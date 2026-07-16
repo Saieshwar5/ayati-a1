@@ -27,9 +27,9 @@ const PROMPT = [
   "Use git_context_create_task only when the request starts a distinct durable deliverable.",
   "Never default an unclear mutation to the most recent task. Ask the user when ownership remains ambiguous.",
   "Every new task must declare placement explicitly: requested or managed.",
-  "For requested placement, provide only the exact path; the runtime verifies it against the current user message and verified read context.",
+  "For requested placement, provide the absolute directory that will contain the deliverables as workingDirectory. If the user names an output file, use its parent directory.",
   "Use managed placement only when no requested location exists. Never silently replace a requested location with a managed directory.",
-  "After either tool succeeds, treat workingDirectory as the task root and use paths relative to it.",
+  "After either tool succeeds, use absolute paths rooted inside the returned workingDirectory for every host filesystem tool call.",
 ].join("\n");
 
 export function createGitContextSkill(deps: GitContextSkillDeps): SkillDefinition {
@@ -57,17 +57,17 @@ function createTaskTool(deps: GitContextSkillDeps): ToolDefinition {
         objective: { type: "string", description: "Concrete deliverable or durable objective." },
         placement: {
           type: "object",
-          description: "Explicit placement decision. Use requested with path when the user message or verified read context specifies a directory. Use managed only when no location was requested.",
+          description: "Explicit placement decision. Use requested with an absolute workingDirectory when the user message or verified read context specifies a location. If the user specifies an output file, use its parent directory. Use managed only when no location was requested.",
           properties: {
             mode: { enum: ["requested", "managed"] },
-            path: { type: "string", description: "Required for requested mode. Relative paths resolve from the Ayati workspace. Omit for managed mode." },
+            workingDirectory: { type: "string", description: "Absolute directory that will contain task deliverables. This must be a directory, not an output file path. Omit for managed mode." },
           },
           required: ["mode"],
           additionalProperties: false,
           anyOf: [
             {
-              properties: { mode: { const: "requested" }, path: { type: "string" } },
-              required: ["mode", "path"],
+              properties: { mode: { const: "requested" }, workingDirectory: { type: "string" } },
+              required: ["mode", "workingDirectory"],
             },
             {
               properties: { mode: { const: "managed" } },

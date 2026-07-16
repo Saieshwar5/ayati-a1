@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { lstat } from "node:fs/promises";
-import { basename, isAbsolute, normalize, relative, resolve, sep } from "node:path";
+import { lstat, readFile } from "node:fs/promises";
+import { isAbsolute, relative, resolve } from "node:path";
 import type { GitContextService, MutationTarget, TaskContextProjection } from "ayati-git-context";
 import type {
   MountedToolGroup,
@@ -11,6 +11,8 @@ import type {
 } from "../skills/tool-executor.js";
 import { getToolTaxonomy } from "../skills/tool-taxonomy.js";
 import type { ToolDefinition, ToolExecutionContext, ToolResult } from "../skills/types.js";
+import { canonicalizeAbsolutePath, requireAbsolutePath } from "../skills/workspace-paths.js";
+import { isClearlyReadOnlyShellCommand } from "../skills/builtins/shell/read-only-policy.js";
 
 export function createTaskScopedToolExecutor(input: {
   base: ToolExecutor;
@@ -67,37 +69,34 @@ class TaskScopedToolExecutor implements ToolExecutor {
     if (!task?.checkoutPath || active.run?.run.runId !== context.runId) {
       return await this.base.execute(toolName, originalInput, context);
     }
-    const repeatedRoot = findRepeatedTaskRoot(originalInput, task.checkoutPath);
-    if (repeatedRoot) {
-      return taskScopeFailure(
-        "TASK_ROOT_REPEATED",
-        `Task paths are already relative to the active task root. Use '${repeatedRoot.suggestedPath}' instead of '${repeatedRoot.path}'.`,
-      );
-    }
     const scopedInput = scopeToolInput(toolName, originalInput, task);
+    const resourceRoot = task.workingDirectory || task.checkoutPath;
     const scopedContext: ToolExecutionContext = {
       ...context,
       resourceScope: {
         kind: "task",
-        rootPath: task.checkoutPath,
+        rootPath: resourceRoot,
         taskId: task.task.taskId,
       },
     };
+    const scopeError = await validateResourceScope(scopedInput, resourceRoot);
+    if (scopeError) {
+      return taskScopeFailure(scopeError.code, scopeError.message);
+    }
     if (taxonomy.effect === "read_only" || taxonomy.effect === "external_mutation") {
       return await this.base.execute(toolName, scopedInput, scopedContext);
     }
-    if (isReadOnlyShellValidation(toolName, scopedInput)) {
+    if (await isReadOnlyShellValidation(toolName, scopedInput)) {
       return await this.base.execute(toolName, scopedInput, scopedContext);
     }
-    const scopeError = validateMutationScope(scopedInput, task.checkoutPath);
-    if (scopeError) {
-      return taskScopeFailure("TASK_RESOURCE_SCOPE_VIOLATION", scopeError);
+    if (toolName === "shell_session_close") {
+      return await this.base.execute(toolName, scopedInput, scopedContext);
     }
-    const targets = await mutationTargets(toolName, scopedInput, task.checkoutPath);
+    const targets = await mutationTargets(toolName, scopedInput, resourceRoot);
     if (targets.some((target) => target.path === ".")) {
       return taskScopeFailure(
         "TASK_RESOURCE_SCOPE_VIOLATION",
-        `${toolName} must name a bounded task-relative file or subdirectory before mutation authority can be acquired.`,
+        `${toolName} must name a bounded absolute file or subdirectory inside ${resourceRoot} before mutation authority can be acquired.`,
       );
     }
     const acquired = await this.gitContext.acquireMutationAuthority({
@@ -155,16 +154,16 @@ function scopeToolInput(
   }
   const input = structuredClone(value as Record<string, unknown>);
   delete input["allowExternalPath"];
-  const scope = (path: unknown): unknown => typeof path === "string" && path.trim()
-    ? scopePath(path, task.checkoutPath!)
+  const scope = (path: unknown): unknown => typeof path === "string" && path.trim() && isAbsolute(path)
+    ? resolve(path)
     : path;
-  for (const key of ["path", "from", "to", "source", "destination", "target", "cwd", "workdir", "scriptPath"]) {
+  for (const key of ["path", "from", "to", "source", "destination", "target", "cwd", "workdir", "scriptPath", "dbPath", "targetDbPath"]) {
     if (key in input) input[key] = scope(input[key]);
   }
   for (const key of ["paths", "roots"]) {
     if (Array.isArray(input[key])) input[key] = (input[key] as unknown[]).map(scope);
   }
-  for (const key of ["files", "edits"]) {
+  for (const key of ["files", "edits", "targets"]) {
     if (!Array.isArray(input[key])) continue;
     input[key] = (input[key] as unknown[]).map((entry) => {
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
@@ -176,14 +175,9 @@ function scopeToolInput(
     });
   }
   if ((toolName === "shell" || toolName.startsWith("shell_")) && !("cwd" in input)) {
-    input["cwd"] = task.checkoutPath;
+    input["cwd"] = task.workingDirectory || task.checkoutPath;
   }
   return input;
-}
-
-function scopePath(path: string, checkoutPath: string): string {
-  if (isAbsolute(path)) return path;
-  return resolve(checkoutPath, path);
 }
 
 async function mutationTargets(
@@ -191,17 +185,40 @@ async function mutationTargets(
   value: unknown,
   checkoutPath: string,
 ): Promise<MutationTarget[]> {
-  const paths = collectPaths(value)
-    .map((path) => isAbsolute(path) ? relative(checkoutPath, path) : path)
-    .filter((path) => path === "." || (!path.startsWith("..") && !isAbsolute(path)));
-  const uniquePaths = [...new Set(paths.length > 0 ? paths : ["."])];
-  const unique = uniquePaths.length > 1
-    ? uniquePaths.filter((path) => path !== ".")
-    : uniquePaths;
-  return await Promise.all(unique.map(async (path) => ({
-    path,
-    kind: await mutationTargetKind(toolName, path, checkoutPath),
+  const requestedTargets = collectMutationTargetInputs(toolName, value);
+  const converted = requestedTargets
+    .map((target) => ({ ...target, path: relative(checkoutPath, target.path) }))
+    .filter((target) => target.path === "." || (!target.path.startsWith("..") && !isAbsolute(target.path)));
+  const deduplicated = new Map<string, { path: string; kind?: MutationTarget["kind"] }>();
+  for (const target of converted.length > 0 ? converted : [{ path: "." }]) {
+    deduplicated.set(target.path, target);
+  }
+  if (deduplicated.size > 1) deduplicated.delete(".");
+  return await Promise.all([...deduplicated.values()].map(async (target) => ({
+    path: target.path,
+    kind: target.kind ?? await mutationTargetKind(toolName, target.path, checkoutPath),
   })));
+}
+
+function collectMutationTargetInputs(
+  toolName: string,
+  value: unknown,
+): Array<{ path: string; kind?: MutationTarget["kind"] }> {
+  if (!toolName.startsWith("shell") && toolName !== "python_execute") {
+    return collectPaths(value).map((path) => ({ path }));
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  const targets = (value as Record<string, unknown>)["targets"];
+  if (!Array.isArray(targets)) return [];
+  return targets.flatMap((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const target = entry as Record<string, unknown>;
+    if (typeof target["path"] !== "string") return [];
+    const kind = target["kind"] === "file" || target["kind"] === "directory"
+      ? target["kind"]
+      : undefined;
+    return [{ path: target["path"], ...(kind ? { kind } : {}) }];
+  });
 }
 
 async function mutationTargetKind(
@@ -223,10 +240,10 @@ async function mutationTargetKind(
 function collectPaths(value: unknown): string[] {
   if (!value || typeof value !== "object" || Array.isArray(value)) return [];
   const input = value as Record<string, unknown>;
-  const direct = ["path", "from", "to", "source", "destination", "target", "cwd", "workdir", "scriptPath"]
+  const direct = ["path", "from", "to", "source", "destination", "target", "cwd", "workdir", "scriptPath", "dbPath", "targetDbPath"]
     .map((key) => input[key])
     .filter((item): item is string => typeof item === "string" && item.trim().length > 0);
-  const arrays = ["paths", "files", "edits"].flatMap((key) => {
+  const arrays = ["paths", "roots", "files", "edits", "targets", "inputFiles", "sqliteDbPaths"].flatMap((key) => {
     const entries = input[key];
     if (!Array.isArray(entries)) return [];
     return entries.flatMap((entry) => {
@@ -240,55 +257,50 @@ function collectPaths(value: unknown): string[] {
   return [...direct, ...arrays];
 }
 
-function isReadOnlyShellValidation(toolName: string, value: unknown): boolean {
-  if (toolName !== "shell" || !value || typeof value !== "object" || Array.isArray(value)) {
+async function isReadOnlyShellValidation(toolName: string, value: unknown): Promise<boolean> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
     return false;
   }
-  const command = (value as Record<string, unknown>)["cmd"];
-  if (typeof command !== "string" || /[;&|`\n\r]|\$\(/.test(command)) {
-    return false;
+  const record = value as Record<string, unknown>;
+  if (toolName === "shell") {
+    const command = record["cmd"];
+    return typeof command === "string" && isClearlyReadOnlyShellCommand(command);
   }
-  return /^\s*node\s+(?:--check|-c)\s+(?:"[^"]+"|'[^']+'|[^\s]+)\s*$/.test(command);
+  if (toolName === "shell_run_script" && typeof record["scriptPath"] === "string") {
+    const script = await readFile(record["scriptPath"], "utf8").catch(() => undefined);
+    return script !== undefined && isClearlyReadOnlyShellCommand(script);
+  }
+  return false;
 }
 
-function validateMutationScope(value: unknown, checkoutPath: string): string | undefined {
+async function validateResourceScope(
+  value: unknown,
+  checkoutPath: string,
+): Promise<{ code: "ABSOLUTE_PATH_REQUIRED" | "PATH_OUTSIDE_TASK_ROOT"; message: string } | undefined> {
+  const canonicalRoot = await canonicalizeAbsolutePath(checkoutPath);
   for (const path of collectPaths(value)) {
-    const resolvedPath = isAbsolute(path) ? resolve(path) : resolve(checkoutPath, path);
-    const candidate = relative(checkoutPath, resolvedPath);
+    const required = requireAbsolutePath(path);
+    if (!required.ok) {
+      return {
+        code: "ABSOLUTE_PATH_REQUIRED",
+        message: `${required.message} The active task workingDirectory is ${canonicalRoot}.`,
+      };
+    }
+    const resolvedPath = await canonicalizeAbsolutePath(required.absolutePath);
+    const candidate = relative(canonicalRoot, resolvedPath);
     if (candidate === "" || (!candidate.startsWith("..") && !isAbsolute(candidate))) {
       continue;
     }
-    return `Task mutation path is outside the active task checkout: ${path}`;
+    return {
+      code: "PATH_OUTSIDE_TASK_ROOT",
+      message: `Task resource path is outside the active task workingDirectory ${canonicalRoot}: ${path}`,
+    };
   }
   return undefined;
-}
-
-function findRepeatedTaskRoot(
-  value: unknown,
-  checkoutPath: string,
-): { path: string; suggestedPath: string } | undefined {
-  const rootName = basename(resolve(checkoutPath));
-  if (!rootName) return undefined;
-  for (const path of collectPaths(value)) {
-    if (isAbsolute(path)) continue;
-    const normalizedPath = normalize(path).replace(new RegExp(`^\\.${escapeRegExp(sep)}+`), "");
-    if (normalizedPath !== rootName && !normalizedPath.startsWith(rootName + sep)) {
-      continue;
-    }
-    const suggestedPath = normalizedPath === rootName
-      ? "."
-      : normalizedPath.slice(rootName.length + 1);
-    return { path, suggestedPath };
-  }
-  return undefined;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function taskScopeFailure(
-  code: "TASK_RESOURCE_SCOPE_VIOLATION" | "TASK_ROOT_REPEATED",
+  code: "TASK_RESOURCE_SCOPE_VIOLATION" | "ABSOLUTE_PATH_REQUIRED" | "PATH_OUTSIDE_TASK_ROOT",
   message: string,
 ): ToolResult {
   return {
@@ -300,15 +312,15 @@ function taskScopeFailure(
       code,
       message,
       error: {
-        category: code === "TASK_ROOT_REPEATED" ? "validation" : "permission",
+        category: code === "ABSOLUTE_PATH_REQUIRED" ? "validation" : "permission",
         code,
         message,
         retryable: true,
         recoverable: true,
         suggestedNextActions: [
-          code === "TASK_ROOT_REPEATED"
-            ? "Remove the repeated task directory prefix and retry with the suggested task-relative path."
-            : "Use a task-relative path inside the active task checkout.",
+          code === "ABSOLUTE_PATH_REQUIRED"
+            ? "Use the complete absolute path rooted at the active task workingDirectory."
+            : "Use an absolute path inside the active task workingDirectory.",
           "Use the task resource binding flow when the user explicitly requested another output location.",
         ],
       },

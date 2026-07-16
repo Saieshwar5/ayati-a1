@@ -69,7 +69,7 @@ describe("findFilesTool", () => {
     expect(meta?.errorCount).toBeGreaterThan(0);
   });
 
-  it("expands tilde roots to home directory", async () => {
+  it("rejects tilde root aliases", async () => {
     const result = await findFilesTool.execute({
       query: "definitely-not-present-file-name-ayati",
       roots: ["~"],
@@ -77,9 +77,8 @@ describe("findFilesTool", () => {
       maxResults: 5,
     });
 
-    expect(result.ok).toBe(true);
-    const meta = result.meta as { roots?: string[] } | undefined;
-    expect(meta?.roots?.[0]).toBe(homedir());
+    expect(result.ok).toBe(false);
+    expect(result.v2?.code).toBe("ABSOLUTE_PATH_REQUIRED");
   });
 
   it("returns an error when query uses wildcard syntax", async () => {

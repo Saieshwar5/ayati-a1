@@ -67,15 +67,14 @@ describe("createDirectoryTool", () => {
     expect(result.error).toContain("path");
   });
 
-  it("creates relative directories inside work_space by default", async () => {
+  it("rejects relative directory paths", async () => {
     const relativePath = `vitest-dir-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const expectedPath = join(workspaceRoot, relativePath);
     workspaceArtifacts.push(expectedPath);
 
     const result = await createDirectoryTool.execute({ path: relativePath });
-    expect(result.ok).toBe(true);
-
-    const info = await stat(expectedPath);
-    expect(info.isDirectory()).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.v2?.code).toBe("ABSOLUTE_PATH_REQUIRED");
+    await expect(stat(expectedPath)).rejects.toBeDefined();
   });
 });

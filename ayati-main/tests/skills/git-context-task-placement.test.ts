@@ -8,15 +8,15 @@ import {
 const WORKSPACE_ROOT = "/tmp/ayati-task-placement-workspace";
 
 describe("task placement", () => {
-  it("accepts a requested path supported by the current user message", () => {
+  it("accepts an absolute working directory supported by a requested output file", () => {
     const placement = parseTaskPlacement({
       mode: "requested",
-      path: "workspace/aurora-coffee-site",
+      workingDirectory: "/tmp/ayati-task-placement-workspace/aurora-coffee-site",
     });
 
     expect(placement).toBeDefined();
     expect(resolveTaskPlacement(placement!, activeContext(
-      "Create it in workspace/aurora-coffee-site.",
+      "Create it at /tmp/ayati-task-placement-workspace/aurora-coffee-site/requirements.md.",
     ), WORKSPACE_ROOT)).toEqual({
       ok: true,
       placement: {
@@ -39,14 +39,14 @@ describe("task placement", () => {
         tool: "read_files",
         purpose: "Read the website requirements.",
         resources: ["website-requirements.md"],
-        output: "Create the website in a directory named `aurora-coffee-site` inside the active workspace.",
+        output: "Create the website in /tmp/ayati-task-placement-workspace/aurora-coffee-site.",
         verification: { status: "passed" },
         createdAt: "2026-07-15T09:00:00+05:30",
       }],
     };
     const placement = parseTaskPlacement({
       mode: "requested",
-      path: "/tmp/ayati-task-placement-workspace/aurora-coffee-site",
+      workingDirectory: "/tmp/ayati-task-placement-workspace/aurora-coffee-site",
     });
 
     expect(placement).toBeDefined();
@@ -82,7 +82,7 @@ describe("task placement", () => {
     };
     const placement = parseTaskPlacement({
       mode: "requested",
-      path: "/srv/customer/aurora-coffee-site",
+      workingDirectory: "/srv/customer/aurora-coffee-site",
     });
 
     expect(resolveTaskPlacement(placement!, active, WORKSPACE_ROOT)).toMatchObject({
@@ -94,11 +94,11 @@ describe("task placement", () => {
   it("does not accept a requested path that only prefixes a different path", () => {
     const placement = parseTaskPlacement({
       mode: "requested",
-      path: "aurora-coffee-site",
+      workingDirectory: "/tmp/ayati-task-placement-workspace/aurora-coffee-site",
     });
 
     expect(resolveTaskPlacement(placement!, activeContext(
-      "Create the task in aurora-coffee-site-old.",
+      "Create the task in /tmp/ayati-task-placement-workspace/aurora-coffee-site-old.",
     ), WORKSPACE_ROOT)).toMatchObject({ ok: false });
   });
 
@@ -109,7 +109,7 @@ describe("task placement", () => {
       "Build the site in the requested workspace directory.",
     ), WORKSPACE_ROOT)).toMatchObject({
       ok: false,
-      message: expect.stringContaining("requested directory"),
+      message: expect.stringContaining("requested location"),
     });
   });
 
@@ -124,17 +124,18 @@ describe("task placement", () => {
   it("rejects evidence that does not contain the requested path", () => {
     const placement = parseTaskPlacement({
       mode: "requested",
-      path: "workspace/other-site",
+      workingDirectory: "/tmp/ayati-task-placement-workspace/other-site",
     });
 
     expect(resolveTaskPlacement(placement!, activeContext(
-      "Create it in workspace/aurora-coffee-site.",
+      "Create it in /tmp/ayati-task-placement-workspace/aurora-coffee-site.",
     ), WORKSPACE_ROOT)).toMatchObject({ ok: false });
   });
 
-  it("requires a path for requested placement and forbids it for managed placement", () => {
+  it("requires an absolute workingDirectory and forbids it for managed placement", () => {
     expect(parseTaskPlacement({ mode: "requested" })).toBeUndefined();
-    expect(parseTaskPlacement({ mode: "managed", path: "site" })).toBeUndefined();
+    expect(parseTaskPlacement({ mode: "requested", workingDirectory: "site" })).toBeUndefined();
+    expect(parseTaskPlacement({ mode: "managed", workingDirectory: "/tmp/site" })).toBeUndefined();
   });
 });
 

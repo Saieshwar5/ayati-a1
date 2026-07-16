@@ -1,5 +1,6 @@
 import type { PreparedAttachmentService } from "../../../documents/prepared-attachment-service.js";
 import type { SkillDefinition, ToolDefinition, ToolResult } from "../../types.js";
+import { requireAbsolutePath } from "../../workspace-paths.js";
 
 export interface DatasetSkillDeps {
   preparedAttachmentService: PreparedAttachmentService;
@@ -102,7 +103,7 @@ function createDatasetPromoteTableTool(deps: DatasetSkillDeps): ToolDefinition {
       properties: {
         preparedInputId: { type: "string", description: "Prepared structured attachment reference. Use the preparedInputId when known; the display name also works." },
         targetTable: { type: "string", description: "Destination SQLite table name." },
-        targetDbPath: { type: "string", description: "Optional target SQLite database path." },
+        targetDbPath: { type: "string", description: "Optional canonical absolute target SQLite database path." },
         ifExists: { type: "string", enum: ["fail", "replace", "append"] },
       },
       additionalProperties: false,
@@ -115,7 +116,7 @@ function createDatasetPromoteTableTool(deps: DatasetSkillDeps): ToolDefinition {
     async execute(input, context): Promise<ToolResult> {
       const preparedInputId = readOptionalString(input, "preparedInputId");
       const targetTable = readRequiredString(input, "targetTable");
-      const targetDbPath = readOptionalString(input, "targetDbPath");
+      const targetDbPath = readOptionalAbsolutePath(input, "targetDbPath");
       const ifExists = readOptionalEnum(input, "ifExists", ["fail", "replace", "append"] as const);
       const runId = readRunId(context);
       try {
@@ -161,6 +162,14 @@ function readRequiredString(input: unknown, field: string): string {
     throw new Error(`${field} must be a non-empty string.`);
   }
   return value.trim();
+}
+
+function readOptionalAbsolutePath(input: unknown, field: string): string | undefined {
+  const value = readOptionalString(input, field);
+  if (value === undefined) return undefined;
+  const result = requireAbsolutePath(value, field);
+  if (!result.ok) throw new Error(result.message);
+  return result.absolutePath;
 }
 
 function readOptionalString(input: unknown, field: string): string | undefined {

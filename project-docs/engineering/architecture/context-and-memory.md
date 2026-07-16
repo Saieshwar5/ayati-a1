@@ -98,7 +98,12 @@ user message
 Each task is an independent Git repository with one stable working directory.
 Task creation makes one bootstrap identity commit, clones it into the exact
 user-requested directory or an isolated managed workspace directory, and
-registers a session submodule pointer. After that, a task run advances task
+registers a session submodule pointer. When a requested directory already
+contains ordinary non-Git files, Ayati imports those files in one clean
+baseline commit before the first task run. That import preserves requirements
+or other user-provided starting material without counting it as a completed
+task run. Existing Git worktrees remain explicit task identities and are not
+silently adopted as new tasks. After initialization, a task run advances task
 history exactly once, when the run finishes.
 
 During the run, every mutating tool still receives deterministic authority and
@@ -212,31 +217,39 @@ tools are removed from the task-run surface.
 
 An active task run has one trusted filesystem authority: the task's stable
 working directory. When the user names a directory, that exact directory is
-the task checkout. Otherwise Ayati allocates `workspace/tasks/<task-id>-<slug>`.
+the task checkout. Otherwise Ayati allocates
+`<absolute-workspace-root>/tasks/<task-id>-<slug>`.
 The app runtime passes this checkout as a runtime-only `resourceScope` to
-executable tools. Filesystem, search, shell, and managed Python paths resolve
-relative to that scope; model tool inputs do not need `allowExternalPath` to
-reach task-owned files. The task-scoped executor removes that escape flag and
-rejects paths outside the working directory before requesting Git mutation
-authority.
+executable tools. The model receives the canonical absolute `workingDirectory`
+and uses absolute paths rooted inside it for filesystem, search, shell, managed
+Python, and other host-resource tool fields. Relative paths, workspace aliases,
+and `~` paths are rejected before execution. The task-scoped executor
+canonicalizes existing symlinks and the nearest existing parent of new targets,
+then rejects paths outside the working directory before requesting Git mutation
+authority. A model-provided escape flag is never mutation authority.
 
 The session submodule checkout is separate and is never an execution root. It
 exists only so a session commit can retain a native Git gitlink to the exact
 task commit. Task finalization advances it after the stable working directory
 has committed and pushed successfully.
 
-Durable and model-facing task asset identities remain task-relative. The
-session-specific checkout path is available to completion verification and
-other trusted runtime code but is omitted from the model prompt. Mutation
-authority receives the same task-relative identity, while the underlying tool
-receives the resolved execution path. `task_completion` resolves and verifies
-declared assets against the active checkout rather than the global user
-workspace.
+Portable paths stored inside Git task trees remain task-relative. At the
+context boundary Ayati reconstructs old and current portable asset records
+against the canonical task `workingDirectory`, so model-facing task assets,
+WorkState file artifacts, completion assets, and final file references use one
+absolute identity. The session-specific submodule checkout remains runtime-only
+and is omitted from the model prompt. After absolute-path authorization, the
+executor performs a one-way private conversion to a task-relative Git path for
+mutation authority and staging. `task_completion` accepts only absolute assets
+inside the active task working directory and verifies them by canonical
+identity.
 
-Known non-mutating validation commands such as `node --check <file>` execute
-with the task checkout as `cwd` and do not acquire mutation authority. Other
-mutation-capable commands must still identify a bounded task file or
-subdirectory; repository-wide `.` authority remains invalid.
+Known non-mutating validation commands such as
+`node --check /absolute/task/path/file.js` execute with the task checkout as
+their absolute `cwd` and do not acquire mutation authority. Other
+mutation-capable shell and managed-Python commands must declare bounded
+absolute file or directory `targets`; the executor converts only those targets
+to private Git paths. Repository-wide `.` authority remains invalid.
 
 A session run has exactly one final home. If it remains read-only, it is
 finalized in `session-store`. If it is promoted, pre-promotion read steps move

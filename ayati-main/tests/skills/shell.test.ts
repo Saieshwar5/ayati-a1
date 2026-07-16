@@ -87,6 +87,13 @@ describe("shell tool", () => {
     expect(String(result.rawOutput ?? "").trim()).toBe(workspaceRoot);
   });
 
+  it("rejects supplied relative working directories", async () => {
+    const result = await shellExecTool.execute({ cmd: "pwd", cwd: "project" });
+
+    expect(result.ok).toBe(false);
+    expect(result.v2?.code).toBe("ABSOLUTE_PATH_REQUIRED");
+  });
+
   it("runs a script", async () => {
     const scriptPath = join("/tmp", `ayati-shell-test-${Date.now()}.sh`);
     writeFileSync(scriptPath, "echo script-ok\n");
@@ -94,6 +101,13 @@ describe("shell tool", () => {
     const result = await shellRunScriptTool.execute({ scriptPath });
     expect(result.ok).toBe(true);
     expect(result.output).toContain("script-ok");
+  });
+
+  it("rejects relative script paths", async () => {
+    const result = await shellRunScriptTool.execute({ scriptPath: "scripts/check.sh" });
+
+    expect(result.ok).toBe(false);
+    expect(result.v2?.code).toBe("ABSOLUTE_PATH_REQUIRED");
   });
 
   it("blocks scripts that mutate files", async () => {

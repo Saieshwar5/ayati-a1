@@ -14,15 +14,11 @@ export const deleteTool: ToolDefinition = {
     properties: {
       path: {
         type: "string",
-        description: "Target path. In a task run, use a path relative to the active task root and do not repeat the task directory name. Otherwise, relative paths use the workspace root.",
+        description: "Absolute path of the file or directory to delete.",
       },
       recursive: {
         type: "boolean",
         description: "Delete directories and their contents recursively (default: false).",
-      },
-      allowExternalPath: {
-        type: "boolean",
-        description: "Allow an absolute path outside the configured workspace for non-task work. Task runs ignore this flag and cannot escape the active task root.",
       },
     },
   },

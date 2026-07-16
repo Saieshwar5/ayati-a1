@@ -40,7 +40,7 @@ export const writeFilesTool: ToolDefinition = {
           properties: {
             path: {
               type: "string",
-              description: "File path. In a task run, use a path relative to the active task root and do not repeat the task directory name. Otherwise, relative paths use the workspace root.",
+              description: "Absolute path of the file to write. It must remain inside the active task workingDirectory during task work.",
             },
             content: { type: "string", description: "Content to write." },
             baseSha256: {
@@ -54,10 +54,6 @@ export const writeFilesTool: ToolDefinition = {
       createDirs: {
         type: "boolean",
         description: "Create parent directories if they don't exist (default: false).",
-      },
-      allowExternalPath: {
-        type: "boolean",
-        description: "Allow absolute paths outside the configured workspace for non-task work. Task runs ignore this flag and cannot escape the active task root.",
       },
     },
     additionalProperties: false,

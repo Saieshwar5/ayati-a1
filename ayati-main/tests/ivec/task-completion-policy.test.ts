@@ -38,8 +38,8 @@ describe("task completion policy", () => {
     const result = await evaluateTaskCompletion(state, {
       summary: "Created the Chenko restaurant homepage.",
       assets: [
-        { path: "site", kind: "directory", description: "Root website directory" },
-        { path: "site/index.html", kind: "file", description: "Main restaurant homepage" },
+        { path: join(workspace, "site"), kind: "directory", description: "Root website directory" },
+        { path: join(workspace, "site/index.html"), kind: "file", description: "Main restaurant homepage" },
       ],
     });
 
@@ -63,18 +63,31 @@ describe("task completion policy", () => {
     const state = taskState();
     const result = await evaluateTaskCompletion(state, {
       summary: "Created the requested website files.",
+      assets: [{ path: join(workspace, "site/index.html"), kind: "file", description: "Main page" }],
+    });
+
+    expect(result.accepted).toBe(false);
+    if (result.accepted) throw new Error("Expected completion rejection.");
+    expect(result.failures).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "REQUIRED_ASSET_MISSING", path: join(workspace, "site/index.html") }),
+    ]));
+    expect(result.nextWorkState).toMatchObject({
+      status: "not_done",
+      nextStep: expect.stringContaining("site/index.html"),
+    });
+  });
+
+  it("rejects relative completion asset paths", async () => {
+    const result = await evaluateTaskCompletion(taskState(), {
+      summary: "Created the requested website files.",
       assets: [{ path: "site/index.html", kind: "file", description: "Main page" }],
     });
 
     expect(result.accepted).toBe(false);
     if (result.accepted) throw new Error("Expected completion rejection.");
     expect(result.failures).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "REQUIRED_ASSET_MISSING", path: "site/index.html" }),
+      expect.objectContaining({ code: "INVALID_ASSET_PATH", path: "site/index.html" }),
     ]));
-    expect(result.nextWorkState).toMatchObject({
-      status: "not_done",
-      nextStep: expect.stringContaining("site/index.html"),
-    });
   });
 
   it("rejects an existing asset without verified run evidence", async () => {
@@ -89,7 +102,7 @@ describe("task completion policy", () => {
     });
     const result = await evaluateTaskCompletion(state, {
       summary: "Updated the existing homepage.",
-      assets: [{ path: "existing.html", kind: "file", description: "Updated homepage" }],
+      assets: [{ path: join(workspace, "existing.html"), kind: "file", description: "Updated homepage" }],
     });
 
     expect(result.accepted).toBe(false);
@@ -122,7 +135,7 @@ describe("task completion policy", () => {
       const result = await evaluateTaskCompletion(state, {
         summary: "Created and validated the Aurora Coffee website.",
         assets: [{
-          path: "aurora-coffee-site/app.js",
+          path: join(checkoutPath, "aurora-coffee-site/app.js"),
           kind: "file",
           description: "Validated website behavior",
         }],
@@ -158,6 +171,7 @@ function taskHarnessContext(checkoutPath: string) {
       },
       task: {
         checkoutPath,
+        workingDirectory: checkoutPath,
         ref: "refs/heads/main",
         workId: "W-1",
         title: "Aurora Coffee website",

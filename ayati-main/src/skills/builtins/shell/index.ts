@@ -13,7 +13,7 @@ import {
   type ToolContextBlock,
   type ToolContextObservation,
 } from "../../observations/context-observation.js";
-import { resolveWorkspaceCwd } from "../../workspace-paths.js";
+import { requireAbsolutePath, resolveWorkspaceCwd } from "../../workspace-paths.js";
 import { commonAnnotations, errorResult, failureV2, genericObjectOutputSchema, okResult, succeededContract, successV2 } from "../contract-helpers.js";
 
 const execAsync = promisify(exec);
@@ -26,6 +26,7 @@ const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 600_000; // 10 min
 interface ShellExecInput {
   cmd: string;
   cwd?: string;
+  targets?: ShellMutationTargetInput[];
   timeoutMs?: number;
   maxOutputChars?: number;
 }
@@ -34,6 +35,7 @@ interface ShellRunScriptInput {
   scriptPath: string;
   args?: string[];
   cwd?: string;
+  targets?: ShellMutationTargetInput[];
   timeoutMs?: number;
   maxOutputChars?: number;
 }
@@ -41,6 +43,7 @@ interface ShellRunScriptInput {
 interface ShellSessionStartInput {
   cmd: string;
   cwd?: string;
+  targets?: ShellMutationTargetInput[];
   waitMs?: number;
   maxOutputChars?: number;
 }
@@ -51,6 +54,12 @@ interface ShellSessionWriteInput {
   closeStdin?: boolean;
   signal?: "SIGINT" | "SIGTERM" | "SIGKILL";
   waitMs?: number;
+  targets?: ShellMutationTargetInput[];
+}
+
+interface ShellMutationTargetInput {
+  path: string;
+  kind?: "file" | "directory";
 }
 
 interface ShellSessionCloseInput {
@@ -472,6 +481,44 @@ function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
   return typeof err === "object" && err !== null && "code" in (err as ErrnoExceptionLike);
 }
 
+function validateAbsoluteShellPath(value: string, field: string): string | ToolResult {
+  const result = requireAbsolutePath(value, field);
+  if (result.ok) return result.absolutePath;
+  return errorResult({
+    code: result.code,
+    message: result.message,
+    category: "validation",
+    target: result.requestedPath,
+    retryable: true,
+    recoverable: true,
+    suggestedNextActions: [`Retry with the canonical absolute ${field}.`],
+  });
+}
+
+function validateShellTargets(value: unknown): ShellMutationTargetInput[] | undefined | ToolResult {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    return { ok: false, error: "Invalid input: targets must be an array when provided." };
+  }
+  const targets: ShellMutationTargetInput[] = [];
+  for (const [index, entry] of value.entries()) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      return { ok: false, error: `Invalid input: targets[${index}] must be an object.` };
+    }
+    const target = entry as Record<string, unknown>;
+    if (typeof target["path"] !== "string" || target["path"].trim().length === 0) {
+      return { ok: false, error: `Invalid input: targets[${index}].path must be a non-empty string.` };
+    }
+    if (target["kind"] !== undefined && target["kind"] !== "file" && target["kind"] !== "directory") {
+      return { ok: false, error: `Invalid input: targets[${index}].kind must be file or directory.` };
+    }
+    const path = validateAbsoluteShellPath(target["path"], `targets[${index}].path`);
+    if (typeof path !== "string") return path;
+    targets.push({ path, ...(target["kind"] ? { kind: target["kind"] } : {}) });
+  }
+  return targets;
+}
+
 function validateShellExecInput(input: unknown): ShellExecInput | ToolResult {
   if (!input || typeof input !== "object") {
     return { ok: false, error: "Invalid input: expected object." };
@@ -483,6 +530,10 @@ function validateShellExecInput(input: unknown): ShellExecInput | ToolResult {
   if (v.cwd !== undefined && typeof v.cwd !== "string") {
     return { ok: false, error: "Invalid input: cwd must be a string when provided." };
   }
+  const cwd = v.cwd === undefined ? undefined : validateAbsoluteShellPath(v.cwd, "cwd");
+  if (cwd !== undefined && typeof cwd !== "string") return cwd;
+  const targets = validateShellTargets(v.targets);
+  if (targets && "ok" in targets) return targets;
   if (v.timeoutMs !== undefined && (!Number.isFinite(v.timeoutMs) || v.timeoutMs <= 0)) {
     return { ok: false, error: "Invalid input: timeoutMs must be a positive number." };
   }
@@ -491,7 +542,8 @@ function validateShellExecInput(input: unknown): ShellExecInput | ToolResult {
   }
   return {
     cmd: v.cmd,
-    cwd: v.cwd,
+    cwd,
+    targets,
     timeoutMs: v.timeoutMs,
     maxOutputChars: v.maxOutputChars,
   };
@@ -505,12 +557,18 @@ function validateRunScriptInput(input: unknown): ShellRunScriptInput | ToolResul
   if (typeof v.scriptPath !== "string" || v.scriptPath.trim().length === 0) {
     return { ok: false, error: "Invalid input: scriptPath must be a non-empty string." };
   }
+  const scriptPath = validateAbsoluteShellPath(v.scriptPath, "scriptPath");
+  if (typeof scriptPath !== "string") return scriptPath;
   if (v.args !== undefined && !validateStringArray(v.args)) {
     return { ok: false, error: "Invalid input: args must be an array of strings when provided." };
   }
   if (v.cwd !== undefined && typeof v.cwd !== "string") {
     return { ok: false, error: "Invalid input: cwd must be a string when provided." };
   }
+  const cwd = v.cwd === undefined ? undefined : validateAbsoluteShellPath(v.cwd, "cwd");
+  if (cwd !== undefined && typeof cwd !== "string") return cwd;
+  const targets = validateShellTargets(v.targets);
+  if (targets && "ok" in targets) return targets;
   if (v.timeoutMs !== undefined && (!Number.isFinite(v.timeoutMs) || v.timeoutMs <= 0)) {
     return { ok: false, error: "Invalid input: timeoutMs must be a positive number." };
   }
@@ -518,9 +576,10 @@ function validateRunScriptInput(input: unknown): ShellRunScriptInput | ToolResul
     return { ok: false, error: "Invalid input: maxOutputChars must be a positive number." };
   }
   return {
-    scriptPath: v.scriptPath,
+    scriptPath,
     args: v.args,
-    cwd: v.cwd,
+    cwd,
+    targets,
     timeoutMs: v.timeoutMs,
     maxOutputChars: v.maxOutputChars,
   };
@@ -537,6 +596,10 @@ function validateSessionStartInput(input: unknown): ShellSessionStartInput | Too
   if (v.cwd !== undefined && typeof v.cwd !== "string") {
     return { ok: false, error: "Invalid input: cwd must be a string when provided." };
   }
+  const cwd = v.cwd === undefined ? undefined : validateAbsoluteShellPath(v.cwd, "cwd");
+  if (cwd !== undefined && typeof cwd !== "string") return cwd;
+  const targets = validateShellTargets(v.targets);
+  if (targets && "ok" in targets) return targets;
   if (v.waitMs !== undefined && (!Number.isFinite(v.waitMs) || v.waitMs < 0)) {
     return { ok: false, error: "Invalid input: waitMs must be a non-negative number." };
   }
@@ -545,7 +608,8 @@ function validateSessionStartInput(input: unknown): ShellSessionStartInput | Too
   }
   return {
     cmd: v.cmd,
-    cwd: v.cwd,
+    cwd,
+    targets,
     waitMs: v.waitMs,
     maxOutputChars: v.maxOutputChars,
   };
@@ -562,6 +626,8 @@ function validateSessionWriteInput(input: unknown): ShellSessionWriteInput | Too
   if (v.input !== undefined && typeof v.input !== "string") {
     return { ok: false, error: "Invalid input: input must be a string when provided." };
   }
+  const targets = validateShellTargets(v.targets);
+  if (targets && "ok" in targets) return targets;
   if (v.closeStdin !== undefined && typeof v.closeStdin !== "boolean") {
     return { ok: false, error: "Invalid input: closeStdin must be a boolean when provided." };
   }
@@ -577,6 +643,7 @@ function validateSessionWriteInput(input: unknown): ShellSessionWriteInput | Too
     closeStdin: v.closeStdin,
     signal: v.signal,
     waitMs: v.waitMs,
+    targets,
   };
 }
 
@@ -936,6 +1003,20 @@ const shellCommandOutputSchema = {
   },
 };
 
+const shellMutationTargetsSchema = {
+  type: "array",
+  description: "Bounded host paths the command may create or modify. Required by task authorization for mutation-capable commands.",
+  items: {
+    type: "object",
+    required: ["path"],
+    properties: {
+      path: { type: "string", description: "Canonical absolute file or directory path." },
+      kind: { type: "string", enum: ["file", "directory"] },
+    },
+    additionalProperties: false,
+  },
+};
+
 const shellCommandAnnotations = commonAnnotations({
   domain: "shell",
   readOnly: false,
@@ -981,7 +1062,8 @@ export const shellExecTool: ToolDefinition = {
     required: ["cmd"],
     properties: {
       cmd: { type: "string" },
-      cwd: { type: "string" },
+      cwd: { type: "string", description: "Canonical absolute working directory. Omit to use the task directory." },
+      targets: shellMutationTargetsSchema,
       timeoutMs: { type: "number" },
       maxOutputChars: { type: "number" },
     },
@@ -1020,9 +1102,10 @@ export const shellRunScriptTool: ToolDefinition = {
     type: "object",
     required: ["scriptPath"],
     properties: {
-      scriptPath: { type: "string" },
+      scriptPath: { type: "string", description: "Canonical absolute path to the bash script." },
       args: { type: "array", items: { type: "string" } },
-      cwd: { type: "string" },
+      cwd: { type: "string", description: "Canonical absolute working directory. Omit to use the task directory." },
+      targets: shellMutationTargetsSchema,
       timeoutMs: { type: "number" },
       maxOutputChars: { type: "number" },
     },
@@ -1105,7 +1188,8 @@ export const shellSessionStartTool: ToolDefinition = {
     required: ["cmd"],
     properties: {
       cmd: { type: "string" },
-      cwd: { type: "string" },
+      cwd: { type: "string", description: "Canonical absolute working directory. Omit to use the task directory." },
+      targets: shellMutationTargetsSchema,
       waitMs: { type: "number" },
       maxOutputChars: { type: "number" },
     },
@@ -1245,6 +1329,7 @@ export const shellSessionWriteTool: ToolDefinition = {
     properties: {
       sessionId: { type: "string" },
       input: { type: "string" },
+      targets: shellMutationTargetsSchema,
       closeStdin: { type: "boolean" },
       signal: { type: "string" },
       waitMs: { type: "number" },
@@ -1454,7 +1539,8 @@ const SHELL_PROMPT_BLOCK = [
   "Shell tools are built in.",
   "Use them directly for terminal execution, developer workflows, and orchestrating system tools.",
   "Default shell work to the configured workspace root unless the user or task clearly points to another directory.",
-  "Do not prefix cwd values with workspace/ or work_space/; relative cwd values are already workspace-relative.",
+  "When cwd or scriptPath is supplied, pass its canonical absolute filesystem path. Relative paths, workspace aliases, and ~ paths are rejected.",
+  "For a task command that may create or modify files, declare every bounded absolute mutation target in targets. Read-only validation commands do not need targets.",
   "Shell tools block destructive commands and direct file mutation such as rm -rf, git reset --hard, sed -i, redirection to files, tee writes, and interactive shells; use filesystem tools for file changes.",
   "Use shell_run_script to execute project scripts.",
   "Use shell_session_start/shell_session_write/shell_session_close for interactive commands.",

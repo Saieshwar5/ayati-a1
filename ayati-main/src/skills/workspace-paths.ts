@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DEFAULT_WORKSPACE_DIR, resolveWorkspaceDir } from "../config/runtime-config.js";
@@ -24,11 +24,72 @@ export interface WorkspaceMutationPathRejected {
 
 export type WorkspaceMutationPathResult = WorkspaceMutationPathAllowed | WorkspaceMutationPathRejected;
 
+export interface AbsolutePathAllowed {
+  ok: true;
+  absolutePath: string;
+}
+
+export interface AbsolutePathRejected {
+  ok: false;
+  code: "ABSOLUTE_PATH_REQUIRED";
+  requestedPath: string;
+  message: string;
+}
+
+export type AbsolutePathResult = AbsolutePathAllowed | AbsolutePathRejected;
+
 function normalizeSpecialPath(pathValue: string): string {
   const trimmed = pathValue.trim();
   if (trimmed === "~") return homedir();
   if (trimmed.startsWith("~/")) return join(homedir(), trimmed.slice(2));
   return trimmed;
+}
+
+export function requireAbsolutePath(pathValue: string, field = "path"): AbsolutePathResult {
+  const trimmed = pathValue.trim();
+  if (trimmed === "~" || trimmed.startsWith("~/")) {
+    return {
+      ok: false,
+      code: "ABSOLUTE_PATH_REQUIRED",
+      requestedPath: pathValue,
+      message: `${field} must be an absolute filesystem path. Relative paths, workspace aliases, and ~ paths are not accepted in agent tool calls.`,
+    };
+  }
+  const normalized = normalizeSpecialPath(pathValue);
+  if (!isAbsolute(normalized)) {
+    return {
+      ok: false,
+      code: "ABSOLUTE_PATH_REQUIRED",
+      requestedPath: pathValue,
+      message: `${field} must be an absolute filesystem path. Relative paths, workspace aliases, and ~ paths are not accepted in agent tool calls.`,
+    };
+  }
+  return { ok: true, absolutePath: resolve(normalized) };
+}
+
+/**
+ * Resolve symlinks in the existing portion of an absolute path. This also
+ * handles new targets by resolving their nearest existing parent first.
+ */
+export async function canonicalizeAbsolutePath(pathValue: string): Promise<string> {
+  const required = requireAbsolutePath(pathValue);
+  if (!required.ok) {
+    throw new Error(required.message);
+  }
+  const suffix: string[] = [];
+  let current = required.absolutePath;
+  while (true) {
+    try {
+      const existing = await realpath(current);
+      return resolve(existing, ...suffix);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const parent = dirname(current);
+      if (parent === current) return required.absolutePath;
+      suffix.unshift(basename(current));
+      current = parent;
+    }
+  }
 }
 
 export function getWorkspaceRoot(): string {
@@ -112,7 +173,7 @@ export function resolveWorkspaceMutationPath(
       requestedPath: pathValue,
       resolvedPath,
       workspaceRoot: root,
-      message: `External workspace path rejected for ${operation}: ${resolvedPath} is outside ${root}. Use a workspace-relative path for generated files, or set allowExternalPath=true only when the user explicitly requested this external path.`,
+      message: `Path rejected for ${operation}: ${resolvedPath} is outside the authorized absolute resource root ${root}. Route the work to a task whose workingDirectory contains the target path before retrying.`,
     };
   }
 

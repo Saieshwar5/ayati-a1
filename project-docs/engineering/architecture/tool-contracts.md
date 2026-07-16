@@ -38,6 +38,26 @@ Tool definitions can declare:
 The decision model sees annotations and schemas. The executor and verification
 layer use contracts to prove outcomes.
 
+## Host Filesystem Path Contract
+
+Every model-facing field that addresses a host file or directory uses a
+canonical absolute path. This includes filesystem paths, search roots, shell
+working directories and scripts, Python datasets/scripts/input files, supplied
+SQLite database paths, and generated artifact registration paths. An omitted
+optional path may use a runtime-owned absolute default.
+
+Relative paths, `.`, `..`, `~/...`, `workspace/...`, and `work_space/...` are
+rejected with `ABSOLUTE_PATH_REQUIRED`; they are not silently repaired. During
+a task, absolute paths are canonicalized through symlinks and must remain
+inside the task `workingDirectory`. Absolute syntax and authorization are
+separate checks.
+
+Tool results, evidence, task assets, completion assets, and final file
+references preserve the same absolute identity. Git alone receives a private
+portable task-relative path, derived after authorization. Relative references
+inside generated content—such as `./styles.css` in HTML or source imports—are
+normal project content and remain valid.
+
 ## Verification Path
 
 For a deterministic action:
@@ -123,8 +143,8 @@ Verified facts should be short, factual, and grounded in tool evidence.
 
 Examples:
 
-- `todo/index.html exists`
-- `write_files read-back hash matched for todo/app.js`
+- `/home/user/project/todo/index.html exists`
+- `write_files read-back hash matched for /home/user/project/todo/app.js`
 - `shell command pnpm test exited 0`
 - `document_query returned section evidence from contract.pdf`
 

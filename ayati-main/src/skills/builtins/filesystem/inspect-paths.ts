@@ -60,7 +60,7 @@ export const inspectPathsTool: ToolDefinition = {
       paths: {
         type: "array",
         items: { type: "string" },
-        description: "Paths to inspect. In a task run, relative paths start at the active task root and must not repeat the task directory name. Otherwise they start at the workspace root.",
+        description: "Absolute file or directory paths to inspect.",
       },
       includeLineCount: { type: "boolean", description: "Count text-file lines. Defaults to true." },
       includeHash: { type: "boolean", description: "Compute sha256 for files. Defaults to false." },

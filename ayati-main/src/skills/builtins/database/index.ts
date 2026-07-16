@@ -15,11 +15,12 @@ import {
   updateRows,
 } from "../../../database/sqlite-runtime.js";
 import type { DatabaseColumnInput, DatabaseToolMode } from "../../../database/sqlite-runtime.js";
+import { requireAbsolutePath } from "../../workspace-paths.js";
 
 const DATABASE_PROMPT_BLOCK = [
   "SQLite database tools are built in.",
   "Use them directly for local, structured database work.",
-  "Default database path: data/sqlite/agent.sqlite.",
+  "Omit dbPath to use the managed default database. When dbPath is supplied, it must be a canonical absolute filesystem path.",
   "Prefer structured tools for common tasks because they are easier and more reliable for the agent.",
   "Use db_execute_sql when you need joins, aggregations, migrations, or any advanced SQLite feature not covered by the structured tools.",
   "Inspect schema before mutating an unfamiliar table.",
@@ -200,7 +201,7 @@ function createListTablesTool(): ToolDefinition {
     inputSchema: {
       type: "object",
       properties: {
-        dbPath: { type: "string", description: "Optional SQLite database path. Defaults to data/sqlite/agent.sqlite." },
+        dbPath: { type: "string", description: "Optional canonical absolute SQLite database path. Omit to use the managed default database." },
       },
     },
     selectionHints: {
@@ -212,7 +213,8 @@ function createListTablesTool(): ToolDefinition {
     },
     async execute(input): Promise<ToolResult> {
       const payload = isPlainObject(input) ? input : {};
-      const dbPath = readOptionalString(payload, "dbPath");
+      const dbPath = readOptionalDatabasePath(payload);
+      if (isToolResult(dbPath)) return dbPath;
       const result = listTables(dbPath);
       return result.ok
         ? buildSuccessResult(result.data, { dbPath: result.data?.dbPath })
@@ -229,7 +231,7 @@ function createDescribeTableTool(): ToolDefinition {
       type: "object",
       required: ["table"],
       properties: {
-        dbPath: { type: "string", description: "Optional SQLite database path." },
+        dbPath: { type: "string", description: "Optional canonical absolute SQLite database path. Omit to use the managed default database." },
         table: { type: "string", description: "Table name to describe." },
         sampleLimit: { type: "number", description: "Optional sample row limit (default 50, max 200)." },
       },
@@ -247,7 +249,8 @@ function createDescribeTableTool(): ToolDefinition {
       if (isToolResult(table)) return table;
       const sampleLimit = readOptionalNumber(input, "sampleLimit");
       if (isToolResult(sampleLimit)) return sampleLimit;
-      const dbPath = readOptionalString(input, "dbPath");
+      const dbPath = readOptionalDatabasePath(input);
+      if (isToolResult(dbPath)) return dbPath;
       const result = describeTable({
         dbPath,
         table,
@@ -268,7 +271,7 @@ function createGetTableDdlTool(): ToolDefinition {
       type: "object",
       required: ["table"],
       properties: {
-        dbPath: { type: "string", description: "Optional SQLite database path." },
+        dbPath: { type: "string", description: "Optional canonical absolute SQLite database path. Omit to use the managed default database." },
         table: { type: "string", description: "Table name." },
       },
     },
@@ -283,7 +286,8 @@ function createGetTableDdlTool(): ToolDefinition {
       if (!isPlainObject(input)) return buildFailureResult("Invalid input: expected object.");
       const table = readRequiredString(input, "table");
       if (isToolResult(table)) return table;
-      const dbPath = readOptionalString(input, "dbPath");
+      const dbPath = readOptionalDatabasePath(input);
+      if (isToolResult(dbPath)) return dbPath;
       const result = getTableDdl({ dbPath, table });
       return result.ok
         ? buildSuccessResult(result.data, { table })
@@ -300,7 +304,7 @@ function createCreateTableTool(): ToolDefinition {
       type: "object",
       required: ["table", "columns"],
       properties: {
-        dbPath: { type: "string", description: "Optional SQLite database path." },
+        dbPath: { type: "string", description: "Optional canonical absolute SQLite database path. Omit to use the managed default database." },
         table: { type: "string", description: "Table name to create." },
         ifNotExists: { type: "boolean", description: "Create only when missing. Defaults to true." },
         columns: {
@@ -321,7 +325,8 @@ function createCreateTableTool(): ToolDefinition {
       if (!isPlainObject(input)) return buildFailureResult("Invalid input: expected object.");
       const table = readRequiredString(input, "table");
       if (isToolResult(table)) return table;
-      const dbPath = readOptionalString(input, "dbPath");
+      const dbPath = readOptionalDatabasePath(input);
+      if (isToolResult(dbPath)) return dbPath;
       const ifNotExists = readOptionalBoolean(input, "ifNotExists");
       if (isToolResult(ifNotExists)) return ifNotExists;
       const columns = readRequiredArray(input, "columns");
@@ -347,7 +352,7 @@ function createRenameTableTool(): ToolDefinition {
       type: "object",
       required: ["table", "newName"],
       properties: {
-        dbPath: { type: "string", description: "Optional SQLite database path." },
+        dbPath: { type: "string", description: "Optional canonical absolute SQLite database path. Omit to use the managed default database." },
         table: { type: "string", description: "Current table name." },
         newName: { type: "string", description: "New table name." },
       },
@@ -365,7 +370,8 @@ function createRenameTableTool(): ToolDefinition {
       if (isToolResult(table)) return table;
       const newName = readRequiredString(input, "newName");
       if (isToolResult(newName)) return newName;
-      const dbPath = readOptionalString(input, "dbPath");
+      const dbPath = readOptionalDatabasePath(input);
+      if (isToolResult(dbPath)) return dbPath;
       const result = renameTable({ dbPath, table, newName });
       return result.ok
         ? buildSuccessResult(result.data, { table, newName })
@@ -382,7 +388,7 @@ function createDropTableTool(): ToolDefinition {
       type: "object",
       required: ["table"],
       properties: {
-        dbPath: { type: "string", description: "Optional SQLite database path." },
+        dbPath: { type: "string", description: "Optional canonical absolute SQLite database path. Omit to use the managed default database." },
         table: { type: "string", description: "Table name to drop." },
         ifExists: { type: "boolean", description: "Ignore missing tables when true." },
       },
@@ -400,7 +406,8 @@ function createDropTableTool(): ToolDefinition {
       if (isToolResult(table)) return table;
       const ifExists = readOptionalBoolean(input, "ifExists");
       if (isToolResult(ifExists)) return ifExists;
-      const dbPath = readOptionalString(input, "dbPath");
+      const dbPath = readOptionalDatabasePath(input);
+      if (isToolResult(dbPath)) return dbPath;
       const result = dropTable({
         dbPath,
         table,
@@ -421,7 +428,7 @@ function createAddColumnsTool(): ToolDefinition {
       type: "object",
       required: ["table", "columns"],
       properties: {
-        dbPath: { type: "string", description: "Optional SQLite database path." },
+        dbPath: { type: "string", description: "Optional canonical absolute SQLite database path. Omit to use the managed default database." },
         table: { type: "string", description: "Table name." },
         columns: {
           type: "array",
@@ -443,7 +450,8 @@ function createAddColumnsTool(): ToolDefinition {
       if (isToolResult(table)) return table;
       const columns = readRequiredArray(input, "columns");
       if (isToolResult(columns)) return columns;
-      const dbPath = readOptionalString(input, "dbPath");
+      const dbPath = readOptionalDatabasePath(input);
+      if (isToolResult(dbPath)) return dbPath;
       const result = addColumns({ dbPath, table, columns: columns as DatabaseColumnInput[] });
       return result.ok
         ? buildSuccessResult(result.data, { table })
@@ -460,7 +468,7 @@ function createInsertRowsTool(): ToolDefinition {
       type: "object",
       required: ["table", "rows"],
       properties: {
-        dbPath: { type: "string", description: "Optional SQLite database path." },
+        dbPath: { type: "string", description: "Optional canonical absolute SQLite database path. Omit to use the managed default database." },
         table: { type: "string", description: "Table name." },
         rows: {
           type: "array",
@@ -482,7 +490,8 @@ function createInsertRowsTool(): ToolDefinition {
       if (isToolResult(table)) return table;
       const rows = readRequiredArray(input, "rows");
       if (isToolResult(rows)) return rows;
-      const dbPath = readOptionalString(input, "dbPath");
+      const dbPath = readOptionalDatabasePath(input);
+      if (isToolResult(dbPath)) return dbPath;
       const result = insertRows({ dbPath, table, rows: rows as Array<Record<string, unknown>> });
       return result.ok
         ? buildSuccessResult(result.data, { table })
@@ -499,7 +508,7 @@ function createUpdateRowsTool(): ToolDefinition {
       type: "object",
       required: ["table", "set"],
       properties: {
-        dbPath: { type: "string", description: "Optional SQLite database path." },
+        dbPath: { type: "string", description: "Optional canonical absolute SQLite database path. Omit to use the managed default database." },
         table: { type: "string", description: "Table name." },
         set: { type: "object", description: "Patch object keyed by column name." },
         whereSql: { type: "string", description: "Optional SQL after WHERE, such as id = ?." },
@@ -526,7 +535,8 @@ function createUpdateRowsTool(): ToolDefinition {
       const whereSql = readOptionalString(input, "whereSql");
       const params = readOptionalArray(input, "params");
       if (isToolResult(params)) return params;
-      const dbPath = readOptionalString(input, "dbPath");
+      const dbPath = readOptionalDatabasePath(input);
+      if (isToolResult(dbPath)) return dbPath;
       const result = updateRows({
         dbPath,
         table,
@@ -549,7 +559,7 @@ function createDeleteRowsTool(): ToolDefinition {
       type: "object",
       required: ["table"],
       properties: {
-        dbPath: { type: "string", description: "Optional SQLite database path." },
+        dbPath: { type: "string", description: "Optional canonical absolute SQLite database path. Omit to use the managed default database." },
         table: { type: "string", description: "Table name." },
         whereSql: { type: "string", description: "Optional SQL after WHERE, such as created_at < ?." },
         params: {
@@ -573,7 +583,8 @@ function createDeleteRowsTool(): ToolDefinition {
       const whereSql = readOptionalString(input, "whereSql");
       const params = readOptionalArray(input, "params");
       if (isToolResult(params)) return params;
-      const dbPath = readOptionalString(input, "dbPath");
+      const dbPath = readOptionalDatabasePath(input);
+      if (isToolResult(dbPath)) return dbPath;
       const result = deleteRows({
         dbPath,
         table,
@@ -595,7 +606,7 @@ function createQueryTool(): ToolDefinition {
       type: "object",
       required: ["table"],
       properties: {
-        dbPath: { type: "string", description: "Optional SQLite database path." },
+        dbPath: { type: "string", description: "Optional canonical absolute SQLite database path. Omit to use the managed default database." },
         table: { type: "string", description: "Table name." },
         columns: {
           type: "array",
@@ -639,7 +650,8 @@ function createQueryTool(): ToolDefinition {
       const offset = readOptionalNumber(input, "offset");
       if (isToolResult(offset)) return offset;
       const whereSql = readOptionalString(input, "whereSql");
-      const dbPath = readOptionalString(input, "dbPath");
+      const dbPath = readOptionalDatabasePath(input);
+      if (isToolResult(dbPath)) return dbPath;
 
       const result = queryTable({
         dbPath,
@@ -666,7 +678,7 @@ function createExecuteSqlTool(): ToolDefinition {
       type: "object",
       required: ["sql"],
       properties: {
-        dbPath: { type: "string", description: "Optional SQLite database path." },
+        dbPath: { type: "string", description: "Optional canonical absolute SQLite database path. Omit to use the managed default database." },
         sql: { type: "string", description: "SQL to execute." },
         params: {
           type: "array",
@@ -694,7 +706,8 @@ function createExecuteSqlTool(): ToolDefinition {
       if (isToolResult(mode)) return mode;
       const maxRows = readOptionalNumber(input, "maxRows");
       if (isToolResult(maxRows)) return maxRows;
-      const dbPath = readOptionalString(input, "dbPath");
+      const dbPath = readOptionalDatabasePath(input);
+      if (isToolResult(dbPath)) return dbPath;
       const result = executeSql({
         dbPath,
         sql,
@@ -732,6 +745,25 @@ function readOptionalString(input: Record<string, unknown>, field: string): stri
     return undefined;
   }
   return value.trim();
+}
+
+function readOptionalDatabasePath(input: Record<string, unknown>): string | ToolResult | undefined {
+  const value = input["dbPath"];
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return buildFailureResult("Invalid input: dbPath must be a non-empty absolute filesystem path when provided.");
+  }
+  const result = requireAbsolutePath(value, "dbPath");
+  if (result.ok) return result.absolutePath;
+  return errorResult({
+    code: result.code,
+    message: result.message,
+    category: "validation",
+    target: result.requestedPath,
+    retryable: true,
+    recoverable: true,
+    suggestedNextActions: ["Use the active task workingDirectory to construct the complete absolute database path and retry."],
+  });
 }
 
 function readOptionalBoolean(input: Record<string, unknown>, field: string): boolean | ToolResult | undefined {

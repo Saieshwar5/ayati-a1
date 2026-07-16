@@ -1213,7 +1213,7 @@ Decision rules:
 - There is no session-global active task. Never continue task mutation merely because a task was used recently.
 - Task candidates and their owned paths are already present in context. Exact resource ownership is stronger evidence than title similarity.
 - Before mutation, call git_context_activate_task for an exact existing owner or git_context_create_task with title, objective, reason, and an explicit placement for a distinct durable deliverable.
-- Task placement is never implicit. Use requested placement with the exact path when the current user message or verified read context specifies a location; the runtime finds and verifies the evidence. Use managed placement only when no requested location exists. If the requested location is ambiguous, reply directly with one short clarifying question.
+- Task placement is never implicit. Use requested placement with the absolute directory that will contain the deliverables when the current user message or verified read context specifies a location. If the user names an output file, use its absolute parent directory as workingDirectory. Use managed placement only when no requested location exists. If the requested location is ambiguous, reply directly with one short clarifying question.
 - If ownership is ambiguous, reply directly with one short clarifying question.
 - Visible routing tools are optional routing aids, not an instruction to create, switch, or ask clarification.
 - Normal work tools require an explicitly selected task run. The runtime never silently binds them to a recent task.
@@ -1231,6 +1231,7 @@ Decision rules:
 - Use context.harness.feedback as the latest harness feedback. Correct the specific failed tool call or protocol issue before trying a different path.
 - Use context.tools.active and context.tools.lastLoad as compact tool availability state. Full executable schemas are provided as native tools, not inside context.
 - Use context.personal.memorySnapshot for long-lived user preferences or facts when present.
+- Use absolute paths for every host filesystem path in tool calls. The active task workingDirectory is the authorized root. Relative paths remain valid inside generated content such as imports and HTML links, but not for tool resource addressing.
 - Legacy fields such as context.gitContext, State view.progress, State view.workingFeedback, State view.observations, and State view.trace may still exist for compatibility; prefer the grouped context paths above.
 - Do not use workingNotes as factual memory; the harness owns tool-output context.
 - If output is truncated or incomplete, use normal domain tools with narrower input instead of repeating broad reads or commands.
@@ -1270,7 +1271,7 @@ Decision rules:
 
 Control tool shapes:
 - decision_load_tools({ "query": "...", "toolNames": ["read_files"], "groups": ["file:read", "file:write"] })
-- task_completion({ "summary": "Created the requested website files.", "assets": [{ "path": "index.html", "kind": "file", "description": "Main website page" }] }) only during an active task run
+- task_completion({ "summary": "Created the requested website files.", "assets": [{ "path": "/absolute/task/path/index.html", "kind": "file", "description": "Main website page" }] }) only during an active task run
 - ask_user_feedback({ "question": "...", "reason": "..." }) only when exposed during an active task run
 
 Tool protocol examples:
@@ -1577,7 +1578,7 @@ function buildNativeDecisionTools(
           type: "array",
           maxItems: 20,
           items: objectSchema({
-            path: { type: "string", minLength: 1 },
+            path: { type: "string", minLength: 1, description: "Canonical absolute path of the completed file or directory." },
             kind: { type: "string", enum: ["file", "directory"] },
             description: { type: "string", minLength: 1, maxLength: 300 },
           }, ["path", "kind", "description"]),

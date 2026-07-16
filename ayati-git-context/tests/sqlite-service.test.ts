@@ -231,6 +231,45 @@ describe("SQLite Git Context service", () => {
       .toContain("Task: " + task.task.taskId);
   });
 
+  it("imports existing requirement files when a requested task directory is created", async () => {
+    const directory = await createTemporaryDirectory();
+    const workspaceRoot = join(directory, "workspace");
+    const requestedDirectory = join(directory, "requested-site");
+    await mkdir(requestedDirectory, { recursive: true });
+    await writeFile(
+      join(requestedDirectory, "requirements.md"),
+      "# Aurora Coffee\n\nBuild a responsive website.\n",
+      "utf8",
+    );
+    const database = await ContextDatabase.open({ path: join(directory, "context.db") });
+    const service = new SqliteGitContextService({
+      database,
+      dataRoot: join(workspaceRoot, ".ayati-context"),
+      workspaceRoot,
+      now: () => "2026-07-12T09:00:00+05:30",
+    });
+    services.push(service);
+    const session = await ensureSession(service);
+
+    const created = await service.createTask({
+      requestId: "REQ-existing-requested-directory",
+      sessionId: session.session.sessionId,
+      title: "Aurora Coffee Website",
+      objective: "Build the website from the existing requirements file.",
+      placement: { mode: "requested", workingDirectory: requestedDirectory },
+      at: "2026-07-12T09:05:00+05:30",
+    });
+
+    expect(created.task.workingPath).toBe(requestedDirectory);
+    expect(await git(requestedDirectory, ["status", "--porcelain", "--untracked-files=all"]))
+      .toBe("");
+    expect(await git(requestedDirectory, ["rev-parse", "HEAD"])).toBe(created.task.head);
+    expect(await git(created.task.repositoryPath, ["show", "main:requirements.md"]))
+      .toContain("Build a responsive website.");
+    expect(await git(created.task.repositoryPath, ["rev-list", "--count", "main"]))
+      .toBe("2");
+  });
+
   it("rejects requested task roots that overlap an existing task root", async () => {
     const directory = await createTemporaryDirectory();
     const workspaceRoot = join(directory, "workspace");

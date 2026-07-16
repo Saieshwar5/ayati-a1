@@ -7,7 +7,6 @@ import {
   DEFAULT_MANAGED_PYTHON_INTERPRETER,
   readPythonJsonResult,
   runManagedPythonProcess,
-  toRelativeArtifactPath,
   writeExecutionManifest,
   writePythonRequest,
   writePythonScript,
@@ -250,11 +249,11 @@ async function executeInspectDataset(
     }
   }
 
-  const relativeArtifacts = [toRelativeArtifactPath(deps.dataDir, artifacts.resultPath)];
+  const artifactPaths = [artifacts.resultPath];
   await writeExecutionManifest({
     artifacts,
     runtime,
-    relativeArtifacts,
+    artifactPaths,
     request: requestPayload,
   });
 
@@ -340,11 +339,11 @@ async function executePythonCode(
       requestPath: artifacts.requestPath,
     });
   }
-  const relativeArtifacts = await collectArtifactPaths(deps, artifacts);
+  const artifactPaths = await collectArtifactPaths(deps, artifacts);
   await writeExecutionManifest({
     artifacts,
     runtime,
-    relativeArtifacts,
+    artifactPaths,
     request: requestPayload,
   });
 
@@ -358,7 +357,7 @@ async function executePythonCode(
     outputTruncated: runtime.outputTruncated,
     stdoutPreview: runtime.stdoutPreview,
     stderrPreview: runtime.stderrPreview,
-    artifacts: relativeArtifacts,
+    artifacts: artifactPaths,
     files: {
       runDir: artifacts.runDir,
       stdoutPath: artifacts.stdoutPath,
@@ -392,13 +391,13 @@ function createInspectDatasetTool(deps: PythonSkillDeps): ToolDefinition {
       required: ["sourceType"],
       properties: {
         sourceType: { type: "string", description: "One of path, sqlite_table, or sqlite_query." },
-        path: { type: "string", description: "Absolute or cwd-relative dataset path for CSV, XLSX, TSV, JSON, JSONL, or Parquet files." },
-        dbPath: { type: "string", description: "Optional SQLite database path. Defaults to data/sqlite/agent.sqlite." },
+        path: { type: "string", description: "Canonical absolute dataset path for CSV, XLSX, TSV, JSON, JSONL, or Parquet files." },
+        dbPath: { type: "string", description: "Optional canonical absolute SQLite database path. Omit to use the managed default database." },
         table: { type: "string", description: "SQLite table name when sourceType is sqlite_table." },
         sql: { type: "string", description: "SQLite query text when sourceType is sqlite_query." },
         sampleRows: { type: "number", description: "Sample row count to include in the response. Defaults to 10." },
         profileColumns: { type: "boolean", description: "Whether to compute per-column summaries. Defaults to true." },
-        cwd: { type: "string", description: "Optional working directory used to resolve relative paths." },
+        cwd: { type: "string", description: "Optional canonical absolute working directory. Omit to use the task directory." },
         timeoutMs: { type: "number", description: "Optional timeout override in milliseconds." },
         maxOutputChars: { type: "number", description: "Optional cap for stdout/stderr previews." },
       },
@@ -430,24 +429,37 @@ function createPythonExecuteTool(deps: PythonSkillDeps): ToolDefinition {
       properties: {
         mode: { type: "string", description: "One of code or script." },
         code: { type: "string", description: "Inline Python code to execute when mode is code." },
-        scriptPath: { type: "string", description: "Absolute or cwd-relative script path when mode is script." },
+        scriptPath: { type: "string", description: "Canonical absolute script path when mode is script." },
         args: {
           type: "array",
           description: "Optional script arguments.",
           items: PYTHON_STRING_ARRAY_ITEM_SCHEMA,
         },
-        cwd: { type: "string", description: "Optional working directory for execution." },
+        cwd: { type: "string", description: "Optional canonical absolute working directory. Omit to use the task directory." },
         timeoutMs: { type: "number", description: "Optional timeout override in milliseconds." },
         maxOutputChars: { type: "number", description: "Optional cap for stdout/stderr previews." },
         inputFiles: {
           type: "array",
-          description: "Optional dataset file paths exposed through AYATI_PYTHON_INPUT_FILES.",
+          description: "Optional canonical absolute dataset file paths exposed through AYATI_PYTHON_INPUT_FILES.",
           items: PYTHON_STRING_ARRAY_ITEM_SCHEMA,
         },
         sqliteDbPaths: {
           type: "array",
-          description: "Optional SQLite database paths exposed through AYATI_PYTHON_SQLITE_DB_PATHS.",
+          description: "Optional canonical absolute SQLite database paths exposed through AYATI_PYTHON_SQLITE_DB_PATHS.",
           items: PYTHON_STRING_ARRAY_ITEM_SCHEMA,
+        },
+        targets: {
+          type: "array",
+          description: "Bounded task paths the Python code may create or modify. Required by task authorization when writing task files.",
+          items: {
+            type: "object",
+            required: ["path"],
+            properties: {
+              path: { type: "string", description: "Canonical absolute file or directory path." },
+              kind: { type: "string", enum: ["file", "directory"] },
+            },
+            additionalProperties: false,
+          },
         },
       },
     },
@@ -475,6 +487,7 @@ const PYTHON_PROMPT_BLOCK = [
   "Prefer these Python tools over the generic shell tool whenever the job is primarily dataframe work, statistics, visualization, or machine learning.",
   "python_execute exposes AYATI_PYTHON_RUN_DIR, AYATI_PYTHON_ARTIFACT_DIR, AYATI_PYTHON_INPUT_FILES, and AYATI_PYTHON_SQLITE_DB_PATHS to the Python process.",
   "Write generated charts, reports, and derived files into AYATI_PYTHON_ARTIFACT_DIR so they are captured as Python artifacts.",
+  "If Python code may create or modify task files outside AYATI_PYTHON_ARTIFACT_DIR, declare every bounded canonical absolute path in targets.",
   "Do not use bare python, python3, or pip through shell when these managed Python tools can do the job.",
 ].join("\n");
 

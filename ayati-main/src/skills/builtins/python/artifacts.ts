@@ -1,5 +1,5 @@
 import { mkdir, readdir, writeFile } from "node:fs/promises";
-import { relative, resolve } from "node:path";
+import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
 export interface PythonArtifactPaths {
@@ -61,8 +61,4 @@ export async function listFilesRecursive(rootDir: string): Promise<string[]> {
   }
 
   return results.sort();
-}
-
-export function toRelativeArtifactPath(baseDir: string, targetPath: string): string {
-  return relative(baseDir, targetPath) || ".";
 }

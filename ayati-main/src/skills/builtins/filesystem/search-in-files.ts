@@ -17,6 +17,7 @@ interface SearchState {
 
 interface FileMatch {
   filePath: string;
+  kind: "file";
   line: number;
   before: string[];
   match: string;
@@ -50,6 +51,7 @@ function findLineMatches(
     }
     out.push({
       filePath,
+      kind: "file",
       line: i + 1,
       before: lines.slice(Math.max(0, i - contextLines), i),
       match: line,
@@ -70,7 +72,7 @@ export const searchInFilesTool: ToolDefinition = {
       roots: {
         type: "array",
         items: { type: "string" },
-        description: "Optional roots to search from. Defaults to workspace root.",
+        description: "Optional absolute directory roots to search. Omit to use the active absolute resource root.",
       },
       maxDepth: { type: "number", description: "Maximum recursion depth (default from guardrails)." },
       maxResults: { type: "number", description: "Maximum number of matching files (default from guardrails)." },

@@ -31,13 +31,12 @@ export const filesystemWriteProjector: ToolContextProjector = {
 function compactWriteInput(call: PromptRunToolCallContext): unknown {
   if (call.tool === "write_files") {
     return compactInputFields(call.input, {
-      keep: ["createDirs", "allowExternalPath"],
+      keep: ["createDirs"],
       arrayObjectFields: { files: ["path", "baseSha256"] },
     });
   }
   if (call.tool === "patch_files") {
     return compactInputFields(call.input, {
-      keep: ["allowExternalPath"],
       arrayObjectFields: { files: ["path", "baseSha256"] },
     });
   }

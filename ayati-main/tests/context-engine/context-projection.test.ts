@@ -20,6 +20,9 @@ describe("context engine projection", () => {
     expect(prompt.context.git?.current.task).toBeDefined();
     expect(prompt.context.git?.current.task).not.toHaveProperty("checkoutPath");
     expect(prompt.context.git?.current.task?.identity.workingDirectory).toBe(checkoutPath);
+    expect(prompt.context.git?.current.task?.assets).toEqual([
+      expect.objectContaining({ path: "/workspace/aurora-coffee-site/index.html" }),
+    ]);
   });
 
   it("preserves recent session commits in the provider-facing prompt", () => {
@@ -53,8 +56,8 @@ describe("context engine projection", () => {
       conversationSummary: "The user requested an Aurora Coffee website.",
       workSummary: "Created and validated the responsive website.",
       assets: [
-        { path: "aurora-coffee-site/index.html", description: "Main website page" },
-        { path: "aurora-coffee-site/styles.css", description: "Responsive styling" },
+        { path: "/internal/session/tasks/W-20260714-0001/aurora-coffee-site/index.html", description: "Main website page" },
+        { path: "/internal/session/tasks/W-20260714-0001/aurora-coffee-site/styles.css", description: "Responsive styling" },
       ],
       outcome: "done",
       validation: "passed",
@@ -112,7 +115,7 @@ function activeTaskContext(checkoutPath: string): ActiveContext {
       title: "Aurora Coffee website",
       objective: "Build the website.",
       summary: "Task started.",
-      importantPaths: ["aurora-coffee-site"],
+      importantPaths: ["index.html"],
       recentCommits: [],
     },
     run: {

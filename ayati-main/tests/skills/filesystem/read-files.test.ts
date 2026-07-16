@@ -387,7 +387,7 @@ describe("readFilesTool", () => {
     expect(result.ok).toBe(false);
   });
 
-  it("reads relative paths from work_space by default", async () => {
+  it("rejects relative file paths", async () => {
     const relativePath = `vitest-read-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`;
     const expectedPath = join(workspaceRoot, relativePath);
     workspaceArtifacts.push(expectedPath);
@@ -397,8 +397,8 @@ describe("readFilesTool", () => {
       files: [{ path: relativePath }],
     });
 
-    expect(result.ok).toBe(true);
-    expect(result.output).toContain("workspace read");
+    expect(result.ok).toBe(false);
+    expect(result.v2?.code).toBe("ABSOLUTE_PATH_REQUIRED");
   });
 });
 

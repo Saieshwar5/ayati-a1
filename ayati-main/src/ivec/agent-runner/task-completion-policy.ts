@@ -1,6 +1,6 @@
 import { lstat } from "node:fs/promises";
-import { isAbsolute, normalize, resolve, sep } from "node:path";
-import { getWorkspaceRoot, isWithinWorkspace, resolveWorkspacePath } from "../../skills/workspace-paths.js";
+import { isAbsolute, resolve } from "node:path";
+import { canonicalizeAbsolutePath, getWorkspaceRoot, isWithinWorkspace } from "../../skills/workspace-paths.js";
 import type { LoopState, WorkState } from "../types.js";
 import type { AgentTaskCompletionRequest, TaskCompletionAssetInput } from "./decision.js";
 
@@ -128,11 +128,14 @@ async function verifyAssets(
   const root = completionResourceRoot(state);
 
   for (const asset of assets) {
-    const normalizedInput = normalize(asset.path);
-    const resolvedPath = resolveWorkspacePath(asset.path, root);
-    const escapesWorkspace = normalizedInput === ".." || normalizedInput.startsWith(`..${sep}`);
-    if (escapesWorkspace || (isAbsolute(asset.path) && !isWithinWorkspace(resolvedPath, root)) || !isWithinWorkspace(resolvedPath, root)) {
-      failures.push({ code: "INVALID_ASSET_PATH", path: asset.path, message: `Completion asset is outside the workspace: ${asset.path}` });
+    if (!isAbsolute(asset.path)) {
+      failures.push({ code: "INVALID_ASSET_PATH", path: asset.path, message: `Completion asset must use an absolute path: ${asset.path}` });
+      continue;
+    }
+    const resolvedPath = await canonicalizeAbsolutePath(asset.path);
+    const canonicalRoot = await canonicalizeAbsolutePath(root);
+    if (!isWithinWorkspace(resolvedPath, canonicalRoot)) {
+      failures.push({ code: "INVALID_ASSET_PATH", path: asset.path, message: `Completion asset is outside the task workingDirectory ${canonicalRoot}: ${asset.path}` });
       continue;
     }
     if (seen.has(resolvedPath)) {
@@ -153,7 +156,7 @@ async function verifyAssets(
       failures.push({ code: "ASSET_KIND_MISMATCH", path: asset.path, message: `Completion asset is not a ${asset.kind}: ${asset.path}` });
       continue;
     }
-    if (!hasAssetEvidence(state, asset.path, resolvedPath)) {
+    if (!hasAssetEvidence(state, resolvedPath)) {
       failures.push({
         code: "ASSET_MUTATION_NOT_VERIFIED",
         path: asset.path,
@@ -168,7 +171,8 @@ async function verifyAssets(
 }
 
 function completionResourceRoot(state: LoopState): string {
-  const taskRoot = state.harnessContext.contextEngine?.task?.checkoutPath?.trim();
+  const taskRoot = state.harnessContext.contextEngine?.task?.workingDirectory?.trim()
+    || state.harnessContext.contextEngine?.task?.checkoutPath?.trim();
   return taskRoot ? resolve(taskRoot) : getWorkspaceRoot();
 }
 
@@ -185,8 +189,8 @@ function hasUnresolvedLatestFailure(state: LoopState): boolean {
   return !state.completedSteps.some((step) => step.step > lastFailure.step && step.outcome === "success");
 }
 
-function hasAssetEvidence(state: LoopState, requestedPath: string, resolvedPath: string): boolean {
-  const candidates = [requestedPath, resolvedPath].map((value) => value.replace(/\\/g, "/"));
+function hasAssetEvidence(state: LoopState, resolvedPath: string): boolean {
+  const candidate = resolvedPath.replace(/\\/g, "/");
   const containsPath = (value: unknown): boolean => {
     let text: string;
     try {
@@ -195,7 +199,7 @@ function hasAssetEvidence(state: LoopState, requestedPath: string, resolvedPath:
       return false;
     }
     const normalized = text.replace(/\\/g, "/");
-    return candidates.some((candidate) => normalized.includes(candidate));
+    return normalized.includes(candidate);
   };
   return (state.workState.artifacts ?? []).some(containsPath)
     || state.workState.verifiedFacts.some(containsPath)

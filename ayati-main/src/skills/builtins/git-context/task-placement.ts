@@ -1,4 +1,4 @@
-import { basename, isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import type { ActiveContext, TaskPlacement } from "ayati-git-context";
 
 export type TaskPlacementEvidence =
@@ -16,7 +16,7 @@ export type TaskPlacementInput =
     }
   | {
       mode: "requested";
-      path: string;
+      workingDirectory: string;
     };
 
 export type TaskPlacementResolution =
@@ -42,31 +42,32 @@ export function parseTaskPlacement(value: unknown): TaskPlacementInput | undefin
   if (value["mode"] !== "requested") {
     return undefined;
   }
-  const path = nonEmptyString(value["path"]);
-  if (!path
-    || !Object.keys(value).every((key) => key === "mode" || key === "path")) {
+  const workingDirectory = nonEmptyString(value["workingDirectory"]);
+  if (!workingDirectory
+    || !isAbsolute(workingDirectory)
+    || !Object.keys(value).every((key) => key === "mode" || key === "workingDirectory")) {
     return undefined;
   }
-  return { mode: "requested", path };
+  return { mode: "requested", workingDirectory: resolve(workingDirectory) };
 }
 
 export function resolveTaskPlacement(
   placement: TaskPlacementInput,
   active: ActiveContext,
-  workspaceRoot: string,
+  _workspaceRoot: string,
 ): TaskPlacementResolution {
   const userMessage = latestUserMessage(active);
   if (placement.mode === "managed") {
     if (refersToRequestedLocation(userMessage)) {
       return {
         ok: false,
-        message: "The current request refers to a requested directory. Use requested placement with the exact path; managed placement cannot silently replace it.",
+        message: "The current request refers to a requested location. Use requested placement with its absolute containing workingDirectory; managed placement cannot silently replace it.",
       };
     }
     return { ok: true, placement: { mode: "managed" } };
   }
 
-  const requestedPath = requestedPathIdentity(placement.path, workspaceRoot);
+  const requestedPath = requestedPathIdentity(placement.workingDirectory);
   if (pathAppearsIn(requestedPath, userMessage)) {
     return {
       ok: true,
@@ -121,30 +122,10 @@ interface RequestedPathIdentity {
   evidenceForms: string[];
 }
 
-function requestedPathIdentity(path: string, workspaceRoot: string): RequestedPathIdentity {
-  const root = resolve(workspaceRoot);
+function requestedPathIdentity(path: string): RequestedPathIdentity {
   const normalizedInput = normalizedPath(path);
-  const workspaceAliases = new Set(["workspace", "work_space", basename(root).toLowerCase()]);
-  const parts = normalizedInput.split("/").filter((part) => part && part !== ".");
-  while (!isAbsolute(normalizedInput)
-    && parts[0]
-    && workspaceAliases.has(parts[0].toLowerCase())) {
-    parts.shift();
-  }
-  const canonicalPath = isAbsolute(normalizedInput)
-    ? resolve(normalizedInput)
-    : resolve(root, parts.join("/"));
+  const canonicalPath = resolve(normalizedInput);
   const forms = new Set<string>([normalizedInput, normalizedPath(canonicalPath)]);
-  const workspaceRelative = relative(root, canonicalPath);
-  if (workspaceRelative
-    && !workspaceRelative.startsWith("..")
-    && !isAbsolute(workspaceRelative)) {
-    const relativeForm = normalizedPath(workspaceRelative);
-    forms.add(relativeForm);
-    forms.add("workspace/" + relativeForm);
-    forms.add("work_space/" + relativeForm);
-    forms.add(normalizedPath(basename(root) + "/" + relativeForm));
-  }
   return {
     canonicalPath,
     evidenceForms: [...forms].filter(Boolean),
@@ -153,7 +134,21 @@ function requestedPathIdentity(path: string, workspaceRoot: string): RequestedPa
 
 function pathAppearsIn(path: RequestedPathIdentity, text: string): boolean {
   const normalizedText = normalize(text);
-  return path.evidenceForms.some((form) => containsPathToken(normalizedText, normalize(form)));
+  return path.evidenceForms.some((form) => {
+    const normalizedForm = normalize(form);
+    return containsPathToken(normalizedText, normalizedForm)
+      || containsChildPathToken(normalizedText, normalizedForm);
+  });
+}
+
+function containsChildPathToken(text: string, directoryPath: string): boolean {
+  const prefix = directoryPath + "/";
+  let start = text.indexOf(prefix);
+  while (start >= 0) {
+    if (!continuesPathAt(text, start - 1, -1)) return true;
+    start = text.indexOf(prefix, start + 1);
+  }
+  return false;
 }
 
 function containsPathToken(text: string, path: string): boolean {

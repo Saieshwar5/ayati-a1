@@ -91,7 +91,7 @@ export const patchFilesTool: ToolDefinition = {
           properties: {
             path: {
               type: "string",
-              description: "File path. In a task run, use a path relative to the active task root and do not repeat the task directory name. Otherwise, relative paths use the workspace root.",
+              description: "Absolute path of the file to patch.",
             },
             patches: {
               type: "array",
@@ -124,10 +124,6 @@ export const patchFilesTool: ToolDefinition = {
           },
           additionalProperties: false,
         },
-      },
-      allowExternalPath: {
-        type: "boolean",
-        description: "Allow absolute paths outside the configured workspace for non-task work. Task runs ignore this flag and cannot escape the active task root.",
       },
     },
     additionalProperties: false,
