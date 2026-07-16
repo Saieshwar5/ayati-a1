@@ -14,15 +14,11 @@ export const createDirectoryTool: ToolDefinition = {
     properties: {
       path: {
         type: "string",
-        description: "Directory path. In a task run, use a path relative to the active task root and do not repeat the task directory name. Otherwise, relative paths use the workspace root.",
+        description: "Absolute path of the directory to create.",
       },
       recursive: {
         type: "boolean",
         description: "Create parent directories if needed (default: true).",
-      },
-      allowExternalPath: {
-        type: "boolean",
-        description: "Allow an absolute path outside the configured workspace for non-task work. Task runs ignore this flag and cannot escape the active task root.",
       },
     },
   },

@@ -16,6 +16,21 @@ function parseOutput(output: string | undefined): Record<string, unknown> {
 }
 
 describe("files built-in skill", () => {
+  it("rejects relative paths when registering local files", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const skill = createFilesSkill({ fileLibrary: new FileLibrary({ dataDir }) });
+      const registerTool = skill.tools.find((tool) => tool.name === "file_register_path");
+      expect(registerTool).toBeTruthy();
+
+      const result = await registerTool!.execute({ path: "notes/report.md" });
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("must be an absolute filesystem path");
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("auto-selects the only run file for text queries", async () => {
     const dataDir = makeTmpDir();
     try {

@@ -1,6 +1,6 @@
 import { resolve as resolvePath } from "node:path";
 import type { ToolResult } from "../../types.js";
-import { resolveWorkspaceCwd } from "../../workspace-paths.js";
+import { requireAbsolutePath, resolveWorkspaceCwd } from "../../workspace-paths.js";
 import { resolveDatabasePath } from "../../../database/sqlite-runtime.js";
 
 export interface PythonInspectDatasetInput {
@@ -26,6 +26,12 @@ export interface PythonExecuteInput {
   maxOutputChars?: number;
   inputFiles?: string[];
   sqliteDbPaths?: string[];
+  targets?: PythonMutationTargetInput[];
+}
+
+export interface PythonMutationTargetInput {
+  path: string;
+  kind?: "file" | "directory";
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -34,6 +40,62 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function isToolResult(value: unknown): value is ToolResult {
   return typeof value === "object" && value !== null && "ok" in value;
+}
+
+function absolutePath(value: string, field: string): string | ToolResult {
+  const result = requireAbsolutePath(value, field);
+  if (result.ok) return result.absolutePath;
+  return {
+    ok: false,
+    error: result.message,
+    v2: {
+      transportOk: true,
+      operationStatus: "failed",
+      code: result.code,
+      message: result.message,
+      error: {
+        category: "validation",
+        code: result.code,
+        message: result.message,
+        retryable: true,
+        recoverable: true,
+        target: value,
+        suggestedNextActions: ["Use the active task workingDirectory to construct the complete absolute path and retry."],
+      },
+    },
+  };
+}
+
+function absolutePaths(values: string[] | undefined, field: string): string[] | undefined | ToolResult {
+  if (!values) return undefined;
+  const paths: string[] = [];
+  for (const [index, value] of values.entries()) {
+    const path = absolutePath(value, `${field}[${index}]`);
+    if (typeof path !== "string") return path;
+    paths.push(path);
+  }
+  return paths;
+}
+
+function readMutationTargets(obj: Record<string, unknown>): PythonMutationTargetInput[] | undefined | ToolResult {
+  const value = obj["targets"];
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) {
+    return { ok: false, error: "Invalid input: targets must be a non-empty array when provided." };
+  }
+  const targets: PythonMutationTargetInput[] = [];
+  for (const [index, entry] of value.entries()) {
+    if (!isPlainObject(entry) || typeof entry["path"] !== "string") {
+      return { ok: false, error: `Invalid input: targets[${index}].path must be a non-empty absolute path.` };
+    }
+    if (entry["kind"] !== undefined && entry["kind"] !== "file" && entry["kind"] !== "directory") {
+      return { ok: false, error: `Invalid input: targets[${index}].kind must be file or directory.` };
+    }
+    const path = absolutePath(entry["path"], `targets[${index}].path`);
+    if (typeof path !== "string") return path;
+    targets.push({ path, ...(entry["kind"] ? { kind: entry["kind"] } : {}) });
+  }
+  return targets;
 }
 
 function readOptionalString(obj: Record<string, unknown>, key: string): string | undefined | ToolResult {
@@ -80,7 +142,7 @@ export function resolvePythonPath(pathValue: string, cwd?: string, rootPath?: st
 
 export function validatePythonInspectDatasetInput(
   input: unknown,
-  rootPath?: string,
+  _rootPath?: string,
 ): PythonInspectDatasetInput | ToolResult {
   if (!isPlainObject(input)) {
     return { ok: false, error: "Invalid input: expected object." };
@@ -93,6 +155,8 @@ export function validatePythonInspectDatasetInput(
 
   const cwd = readOptionalString(input, "cwd");
   if (typeof cwd === "object") return cwd;
+  const absoluteCwd = cwd === undefined ? undefined : absolutePath(cwd, "cwd");
+  if (absoluteCwd !== undefined && typeof absoluteCwd !== "string") return absoluteCwd;
   const timeoutMs = readOptionalNumber(input, "timeoutMs");
   if (typeof timeoutMs === "object") return timeoutMs;
   const maxOutputChars = readOptionalNumber(input, "maxOutputChars");
@@ -108,10 +172,12 @@ export function validatePythonInspectDatasetInput(
     if (!pathValue) {
       return { ok: false, error: "Invalid input: path is required when sourceType is path." };
     }
+    const path = absolutePath(pathValue, "path");
+    if (typeof path !== "string") return path;
     return {
       sourceType,
-      path: resolvePythonPath(pathValue, cwd, rootPath),
-      cwd,
+      path,
+      cwd: absoluteCwd,
       timeoutMs,
       maxOutputChars,
       sampleRows,
@@ -121,6 +187,8 @@ export function validatePythonInspectDatasetInput(
 
   const dbPath = readOptionalString(input, "dbPath");
   if (typeof dbPath === "object") return dbPath;
+  const absoluteDbPath = dbPath === undefined ? undefined : absolutePath(dbPath, "dbPath");
+  if (absoluteDbPath !== undefined && typeof absoluteDbPath !== "string") return absoluteDbPath;
 
   if (sourceType === "sqlite_table") {
     const table = readOptionalString(input, "table");
@@ -130,9 +198,9 @@ export function validatePythonInspectDatasetInput(
     }
     return {
       sourceType,
-      dbPath: resolveDatabasePath(dbPath),
+      dbPath: resolveDatabasePath(absoluteDbPath),
       table,
-      cwd,
+      cwd: absoluteCwd,
       timeoutMs,
       maxOutputChars,
       sampleRows,
@@ -147,9 +215,9 @@ export function validatePythonInspectDatasetInput(
   }
   return {
     sourceType,
-    dbPath: resolveDatabasePath(dbPath),
+    dbPath: resolveDatabasePath(absoluteDbPath),
     sql,
-    cwd,
+    cwd: absoluteCwd,
     timeoutMs,
     maxOutputChars,
     sampleRows,
@@ -159,7 +227,7 @@ export function validatePythonInspectDatasetInput(
 
 export function validatePythonExecuteInput(
   input: unknown,
-  rootPath?: string,
+  _rootPath?: string,
 ): PythonExecuteInput | ToolResult {
   if (!isPlainObject(input)) {
     return { ok: false, error: "Invalid input: expected object." };
@@ -172,6 +240,8 @@ export function validatePythonExecuteInput(
 
   const cwd = readOptionalString(input, "cwd");
   if (typeof cwd === "object") return cwd;
+  const absoluteCwd = cwd === undefined ? undefined : absolutePath(cwd, "cwd");
+  if (absoluteCwd !== undefined && typeof absoluteCwd !== "string") return absoluteCwd;
   const timeoutMs = readOptionalNumber(input, "timeoutMs");
   if (typeof timeoutMs === "object") return timeoutMs;
   const maxOutputChars = readOptionalNumber(input, "maxOutputChars");
@@ -182,6 +252,12 @@ export function validatePythonExecuteInput(
   if (isToolResult(inputFiles)) return inputFiles;
   const sqliteDbPaths = readOptionalStringArray(input, "sqliteDbPaths");
   if (isToolResult(sqliteDbPaths)) return sqliteDbPaths;
+  const absoluteInputFiles = absolutePaths(inputFiles, "inputFiles");
+  if (isToolResult(absoluteInputFiles)) return absoluteInputFiles;
+  const absoluteSqliteDbPaths = absolutePaths(sqliteDbPaths, "sqliteDbPaths");
+  if (isToolResult(absoluteSqliteDbPaths)) return absoluteSqliteDbPaths;
+  const targets = readMutationTargets(input);
+  if (isToolResult(targets)) return targets;
 
   if (mode === "code") {
     const code = readOptionalString(input, "code");
@@ -192,12 +268,13 @@ export function validatePythonExecuteInput(
     return {
       mode,
       code,
-      cwd,
+      cwd: absoluteCwd,
       timeoutMs,
       maxOutputChars,
       args,
-      inputFiles: inputFiles?.map((entry) => resolvePythonPath(entry, cwd, rootPath)),
-      sqliteDbPaths: sqliteDbPaths?.map((entry) => resolveDatabasePath(entry)),
+      inputFiles: absoluteInputFiles,
+      sqliteDbPaths: absoluteSqliteDbPaths,
+      targets,
     };
   }
 
@@ -206,15 +283,18 @@ export function validatePythonExecuteInput(
   if (!scriptPath) {
     return { ok: false, error: "Invalid input: scriptPath is required when mode is script." };
   }
+  const absoluteScriptPath = absolutePath(scriptPath, "scriptPath");
+  if (typeof absoluteScriptPath !== "string") return absoluteScriptPath;
 
   return {
     mode,
-    scriptPath: resolvePythonPath(scriptPath, cwd, rootPath),
-    cwd,
+    scriptPath: absoluteScriptPath,
+    cwd: absoluteCwd,
     timeoutMs,
     maxOutputChars,
     args,
-    inputFiles: inputFiles?.map((entry) => resolvePythonPath(entry, cwd, rootPath)),
-    sqliteDbPaths: sqliteDbPaths?.map((entry) => resolveDatabasePath(entry)),
+    inputFiles: absoluteInputFiles,
+    sqliteDbPaths: absoluteSqliteDbPaths,
+    targets,
   };
 }

@@ -1,4 +1,5 @@
 import type { ActiveContext } from "ayati-git-context";
+import { basename, isAbsolute, resolve } from "node:path";
 import type {
   ContextCommitSummary,
   ContextEngineMachineContext,
@@ -16,6 +17,10 @@ export function buildContextEngineProjection(
   const activeTask = active.activeTask;
   const run = active.run?.run;
   const taskBound = Boolean(activeTask && run?.runClass === "task" && run.taskId === activeTask.task.taskId);
+  const taskWorkingDirectories = new Map(
+    (active.taskCandidates ?? []).map((task) => [task.taskId, task.workingDirectory]),
+  );
+  if (activeTask) taskWorkingDirectories.set(activeTask.task.taskId, activeTask.workingDirectory);
   return {
     session: {
       meta: {
@@ -30,7 +35,8 @@ export function buildContextEngineProjection(
         text: active.session.summary,
       },
       activityTail: [],
-      recentCommits: active.session.recentCommits.map(commitSummary),
+      recentCommits: active.session.recentCommits.map((commit) =>
+        commitSummary(commit, commit.taskId ? taskWorkingDirectories.get(commit.taskId) : undefined)),
     },
     focus: taskBound && activeTask
       ? {
@@ -76,7 +82,8 @@ export function buildContextEngineProjection(
             next: activeTask.latestOutcome === "done" ? undefined : activeTask.summary,
             assets: taskAssets(activeTask),
             recentRuns: [],
-            recentCommits: activeTask.recentCommits.map(commitSummary),
+            recentCommits: activeTask.recentCommits.map((commit) =>
+              commitSummary(commit, activeTask.workingDirectory)),
             recentEvidence: [],
           },
         }
@@ -127,13 +134,18 @@ function latestInputAt(active: ActiveContext): string {
 
 function commitSummary(commit: ActiveContext["session"] extends infer _T
   ? NonNullable<ActiveContext["session"]>["recentCommits"][number]
-  : never): ContextCommitSummary {
+  : never, workingDirectory?: string): ContextCommitSummary {
+  const assets = (commit.assets ?? []).flatMap((asset) => {
+    if (isAbsolute(asset.path)) return [{ ...asset, path: resolve(asset.path) }];
+    if (workingDirectory) return [{ ...asset, path: resolve(workingDirectory, asset.path) }];
+    return [];
+  });
   return {
     commit: commit.commit,
     subject: commit.subject,
     ...(commit.conversationSummary ? { conversationSummary: commit.conversationSummary } : {}),
     ...(commit.workSummary ? { workSummary: commit.workSummary } : {}),
-    ...(commit.assets ? { assets: commit.assets } : {}),
+    ...(assets.length > 0 ? { assets } : {}),
     ...(commit.outcome ? { outcome: commit.outcome } : {}),
     ...(commit.validation ? { validation: commit.validation } : {}),
     ...(commit.committedAt ? { at: commit.committedAt } : {}),
@@ -145,11 +157,11 @@ function commitSummary(commit: ActiveContext["session"] extends infer _T
 function taskAssets(task: NonNullable<ActiveContext["activeTask"]>): TaskAssetRecord[] {
   const paths = task.importantPaths.length > 0 ? task.importantPaths : ["."];
   return paths.map((path) => ({
-    assetId: task.task.taskId + ":" + path,
+    assetId: task.task.taskId + ":" + resolve(task.workingDirectory, path),
     role: "output",
     kind: path === "." ? "directory" : "file",
-    name: path,
+    name: path === "." ? basename(task.workingDirectory) : basename(path),
     description: path === "." ? "Task repository checkout" : "Task-owned file",
-    path,
+    path: resolve(task.workingDirectory, path),
   }));
 }

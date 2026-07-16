@@ -104,6 +104,13 @@ describe("database skill", () => {
     ]);
   });
 
+  it("rejects a supplied relative database path", async () => {
+    const result = await getTool("db_list_tables").execute({ dbPath: "data/local.sqlite" });
+
+    expect(result.ok).toBe(false);
+    expect(result.v2?.code).toBe("ABSOLUTE_PATH_REQUIRED");
+  });
+
   it("supports schema changes, row updates/deletes, table rename/drop, and raw SQL", async () => {
     const dbPath = makeDbPath();
 

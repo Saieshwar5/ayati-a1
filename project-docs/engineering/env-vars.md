@@ -80,8 +80,10 @@ AYATI_WORKSPACE_DIR=
 `AYATI_WORKSPACE_DIR` sets the default directory for generated files, scratch
 work, filesystem tools, shell cwd, and other ad-hoc agent work when the user
 does not specify a directory. When unset, Ayati uses `ayati-main/work_space`.
-Relative tool paths are already resolved inside this workspace root, so agents
-should pass `report.md` instead of `work_space/report.md`.
+Ayati resolves this configuration value at startup. Model tool calls use the
+resulting canonical absolute root and must pass absolute host filesystem paths,
+for example `/home/user/project/report.md`. Relative paths, `workspace/...`,
+`work_space/...`, and `~/...` are not valid model tool resource addresses.
 
 Git context:
 
@@ -108,7 +110,8 @@ supervised compatible server already owns the configured socket.
 
 `AYATI_GIT_CONTEXT_STORE_DIR` overrides the context-engine storage directory.
 When unset, Ayati uses `ayati-main/data/context-engine`. Relative paths resolve
-from the backend package root.
+from the backend package root. This startup configuration compatibility is
+internal; it does not make relative paths valid in agent tool calls.
 
 `AYATI_GIT_CONTEXT_DATABASE` and `AYATI_GIT_CONTEXT_SOCKET` override the
 SQLite database and Unix-socket paths. Their defaults are `context.sqlite` and

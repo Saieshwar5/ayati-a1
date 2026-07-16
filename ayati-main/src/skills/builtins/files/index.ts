@@ -2,6 +2,7 @@ import type { DirectoryLibrary } from "../../../files/directory-library.js";
 import type { FileLibrary } from "../../../files/file-library.js";
 import type { ManagedFileRecord } from "../../../files/types.js";
 import type { SkillDefinition, ToolDefinition, ToolExecutionContext, ToolResult } from "../../types.js";
+import { requireAbsolutePath } from "../../workspace-paths.js";
 
 export interface FilesSkillDeps {
   fileLibrary: FileLibrary;
@@ -14,6 +15,7 @@ const FILES_PROMPT_BLOCK = [
   "Attached files are registered before the agent loop runs and can be auto-selected when there is exactly one run file.",
   "Use file_describe to inspect file metadata and capabilities.",
   "Use file_register_path after filesystem search finds a local file the user wants to work on.",
+  "Pass canonical absolute filesystem paths to file_register_path and file_register_artifact.",
   "Use file_fetch_url when the task requires downloading a file from a URL.",
   "Use file_read_text or file_query for text-capable files.",
   "Use file_profile_table and file_query_table for CSV/XLSX table files. The staged table name is file_data.",
@@ -296,7 +298,7 @@ function createFileRegisterPathTool(deps: FilesSkillDeps): ToolDefinition {
       type: "object",
       required: ["path"],
       properties: {
-        path: { type: "string" },
+        path: { type: "string", description: "Canonical absolute path of the local file." },
         name: { type: "string" },
       },
       additionalProperties: false,
@@ -309,7 +311,7 @@ function createFileRegisterPathTool(deps: FilesSkillDeps): ToolDefinition {
     async execute(input, context): Promise<ToolResult> {
       return withJsonResult(async () => {
         const record = await deps.fileLibrary.registerPath({
-          path: readRequiredString(input, "path"),
+          path: readRequiredAbsolutePath(input, "path"),
           name: readOptionalString(input, "name"),
           runId: context?.runId,
           runRole: "found",
@@ -363,7 +365,7 @@ function createFileRegisterArtifactTool(deps: FilesSkillDeps): ToolDefinition {
       type: "object",
       required: ["path"],
       properties: {
-        path: { type: "string" },
+        path: { type: "string", description: "Canonical absolute path of the generated artifact." },
         name: { type: "string" },
       },
       additionalProperties: false,
@@ -376,7 +378,7 @@ function createFileRegisterArtifactTool(deps: FilesSkillDeps): ToolDefinition {
     async execute(input, context): Promise<ToolResult> {
       return withJsonResult(async () => {
         const record = await deps.fileLibrary.registerArtifact({
-          path: readRequiredString(input, "path"),
+          path: readRequiredAbsolutePath(input, "path"),
           name: readOptionalString(input, "name"),
           runId: context?.runId,
         });
@@ -666,6 +668,13 @@ function readRequiredString(input: unknown, key: string): string {
     throw new Error(`${key} must be a non-empty string.`);
   }
   return value;
+}
+
+function readRequiredAbsolutePath(input: unknown, key: string): string {
+  const value = readRequiredString(input, key);
+  const result = requireAbsolutePath(value, key);
+  if (!result.ok) throw new Error(result.message);
+  return result.absolutePath;
 }
 
 function readOptionalString(input: unknown, key: string): string | undefined {

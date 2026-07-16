@@ -25,8 +25,8 @@ describe("listDirectoryTool", () => {
 
     const result = await listDirectoryTool.execute({ path: tmp });
     expect(result.ok).toBe(true);
-    expect(result.output).toContain("[file] a.txt");
-    expect(result.output).toContain("[dir] subdir");
+    expect(result.output).toContain(`[file] ${join(tmp, "a.txt")}`);
+    expect(result.output).toContain(`[dir] ${join(tmp, "subdir")}`);
   });
 
   it("lists recursively", async () => {
@@ -72,14 +72,13 @@ describe("listDirectoryTool", () => {
     expect(result.ok).toBe(false);
   });
 
-  it("expands tilde path to home directory", async () => {
+  it("rejects tilde aliases", async () => {
     const result = await listDirectoryTool.execute({ path: "~" });
-    expect(result.ok).toBe(true);
-    const meta = result.meta as { dirPath?: string } | undefined;
-    expect(meta?.dirPath).toBe(homedir());
+    expect(result.ok).toBe(false);
+    expect(result.v2?.code).toBe("ABSOLUTE_PATH_REQUIRED");
   });
 
-  it("lists relative directories from work_space by default", async () => {
+  it("rejects relative directory paths", async () => {
     const relativeDir = `vitest-list-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const expectedDir = join(workspaceRoot, relativeDir);
     workspaceArtifacts.push(expectedDir);
@@ -87,7 +86,7 @@ describe("listDirectoryTool", () => {
     await writeFile(join(expectedDir, "inside.txt"), "x", "utf-8");
 
     const result = await listDirectoryTool.execute({ path: relativeDir });
-    expect(result.ok).toBe(true);
-    expect(result.output).toContain("[file] inside.txt");
+    expect(result.ok).toBe(false);
+    expect(result.v2?.code).toBe("ABSOLUTE_PATH_REQUIRED");
   });
 });

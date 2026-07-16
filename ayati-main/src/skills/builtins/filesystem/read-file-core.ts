@@ -50,7 +50,7 @@ export const readFileCoreTool: ToolDefinition = {
     type: "object",
     required: ["path"],
     properties: {
-      path: { type: "string", description: "Absolute or relative file path." },
+      path: { type: "string", description: "Absolute path of the file to read." },
       mode: {
         type: "string",
         enum: ["auto", "profile", "search", "slice", "full"],

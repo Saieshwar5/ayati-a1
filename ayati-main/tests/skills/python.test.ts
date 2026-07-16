@@ -150,6 +150,27 @@ describe("python skill", () => {
     expect(existsSync(String(files["manifestPath"]))).toBe(true);
   });
 
+  it("rejects relative model-supplied resource paths", async () => {
+    const dataDir = createTempDir("ayati-python-data-");
+    tempDirs.push(dataDir);
+    const interpreterDir = createTempDir("ayati-python-bin-");
+    tempDirs.push(interpreterDir);
+    const interpreterPath = createFakeInterpreter(interpreterDir);
+
+    const inspectTool = getTool("python_inspect_dataset", interpreterPath, dataDir);
+    const inspectResult = await inspectTool.execute({ sourceType: "path", path: "sales.csv" });
+    expect(inspectResult.ok).toBe(false);
+    expect(inspectResult.v2?.code).toBe("ABSOLUTE_PATH_REQUIRED");
+
+    const executeTool = getTool("python_execute", interpreterPath, dataDir);
+    const executeResult = await executeTool.execute({
+      mode: "script",
+      scriptPath: "scripts/report.py",
+    });
+    expect(executeResult.ok).toBe(false);
+    expect(executeResult.v2?.code).toBe("ABSOLUTE_PATH_REQUIRED");
+  });
+
   it("fails closed when the managed interpreter is missing", async () => {
     const dataDir = createTempDir("ayati-python-data-");
     tempDirs.push(dataDir);

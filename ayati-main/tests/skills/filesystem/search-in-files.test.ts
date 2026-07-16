@@ -49,7 +49,7 @@ describe("searchInFilesTool", () => {
     expect(result.output).toContain("caps.txt");
   });
 
-  it("searches work_space by default when roots are omitted", async () => {
+  it("searches an explicit absolute root", async () => {
     const relativeDir = `vitest-search-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const expectedDir = join(workspaceRoot, relativeDir);
     const filePath = join(expectedDir, "inside.txt");
@@ -57,7 +57,7 @@ describe("searchInFilesTool", () => {
     await mkdir(expectedDir, { recursive: true });
     await writeFile(filePath, "workspace needle", "utf-8");
 
-    const result = await searchInFilesTool.execute({ query: "workspace needle" });
+    const result = await searchInFilesTool.execute({ query: "workspace needle", roots: [expectedDir] });
     expect(result.ok).toBe(true);
     expect(result.output).toContain(filePath);
   });

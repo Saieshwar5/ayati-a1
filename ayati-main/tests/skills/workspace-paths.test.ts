@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { DEFAULT_WORKSPACE_DIR } from "../../src/config/runtime-config.js";
 import {
   ensureWorkspaceRoot,
+  requireAbsolutePath,
   resolveWorkspaceMutationPath,
   resolveWorkspaceCwd,
   resolveWorkspacePath,
@@ -92,6 +93,25 @@ describe("workspace paths", () => {
     process.env["AYATI_WORKSPACE_DIR"] = "/tmp/ayati-custom-workspace";
 
     expect(resolveWorkspacePath("/tmp/explicit/report.md")).toBe("/tmp/explicit/report.md");
+  });
+
+  it("requires canonical absolute paths at agent tool boundaries", () => {
+    expect(requireAbsolutePath("notes/report.md", "path")).toMatchObject({
+      ok: false,
+      code: "ABSOLUTE_PATH_REQUIRED",
+    });
+    expect(requireAbsolutePath("workspace/report.md", "path")).toMatchObject({
+      ok: false,
+      code: "ABSOLUTE_PATH_REQUIRED",
+    });
+    expect(requireAbsolutePath("~/report.md", "path")).toMatchObject({
+      ok: false,
+      code: "ABSOLUTE_PATH_REQUIRED",
+    });
+    expect(requireAbsolutePath("/tmp/../tmp/report.md", "path")).toEqual({
+      ok: true,
+      absolutePath: "/tmp/report.md",
+    });
   });
 
   it("rejects external mutation paths unless explicitly allowed", async () => {

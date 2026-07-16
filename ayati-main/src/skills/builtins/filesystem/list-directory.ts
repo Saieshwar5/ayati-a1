@@ -13,6 +13,7 @@ import { validateListDirectoryInput } from "./validators.js";
 
 interface EntryInfo {
   name: string;
+  absolutePath: string;
   type: "dir" | "file" | "other";
   depth: number;
 }
@@ -48,7 +49,7 @@ async function listEntries(
     acc.counts[type === "dir" ? "dirs" : type === "file" ? "files" : "other"]++;
 
     if (acc.entries.length < maxEntries) {
-      acc.entries.push({ name: relName, type, depth });
+      acc.entries.push({ name: relName, absolutePath: join(dirPath, dirent.name), type, depth });
     } else {
       acc.omittedCount++;
       acc.capped = true;
@@ -76,7 +77,7 @@ export const listDirectoryTool: ToolDefinition = {
     type: "object",
     required: ["path"],
     properties: {
-      path: { type: "string", description: "Directory path. In a task run, a relative path starts at the active task root and must not repeat the task directory name. Otherwise it starts at the workspace root." },
+      path: { type: "string", description: "Absolute path of the directory to list." },
       recursive: { type: "boolean", description: "List contents recursively (default: false)." },
       showHidden: { type: "boolean", description: "Show hidden files/directories (default: false)." },
     },
@@ -246,7 +247,7 @@ function buildDirectoryObservation(input: {
 }
 
 function formatEntry(entry: EntryInfo): string {
-  return `[${entry.type}] ${entry.name}`;
+  return `[${entry.type}] ${entry.absolutePath}`;
 }
 
 function formatRawEntries(entries: EntryInfo[], omittedCount: number): string {

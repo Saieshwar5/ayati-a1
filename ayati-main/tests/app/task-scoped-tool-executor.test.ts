@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import type { GitContextService } from "ayati-git-context";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTaskScopedToolExecutor } from "../../src/app/task-scoped-tool-executor.js";
@@ -17,7 +17,7 @@ afterEach(() => {
 });
 
 describe("task-scoped tool executor", () => {
-  it("scopes relative mutation paths and checkpoints verified task changes", async () => {
+  it("accepts absolute mutation paths and checkpoints verified task changes", async () => {
     const checkoutPath = mkdtempSync(join(tmpdir(), "ayati-task-checkout-"));
     temporaryDirectories.push(checkoutPath);
     const execute = vi.fn(async () => ({ ok: true, output: "wrote README" }));
@@ -53,7 +53,7 @@ describe("task-scoped tool executor", () => {
     const executor = createTaskScopedToolExecutor({ base, gitContext: service });
 
     const result = await executor.execute("write_files", {
-      files: [{ path: "README", content: "Task context" }],
+      files: [{ path: join(checkoutPath, "README"), content: "Task context" }],
       createDirs: true,
     }, {
       clientId: "client-1",
@@ -127,7 +127,7 @@ describe("task-scoped tool executor", () => {
     });
 
     const result = await executor.execute("write_files", {
-      files: [{ path: "site/index.html", content: "<h1>Aurora Coffee</h1>" }],
+      files: [{ path: join(checkoutPath, "site/index.html"), content: "<h1>Aurora Coffee</h1>" }],
       createDirs: true,
       allowExternalPath: true,
     }, {
@@ -160,7 +160,12 @@ describe("task-scoped tool executor", () => {
     });
 
     const result = await executor.execute("shell", {
-      cmd: "node --check app.js",
+      cmd: [
+        "set -e",
+        `ls -la ${checkoutPath}`,
+        `node --check ${join(checkoutPath, "app.js")}`,
+      ].join("\n"),
+      targets: [{ path: checkoutPath, kind: "directory" }],
     }, {
       clientId: "client-1",
       sessionId: "S-1",
@@ -170,6 +175,79 @@ describe("task-scoped tool executor", () => {
 
     expect(result.ok).toBe(true);
     expect(result.meta).toMatchObject({ exitCode: 0 });
+    expect(acquireMutationAuthority).not.toHaveBeenCalled();
+  });
+
+  it("authorizes shell work only through declared absolute mutation targets", async () => {
+    const checkoutPath = mkdtempSync(join(tmpdir(), "ayati-task-checkout-"));
+    temporaryDirectories.push(checkoutPath);
+    const execute = vi.fn(async () => ({ ok: true, output: "build complete" }));
+    const acquireMutationAuthority = vi.fn(async () => ({
+      authority: { authorityId: "A-shell", lockToken: "lock-shell" },
+    }));
+    const service = {
+      getActiveContext: vi.fn(async () => activeContext(checkoutPath)),
+      acquireMutationAuthority,
+      verifyMutation: vi.fn(async () => ({
+        authorityId: "A-shell",
+        status: "verified",
+        verified: true,
+        outcome: "verified_changes",
+        provenance: {},
+      })),
+      checkpointMutation: vi.fn(async () => ({
+        authorityId: "A-shell",
+        taskId: "W-20260713-0001",
+        runId: "R-1",
+        beforeHead: "a".repeat(40),
+        checkpointHead: "b".repeat(40),
+        stagedPaths: ["dist"],
+        sessionGitlinkUpdated: true,
+      })),
+    } as unknown as GitContextService;
+    const executor = createTaskScopedToolExecutor({ base: baseExecutor(execute), gitContext: service });
+
+    const result = await executor.execute("shell", {
+      cmd: "pnpm build",
+      targets: [{ path: join(checkoutPath, "dist"), kind: "directory" }],
+    }, {
+      clientId: "client-1",
+      sessionId: "S-1",
+      runId: "R-1",
+      stepNumber: 3,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(acquireMutationAuthority).toHaveBeenCalledWith(expect.objectContaining({
+      targets: [{ path: "dist", kind: "directory" }],
+    }));
+    expect(execute).toHaveBeenCalledWith("shell", expect.objectContaining({
+      cwd: checkoutPath,
+      targets: [{ path: join(checkoutPath, "dist"), kind: "directory" }],
+    }), expect.objectContaining({ resourceScope: expect.objectContaining({ rootPath: checkoutPath }) }));
+  });
+
+  it("rejects mutation-capable shell work without declared targets", async () => {
+    const checkoutPath = mkdtempSync(join(tmpdir(), "ayati-task-checkout-"));
+    temporaryDirectories.push(checkoutPath);
+    const execute = vi.fn(async () => ({ ok: true, output: "should not run" }));
+    const acquireMutationAuthority = vi.fn();
+    const service = {
+      getActiveContext: vi.fn(async () => activeContext(checkoutPath)),
+      acquireMutationAuthority,
+    } as unknown as GitContextService;
+    const executor = createTaskScopedToolExecutor({ base: baseExecutor(execute), gitContext: service });
+
+    const result = await executor.execute("shell", { cmd: "pnpm build" }, {
+      clientId: "client-1",
+      sessionId: "S-1",
+      runId: "R-1",
+      stepNumber: 3,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.v2?.code).toBe("TASK_RESOURCE_SCOPE_VIOLATION");
+    expect(execute).not.toHaveBeenCalled();
     expect(acquireMutationAuthority).not.toHaveBeenCalled();
   });
 
@@ -198,12 +276,12 @@ describe("task-scoped tool executor", () => {
     });
 
     expect(result.ok).toBe(false);
-    expect(result.v2?.code).toBe("TASK_RESOURCE_SCOPE_VIOLATION");
+    expect(result.v2?.code).toBe("PATH_OUTSIDE_TASK_ROOT");
     expect(acquireMutationAuthority).not.toHaveBeenCalled();
     expect(existsSync(outsidePath)).toBe(false);
   });
 
-  it("rejects a repeated task-root prefix before the tool can create nested output", async () => {
+  it("rejects relative paths before the tool can create nested output", async () => {
     const checkoutPath = mkdtempSync(join(tmpdir(), "ayati-task-checkout-"));
     temporaryDirectories.push(checkoutPath);
     const execute = vi.fn(async () => ({ ok: true, output: "should not run" }));
@@ -216,7 +294,7 @@ describe("task-scoped tool executor", () => {
       base: baseExecutor(execute),
       gitContext: service,
     });
-    const repeatedPath = `${basename(checkoutPath)}/index.html`;
+    const repeatedPath = "nested/index.html";
 
     const result = await executor.execute("write_files", {
       files: [{ path: repeatedPath, content: "<h1>Nested by mistake</h1>" }],
@@ -229,11 +307,44 @@ describe("task-scoped tool executor", () => {
     });
 
     expect(result.ok).toBe(false);
-    expect(result.v2?.code).toBe("TASK_ROOT_REPEATED");
-    expect(result.error).toContain("Use 'index.html'");
+    expect(result.v2?.code).toBe("ABSOLUTE_PATH_REQUIRED");
+    expect(result.error).toContain("must be an absolute filesystem path");
     expect(execute).not.toHaveBeenCalled();
     expect(acquireMutationAuthority).not.toHaveBeenCalled();
     expect(existsSync(join(checkoutPath, repeatedPath))).toBe(false);
+  });
+
+  it("rejects a canonical path that escapes through a symlink", async () => {
+    const checkoutPath = mkdtempSync(join(tmpdir(), "ayati-task-checkout-"));
+    const outsidePath = mkdtempSync(join(tmpdir(), "ayati-task-outside-"));
+    temporaryDirectories.push(checkoutPath, outsidePath);
+    symlinkSync(outsidePath, join(checkoutPath, "linked-outside"), "dir");
+    const execute = vi.fn(async () => ({ ok: true, output: "should not run" }));
+    const acquireMutationAuthority = vi.fn();
+    const service = {
+      getActiveContext: vi.fn(async () => activeContext(checkoutPath)),
+      acquireMutationAuthority,
+    } as unknown as GitContextService;
+    const executor = createTaskScopedToolExecutor({
+      base: baseExecutor(execute),
+      gitContext: service,
+    });
+
+    const result = await executor.execute("write_files", {
+      files: [{ path: join(checkoutPath, "linked-outside/escaped.txt"), content: "not allowed" }],
+      createDirs: true,
+    }, {
+      clientId: "client-1",
+      sessionId: "S-1",
+      runId: "R-1",
+      stepNumber: 5,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.v2?.code).toBe("PATH_OUTSIDE_TASK_ROOT");
+    expect(execute).not.toHaveBeenCalled();
+    expect(acquireMutationAuthority).not.toHaveBeenCalled();
+    expect(existsSync(join(outsidePath, "escaped.txt"))).toBe(false);
   });
 });
 

@@ -2,6 +2,7 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { ToolDefinition, ToolResult } from "../../types.js";
 import { resolveWorkspaceRoots } from "../../workspace-paths.js";
+import { commonAnnotations, okResult, successV2 } from "../contract-helpers.js";
 import { validateFindFilesInput } from "./validators.js";
 
 interface SearchState {
@@ -28,13 +29,17 @@ export const findFilesTool: ToolDefinition = {
       roots: {
         type: "array",
         items: { type: "string" },
-        description: "Optional roots to search from. Defaults to workspace root.",
+        description: "Optional absolute directory roots to search. Omit to use the active absolute resource root.",
       },
       maxDepth: { type: "number", description: "Maximum recursion depth (default from guardrails)." },
       maxResults: { type: "number", description: "Maximum number of matches (default from guardrails)." },
       includeHidden: { type: "boolean", description: "Whether to include hidden files/directories." },
     },
   },
+  annotations: commonAnnotations({
+    domain: "filesystem",
+    readOnly: true,
+  }),
   selectionHints: {
     tags: ["filesystem", "search", "find", "filename", "path"],
     aliases: ["locate_file", "find_path", "find_filename"],
@@ -100,10 +105,14 @@ export const findFilesTool: ToolDefinition = {
         }
       }
 
-      return {
-        ok: true,
-        output: matches.length > 0 ? matches.join("\n") : "(no matches)",
-        meta: {
+      const structuredContent = {
+        query: parsed.query,
+        roots: searchedRoots,
+        matches: matches.map((absolutePath) => ({ absolutePath, kind: "file" as const })),
+        capped: matches.length >= maxResults,
+        errors: errors.slice(0, 20),
+      };
+      const meta = {
           durationMs: Date.now() - start,
           query: parsed.query,
           roots: searchedRoots,
@@ -113,8 +122,17 @@ export const findFilesTool: ToolDefinition = {
           capped: matches.length >= maxResults,
           errorCount: errors.length,
           errors: errors.slice(0, 20),
-        },
       };
+      return okResult({
+        output: matches.length > 0 ? matches.join("\n") : "(no matches)",
+        meta,
+        v2: successV2({
+          code: "FILES_FOUND",
+          message: `Found ${matches.length} matching file${matches.length === 1 ? "" : "s"}.`,
+          structuredContent,
+          diagnostics: meta,
+        }),
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown filesystem search error";
       return { ok: false, error: message, meta: { durationMs: Date.now() - start } };

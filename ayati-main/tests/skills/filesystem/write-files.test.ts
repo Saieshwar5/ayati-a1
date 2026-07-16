@@ -175,7 +175,7 @@ describe("writeFilesTool", () => {
     expect(result.v2?.code).toBe("PARENT_DIR_MISSING");
   });
 
-  it("writes relative paths inside work_space by default", async () => {
+  it("rejects relative file paths", async () => {
     const relativePath = `vitest-write-files-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`;
     const expectedPath = join(workspaceRoot, relativePath);
     workspaceArtifacts.push(expectedPath);
@@ -184,8 +184,8 @@ describe("writeFilesTool", () => {
       files: [{ path: relativePath, content: "workspace default" }],
     });
 
-    expect(result.ok).toBe(true);
-    expect(await readFile(expectedPath, "utf-8")).toBe("workspace default");
+    expect(result.ok).toBe(false);
+    expect(result.v2?.code).toBe("ABSOLUTE_PATH_REQUIRED");
   });
 
   it("rejects external absolute writes by default", async () => {

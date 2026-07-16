@@ -23,19 +23,15 @@ export const moveTool: ToolDefinition = {
     properties: {
       source: {
         type: "string",
-        description: "Source path. In a task run, use a path relative to the active task root and do not repeat the task directory name. Otherwise, relative paths use the workspace root.",
+        description: "Absolute path of the source file or directory.",
       },
       destination: {
         type: "string",
-        description: "Destination path. In a task run, use a path relative to the active task root and do not repeat the task directory name. Otherwise, relative paths use the workspace root.",
+        description: "Absolute destination path.",
       },
       overwrite: {
         type: "boolean",
         description: "Overwrite destination if it exists (default: false).",
-      },
-      allowExternalPath: {
-        type: "boolean",
-        description: "Allow absolute paths outside the configured workspace for non-task work. Task runs ignore this flag and cannot escape the active task root.",
       },
     },
   },

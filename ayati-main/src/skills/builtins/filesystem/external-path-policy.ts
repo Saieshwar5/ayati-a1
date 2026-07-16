@@ -11,15 +11,15 @@ export function externalWorkspacePathError(rejection: WorkspaceMutationPathRejec
     retryable: true,
     recoverable: true,
     suggestedNextActions: [
-      "Use a workspace-relative path for generated files.",
-      "Set allowExternalPath=true only when the user explicitly requested this external path.",
+      "Use an absolute path inside the active task workingDirectory.",
+      "If the user requested another location, route the work to a task whose workingDirectory contains that absolute path.",
     ],
     structuredContent: {
       requestedPath: rejection.requestedPath,
       resolvedPath: rejection.resolvedPath,
       workspaceRoot: rejection.workspaceRoot,
       operation: rejection.operation,
-      allowExternalPathRequired: true,
+      requiresAuthorizedWorkingDirectory: true,
     },
     meta: {
       requestedPath: rejection.requestedPath,

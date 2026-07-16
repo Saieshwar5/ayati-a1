@@ -233,8 +233,8 @@ export class TaskLifecycleService {
           task,
           dataRoot: this.dataRoot,
         });
-        await ensureTaskWorkingDirectory({ ...task, head });
-        activateTask(this.database, task.taskId, head, this.now());
+        const workingHead = await ensureTaskWorkingDirectory({ ...task, head });
+        activateTask(this.database, task.taskId, workingHead, this.now());
       } catch {
         // One unusable user-requested directory must not prevent unrelated
         // sessions and tasks from recovering. Retrying the original request
@@ -296,8 +296,8 @@ export class TaskLifecycleService {
       task: record,
       dataRoot: this.dataRoot,
     });
-    await ensureTaskWorkingDirectory({ ...record, head });
-    return activateTask(this.database, taskId, head, at);
+    const workingHead = await ensureTaskWorkingDirectory({ ...record, head });
+    return activateTask(this.database, taskId, workingHead, at);
   }
 
   private requireActiveTask(taskId: string): TaskCatalogEntry {

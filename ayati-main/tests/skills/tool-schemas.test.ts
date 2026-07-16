@@ -46,6 +46,36 @@ function findMissingArrayItems(schema: unknown, path = "inputSchema"): string[] 
   return issues;
 }
 
+function findFilesystemPathDescriptionIssues(schema: unknown, path = "inputSchema"): string[] {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return [];
+  const record = schema as Record<string, unknown>;
+  const issues: string[] = [];
+  const properties = record["properties"];
+  if (properties && typeof properties === "object" && !Array.isArray(properties)) {
+    for (const [name, propertySchema] of Object.entries(properties as Record<string, unknown>)) {
+      if (!propertySchema || typeof propertySchema !== "object" || Array.isArray(propertySchema)) continue;
+      const property = propertySchema as Record<string, unknown>;
+      if (["path", "paths", "roots", "source", "destination"].includes(name)) {
+        const description = typeof property["description"] === "string" ? property["description"].toLowerCase() : "";
+        if (!description.includes("absolute")) {
+          issues.push(`${path}.properties.${name} must describe an absolute path`);
+        }
+      }
+      issues.push(...findFilesystemPathDescriptionIssues(propertySchema, `${path}.properties.${name}`));
+    }
+  }
+  for (const [key, value] of Object.entries(record)) {
+    if (key === "properties") continue;
+    if (Array.isArray(value)) {
+      issues.push(...value.flatMap((entry, index) =>
+        findFilesystemPathDescriptionIssues(entry, `${path}.${key}[${index}]`)));
+    } else if (value && typeof value === "object") {
+      issues.push(...findFilesystemPathDescriptionIssues(value, `${path}.${key}`));
+    }
+  }
+  return issues;
+}
+
 async function buildRuntimeTools(): Promise<ToolDefinition[]> {
   const builtInTools = await builtInSkillsProvider.getAllTools();
   const preparedAttachmentService = {} as unknown as PreparedAttachmentService;
@@ -104,6 +134,28 @@ describe("runtime tool schemas", () => {
     expect(createTask?.inputSchema.properties?.["placement"]?.properties).not.toHaveProperty("evidence");
     expect(createTask?.outputSchema.properties?.["workingDirectory"]).toMatchObject({ type: "string" });
     expect(createTask?.outputSchema.properties).not.toHaveProperty("checkoutPath");
+    expect(issues).toEqual([]);
+  });
+
+  it("advertises absolute paths for every filesystem resource field", async () => {
+    const tools = await buildRuntimeTools();
+    const filesystemTools = new Set([
+      "inspect_paths",
+      "read_files",
+      "write_files",
+      "patch_files",
+      "delete",
+      "list_directory",
+      "create_directory",
+      "move",
+      "find_files",
+      "search_in_files",
+    ]);
+    const issues = tools
+      .filter((tool) => filesystemTools.has(tool.name))
+      .flatMap((tool) => findFilesystemPathDescriptionIssues(tool.inputSchema)
+        .map((issue) => `${tool.name}: ${issue}`));
+
     expect(issues).toEqual([]);
   });
 });

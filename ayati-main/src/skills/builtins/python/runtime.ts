@@ -7,7 +7,6 @@ import { resolveWorkspaceCwd } from "../../workspace-paths.js";
 import {
   createPythonArtifactPaths,
   listFilesRecursive,
-  toRelativeArtifactPath,
   writePythonManifest,
   type PythonArtifactPaths,
 } from "./artifacts.js";
@@ -209,19 +208,16 @@ export async function runManagedPythonProcess(input: {
 }
 
 export async function collectArtifactPaths(
-  deps: PythonSkillRuntimeDeps,
+  _deps: PythonSkillRuntimeDeps,
   artifacts: PythonArtifactPaths,
 ): Promise<string[]> {
-  const files = await listFilesRecursive(artifacts.artifactsDir);
-  return files.map((filePath) => toRelativeArtifactPath(deps.dataDir, filePath));
+  return await listFilesRecursive(artifacts.artifactsDir);
 }
-
-export { toRelativeArtifactPath };
 
 export async function writeExecutionManifest(input: {
   artifacts: PythonArtifactPaths;
   runtime: PythonSpawnResult;
-  relativeArtifacts: string[];
+  artifactPaths: string[];
   request: Record<string, unknown>;
 }): Promise<void> {
   await writePythonManifest(input.artifacts.manifestPath, {
@@ -246,7 +242,7 @@ export async function writeExecutionManifest(input: {
       helperPath: input.artifacts.helperPath,
       manifestPath: input.artifacts.manifestPath,
     },
-    artifacts: input.relativeArtifacts,
+    artifacts: input.artifactPaths,
   });
 }
 
