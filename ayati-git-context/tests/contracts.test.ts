@@ -58,6 +58,20 @@ describe("Git Context Engine contracts", () => {
     })).toBe(false);
   });
 
+  it("accepts complete conversation message bodies without a persistence length cap", () => {
+    const longContent = "complete-message-body\n".repeat(2_000) + "END-OF-MESSAGE";
+
+    for (const role of ["user", "assistant", "system_event"] as const) {
+      expect(isAppendConversationRequest({
+        requestId: `REQ-long-${role}`,
+        sessionId: "S-1",
+        role,
+        content: longContent,
+        at: "2026-07-12T00:00:00+05:30",
+      })).toBe(true);
+    }
+  });
+
   it("validates bounded task creation requests", () => {
     expect(isCreateTaskRequest({
       requestId: "REQ-task",
@@ -187,6 +201,8 @@ describe("Git Context Engine contracts", () => {
   });
 
   it("validates bounded task-run finalization outcomes", () => {
+    const completeAssistantResponse = "complete assistant response\n".repeat(1_000)
+      + "END-OF-ASSISTANT-RESPONSE";
     expect(isFinalizeTaskRunRequest({
       requestId: "REQ-finalize",
       sessionId: "S-20260712-local",
@@ -204,7 +220,7 @@ describe("Git Context Engine contracts", () => {
         failures: ["Validation failed"],
         criteria: [{ criterion: "Validation passes.", passed: false }],
       },
-      assistantResponse: "I created the files, but validation is still failing.",
+      assistantResponse: completeAssistantResponse,
       at: "2026-07-12T10:06:00+05:30",
     })).toBe(true);
     expect(isFinalizeTaskRunRequest({
@@ -256,11 +272,13 @@ describe("Git Context Engine contracts", () => {
   });
 
   it("validates session-run finalization with done WorkState", () => {
+    const completeAssistantResponse = "complete read-only response\n".repeat(1_000)
+      + "END-OF-ASSISTANT-RESPONSE";
     expect(isFinalizeSessionRunRequest({
       requestId: "REQ-finalize-session",
       sessionId: "S-20260712-local",
       runId: "R-20260712-0001",
-      assistantResponse: "Here is what I found.",
+      assistantResponse: completeAssistantResponse,
       workState: { ...emptyRunWorkState(), status: "done" },
       at: "2026-07-12T10:00:01+05:30",
     })).toBe(true);

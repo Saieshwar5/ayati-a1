@@ -723,6 +723,7 @@ export async function runAgentLoop(
         },
       );
       if (evaluation.accepted) {
+        state.verifiedCompletionSummary = decision.request.summary;
         state.completionAssets = evaluation.assets;
         state.consecutiveFailures = 0;
         recordRunMetric(metrics, "verified_completion", { kind: "local" });
@@ -1674,6 +1675,7 @@ export async function runAgentLoop(
           workState: summarizeWorkState(state.workState),
         });
         if (evaluation.accepted) {
+          state.verifiedCompletionSummary = completionDecision.request.summary;
           state.completionAssets = evaluation.assets;
           recordRunMetric(metrics, "verified_completion", { kind: "local" });
         }

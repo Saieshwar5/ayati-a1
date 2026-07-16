@@ -221,6 +221,8 @@ export interface LoopState {
   contextVisibility?: SystemEventContextVisibility;
   preferredResponseKind?: AgentResponseKind;
   workState: WorkState;
+  /** Exact accepted completion summary, retained outside compact prompt state. */
+  verifiedCompletionSummary?: string;
   completionAssets?: Array<{
     path: string;
     resolvedPath: string;
