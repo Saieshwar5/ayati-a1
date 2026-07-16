@@ -116,6 +116,18 @@ export function beginRecoverableIdempotent<T>(input: {
   });
 }
 
+export function hasRecoverableIdempotencyRequest(input: {
+  database: ContextDatabase;
+  requestId: string;
+  operation: string;
+  payload: unknown;
+}): boolean {
+  const existing = readRequest(input.database, input.requestId);
+  if (!existing) return false;
+  assertMatchingRequest(existing, input);
+  return true;
+}
+
 export function completeRecoverableIdempotent<T>(input: {
   database: ContextDatabase;
   requestId: string;

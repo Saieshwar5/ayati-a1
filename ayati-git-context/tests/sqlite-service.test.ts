@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ContextDatabase } from "../src/database/database.js";
 import { beginRecoverableIdempotent } from "../src/database/idempotency.js";
 import { appendConversationMessage } from "../src/repositories/conversation-records.js";
@@ -18,6 +18,7 @@ const execFileAsync = promisify(execFile);
 
 const temporaryDirectories: string[] = [];
 const services: SqliteGitContextService[] = [];
+const testNow = () => "2026-07-12T09:00:00+05:30";
 
 afterEach(async () => {
   await Promise.all(services.splice(0).map(async (service) => {
@@ -106,7 +107,7 @@ describe("SQLite Git Context service", () => {
     });
     await mkdir(repositoryPath, { recursive: true });
     await git(repositoryPath, ["init", "--initial-branch=main"]);
-    const service = new SqliteGitContextService({ database, dataRoot: directory });
+    const service = new SqliteGitContextService({ database, dataRoot: directory, now: testNow });
     services.push(service);
 
     const context = await service.getActiveContext({ sessionId: "S-20260712-local" });
@@ -318,6 +319,7 @@ describe("SQLite Git Context service", () => {
     const firstService = new SqliteGitContextService({
       database: firstDatabase,
       dataRoot: directory,
+      now: testNow,
     });
     const session = await ensureSession(firstService);
     const input = {
@@ -354,6 +356,7 @@ describe("SQLite Git Context service", () => {
     const secondService = new SqliteGitContextService({
       database: secondDatabase,
       dataRoot: directory,
+      now: testNow,
     });
     services.push(secondService);
     await secondService.getActiveContext({ sessionId: session.session.sessionId });
@@ -583,6 +586,7 @@ describe("SQLite Git Context service", () => {
     const firstService = new SqliteGitContextService({
       database: firstDatabase,
       dataRoot: directory,
+      now: testNow,
     });
     const session = await ensureSession(firstService);
     const input = {
@@ -606,6 +610,7 @@ describe("SQLite Git Context service", () => {
     const secondService = new SqliteGitContextService({
       database: secondDatabase,
       dataRoot: directory,
+      now: testNow,
     });
     services.push(secondService);
     const restored = await secondService.getActiveContext({
@@ -760,6 +765,7 @@ describe("SQLite Git Context service", () => {
     const firstService = new SqliteGitContextService({
       database: firstDatabase,
       dataRoot: directory,
+      now: testNow,
     });
 
     const session = await ensureSession(firstService);
@@ -802,6 +808,7 @@ describe("SQLite Git Context service", () => {
     const secondService = new SqliteGitContextService({
       database: secondDatabase,
       dataRoot: directory,
+      now: testNow,
     });
     services.push(secondService);
     const restored = await secondService.getActiveContext({});
@@ -1350,23 +1357,326 @@ describe("SQLite Git Context service", () => {
     ]);
   });
 
-  it("requires rollover before creating a different daily session", async () => {
-    const { service } = await createService();
-    await ensureSession(service);
+  it("rolls a clean daily session without creating a closing commit", async () => {
+    const { service, database } = await createService();
+    const first = await ensureSession(service);
+    const headBefore = first.session.head;
+    const commitCountBefore = await git(first.session.repositoryPath, ["rev-list", "--count", "HEAD"]);
 
-    await expect(service.ensureActiveSession({
+    const next = await service.ensureActiveSession({
       requestId: "REQ-next-day",
       date: "2026-07-13",
       timezone: "Asia/Kolkata",
       agentId: "local",
-    })).rejects.toMatchObject({
-      code: "SESSION_ROLLOVER_PENDING",
-      retryable: true,
+      at: "2026-07-13T00:00:01+05:30",
+      expectedHead: first.session.head ?? undefined,
     });
+
+    expect(next).toMatchObject({
+      created: true,
+      session: { sessionId: "S-20260713-local", status: "open" },
+    });
+    expect(database.prepare([
+      "SELECT status, sealed_at, head_sha FROM sessions WHERE session_id = ?",
+    ].join(" ")).get(first.session.sessionId)).toEqual({
+      status: "sealed",
+      sealed_at: "2026-07-13T00:00:01+05:30",
+      head_sha: headBefore,
+    });
+    expect(await git(first.session.repositoryPath, ["rev-list", "--count", "HEAD"]))
+      .toBe(commitCountBefore);
+  });
+
+  it("rejects a conflicting ensure-session retry before changing rollover state", async () => {
+    const { service, database } = await createService();
+    const first = await ensureSession(service);
+
+    await expect(service.ensureActiveSession({
+      requestId: "REQ-session",
+      date: "2026-07-13",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      at: "2026-07-13T00:00:01+05:30",
+    })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+
+    expect(database.prepare(
+      "SELECT status FROM sessions WHERE session_id = ?",
+    ).get(first.session.sessionId)).toEqual({ status: "open" });
+    expect(database.prepare(
+      "SELECT COUNT(*) AS count FROM sessions",
+    ).get()).toEqual({ count: 1 });
+  });
+
+  it("keeps a dirty daily session writable without creating a rollover commit", async () => {
+    const { service } = await createService();
+    const first = await ensureSession(service);
+    await service.appendConversation({
+      requestId: "REQ-before-midnight",
+      sessionId: first.session.sessionId,
+      role: "user",
+      content: "Keep this conversation pending across midnight.",
+      at: "2026-07-12T23:59:00+05:30",
+    });
+    const commitCountBefore = await git(first.session.repositoryPath, ["rev-list", "--count", "HEAD"]);
+
+    const pending = await service.ensureActiveSession({
+      requestId: "REQ-dirty-next-day",
+      date: "2026-07-13",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      at: "2026-07-13T00:00:01+05:30",
+    });
+    const afterMidnight = await service.appendConversation({
+      requestId: "REQ-after-midnight",
+      sessionId: first.session.sessionId,
+      role: "user",
+      content: "This still belongs to the old session until a task commit.",
+      at: "2026-07-13T00:01:00+05:30",
+    });
+
+    expect(pending).toMatchObject({
+      created: false,
+      session: { sessionId: first.session.sessionId, status: "rollover_pending" },
+    });
+    expect(afterMidnight.message.sessionSequence).toBe(2);
+    expect(await git(first.session.repositoryPath, ["rev-list", "--count", "HEAD"]))
+      .toBe(commitCountBefore);
+    expect((await service.getActiveContext({})).session?.session).toMatchObject({
+      sessionId: first.session.sessionId,
+      status: "rollover_pending",
+    });
+  });
+
+  it("does not seal a session whose repository has an uncommitted task pointer", async () => {
+    const { service } = await createService();
+    const first = await ensureSession(service);
+    const task = await service.createTask({
+      requestId: "REQ-rollover-mounted-task",
+      sessionId: first.session.sessionId,
+      title: "Mounted Task",
+      objective: "Keep the staged task pointer in the old session.",
+      placement: { mode: "managed" },
+      at: "2026-07-12T23:58:00+05:30",
+    });
+    await service.mountTask({
+      requestId: "REQ-rollover-mounted-task-mount",
+      sessionId: first.session.sessionId,
+      taskId: task.task.taskId,
+      at: "2026-07-12T23:58:30+05:30",
+    });
+    const commitCountBefore = await git(first.session.repositoryPath, ["rev-list", "--count", "HEAD"]);
+
+    const pending = await service.ensureActiveSession({
+      requestId: "REQ-rollover-mounted-task-next-day",
+      date: "2026-07-13",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      at: "2026-07-13T00:00:01+05:30",
+    });
+
+    expect(pending).toMatchObject({
+      created: false,
+      session: { sessionId: first.session.sessionId, status: "rollover_pending" },
+    });
+    expect(await git(first.session.repositoryPath, ["status", "--short"])).not.toBe("");
+    expect(await git(first.session.repositoryPath, ["rev-list", "--count", "HEAD"]))
+      .toBe(commitCountBefore);
+  });
+
+  it("completes pending rollover only after a normal task-run session commit", async () => {
+    const { service, database } = await createService();
+    const first = await ensureSession(service);
+    const systemEvent = await service.appendConversation({
+      requestId: "REQ-rollover-system-event",
+      sessionId: first.session.sessionId,
+      role: "system_event",
+      content: "A system event is pending before the midnight task.",
+      at: "2026-07-12T23:57:00+05:30",
+    });
+    const conversation = await service.appendConversation({
+      requestId: "REQ-rollover-task-message",
+      sessionId: first.session.sessionId,
+      role: "user",
+      content: "Create a task that finishes after midnight.",
+      at: "2026-07-12T23:58:00+05:30",
+    });
+    const selected = await service.createTaskRun({
+      requestId: "REQ-rollover-task-create",
+      sessionId: first.session.sessionId,
+      conversationId: conversation.conversation.conversationId,
+      trigger: "user",
+      workState: emptyRunWorkState(),
+      title: "Midnight Task",
+      objective: "Finish normally and then roll the daily session.",
+      placement: { mode: "managed" },
+      at: "2026-07-12T23:58:30+05:30",
+    });
+    const commitCountBefore = await git(first.session.repositoryPath, ["rev-list", "--count", "HEAD"]);
+    const pending = await service.ensureActiveSession({
+      requestId: "REQ-rollover-task-next-day",
+      date: "2026-07-13",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      at: "2026-07-13T00:00:01+05:30",
+    });
+
+    const finalizationInput = {
+      requestId: "REQ-rollover-task-finalize",
+      sessionId: first.session.sessionId,
+      runId: selected.run.runId,
+      taskId: selected.task.taskId,
+      outcome: "done",
+      conversationSummary: "The midnight task finished.",
+      summary: "The task is complete.",
+      validation: "passed",
+      completion: {
+        accepted: true,
+        assets: [],
+        missing: [],
+        failures: [],
+        criteria: [{ criterion: "Task finalized", passed: true }],
+      },
+      assistantResponse: "The midnight task is complete.",
+      at: "2026-07-13T00:02:00+05:30",
+    } as const;
+    const finalized = await service.finalizeTaskRun(finalizationInput);
+    const active = await service.getActiveContext({});
+    const conversationRecord = database.prepare([
+      "SELECT file_path AS filePath FROM conversation_segments",
+      "WHERE conversation_id = ?",
+    ].join(" ")).get(conversation.conversation.conversationId) as { filePath: string };
+    const conversationFile = await readFile(
+      join(first.session.repositoryPath, conversationRecord.filePath),
+      "utf8",
+    );
+
+    expect(pending.session.status).toBe("rollover_pending");
+    expect(await git(first.session.repositoryPath, ["rev-list", "--count", "HEAD"]))
+      .toBe(String(Number(commitCountBefore) + 1));
+    expect(finalized.sessionCommit).toMatch(/^[a-f0-9]{40}$/);
+    expect(conversationFile).toContain(systemEvent.message.content);
+    expect(conversationFile).toContain(conversation.message.content);
+    expect(conversationFile).toContain("The midnight task is complete.");
+    expect(database.prepare([
+      "SELECT status, head_sha FROM sessions WHERE session_id = ?",
+    ].join(" ")).get(first.session.sessionId)).toEqual({
+      status: "sealed",
+      head_sha: finalized.sessionCommit,
+    });
+    expect(active.session?.session).toMatchObject({
+      sessionId: "S-20260713-local",
+      status: "open",
+    });
+    expect(active.session?.pendingConversation).toEqual([]);
+    await expect(service.finalizeTaskRun(finalizationInput)).resolves.toEqual(finalized);
+  });
+
+  it("catches up a clean stale session during startup recovery", async () => {
+    const directory = await createTemporaryDirectory();
+    const databasePath = join(directory, "context.db");
+    const firstDatabase = await ContextDatabase.open({ path: databasePath });
+    const firstService = new SqliteGitContextService({
+      database: firstDatabase,
+      dataRoot: directory,
+      now: testNow,
+    });
+    const first = await ensureSession(firstService);
+    await firstService.close();
+
+    const secondDatabase = await ContextDatabase.open({ path: databasePath });
+    const secondService = new SqliteGitContextService({
+      database: secondDatabase,
+      dataRoot: directory,
+      now: () => "2026-07-13T00:00:01+05:30",
+    });
+    services.push(secondService);
+
+    const active = await secondService.getActiveContext({});
+
+    expect(active.session?.session).toMatchObject({
+      sessionId: "S-20260713-local",
+      status: "open",
+    });
+    expect(secondDatabase.prepare(
+      "SELECT status FROM sessions WHERE session_id = ?",
+    ).get(first.session.sessionId)).toEqual({ status: "sealed" });
+    expect(await git(first.session.repositoryPath, ["rev-list", "--count", "HEAD"])).toBe("1");
+  });
+
+  it("restores a dirty rollover-pending session as writable after restart", async () => {
+    const directory = await createTemporaryDirectory();
+    const databasePath = join(directory, "context.db");
+    const firstDatabase = await ContextDatabase.open({ path: databasePath });
+    const firstService = new SqliteGitContextService({
+      database: firstDatabase,
+      dataRoot: directory,
+      now: testNow,
+    });
+    const first = await ensureSession(firstService);
+    await firstService.appendConversation({
+      requestId: "REQ-restart-rollover-before-midnight",
+      sessionId: first.session.sessionId,
+      role: "user",
+      content: "Keep this pending until a later task commit.",
+      at: "2026-07-12T23:59:00+05:30",
+    });
+    await firstService.ensureActiveSession({
+      requestId: "REQ-restart-rollover-request",
+      date: "2026-07-13",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      at: "2026-07-13T00:00:01+05:30",
+    });
+    await firstService.close();
+
+    const secondDatabase = await ContextDatabase.open({ path: databasePath });
+    const secondService = new SqliteGitContextService({
+      database: secondDatabase,
+      dataRoot: directory,
+      now: () => "2026-07-13T00:02:00+05:30",
+    });
+    services.push(secondService);
+    const restored = await secondService.getActiveContext({});
+    const appended = await secondService.appendConversation({
+      requestId: "REQ-restart-rollover-after-midnight",
+      sessionId: first.session.sessionId,
+      role: "user",
+      content: "Continue in the old session after restart.",
+      at: "2026-07-13T00:03:00+05:30",
+    });
+
+    expect(restored.session?.session).toMatchObject({
+      sessionId: first.session.sessionId,
+      status: "rollover_pending",
+    });
+    expect(appended.message.sessionSequence).toBe(2);
+    expect(secondDatabase.prepare(
+      "SELECT COUNT(*) AS count FROM sessions WHERE status IN ('open', 'rollover_pending')",
+    ).get()).toEqual({ count: 1 });
+  });
+
+  it("checks for clean midnight rollover while the service remains running", async () => {
+    let currentTime = "2026-07-12T23:59:59+05:30";
+    const { service } = await createService({
+      now: () => currentTime,
+      rolloverCheckIntervalMs: 5,
+    });
+    const first = await ensureSession(service);
+    currentTime = "2026-07-13T00:00:01+05:30";
+
+    await vi.waitFor(async () => {
+      const active = await service.getActiveContext({});
+      expect(active.session?.session.sessionId).toBe("S-20260713-local");
+    }, { timeout: 2_000, interval: 10 });
+
+    expect(await git(first.session.repositoryPath, ["rev-list", "--count", "HEAD"])).toBe("1");
   });
 });
 
-async function createService(): Promise<{
+async function createService(options: {
+  now?: () => string;
+  rolloverCheckIntervalMs?: number;
+} = {}): Promise<{
   database: ContextDatabase;
   service: SqliteGitContextService;
 }> {
@@ -1377,7 +1687,10 @@ async function createService(): Promise<{
   const service = new SqliteGitContextService({
     database,
     dataRoot: directory,
-    now: () => "2026-07-12T09:00:00+05:30",
+    now: options.now ?? testNow,
+    ...(options.rolloverCheckIntervalMs !== undefined
+      ? { rolloverCheckIntervalMs: options.rolloverCheckIntervalMs }
+      : {}),
   });
   services.push(service);
   return { database, service };
