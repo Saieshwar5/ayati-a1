@@ -87,6 +87,11 @@ export function buildBlockedWorkStateReply(state: LoopState): string {
 }
 
 export function buildVerifiedCompletionReply(state: LoopState, step?: StepSummary): string {
+  const verifiedCompletionSummary = state.verifiedCompletionSummary?.trim();
+  if (verifiedCompletionSummary && !looksLikeInternalCompletionText(verifiedCompletionSummary)) {
+    return verifiedCompletionSummary;
+  }
+
   const artifacts = normalizeList(step && stepHasGeneratedArtifactEvidence(step) ? step.artifacts : [])
     .filter((artifact) => isDurableStepArtifact(artifact))
     .map((artifact) => displayArtifactPath(artifact));

@@ -1660,6 +1660,10 @@ describe("agentLoop", () => {
     const dataDir = makeTmpDir();
     const outputPath = join(dataDir, "completion-site", "index.html");
     const feedback = createMemoryFeedbackLedger();
+    const completionSummary = "Verified website implementation detail. ".repeat(23)
+      + "END-OF-COMPLETION";
+    expect(completionSummary.length).toBeGreaterThan(900);
+    expect(completionSummary.length).toBeLessThan(1_000);
     try {
       const toolExecutor = createToolExecutor([writeFilesTool]);
       const provider = createProvider([
@@ -1683,7 +1687,7 @@ describe("agentLoop", () => {
         },
         {
           kind: "task_completion",
-          request: { summary: "Created the requested website file.", assets: [] },
+          request: { summary: completionSummary, assets: [] },
         },
         "task_completion",
       ]);
@@ -1706,7 +1710,7 @@ describe("agentLoop", () => {
       expect(provider.generateTurn).toHaveBeenCalledTimes(3);
       expect(readFileSync(outputPath, "utf-8")).toBe("<!doctype html><title>Done</title>");
       expect(result.content).not.toBe("task_completion");
-      expect(result.content).toBe("Created the requested website file.");
+      expect(result.content).toBe(completionSummary);
       expect(feedbackEvents(feedback.events, "decision", "final_response_rejected")).toHaveLength(1);
     } finally {
       cleanup(dataDir);

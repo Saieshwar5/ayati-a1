@@ -130,6 +130,22 @@ describe("final response policy", () => {
     }))).toBe("The checklist is ready.");
   });
 
+  it("keeps the exact accepted completion summary outside compact WorkState", () => {
+    const completeSummary = "Verified implementation detail. ".repeat(80)
+      + "END-OF-COMPLETION";
+    expect(completeSummary.length).toBeGreaterThan(900);
+
+    expect(buildVerifiedCompletionReply(state({
+      verifiedCompletionSummary: completeSummary,
+      workState: {
+        status: "done",
+        summary: completeSummary.slice(0, 897) + "...",
+        verifiedFacts: [],
+        evidence: [],
+      },
+    }))).toBe(completeSummary);
+  });
+
   it("falls back to latest failure details for failure replies", () => {
     expect(buildFailureReply(state())).toBe("I couldn't complete the task.");
     expect(buildFailureReply(state({

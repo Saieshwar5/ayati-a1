@@ -1008,11 +1008,24 @@ describe("SQLite Git Context service", () => {
   it("creates, mounts, runs, and finalizes a task through one high-level selection", async () => {
     const { service, database } = await createService();
     const session = await ensureSession(service);
+    const systemEventContent = "system event context line\n".repeat(1_000)
+      + "END-OF-SYSTEM-EVENT";
+    const userContent = "user requirement line\n".repeat(1_100)
+      + "END-OF-USER-MESSAGE";
+    const assistantContent = "assistant result line\n".repeat(1_200)
+      + "END-OF-ASSISTANT-MESSAGE";
+    await service.appendConversation({
+      requestId: "REQ-task-run-system-event",
+      sessionId: session.session.sessionId,
+      role: "system_event",
+      content: systemEventContent,
+      at: "2026-07-12T09:29:59+05:30",
+    });
     const conversation = await service.appendConversation({
       requestId: "REQ-task-run-message",
       sessionId: session.session.sessionId,
       role: "user",
-      content: "Create a small research task.",
+      content: userContent,
       at: "2026-07-12T09:30:00+05:30",
     });
 
@@ -1095,9 +1108,17 @@ describe("SQLite Git Context service", () => {
         failures: [],
         criteria: [{ criterion: "Task repository exists", passed: true }],
       },
-      assistantResponse: "The research task is ready.",
+      assistantResponse: assistantContent,
       at: "2026-07-12T09:30:02+05:30",
     });
+    const conversationRecord = database.prepare([
+      "SELECT file_path AS filePath FROM conversation_segments",
+      "WHERE conversation_id = ?",
+    ].join(" ")).get(conversation.conversation.conversationId) as { filePath: string };
+    const conversationFile = await readFile(
+      join(session.session.repositoryPath, conversationRecord.filePath),
+      "utf8",
+    );
     const active = await service.getActiveContext({ sessionId: session.session.sessionId });
     const finalWorkState = database.prepare([
       "SELECT status, summary, open_work_json, blockers_json, next_step",
@@ -1111,6 +1132,15 @@ describe("SQLite Git Context service", () => {
     };
 
     expect(finalized.taskHeadBefore).not.toBe(finalized.taskHeadAfter);
+    expect(conversationFile).toContain("## System Event\n\n" + systemEventContent);
+    expect(conversationFile).toContain("## User\n\n" + userContent);
+    expect(conversationFile).toContain("## Assistant\n\n" + assistantContent);
+    expect(conversationFile.indexOf(systemEventContent)).toBeLessThan(
+      conversationFile.indexOf(userContent),
+    );
+    expect(conversationFile.indexOf(userContent)).toBeLessThan(
+      conversationFile.indexOf(assistantContent),
+    );
     expect(finalWorkState).toEqual({
       status: "done",
       summary: "The research task is ready for future work.",

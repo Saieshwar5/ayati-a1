@@ -728,7 +728,7 @@ export function isFinalizeTaskRunRequest(value: unknown): value is FinalizeTaskR
     && isTaskCompletionRecord(value["completion"])
     && (value["outcome"] === "done") === value["completion"].accepted
     && (value["outcome"] !== "done" || value["validation"] === "passed")
-    && isBoundedString(value["assistantResponse"], 20_000)
+    && isNonEmptyString(value["assistantResponse"])
     && isNonEmptyString(value["at"]);
 }
 
@@ -740,7 +740,7 @@ export function isFinalizeSessionRunRequest(
   }
   return isNonEmptyString(value["sessionId"])
     && isNonEmptyString(value["runId"])
-    && isBoundedString(value["assistantResponse"], 20_000)
+    && isNonEmptyString(value["assistantResponse"])
     && isRunWorkStateInput(value["workState"])
     && value["workState"].status === "done"
     && isNonEmptyString(value["at"]);
