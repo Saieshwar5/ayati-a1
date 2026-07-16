@@ -137,6 +137,32 @@ override the compressed older summary. This boundary lets an informational
 follow-up use the latest committed result without activating a task or reading
 the task repository again.
 
+### Daily session rollover
+
+Ayati keeps at most one writable Git Context session per agent. A local-date
+change requests rollover but never creates a commit merely to close the old
+session. If the old session has no running work, no pending conversation, and
+a clean session repository, the engine seals it at its existing HEAD and opens
+the new daily session. The old repository receives no closing commit.
+
+If conversation or repository state is still uncommitted, the old session
+becomes `rollover_pending` and remains writable. User, assistant, and system
+event messages continue to belong to that session. Read-only work and later
+task selection may continue there, but the engine does not open a second live
+session.
+
+The next ordinary task-run finalization commits the complete pending
+conversation window through the normal task/session finalization path. Only
+after that commit succeeds and the old session is clean does the engine seal
+it and open the session for the current local date. Intermediate mutation
+checkpoints and read-only session finalization do not complete rollover.
+
+Startup recovery and a lightweight timezone-aware date check reconcile the
+same states after downtime. A rollover-pending session may therefore extend
+past midnight, or across several dates if no later task run produces a commit;
+Ayati creates only the current-date replacement when rollover eventually
+completes.
+
 Pending-turn routing states are:
 
 - `unbound`: user message is global only; task ownership is not decided.

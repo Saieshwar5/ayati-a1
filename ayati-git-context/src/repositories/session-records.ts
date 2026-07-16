@@ -132,6 +132,39 @@ export function updateSessionHead(
   return session;
 }
 
+export function updateSessionStatus(
+  database: ContextDatabase,
+  sessionId: string,
+  status: SessionRecord["status"],
+  at: string,
+): SessionRecord {
+  database.prepare([
+    "UPDATE sessions SET status = ?,",
+    "sealed_at = CASE WHEN ? = 'sealed' THEN ? ELSE sealed_at END",
+    "WHERE session_id = ?",
+  ].join(" ")).run(status, status, at, sessionId);
+  const session = readSessionRecord(database, sessionId);
+  if (!session) {
+    throw new Error("Updated session could not be read: " + sessionId);
+  }
+  return session;
+}
+
+export function hasPendingSessionWork(
+  database: ContextDatabase,
+  sessionId: string,
+): boolean {
+  const row = database.prepare([
+    "SELECT",
+    "EXISTS(SELECT 1 FROM runs WHERE session_id = ? AND status = 'running')",
+    "OR EXISTS(",
+    "  SELECT 1 FROM conversation_segments",
+    "  WHERE session_id = ? AND status IN ('active', 'closed')",
+    ") AS pending",
+  ].join(" ")).get(sessionId, sessionId) as { pending: number };
+  return Number(row.pending) === 1;
+}
+
 export function readSessionIdentity(
   database: ContextDatabase,
   sessionId: string,
