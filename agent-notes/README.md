@@ -18,13 +18,6 @@ Recommended structure:
 
 Current plans:
 
-- `external-task-resource-bindings-2026-07-17/README.md`: controlling plan for
-  extending Ayati's single task lifecycle to owned, adopted, external, and
-  mixed resources through managed sidecar repositories, typed resource
-  bindings, exact per-run mutation leases, deterministic receipts,
-  resource-aware completion, existing user Git repository handling, and
-  external API effects. Prefer this plan when older notes assume every mutable
-  resource must live inside the task checkout.
 - `git-context-engine-service-migration-2026-07-12/README.md`: master
   migration plan for making Git Context Engine an independent Git-and-SQLite
   service, storing daily conversation and task-run evidence on session main,
