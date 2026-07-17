@@ -29,41 +29,41 @@ has not started.
 
 Before implementation begins:
 
-- [ ] User approves the first implementation slice.
-- [ ] Create `refactor/simple-task-repository-v1` or another agreed behavior
+- [x] User approves the first implementation slice.
+- [x] Create `refactor/simple-task-repository-v1` or another agreed behavior
   branch from the correct integration point.
-- [ ] Confirm clean worktree and test baseline.
-- [ ] Read every file in this plan directory.
-- [ ] Reconcile any implementation completed after this plan's inspection.
-- [ ] Show expected files, migration impact, and focused tests for Slice 1.
+- [x] Confirm clean worktree and test baseline.
+- [x] Read every file in this plan directory.
+- [x] Reconcile any implementation completed after this plan's inspection.
+- [x] Show expected files, migration impact, and focused tests for Slice 1.
 
 ## Phase 0: Contracts And Fixtures
 
-- [ ] Add learning, coding, computer-use, analysis, and automation repository
+- [x] Add learning, coding, computer-use, analysis, and automation repository
   fixtures.
-- [ ] Add invalid/malformed/legacy fixtures.
-- [ ] Define stable error codes.
-- [ ] Record baseline package and workspace tests.
+- [x] Add invalid/malformed/legacy fixtures.
+- [x] Define stable error codes.
+- [x] Record baseline package and workspace tests.
 
 Exit gate:
 
-- [ ] Typed fixtures express the repository contract without changing live
+- [x] Typed fixtures express the repository contract without changing live
   behavior.
 
 ## Phase 1: Repository Schemas
 
-- [ ] Implement task layout module.
-- [ ] Implement task card parser, validator, and renderer.
-- [ ] Implement request parser, validator, and renderer.
-- [ ] Implement references manifest parser, validator, and renderer.
-- [ ] Implement task/request transition validation.
-- [ ] Implement commit metadata parser and renderer.
-- [ ] Implement V1 repository validator.
-- [ ] Add schema and security tests.
+- [x] Implement task layout module.
+- [x] Implement task card parser, validator, and renderer.
+- [x] Implement request parser, validator, and renderer.
+- [x] Implement references manifest parser, validator, and renderer.
+- [x] Implement task/request transition validation.
+- [x] Implement commit metadata parser and renderer.
+- [x] Implement V1 repository validator.
+- [x] Add schema and security tests.
 
 Exit gate:
 
-- [ ] All schemas round-trip deterministically and reject malformed state.
+- [x] All schemas round-trip deterministically and reject malformed state.
 
 ## Phase 2: Read-Only V1 Context
 
@@ -208,17 +208,17 @@ Exit gate:
 
 ## Verification
 
-- [ ] Focused schema tests pass.
+- [x] Focused schema tests pass.
 - [ ] Focused repository lifecycle tests pass.
 - [ ] Crash/failure-injection matrix passes.
 - [ ] Migration cohort tests pass.
-- [ ] `pnpm --filter ayati-git-context test` passes.
-- [ ] `pnpm --filter ayati-git-context build` passes.
-- [ ] Relevant `ayati-main` app/harness tests pass.
-- [ ] `pnpm --filter ayati-main test` passes.
-- [ ] `pnpm --filter ayati-main build` passes.
-- [ ] `pnpm test` passes.
-- [ ] `pnpm build` passes.
+- [x] `pnpm --filter ayati-git-context test` passes.
+- [x] `pnpm --filter ayati-git-context build` passes.
+- [x] Relevant `ayati-main` app/harness tests pass.
+- [x] `pnpm --filter ayati-main test` passes.
+- [x] `pnpm --filter ayati-main build` passes.
+- [x] `pnpm test` passes.
+- [x] `pnpm build` passes.
 - [ ] Five live acceptance scenarios pass and are manually inspected.
 
 ## Deferred After V1
@@ -243,3 +243,21 @@ Add dated entries here after each verified implementation slice. Include:
 - tests run and results
 - migration/recovery evidence
 - remaining blockers or decisions
+
+### 2026-07-17: V1 contracts and fixtures
+
+- Branch: `refactor/simple-task-repository-v1`
+- Commit: the implementation commit containing this entry.
+- Added pure V1 task-card, request, references, layout, commit-metadata, and
+  repository-validation contracts. No live creation, routing, mutation,
+  submodule, finalization, or migration path uses them yet.
+- Added five domain fixtures plus malformed, legacy-identity, dirty-tree,
+  tracked-inbox, request-consistency, reference-consistency, symlink, and
+  nested-repository coverage.
+- Focused result: 2 test files and 20 tests passed.
+- Package result: 12 test files and 101 tests passed; package build passed.
+- Workspace result: CLI 38 tests, Git Context 101 tests, and backend 844 tests
+  passed; full workspace build passed.
+- Migration evidence: the validator accepts legacy `W-*` identity without
+  rewriting it. Actual repository migration and recovery remain later phases.
+- Next slice: Phase 2 read-only V1 context and catalog layout dispatch.
