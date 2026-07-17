@@ -75,7 +75,6 @@ import {
 import { SessionSummaryHotCache } from "./session-summary-hot-cache.js";
 import { SessionRunLifecycleService } from "./session-run-lifecycle-service.js";
 import { TaskRunSelectionService } from "./task-run-selection-service.js";
-import { readTaskContext } from "../tasks/task-context-reader.js";
 import { readTaskMount } from "../repositories/task-mount-records.js";
 import { GitContextObserver } from "../observability.js";
 import { GitContextServiceObservability } from "./service-observability.js";
@@ -243,7 +242,7 @@ export class SqliteGitContextService implements GitContextService {
           : {}),
         ...(run?.run.taskId
           ? {
-              activeTask: await readTaskContext(
+              activeTask: await this.taskLifecycle.readContext(
                 (await this.taskLifecycle.getTask({ taskId: run.run.taskId })).task,
                 readTaskMount(this.database, session.sessionId, run.run.taskId)?.workingPath,
               ),

@@ -2,8 +2,8 @@
 
 Last updated: 2026-07-17
 
-Current status: design accepted and master plan prepared. Runtime implementation
-has not started.
+Current status: repository contracts and read-only V1 context are implemented.
+V1 creation and mutation remain intentionally disabled.
 
 ## Planning
 
@@ -67,17 +67,17 @@ Exit gate:
 
 ## Phase 2: Read-Only V1 Context
 
-- [ ] Add catalog layout/version dispatch.
-- [ ] Implement V1 task read projection from committed Git state.
-- [ ] Read only the current request by default.
-- [ ] Parse bounded semantic commit history.
-- [ ] Use curated important paths.
-- [ ] Report repository health separately.
-- [ ] Prove no read-side mount/lock/write behavior.
+- [x] Add catalog layout/version dispatch.
+- [x] Implement V1 task read projection from committed Git state.
+- [x] Read only the current request by default.
+- [x] Parse bounded semantic commit history.
+- [x] Use curated important paths.
+- [x] Report repository health separately.
+- [x] Prove no read-side mount/lock/write behavior.
 
 Exit gate:
 
-- [ ] Valid V1 tasks can be read at any time without activation.
+- [x] Valid V1 tasks can be read at any time without activation.
 
 ## Phase 3: V1 Task Creation
 
@@ -261,3 +261,29 @@ Add dated entries here after each verified implementation slice. Include:
 - Migration evidence: the validator accepts legacy `W-*` identity without
   rewriting it. Actual repository migration and recovery remain later phases.
 - Next slice: Phase 2 read-only V1 context and catalog layout dispatch.
+
+### 2026-07-17: Read-only V1 context and layout dispatch
+
+- Branch: `refactor/simple-task-repository-v1`
+- Commit: the implementation commit containing this entry.
+- Added schema migration 12 with explicit `legacy_independent_v0` and
+  `simple_repository_v1` catalog ownership. Existing and newly created legacy
+  rows default explicitly to the legacy reader/writer.
+- Split task context reading into a layout dispatcher, an unchanged legacy
+  reader, and a V1 reader. V1 context comes from committed `HEAD`, reads only
+  the current request body, caps recent history at 12 commits, uses task-card
+  important paths, and reports working-tree health separately.
+- V1 `getTask` responses now include durable context without activation,
+  mounts, locks, catalog writes, or repository writes. V1 mount and mutation
+  entry points fail closed until their dedicated implementation slices.
+- Replaced full committed-tree enumeration in V1 validation with `.ayati`-only
+  enumeration and targeted `git cat-file` existence checks.
+- Focused result: 3 files and 25 tests passed. Package result: 13 files and 106
+  tests passed; package build passed.
+- Workspace result: CLI 38 tests, Git Context 106 tests, and backend 844 tests
+  passed (988 total); full workspace build passed.
+- Migration evidence: an omitted layout column resolves to
+  `legacy_independent_v0`; V1 dispatch is catalog-driven and never inferred
+  from filesystem shape.
+- Next slice: Phase 3 V1 task creation, with normal repositories under the
+  configured task root and idempotent initialization recovery.

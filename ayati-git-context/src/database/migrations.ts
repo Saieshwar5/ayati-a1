@@ -390,6 +390,14 @@ const MIGRATIONS: Migration[] = [
       ");",
     ].join("\n"),
   },
+  {
+    version: 12,
+    sql: [
+      "ALTER TABLE tasks ADD COLUMN layout_version TEXT NOT NULL",
+      "  DEFAULT 'legacy_independent_v0'",
+      "  CHECK (layout_version IN ('legacy_independent_v0', 'simple_repository_v1'));",
+    ].join("\n"),
+  },
 ];
 
 export function applyMigrations(database: DatabaseSync, now: () => string): void {

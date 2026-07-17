@@ -1,4 +1,4 @@
-export const GIT_CONTEXT_PROTOCOL_VERSION = 17;
+export const GIT_CONTEXT_PROTOCOL_VERSION = 18;
 
 export type SessionId = string;
 export type TaskId = string;
@@ -7,6 +7,10 @@ export type ConversationId = string;
 
 export type RunClass = "session" | "task";
 export type ConversationRole = "user" | "assistant" | "system_event";
+
+export type TaskRepositoryLayout =
+  | "legacy_independent_v0"
+  | "simple_repository_v1";
 
 export type GitContextCapability =
   | "health"
@@ -34,6 +38,7 @@ export interface SessionRef {
 
 export interface TaskRef {
   taskId: TaskId;
+  layoutVersion: TaskRepositoryLayout;
   repositoryPath: string;
   workingPath: string;
   branch: string;
@@ -148,6 +153,8 @@ export interface CommitSummary {
   outcome?: string;
   validation?: string;
   taskId?: string;
+  requestId?: string;
+  event?: "task_created" | "task_repository_migrated" | "task_run_finalized";
   runId?: string;
   sessionId?: string;
   taskTitle?: string;
@@ -237,6 +244,31 @@ export interface TaskContextProjection {
   validation?: string;
   taskStatus?: "in_progress" | "done" | "blocked";
   next?: string;
+  schemaVersion?: "ayati.task/v1";
+  lifecycleStatus?: "active" | "paused" | "archived";
+  repositoryHealth?: "ready" | "dirty_external";
+  currentFocus?: string;
+  blockers?: string[];
+  currentRequest?: {
+    id: string;
+    title: string;
+    status: "queued" | "active" | "blocked" | "done" | "dropped";
+    request: string;
+    acceptance: string[];
+    constraints: string[];
+  };
+  importantPathDetails?: Array<{
+    path: string;
+    description?: string;
+    exists: boolean;
+  }>;
+  referencesSummary?: {
+    total: number;
+    available: number;
+    missing: number;
+    changed: number;
+    unchecked: number;
+  };
 }
 
 export interface TaskCandidate {
@@ -349,6 +381,8 @@ export interface GetTaskRequest {
 
 export interface GetTaskResponse {
   task: TaskCatalogEntry;
+  /** Durable task context. Present for simple_repository_v1 tasks. */
+  context?: TaskContextProjection;
 }
 
 export interface MountTaskRequest extends GitContextRequestEnvelope {

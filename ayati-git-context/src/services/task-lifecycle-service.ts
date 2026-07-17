@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import type {
   CreateTaskRequest,
   CreateTaskResponse,
@@ -7,6 +8,7 @@ import type {
   MountTaskResponse,
   SessionRef,
   TaskCatalogEntry,
+  TaskContextProjection,
   ListTasksRequest,
   ListTasksResponse,
 } from "../contracts.js";
@@ -40,6 +42,7 @@ import {
   readTaskInitialization,
   resolveTaskWorkingDirectory,
 } from "../repositories/task-records.js";
+import { readTaskContext } from "../tasks/task-context-reader.js";
 
 export interface TaskLifecycleServiceOptions {
   database: ContextDatabase;
@@ -52,12 +55,14 @@ export class TaskLifecycleService {
   private readonly database: ContextDatabase;
   private readonly dataRoot: string;
   private readonly workspaceRoot: string;
+  private readonly taskRoot: string;
   private readonly now: () => string;
 
   constructor(options: TaskLifecycleServiceOptions) {
     this.database = options.database;
     this.dataRoot = options.dataRoot;
     this.workspaceRoot = options.workspaceRoot;
+    this.taskRoot = join(options.workspaceRoot, "tasks");
     this.now = options.now;
   }
 
@@ -119,8 +124,23 @@ export class TaskLifecycleService {
     if (!record) {
       throw taskNotFound(input.taskId);
     }
-    await verifyCanonicalTaskRepository(record);
-    return { task };
+    if (record.layoutVersion === "legacy_independent_v0") {
+      await verifyCanonicalTaskRepository(record);
+      return { task };
+    }
+    const context = await this.readContext(task);
+    return {
+      task: {
+        ...task,
+        repositoryPath: context.task.repositoryPath,
+        workingPath: context.task.workingPath,
+        branch: context.task.branch,
+        head: context.task.head,
+        title: context.title,
+        objective: context.objective,
+      },
+      context,
+    };
   }
 
   listTasks(input: ListTasksRequest): ListTasksResponse {
@@ -147,6 +167,7 @@ export class TaskLifecycleService {
   ): Promise<MountTaskResponse> {
     validateTaskId(input.taskId);
     const task = this.requireActiveTask(input.taskId);
+    requireLegacyWriter(task);
     verifyExpectedTaskHead(task, input.expectedTaskHead);
     const taskRecord = readTaskInitialization(this.database, input.taskId);
     if (!taskRecord) {
@@ -228,6 +249,7 @@ export class TaskLifecycleService {
 
   async recoverInitializingState(): Promise<void> {
     for (const task of readInitializingTasks(this.database)) {
+      if (task.layoutVersion !== "legacy_independent_v0") continue;
       try {
         const head = await ensureCanonicalTaskRepository({
           task,
@@ -287,6 +309,7 @@ export class TaskLifecycleService {
     if (!record) {
       throw taskNotFound(taskId);
     }
+    requireLegacyWriter(record);
     if (record.status !== "initializing") {
       await verifyCanonicalTaskRepository(record);
       await ensureTaskWorkingDirectory(record);
@@ -306,6 +329,16 @@ export class TaskLifecycleService {
       throw taskNotFound(taskId);
     }
     return task;
+  }
+
+  async readContext(
+    task: TaskCatalogEntry,
+    checkoutPath?: string,
+  ): Promise<TaskContextProjection> {
+    return await readTaskContext(task, {
+      ...(checkoutPath ? { checkoutPath } : {}),
+      taskRoot: this.taskRoot,
+    });
   }
 
   private verifyRequestedPlacement(
@@ -355,9 +388,18 @@ function normalizeTaskInput(input: CreateTaskRequest): {
 }
 
 function validateTaskId(taskId: string): void {
-  if (!/^W-\d{8}-\d{4}$/.test(taskId)) {
+  if (!/^[TW]-\d{8}-\d{4}$/.test(taskId)) {
     throw taskNotFound(taskId);
   }
+}
+
+function requireLegacyWriter(task: { taskId: string; layoutVersion: string }): void {
+  if (task.layoutVersion === "legacy_independent_v0") return;
+  throw new GitContextServiceError({
+    code: "SERVICE_NOT_READY",
+    message: "V1 task mutation and session mounting are not enabled in this implementation slice.",
+    details: { taskId: task.taskId, layoutVersion: task.layoutVersion },
+  });
 }
 
 function verifyExpectedTaskHead(

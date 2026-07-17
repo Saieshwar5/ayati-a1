@@ -12,7 +12,6 @@ import {
   readRun,
 } from "../repositories/run-records.js";
 import type { TaskLifecycleService } from "./task-lifecycle-service.js";
-import { readTaskContext } from "../tasks/task-context-reader.js";
 import type { SessionRunLifecycleService } from "./session-run-lifecycle-service.js";
 import { GitContextObserver } from "../observability.js";
 
@@ -156,7 +155,7 @@ export class TaskRunSelectionService {
       task,
       mount: mounted.mount,
       run,
-      context: await readTaskContext(task, mounted.mount.workingPath),
+      context: await this.taskLifecycle.readContext(task, mounted.mount.workingPath),
       taskCreated,
       mountCreated: mounted.created,
       runPromoted: Boolean(input.runId),

@@ -62,6 +62,13 @@ export class MutationBoundaryService {
     if (!task || task.status !== "active" || !taskRecord) {
       throw mutationRequiresTask(input, "Mutation requires an active task.");
     }
+    if (task.layoutVersion !== "legacy_independent_v0") {
+      throw new GitContextServiceError({
+        code: "SERVICE_NOT_READY",
+        message: "V1 task mutation is not enabled in this implementation slice.",
+        details: { taskId: task.taskId, layoutVersion: task.layoutVersion },
+      });
+    }
     if (!mount || mount.status !== "ready" || !mount.mountedHead) {
       throw mutationRequiresTask(input, "Mutation requires a ready task checkout mount.");
     }

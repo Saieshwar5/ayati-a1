@@ -39,6 +39,7 @@ export async function validateTaskRepository(input: {
   taskRoot: string;
   repositoryPath: string;
   expectedTaskId?: string;
+  requestReadMode?: "all" | "current";
 }): Promise<TaskRepositoryValidation> {
   try {
     return await validate(input);
@@ -55,6 +56,7 @@ async function validate(input: {
   taskRoot: string;
   repositoryPath: string;
   expectedTaskId?: string;
+  requestReadMode?: "all" | "current";
 }): Promise<TaskRepositoryValidation> {
   const root = await realpath(input.taskRoot).catch((error: NodeJS.ErrnoException) => {
     throw invalidRepository("Configured task root is unavailable.", {
@@ -98,15 +100,21 @@ async function validate(input: {
       repositoryPath,
     });
   }
-  const trackedPaths = (await git(repositoryPath, ["ls-tree", "-r", "--name-only", "HEAD"]))
+  const ayatiPaths = (await git(repositoryPath, [
+    "ls-tree",
+    "-r",
+    "--name-only",
+    "HEAD",
+    "--",
+    ".ayati",
+  ]))
     .split("\n")
     .filter(Boolean);
-  const tracked = new Set(trackedPaths);
-  requireTracked(tracked, TASK_CARD_PATH);
-  requireTracked(tracked, TASK_REFERENCES_PATH);
-  requireTracked(tracked, TASK_INBOX_KEEP_PATH);
-  requireTracked(tracked, ".gitignore");
-  validateAyatiPaths(trackedPaths);
+  const trackedAyati = new Set(ayatiPaths);
+  requireTracked(trackedAyati, TASK_CARD_PATH);
+  requireTracked(trackedAyati, TASK_REFERENCES_PATH);
+  requireTracked(trackedAyati, TASK_INBOX_KEEP_PATH);
+  validateAyatiPaths(ayatiPaths);
 
   const taskCard = parseTaskCard(
     await committedFile(repositoryPath, TASK_CARD_PATH),
@@ -119,18 +127,30 @@ async function validate(input: {
       details: { taskId: taskCard.id, repositoryPath },
     });
   }
-  const requests = await readRequests(repositoryPath, trackedPaths);
-  const currentRequest = validateCurrentRequest(taskCard, requests);
+  const requestPaths = ayatiPaths.filter(
+    (path) => path.startsWith(TASK_REQUESTS_DIRECTORY + "/"),
+  );
+  validateRequestPaths(requestPaths);
+  const requests = input.requestReadMode === "current"
+    ? await readCurrentRequest(repositoryPath, requestPaths, taskCard)
+    : await readRequests(repositoryPath, requestPaths);
+  const currentRequest = input.requestReadMode === "current"
+    ? requests[0]
+    : validateCurrentRequest(taskCard, requests);
   const references = parseTaskReferences(
     await committedFile(repositoryPath, TASK_REFERENCES_PATH),
   );
-  validateReferenceRequests(references, requests);
-  validateAdoptedPaths(references, tracked);
+  validateReferenceRequests(references, requestPaths);
+  await validateAdoptedPaths(repositoryPath, references);
   validateInboxIgnore(await committedFile(repositoryPath, ".gitignore"));
 
-  const missingImportantPaths = taskCard.importantPaths
-    .map((entry) => entry.path)
-    .filter((path) => !trackedPathExists(trackedPaths, path));
+  const importantPathPresence = await Promise.all(taskCard.importantPaths.map(async (entry) => ({
+    path: entry.path,
+    exists: await committedPathExists(repositoryPath, entry.path),
+  })));
+  const missingImportantPaths = importantPathPresence
+    .filter((entry) => !entry.exists)
+    .map((entry) => entry.path);
   const statusOutput = await runGitRaw([
     "status",
     "--porcelain",
@@ -156,8 +176,7 @@ async function validate(input: {
   };
 }
 
-async function readRequests(repositoryPath: string, trackedPaths: string[]): Promise<TaskRequest[]> {
-  const paths = trackedPaths.filter((path) => path.startsWith(TASK_REQUESTS_DIRECTORY + "/"));
+async function readRequests(repositoryPath: string, paths: string[]): Promise<TaskRequest[]> {
   const requests: TaskRequest[] = [];
   const ids = new Set<string>();
   for (const path of paths) {
@@ -185,6 +204,60 @@ async function readRequests(repositoryPath: string, trackedPaths: string[]): Pro
     requests.push(request);
   }
   return requests.sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function validateRequestPaths(paths: string[]): void {
+  const ids = new Set<string>();
+  for (const path of paths) {
+    const name = basename(path);
+    const id = name.slice(0, 6);
+    if (!/^R-\d{4}-.+\.md$/.test(name) || !isRequestId(id)) {
+      throw invalidRepository("Task request directory contains an invalid tracked path.", { path });
+    }
+    if (ids.has(id)) {
+      throw new GitContextServiceError({
+        code: "TASK_REQUEST_INVALID",
+        message: "Task repository contains duplicate request identities.",
+        details: { requestId: id },
+      });
+    }
+    ids.add(id);
+  }
+}
+
+async function readCurrentRequest(
+  repositoryPath: string,
+  paths: string[],
+  taskCard: TaskCard,
+): Promise<TaskRequest[]> {
+  if (!taskCard.currentRequest) return [];
+  const matches = paths.filter((path) => basename(path).startsWith(taskCard.currentRequest + "-"));
+  if (matches.length !== 1 || !matches[0]) {
+    throw new GitContextServiceError({
+      code: "TASK_CURRENT_REQUEST_INVALID",
+      message: "Task card current request must have exactly one committed request file.",
+      details: { currentRequest: taskCard.currentRequest },
+    });
+  }
+  const request = parseTaskRequest(
+    await committedFile(repositoryPath, matches[0]),
+    taskCard.currentRequest,
+  );
+  if (request.status !== "active" || taskCard.status !== "active") {
+    throw new GitContextServiceError({
+      code: "TASK_CURRENT_REQUEST_INVALID",
+      message: "The current request and task must both be active.",
+      details: { currentRequest: taskCard.currentRequest, requestStatus: request.status },
+    });
+  }
+  if (requestFileName(request.id, request.title) !== basename(matches[0])) {
+    throw new GitContextServiceError({
+      code: "TASK_REQUEST_INVALID",
+      message: "Task request filename does not match its identity and title.",
+      details: { path: matches[0], requestId: request.id },
+    });
+  }
+  return [request];
 }
 
 function validateCurrentRequest(
@@ -229,9 +302,9 @@ function validateCurrentRequest(
 
 function validateReferenceRequests(
   references: TaskReference[],
-  requests: TaskRequest[],
+  requestPaths: string[],
 ): void {
-  const requestIds = new Set(requests.map((request) => request.id));
+  const requestIds = new Set(requestPaths.map((path) => basename(path).slice(0, 6)));
   for (const reference of references) {
     const missing = reference.requestIds.filter((requestId) => !requestIds.has(requestId));
     if (missing.length > 0) {
@@ -244,9 +317,13 @@ function validateReferenceRequests(
   }
 }
 
-function validateAdoptedPaths(references: TaskReference[], tracked: ReadonlySet<string>): void {
+async function validateAdoptedPaths(
+  repositoryPath: string,
+  references: TaskReference[],
+): Promise<void> {
   for (const reference of references) {
-    if (reference.adoptedPath && !trackedPathExists([...tracked], reference.adoptedPath)) {
+    if (reference.adoptedPath
+      && !await committedPathExists(repositoryPath, reference.adoptedPath)) {
       throw new GitContextServiceError({
         code: "TASK_REFERENCES_INVALID",
         message: "Task reference adopted path is not present in committed task content.",
@@ -287,12 +364,17 @@ function requireTracked(tracked: ReadonlySet<string>, path: string): void {
   }
 }
 
-function trackedPathExists(paths: readonly string[], path: string): boolean {
-  return paths.some((candidate) => candidate === path || candidate.startsWith(path + "/"));
-}
-
 async function committedFile(repositoryPath: string, path: string): Promise<string> {
   return await runGitRaw(["show", "HEAD:" + path], { cwd: repositoryPath });
+}
+
+async function committedPathExists(repositoryPath: string, path: string): Promise<boolean> {
+  try {
+    await runGit(["cat-file", "-e", "HEAD:" + path], { cwd: repositoryPath });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function git(repositoryPath: string, args: string[]): Promise<string> {

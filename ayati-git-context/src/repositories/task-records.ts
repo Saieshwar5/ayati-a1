@@ -3,6 +3,7 @@ import type {
   CreateTaskRequest,
   TaskCatalogEntry,
   TaskRef,
+  TaskRepositoryLayout,
   TaskStatus,
 } from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
@@ -10,6 +11,7 @@ import { GitContextServiceError } from "../errors.js";
 
 interface TaskRow {
   task_id: string;
+  layout_version: TaskRepositoryLayout;
   repository_path: string;
   working_path: string;
   durable_branch: string;
@@ -24,6 +26,7 @@ interface TaskRow {
 
 export interface TaskInitializationRecord {
   taskId: string;
+  layoutVersion: TaskRepositoryLayout;
   repositoryPath: string;
   workingPath: string;
   branch: string;
@@ -73,9 +76,9 @@ export function allocateTask(
   }
   database.prepare([
     "INSERT INTO tasks(",
-    "task_id, repository_path, working_path, durable_branch, head_sha, title_cache, objective_cache,",
+    "task_id, layout_version, repository_path, working_path, durable_branch, head_sha, title_cache, objective_cache,",
     "status, created_session_id, created_at, updated_at",
-    ") VALUES (?, ?, ?, 'main', NULL, ?, ?, 'initializing', ?, ?, ?)",
+    ") VALUES (?, 'legacy_independent_v0', ?, ?, 'main', NULL, ?, ?, 'initializing', ?, ?, ?)",
   ].join(" ")).run(
     taskId,
     repositoryPath,
@@ -208,7 +211,7 @@ function readTaskRow(database: ContextDatabase, taskId: string): TaskRow | undef
 
 function taskSelect(): string {
   return [
-    "SELECT task_id, repository_path, durable_branch, head_sha, title_cache,",
+    "SELECT task_id, layout_version, repository_path, durable_branch, head_sha, title_cache,",
     "working_path, objective_cache, status, created_session_id, created_at, updated_at FROM tasks",
   ].join(" ");
 }
@@ -216,6 +219,7 @@ function taskSelect(): string {
 function initializationRecord(row: TaskRow): TaskInitializationRecord {
   return {
     taskId: row.task_id,
+    layoutVersion: row.layout_version,
     repositoryPath: row.repository_path,
     workingPath: row.working_path,
     branch: row.durable_branch,
@@ -235,6 +239,7 @@ function catalogEntry(row: TaskRow): TaskCatalogEntry {
   }
   const task: TaskRef = {
     taskId: row.task_id,
+    layoutVersion: row.layout_version,
     repositoryPath: row.repository_path,
     workingPath: row.working_path,
     branch: row.durable_branch,
