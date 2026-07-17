@@ -8,9 +8,13 @@ import {
   GitContextServiceError,
   isGitContextObservabilityEvent,
   type ActiveContext,
+  type AdoptTaskReferenceRequest,
+  type AdoptTaskReferenceResponse,
   type ActivateTaskRunRequest,
   type AcquireMutationAuthorityRequest,
   type AcquireMutationAuthorityResponse,
+  type BindTaskAttachmentsRequest,
+  type BindTaskAttachmentsResponse,
   type AppendConversationRequest,
   type AppendConversationResponse,
   type CheckpointMutationRequest,
@@ -37,6 +41,8 @@ import {
   type MountTaskResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
+  type RecordSessionAttachmentsRequest,
+  type RecordSessionAttachmentsResponse,
   type SelectedTaskRunResponse,
   type SnapshotTaskRunEvidenceRequest,
   type SnapshotTaskRunEvidenceResponse,
@@ -166,6 +172,24 @@ export class ManagedGitContextProcess implements GitContextService {
 
   async mountTask(input: MountTaskRequest): Promise<MountTaskResponse> {
     return await this.invoke((client) => client.mountTask(input));
+  }
+
+  async recordSessionAttachments(
+    input: RecordSessionAttachmentsRequest,
+  ): Promise<RecordSessionAttachmentsResponse> {
+    return await this.invoke((client) => client.recordSessionAttachments(input));
+  }
+
+  async bindTaskAttachments(
+    input: BindTaskAttachmentsRequest,
+  ): Promise<BindTaskAttachmentsResponse> {
+    return await this.invoke((client) => client.bindTaskAttachments(input));
+  }
+
+  async adoptTaskReference(
+    input: AdoptTaskReferenceRequest,
+  ): Promise<AdoptTaskReferenceResponse> {
+    return await this.invoke((client) => client.adoptTaskReference(input));
   }
 
   async acquireMutationAuthority(

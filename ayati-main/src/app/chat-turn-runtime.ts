@@ -231,6 +231,17 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         },
       });
 
+      const attachmentScopeId = this.inputScopeId(inputHandle);
+      const registeredAttachments = await this.registerIncomingDocuments(
+        input.attachments,
+        attachmentScopeId,
+      );
+      const recordedAttachments = await this.recordChatContextSessionAttachments(
+        input.clientId,
+        chatContextTurn,
+        registeredAttachments,
+      );
+
       routedContextTurn = await this.routeChatContextTurn(input.clientId, chatContextTurn, input.content, sessionRunHandle);
       if (routedContextTurn?.status === "ambiguous") {
         await this.dispatchChatContextAmbiguity(input.clientId, chatContextTurn, routedContextTurn);
@@ -241,16 +252,13 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         runHandle = routedContextTurn?.status === "ready"
           ? this.runHandleFromRoutedTurn(inputHandle, routedContextTurn)
           : null;
-        const attachmentRunId = runHandle?.runId ?? this.inputScopeId(inputHandle);
-        const registeredAttachments = await this.registerIncomingDocuments(input.attachments, attachmentRunId);
+        const attachmentRunId = runHandle?.runId ?? attachmentScopeId;
+        if (runHandle) {
+          await this.associateRegisteredAttachmentsWithRun(registeredAttachments, runHandle.runId);
+        }
         let harnessContext = routedContextTurn?.status === "ready"
           ? routedContextTurn.harnessContext
           : this.harnessContextFromPreparedTurn(chatContextTurn);
-        const recordedAttachments = await this.recordChatContextSessionAttachments(
-          input.clientId,
-          chatContextTurn,
-          registeredAttachments,
-        );
         if (recordedAttachments && chatContextTurn) {
           harnessContext = {
             contextEngine: await this.chatContextRuntime.buildActiveContext(chatContextTurn.sessionId),
@@ -1699,6 +1707,18 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     }
 
     throw new Error("Attachment is missing a usable fileId or path.");
+  }
+
+  private async associateRegisteredAttachmentsWithRun(
+    registered: RegisteredChatAttachments,
+    runId: string,
+  ): Promise<void> {
+    await Promise.all([
+      ...registered.managedFiles.map((file) =>
+        this.fileLibrary?.touchRunFile(runId, file.fileId, "attached")),
+      ...registered.managedDirectories.map((directory) =>
+        this.directoryLibrary?.touchRunDirectory(runId, directory.directoryId, "attached")),
+    ]);
   }
 }
 

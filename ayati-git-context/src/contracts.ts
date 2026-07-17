@@ -1,4 +1,4 @@
-export const GIT_CONTEXT_PROTOCOL_VERSION = 20;
+export const GIT_CONTEXT_PROTOCOL_VERSION = 21;
 
 export type SessionId = string;
 export type TaskId = string;
@@ -19,6 +19,7 @@ export type GitContextCapability =
   | "conversations"
   | "runs"
   | "tasks"
+  | "attachments"
   | "mutations"
   | "recovery";
 
@@ -227,6 +228,31 @@ export interface SessionContextProjection {
   pendingConversationContext: ConversationContext[];
   pendingDigest: string;
   recentCommits: CommitSummary[];
+  attachments?: SessionAttachmentsProjection;
+}
+
+export interface SessionAttachmentRecord {
+  sessionAssetId: string;
+  kind: string;
+  name: string;
+  source: string;
+  status: string;
+  documentId?: string;
+  fileId?: string;
+  directoryId?: string;
+  originalPath?: string;
+  storedPath?: string;
+  sizeBytes?: number;
+  mimeType?: string;
+  checksum?: string;
+  createdAt: string;
+  lastUsedAt?: string;
+}
+
+export interface SessionAttachmentsProjection {
+  count: number;
+  recent: SessionAttachmentRecord[];
+  updatedAt?: string;
 }
 
 export interface PreviousSessionCarryover {
@@ -431,6 +457,62 @@ export interface SelectedTaskRunResponse {
   taskCreated: boolean;
   mountCreated: boolean;
   runPromoted: boolean;
+}
+
+export interface RecordSessionAttachmentsRequest extends GitContextRequestEnvelope {
+  sessionId: SessionId;
+  conversationId: ConversationId;
+  attachments: SessionAttachmentRecord[];
+  at: string;
+}
+
+export interface RecordSessionAttachmentsResponse {
+  recorded: number;
+  sessionAssetIds: string[];
+}
+
+export interface BoundTaskReference {
+  taskId: TaskId;
+  runId: RunId;
+  taskRequestId: string;
+  sessionAssetId: string;
+  referenceId: string;
+  kind: "attachment" | "external_directory";
+  location: string;
+  sha256?: string;
+  availability: "available" | "missing" | "changed" | "unchecked";
+  adoptedPath?: string;
+}
+
+export interface BindTaskAttachmentsRequest extends GitContextRequestEnvelope {
+  sessionId: SessionId;
+  conversationId: ConversationId;
+  runId: RunId;
+  taskId: TaskId;
+  at: string;
+}
+
+export interface BindTaskAttachmentsResponse {
+  taskId: TaskId;
+  runId: RunId;
+  references: BoundTaskReference[];
+}
+
+export interface AdoptTaskReferenceRequest extends GitContextRequestEnvelope {
+  authorityId: string;
+  lockToken: string;
+  referenceId: string;
+  destinationPath: string;
+  at: string;
+}
+
+export interface AdoptTaskReferenceResponse {
+  taskId: TaskId;
+  runId: RunId;
+  referenceId: string;
+  sourcePath: string;
+  destinationPath: string;
+  sha256: string;
 }
 
 export interface AcquireMutationAuthorityRequest extends GitContextRequestEnvelope {
@@ -720,6 +802,41 @@ export function isAcquireMutationAuthorityRequest(
     && isNonEmptyString(value["at"]);
 }
 
+export function isRecordSessionAttachmentsRequest(
+  value: unknown,
+): value is RecordSessionAttachmentsRequest {
+  if (!isRequestEnvelope(value)) return false;
+  return isNonEmptyString(value["sessionId"])
+    && isNonEmptyString(value["conversationId"])
+    && Array.isArray(value["attachments"])
+    && value["attachments"].length > 0
+    && value["attachments"].length <= 64
+    && value["attachments"].every(isSessionAttachmentRecord)
+    && isNonEmptyString(value["at"]);
+}
+
+export function isBindTaskAttachmentsRequest(
+  value: unknown,
+): value is BindTaskAttachmentsRequest {
+  if (!isRequestEnvelope(value)) return false;
+  return isNonEmptyString(value["sessionId"])
+    && isNonEmptyString(value["conversationId"])
+    && isNonEmptyString(value["runId"])
+    && /^[TW]-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
+    && isNonEmptyString(value["at"]);
+}
+
+export function isAdoptTaskReferenceRequest(
+  value: unknown,
+): value is AdoptTaskReferenceRequest {
+  if (!isRequestEnvelope(value)) return false;
+  return isNonEmptyString(value["authorityId"])
+    && isNonEmptyString(value["lockToken"])
+    && /^REF-\d{4}$/.test(String(value["referenceId"] ?? ""))
+    && isBoundedString(value["destinationPath"], 1_024)
+    && isNonEmptyString(value["at"]);
+}
+
 export function isVerifyMutationRequest(value: unknown): value is VerifyMutationRequest {
   if (!isRequestEnvelope(value)) {
     return false;
@@ -863,6 +980,28 @@ function isMutationTarget(value: unknown): value is MutationTarget {
   return isRecord(value)
     && isBoundedString(value["path"], 1_024)
     && (value["kind"] === "file" || value["kind"] === "directory");
+}
+
+function isSessionAttachmentRecord(value: unknown): value is SessionAttachmentRecord {
+  return isRecord(value)
+    && isBoundedString(value["sessionAssetId"], 200)
+    && isBoundedString(value["kind"], 100)
+    && isBoundedString(value["name"], 512)
+    && isBoundedString(value["source"], 100)
+    && isBoundedString(value["status"], 100)
+    && optionalBoundedString(value["documentId"], 200)
+    && optionalBoundedString(value["fileId"], 200)
+    && optionalBoundedString(value["directoryId"], 200)
+    && optionalBoundedString(value["originalPath"], 4_096)
+    && optionalBoundedString(value["storedPath"], 4_096)
+    && (value["sizeBytes"] === undefined
+      || (typeof value["sizeBytes"] === "number" && Number.isSafeInteger(value["sizeBytes"])
+        && value["sizeBytes"] >= 0))
+    && optionalBoundedString(value["mimeType"], 200)
+    && (value["checksum"] === undefined
+      || /^[a-f0-9]{64}$/.test(String(value["checksum"])))
+    && isNonEmptyString(value["createdAt"])
+    && optionalNonEmptyString(value["lastUsedAt"]);
 }
 
 function isConversationRole(value: unknown): value is ConversationRole {

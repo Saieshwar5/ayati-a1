@@ -28,7 +28,7 @@ export function buildContextEngineProjection(
         date: active.session.session.date,
         timezone: active.session.session.timezone,
         repoKind: "daily_session",
-        assetCount: 0,
+        assetCount: active.session.attachments?.count ?? 0,
       },
       conversationTail,
       summary: {
@@ -37,6 +37,7 @@ export function buildContextEngineProjection(
       activityTail: [],
       recentCommits: active.session.recentCommits.map((commit) =>
         commitSummary(commit, commit.taskId ? taskWorkingDirectories.get(commit.taskId) : undefined)),
+      ...(active.session.attachments ? { attachments: active.session.attachments } : {}),
     },
     focus: taskBound && activeTask
       ? {

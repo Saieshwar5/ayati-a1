@@ -6,7 +6,9 @@ import { dirname } from "node:path";
 import {
   isAcquireMutationAuthorityRequest,
   isActivateTaskRunRequest,
+  isAdoptTaskReferenceRequest,
   isAppendConversationRequest,
+  isBindTaskAttachmentsRequest,
   isCheckpointMutationRequest,
   isCreateTaskRequest,
   isCreateTaskRunRequest,
@@ -15,6 +17,7 @@ import {
   isFinalizeTaskRunRequest,
   isMountTaskRequest,
   isRecordRunStepRequest,
+  isRecordSessionAttachmentsRequest,
   isSnapshotTaskRunEvidenceRequest,
   isStartRunRequest,
   isVerifyMutationRequest,
@@ -175,6 +178,20 @@ export class GitContextHttpServer {
         return;
       }
 
+      const sessionAttachmentsMatch = url.pathname.match(/^\/sessions\/([^/]+)\/attachments$/);
+      if (method === "POST" && sessionAttachmentsMatch) {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isRecordSessionAttachmentsRequest(body)) {
+          throw invalidRequest("Invalid record-session-attachments request.");
+        }
+        const sessionId = decodePathComponent(sessionAttachmentsMatch[1] ?? "");
+        if (body.sessionId !== sessionId) {
+          throw invalidRequest("Session ID in request path and body must match.");
+        }
+        sendJson(response, 200, await this.service.recordSessionAttachments(body));
+        return;
+      }
+
       if (method === "POST" && url.pathname === "/tasks") {
         const body = await readJsonBody(request, this.maxBodyBytes);
         if (!isCreateTaskRequest(body)) {
@@ -273,6 +290,22 @@ export class GitContextHttpServer {
         return;
       }
 
+      const adoptReferenceMatch = url.pathname.match(
+        /^\/mutation-authorities\/([^/]+)\/adopt-reference$/,
+      );
+      if (method === "POST" && adoptReferenceMatch) {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isAdoptTaskReferenceRequest(body)) {
+          throw invalidRequest("Invalid adopt-task-reference request.");
+        }
+        const authorityId = decodePathComponent(adoptReferenceMatch[1] ?? "");
+        if (body.authorityId !== authorityId) {
+          throw invalidRequest("Authority ID in request path and body must match.");
+        }
+        sendJson(response, 200, await this.service.adoptTaskReference(body));
+        return;
+      }
+
       const checkpointMutationMatch = url.pathname.match(
         /^\/mutation-authorities\/([^/]+)\/checkpoint$/,
       );
@@ -309,6 +342,20 @@ export class GitContextHttpServer {
           throw invalidRequest("Run ID in request path and body must match.");
         }
         sendJson(response, 200, await this.service.recordRunStep(body));
+        return;
+      }
+
+      const taskAttachmentsMatch = url.pathname.match(/^\/runs\/([^/]+)\/task-attachments$/);
+      if (method === "POST" && taskAttachmentsMatch) {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isBindTaskAttachmentsRequest(body)) {
+          throw invalidRequest("Invalid bind-task-attachments request.");
+        }
+        const runId = decodePathComponent(taskAttachmentsMatch[1] ?? "");
+        if (body.runId !== runId) {
+          throw invalidRequest("Run ID in request path and body must match.");
+        }
+        sendJson(response, 200, await this.service.bindTaskAttachments(body));
         return;
       }
 
@@ -363,6 +410,9 @@ export class GitContextHttpServer {
         || Boolean(mutationAuthorityMatch)
         || Boolean(verifyMutationMatch)
         || Boolean(checkpointMutationMatch)
+        || Boolean(sessionAttachmentsMatch)
+        || Boolean(taskAttachmentsMatch)
+        || Boolean(adoptReferenceMatch)
         || Boolean(runEvidenceMatch)
         || Boolean(finalizeTaskRunMatch)
         || Boolean(finalizeSessionRunMatch);
@@ -439,6 +489,9 @@ function requestOperation(method: string, pathname: string): string {
   if (method === "GET" && pathname === "/context/active") return "get_active_context";
   if (pathname === "/sessions/ensure-active") return "ensure_active_session";
   if (pathname === "/conversations/append") return "append_conversation";
+  if (/\/sessions\/[^/]+\/attachments$/.test(pathname)) return "record_session_attachments";
+  if (/\/task-attachments$/.test(pathname)) return "bind_task_attachments";
+  if (/\/adopt-reference$/.test(pathname)) return "adopt_task_reference";
   if (pathname === "/task-runs/create") return "create_task_run";
   if (pathname === "/task-runs/activate") return "activate_task_run";
   if (pathname === "/runs/start") return "start_run";

@@ -1,9 +1,13 @@
 import { join } from "node:path";
 import {
   GIT_CONTEXT_PROTOCOL_VERSION,
+  type AdoptTaskReferenceRequest,
+  type AdoptTaskReferenceResponse,
   type ActivateTaskRunRequest,
   type AcquireMutationAuthorityRequest,
   type AcquireMutationAuthorityResponse,
+  type BindTaskAttachmentsRequest,
+  type BindTaskAttachmentsResponse,
   type ActiveContext,
   type CheckpointMutationRequest,
   type CheckpointMutationResponse,
@@ -28,6 +32,8 @@ import {
   type MountTaskResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
+  type RecordSessionAttachmentsRequest,
+  type RecordSessionAttachmentsResponse,
   type SessionRef,
   type SnapshotTaskRunEvidenceRequest,
   type SnapshotTaskRunEvidenceResponse,
@@ -65,6 +71,7 @@ import { TaskCheckpointService } from "./task-checkpoint-service.js";
 import { TaskLifecycleService } from "./task-lifecycle-service.js";
 import { TaskRunEvidenceService } from "./task-run-evidence-service.js";
 import { TaskRunFinalizationService } from "./task-run-finalization-service.js";
+import { TaskAttachmentService } from "./task-attachment-service.js";
 import { SessionRegistryCache } from "./session-registry-cache.js";
 import { ConversationHotCache } from "./conversation-hot-cache.js";
 import {
@@ -111,6 +118,7 @@ export class SqliteGitContextService implements GitContextService {
   private readonly taskCheckpoint: TaskCheckpointService;
   private readonly taskRunEvidence: TaskRunEvidenceService;
   private readonly taskRunFinalization: TaskRunFinalizationService;
+  private readonly taskAttachments: TaskAttachmentService;
   private readonly dailySessionRollover: DailySessionRolloverService;
   private readonly rolloverCheckIntervalMs: number;
   private rolloverTimer?: ReturnType<typeof setInterval>;
@@ -150,6 +158,10 @@ export class SqliteGitContextService implements GitContextService {
       this.database,
       join(workspaceRoot, "tasks"),
     );
+    this.taskAttachments = new TaskAttachmentService({
+      database: this.database,
+      taskRoot: join(workspaceRoot, "tasks"),
+    });
     this.dailySessionRollover = new DailySessionRolloverService({
       database: this.database,
       dataRoot: this.dataRoot,
@@ -178,6 +190,7 @@ export class SqliteGitContextService implements GitContextService {
           "conversations",
           "runs",
           "tasks",
+          "attachments",
           "mutations",
           "recovery",
         ],
@@ -214,11 +227,13 @@ export class SqliteGitContextService implements GitContextService {
       );
       const taskCandidates = this.taskLifecycle.listTasks({ limit: 20 }).tasks;
       const readContext = buildReadContext(this.database, session.sessionId);
+      const attachments = this.taskAttachments.sessionProjection(session.sessionId);
       const { revision, pendingDigest } = activeContextRevision({
         head: session.head,
         status: session.status,
         conversations,
         readContext,
+        ...(attachments ? { attachments } : {}),
         ...(run ? { run } : {}),
         taskCandidates,
       });
@@ -241,6 +256,7 @@ export class SqliteGitContextService implements GitContextService {
           pendingConversationContext: conversations,
           pendingDigest,
           recentCommits: sessionSummary.recentCommits,
+          ...(attachments ? { attachments } : {}),
         },
         ...(run
           ? {
@@ -360,11 +376,13 @@ export class SqliteGitContextService implements GitContextService {
         const run = this.sessionRuns.getActive(input.sessionId);
         const taskCandidates = this.taskLifecycle.listTasks({ limit: 20 }).tasks;
         const readContext = buildReadContext(this.database, input.sessionId);
+        const attachments = this.taskAttachments.sessionProjection(input.sessionId);
         const revision = activeContextRevision({
           head: session.head,
           status: session.status,
           conversations: currentConversations,
           readContext,
+          ...(attachments ? { attachments } : {}),
           ...(run ? { run } : {}),
           taskCandidates,
         });
@@ -493,6 +511,50 @@ export class SqliteGitContextService implements GitContextService {
           workingPath: result.mount.workingPath,
           mountedHead: result.mount.mountedHead,
         },
+      });
+      return result;
+    });
+  }
+
+  async recordSessionAttachments(
+    input: RecordSessionAttachmentsRequest,
+  ): Promise<RecordSessionAttachmentsResponse> {
+    return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
+      this.requireWritableSession(input.sessionId);
+      const result = await this.taskAttachments.record(input);
+      this.invalidateContext("session_attachments_recorded", {
+        sessionId: input.sessionId,
+      });
+      return result;
+    });
+  }
+
+  async bindTaskAttachments(
+    input: BindTaskAttachmentsRequest,
+  ): Promise<BindTaskAttachmentsResponse> {
+    return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
+      this.requireWritableSession(input.sessionId);
+      const result = await this.taskAttachments.bind(input);
+      this.invalidateContext("task_attachments_bound", {
+        sessionId: input.sessionId,
+        runId: input.runId,
+        taskId: input.taskId,
+      });
+      return result;
+    });
+  }
+
+  async adoptTaskReference(
+    input: AdoptTaskReferenceRequest,
+  ): Promise<AdoptTaskReferenceResponse> {
+    return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
+      const result = await this.taskAttachments.adopt(input);
+      this.invalidateContext("task_reference_adopted", {
+        runId: result.runId,
+        taskId: result.taskId,
       });
       return result;
     });

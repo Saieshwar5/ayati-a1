@@ -1,5 +1,7 @@
 import type {
   ActiveContext,
+  AdoptTaskReferenceRequest,
+  AdoptTaskReferenceResponse,
   AcquireMutationAuthorityRequest,
   AcquireMutationAuthorityResponse,
   CheckpointMutationRequest,
@@ -7,6 +9,8 @@ import type {
   AppendConversationRequest,
   AppendConversationResponse,
   ActivateTaskRunRequest,
+  BindTaskAttachmentsRequest,
+  BindTaskAttachmentsResponse,
   CreateTaskRequest,
   CreateTaskResponse,
   CreateTaskRunRequest,
@@ -26,6 +30,8 @@ import type {
   MountTaskResponse,
   RecordRunStepRequest,
   RecordRunStepResponse,
+  RecordSessionAttachmentsRequest,
+  RecordSessionAttachmentsResponse,
   SnapshotTaskRunEvidenceRequest,
   SnapshotTaskRunEvidenceResponse,
   StartRunRequest,
@@ -46,6 +52,15 @@ export interface GitContextService {
   listTasks(input: ListTasksRequest): Promise<ListTasksResponse>;
   getTask(input: GetTaskRequest): Promise<GetTaskResponse>;
   mountTask(input: MountTaskRequest): Promise<MountTaskResponse>;
+  recordSessionAttachments(
+    input: RecordSessionAttachmentsRequest,
+  ): Promise<RecordSessionAttachmentsResponse>;
+  bindTaskAttachments(
+    input: BindTaskAttachmentsRequest,
+  ): Promise<BindTaskAttachmentsResponse>;
+  adoptTaskReference(
+    input: AdoptTaskReferenceRequest,
+  ): Promise<AdoptTaskReferenceResponse>;
   acquireMutationAuthority(
     input: AcquireMutationAuthorityRequest,
   ): Promise<AcquireMutationAuthorityResponse>;

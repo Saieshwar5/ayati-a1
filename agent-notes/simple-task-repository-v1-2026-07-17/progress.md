@@ -3,8 +3,9 @@
 Last updated: 2026-07-17
 
 Current status: repository contracts, read-only context, isolated creation,
-and deterministic request lifecycle planning are implemented. Applying plans,
-default routing, and V1 mutation remain intentionally disabled.
+request planning, direct mutation, single-commit finalization, and durable
+attachments/references are implemented. Applying request plans and default V1
+routing remain intentionally disabled.
 
 ## Planning
 
@@ -134,16 +135,16 @@ Exit gate:
 
 ## Phase 7: Attachments And References
 
-- [ ] Retain attachments durably before routing.
-- [ ] Place resolved task inputs atomically in ignored inbox.
-- [ ] Write checksum/provenance reference entries.
-- [ ] Detect missing/changed inputs on reuse.
-- [ ] Add explicit verified adoption into tracked task paths.
-- [ ] Cover shared attachment relationships.
+- [x] Retain attachments durably before routing.
+- [x] Place resolved task inputs atomically in ignored inbox.
+- [x] Write checksum/provenance reference entries.
+- [x] Detect missing/changed inputs on reuse.
+- [x] Add explicit verified adoption into tracked task paths.
+- [x] Cover shared attachment relationships.
 
 Exit gate:
 
-- [ ] Input provenance is durable without falsely claiming ignored bytes are
+- [x] Input provenance is durable without falsely claiming ignored bytes are
   recoverable from Git.
 
 ## Phase 7A: External Computer-Use Outcomes
@@ -423,3 +424,44 @@ Add dated entries here after each verified implementation slice. Include:
   passed (1,035 total); full workspace build passed.
 - Next slice: Phase 7 attachments and references, beginning with durable input
   retention, atomic inbox placement, and checksum/provenance records.
+
+### 2026-07-17: Durable attachments and task references
+
+- Branch: `refactor/simple-task-repository-v1`
+- Commit: the implementation commit containing this entry.
+- Added protocol 21 attachment operations for pre-routing session retention,
+  post-routing V1 task binding, and explicit adoption under mutation authority.
+  The main chat runtime now registers and records inputs before task routing,
+  so clarification or ambiguous routing cannot discard them.
+- Added SQLite migration 15 for session attachment occurrences and durable
+  task/reference binding journals. One retained asset may be related to more
+  than one task; no attachment identity grants exclusive task ownership.
+- Resolved V1 task inputs are copied atomically into unique `REF-NNNN-*` paths
+  beneath the ignored `public/inbox/`. Copies are checksum-verified, fsynced,
+  no-overwrite, symlink-safe, restart-idempotent, and never staged as task
+  content.
+- Task finalization merges journaled references into
+  `.ayati/references.md` in the same single task commit as the run. Recovery
+  verifies the committed context bytes before acknowledging the journal, and
+  failed finalization marks uncommitted bindings as recovery-required.
+- Task reads dynamically classify referenced inputs as available, missing, or
+  changed from their current bytes. Git clones therefore cannot falsely claim
+  that ignored inbox inputs are present.
+- Added explicit reference adoption into a bounded tracked destination. It
+  requires an active, unexpired V1 mutation authority, preserves the original
+  inbox bytes, verifies the checksum, and lets ordinary provenance/finalization
+  commit the adopted file.
+- Attachment contents remain outside normal automatic prompt scanning. The
+  existing managed document/file preparation path remains responsible for
+  bounded content access.
+- Focused result: Git Context attachment, contract, and HTTP coverage passed;
+  daemon engine and upload integration coverage passed.
+- Workspace result: CLI 38 tests, Git Context 159 tests, and backend 844 tests
+  passed (1,041 total); the full workspace build passed.
+- Migration/recovery evidence: retained attachment identity survives a service
+  restart; collision retries reuse only checksum-identical destinations;
+  commit acknowledgement verifies exact `.ayati/references.md` content; missing
+  and changed ignored inputs are detected without dirtying Git.
+- Next slice: Phase 7A external computer-use outcomes, beginning with typed
+  task/request/run binding and deterministic safe-receipt capture for verified
+  external mutations.

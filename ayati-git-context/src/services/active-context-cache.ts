@@ -4,6 +4,7 @@ import type {
   ConversationContext,
   ReadContextProjection,
   RunContextProjection,
+  SessionAttachmentsProjection,
   TaskCandidate,
 } from "../contracts.js";
 
@@ -39,6 +40,7 @@ export function activeContextRevision(input: {
   conversations: ConversationContext[];
   readContext?: ReadContextProjection;
   run?: RunContextProjection;
+  attachments?: SessionAttachmentsProjection;
   taskCandidates: TaskCandidate[];
 }): { revision: string; pendingDigest: string } {
   const pendingDigest = hash(JSON.stringify(input.conversations.map((item) => ({
@@ -52,6 +54,18 @@ export function activeContextRevision(input: {
     status: input.status,
     pendingDigest,
     readContextRevision: input.readContext?.revision ?? null,
+    attachments: input.attachments
+      ? {
+          count: input.attachments.count,
+          updatedAt: input.attachments.updatedAt ?? null,
+          recent: input.attachments.recent.map((attachment) => ({
+            sessionAssetId: attachment.sessionAssetId,
+            status: attachment.status,
+            checksum: attachment.checksum ?? null,
+            lastUsedAt: attachment.lastUsedAt ?? null,
+          })),
+        }
+      : null,
     run: input.run
       ? {
           runId: input.run.run.runId,

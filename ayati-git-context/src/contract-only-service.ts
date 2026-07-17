@@ -1,9 +1,13 @@
 import {
   GIT_CONTEXT_PROTOCOL_VERSION,
+  type AdoptTaskReferenceRequest,
+  type AdoptTaskReferenceResponse,
   type ActivateTaskRunRequest,
   type ActiveContext,
   type AcquireMutationAuthorityRequest,
   type AcquireMutationAuthorityResponse,
+  type BindTaskAttachmentsRequest,
+  type BindTaskAttachmentsResponse,
   type CheckpointMutationRequest,
   type CheckpointMutationResponse,
   type AppendConversationRequest,
@@ -27,6 +31,8 @@ import {
   type MountTaskResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
+  type RecordSessionAttachmentsRequest,
+  type RecordSessionAttachmentsResponse,
   type SnapshotTaskRunEvidenceRequest,
   type SnapshotTaskRunEvidenceResponse,
   type StartRunRequest,
@@ -86,6 +92,24 @@ export class ContractOnlyGitContextService implements GitContextService {
   }
 
   async mountTask(_input: MountTaskRequest): Promise<MountTaskResponse> {
+    throw notReady();
+  }
+
+  async recordSessionAttachments(
+    _input: RecordSessionAttachmentsRequest,
+  ): Promise<RecordSessionAttachmentsResponse> {
+    throw notReady();
+  }
+
+  async bindTaskAttachments(
+    _input: BindTaskAttachmentsRequest,
+  ): Promise<BindTaskAttachmentsResponse> {
+    throw notReady();
+  }
+
+  async adoptTaskReference(
+    _input: AdoptTaskReferenceRequest,
+  ): Promise<AdoptTaskReferenceResponse> {
     throw notReady();
   }
 

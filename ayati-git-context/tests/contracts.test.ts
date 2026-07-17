@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   isAcquireMutationAuthorityRequest,
+  isAdoptTaskReferenceRequest,
   isAppendConversationRequest,
+  isBindTaskAttachmentsRequest,
   isCheckpointMutationRequest,
   isCreateTaskRequest,
   isEnsureActiveSessionRequest,
@@ -9,6 +11,7 @@ import {
   isFinalizeTaskRunRequest,
   isMountTaskRequest,
   isRecordRunStepRequest,
+  isRecordSessionAttachmentsRequest,
   isRequestEnvelope,
   isSnapshotTaskRunEvidenceRequest,
   isStartRunRequest,
@@ -119,6 +122,74 @@ describe("Git Context Engine contracts", () => {
       sessionId: "S-20260712-local",
       taskId: "../../escape",
       at: "2026-07-12T10:01:00+05:30",
+    })).toBe(false);
+  });
+
+  it("validates attachment retention, binding, and adoption requests", () => {
+    expect(isRecordSessionAttachmentsRequest({
+      requestId: "REQ-attachments",
+      sessionId: "S-20260717-local",
+      conversationId: "C-000001",
+      attachments: [{
+        sessionAssetId: "SA-contract-file",
+        kind: "file",
+        name: "brief.txt",
+        source: "local_path",
+        status: "ready",
+        storedPath: "/managed/documents/brief.txt",
+        sizeBytes: 12,
+        checksum: "a".repeat(64),
+        createdAt: "2026-07-17T10:00:00+05:30",
+        lastUsedAt: "2026-07-17T10:00:00+05:30",
+      }],
+      at: "2026-07-17T10:00:00+05:30",
+    })).toBe(true);
+    expect(isRecordSessionAttachmentsRequest({
+      requestId: "REQ-empty-attachments",
+      sessionId: "S-20260717-local",
+      conversationId: "C-000001",
+      attachments: [],
+      at: "2026-07-17T10:00:00+05:30",
+    })).toBe(false);
+    expect(isBindTaskAttachmentsRequest({
+      requestId: "REQ-bind-attachments",
+      sessionId: "S-20260717-local",
+      conversationId: "C-000001",
+      runId: "R-20260717-0001",
+      taskId: "T-20260717-0001",
+      at: "2026-07-17T10:01:00+05:30",
+    })).toBe(true);
+    expect(isBindTaskAttachmentsRequest({
+      requestId: "REQ-bind-legacy-task",
+      sessionId: "S-20260717-local",
+      conversationId: "C-000001",
+      runId: "R-20260717-0001",
+      taskId: "W-20260717-0001",
+      at: "2026-07-17T10:01:00+05:30",
+    })).toBe(true);
+    expect(isBindTaskAttachmentsRequest({
+      requestId: "REQ-bind-invalid-task",
+      sessionId: "S-20260717-local",
+      conversationId: "C-000001",
+      runId: "R-20260717-0001",
+      taskId: "task-1",
+      at: "2026-07-17T10:01:00+05:30",
+    })).toBe(false);
+    expect(isAdoptTaskReferenceRequest({
+      requestId: "REQ-adopt-reference",
+      authorityId: "A-1",
+      lockToken: "secret-token",
+      referenceId: "REF-0001",
+      destinationPath: "inputs/brief.txt",
+      at: "2026-07-17T10:02:00+05:30",
+    })).toBe(true);
+    expect(isAdoptTaskReferenceRequest({
+      requestId: "REQ-invalid-reference",
+      authorityId: "A-1",
+      lockToken: "secret-token",
+      referenceId: "brief.txt",
+      destinationPath: "inputs/brief.txt",
+      at: "2026-07-17T10:02:00+05:30",
     })).toBe(false);
   });
 

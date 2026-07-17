@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -94,7 +95,7 @@ export async function createSimpleTaskFixture(input: {
     kind: "attachment",
     label: "input.txt",
     location: inboxRelative,
-    sha256: "sha256:" + "a".repeat(64),
+    sha256: "sha256:" + createHash("sha256").update("ignored input\n").digest("hex"),
     availability: "available",
     addedAt: "2026-07-17T10:35:00+05:30",
     requestIds: [requestId],

@@ -6,6 +6,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   type AcquireMutationAuthorityRequest,
   type AcquireMutationAuthorityResponse,
+  type AdoptTaskReferenceRequest,
+  type AdoptTaskReferenceResponse,
+  type BindTaskAttachmentsRequest,
+  type BindTaskAttachmentsResponse,
   type CheckpointMutationRequest,
   type CheckpointMutationResponse,
   GIT_CONTEXT_PROTOCOL_VERSION,
@@ -28,6 +32,8 @@ import {
   type MountTaskResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
+  type RecordSessionAttachmentsRequest,
+  type RecordSessionAttachmentsResponse,
   type StartRunRequest,
   type StartRunResponse,
   type SnapshotTaskRunEvidenceRequest,
@@ -121,6 +127,58 @@ describe("Git Context Engine HTTP transport", () => {
       at: "2026-07-12T10:00:00+05:30",
     });
     expect(appended.conversation.conversationId).toBe("C-000001");
+
+    await expect(client.recordSessionAttachments({
+      requestId: "REQ-attachments",
+      sessionId: ensured.session.sessionId,
+      conversationId: appended.conversation.conversationId,
+      attachments: [{
+        sessionAssetId: "SA-http-attachment",
+        kind: "file",
+        name: "brief.txt",
+        source: "local_path",
+        status: "ready",
+        originalPath: "/tmp/brief.txt",
+        storedPath: "/tmp/documents/brief.txt",
+        sizeBytes: 12,
+        checksum: "a".repeat(64),
+        createdAt: "2026-07-12T10:00:00+05:30",
+        lastUsedAt: "2026-07-12T10:00:00+05:30",
+      }],
+      at: "2026-07-12T10:00:00+05:30",
+    })).resolves.toEqual({
+      recorded: 1,
+      sessionAssetIds: ["SA-http-attachment"],
+    });
+
+    await expect(client.bindTaskAttachments({
+      requestId: "REQ-bind-attachments",
+      sessionId: ensured.session.sessionId,
+      conversationId: appended.conversation.conversationId,
+      runId: "R-20260712-0001",
+      taskId: "T-20260712-0001",
+      at: "2026-07-12T10:00:01+05:30",
+    })).resolves.toEqual({
+      taskId: "T-20260712-0001",
+      runId: "R-20260712-0001",
+      references: [],
+    });
+
+    await expect(client.adoptTaskReference({
+      requestId: "REQ-adopt-reference",
+      authorityId: "R-20260712-0001-M-0001",
+      lockToken: "test-token",
+      referenceId: "REF-0001",
+      destinationPath: "inputs/brief.txt",
+      at: "2026-07-12T10:00:02+05:30",
+    })).resolves.toEqual({
+      taskId: "T-20260712-0001",
+      runId: "R-20260712-0001",
+      referenceId: "REF-0001",
+      sourcePath: "/tmp/task/public/inbox/REF-0001-brief.txt",
+      destinationPath: "inputs/brief.txt",
+      sha256: "a".repeat(64),
+    });
 
     const createdTask = await client.createTask({
       requestId: "REQ-task",
@@ -462,6 +520,38 @@ class TestGitContextService implements GitContextService {
         status: "ready",
       },
       created: true,
+    };
+  }
+
+  async recordSessionAttachments(
+    input: RecordSessionAttachmentsRequest,
+  ): Promise<RecordSessionAttachmentsResponse> {
+    return {
+      recorded: input.attachments.length,
+      sessionAssetIds: input.attachments.map((attachment) => attachment.sessionAssetId),
+    };
+  }
+
+  async bindTaskAttachments(
+    input: BindTaskAttachmentsRequest,
+  ): Promise<BindTaskAttachmentsResponse> {
+    return {
+      taskId: input.taskId,
+      runId: input.runId,
+      references: [],
+    };
+  }
+
+  async adoptTaskReference(
+    input: AdoptTaskReferenceRequest,
+  ): Promise<AdoptTaskReferenceResponse> {
+    return {
+      taskId: "T-20260712-0001",
+      runId: "R-20260712-0001",
+      referenceId: input.referenceId,
+      sourcePath: "/tmp/task/public/inbox/REF-0001-brief.txt",
+      destinationPath: input.destinationPath,
+      sha256: "a".repeat(64),
     };
   }
 

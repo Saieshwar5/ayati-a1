@@ -1,6 +1,7 @@
 import type { CommitSummary, TaskCatalogEntry, TaskContextProjection } from "../contracts.js";
 import { runGitRaw } from "../git/git-process.js";
 import { parseSimpleTaskCommit } from "./task-commit-metadata.js";
+import { resolveTaskReferenceAvailabilities } from "./task-reference-files.js";
 import { validateTaskRepository } from "./task-repository-validator.js";
 
 const RECORD_SEPARATOR = "\u001e";
@@ -29,6 +30,12 @@ export async function readSimpleTaskContext(
   );
   const missing = new Set(validation.missingImportantPaths);
   const card = validation.taskCard;
+  const references = options.includeReferencesSummary
+    ? await resolveTaskReferenceAvailabilities(
+        validation.repositoryPath,
+        validation.references,
+      )
+    : validation.references;
   return {
     task: {
       taskId: validation.taskId,
@@ -72,7 +79,7 @@ export async function readSimpleTaskContext(
       : {}),
     ...(latestFinalization?.next ? { next: latestFinalization.next } : {}),
     ...(options.includeReferencesSummary
-      ? { referencesSummary: summarizeReferences(validation.references) }
+      ? { referencesSummary: summarizeReferences(references) }
       : {}),
   };
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { IVecEngine } from "../../src/ivec/index.js";
@@ -28,6 +28,7 @@ import type {
   GitMemorySystemEventContextRoutedTurn,
   GitMemorySystemEventContextRuntime,
 } from "../../src/app/git-memory-system-event-context-runtime.js";
+import { DocumentStore } from "../../src/documents/document-store.js";
 
 function createMockProvider(overrides?: Partial<LlmProvider>): LlmProvider {
   return {
@@ -177,6 +178,10 @@ function createChatContextRuntime(
     }),
     recordSessionRunStep: vi.fn().mockResolvedValue(undefined),
     recordTaskRunStep: vi.fn().mockResolvedValue(undefined),
+    recordSessionAttachments: vi.fn().mockResolvedValue({
+      recorded: 1,
+      sessionAssetIds: ["SA-test-attachment"],
+    }),
     recordAssistantMessage: vi.fn().mockResolvedValue({
       v: 1,
       seq: 2,
@@ -847,35 +852,60 @@ describe("IVecEngine", () => {
   });
 
   it("asks the user when context engine task resolution is ambiguous", async () => {
-    const provider = createMockProvider();
-    const onReply = vi.fn();
-    const chatContextRuntime = createChatContextRuntime(ambiguousGitMemoryRoutedTurn());
-    const engine = createEngine({
-      onReply,
-      provider,
-      chatContextRuntime,
-      systemEventPolicy: createSystemEventPolicy(),
-    });
-
-    await engine.start();
-    engine.handleMessage("c1", { type: "chat", content: "upload" });
-
-    await vi.waitFor(() => {
-      expect(onReply).toHaveBeenCalledWith("c1", {
-        type: "feedback",
-        content: expect.stringContaining("I found multiple matching tasks"),
+    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-ambiguous-attachment-"));
+    const attachmentPath = join(dataDir, "input.txt");
+    writeFileSync(attachmentPath, "keep this attachment even when routing is ambiguous\n");
+    try {
+      const provider = createMockProvider();
+      const onReply = vi.fn();
+      const chatContextRuntime = createChatContextRuntime(ambiguousGitMemoryRoutedTurn());
+      const engine = createEngine({
+        onReply,
+        provider,
+        dataDir,
+        documentStore: new DocumentStore({ dataDir: join(dataDir, "documents"), preferCli: false }),
+        chatContextRuntime,
+        systemEventPolicy: createSystemEventPolicy(),
       });
-    });
-    expect(provider.generateTurn).not.toHaveBeenCalled();
-    expect(chatContextRuntime.recordAssistantMessage).toHaveBeenCalledWith({
-      clientId: "c1",
-      turn: expect.objectContaining({
-        sessionId: "S-20260627-local",
-      }),
-      message: expect.stringContaining("W-20260627-0001"),
-      at: expect.any(String),
-    });
-    expect(chatContextRuntime.completeTaskRun).not.toHaveBeenCalled();
+
+      await engine.start();
+      engine.handleMessage("c1", {
+        type: "chat",
+        content: "upload",
+        attachments: [{ source: "cli", path: attachmentPath, name: "input.txt" }],
+      });
+
+      await vi.waitFor(() => {
+        expect(onReply).toHaveBeenCalledWith("c1", {
+          type: "feedback",
+          content: expect.stringContaining("I found multiple matching tasks"),
+        });
+      });
+      expect(provider.generateTurn).not.toHaveBeenCalled();
+      expect(chatContextRuntime.recordSessionAttachments).toHaveBeenCalledWith(expect.objectContaining({
+        clientId: "c1",
+        turn: expect.objectContaining({ sessionId: "S-20260627-local" }),
+        attachments: [expect.objectContaining({
+          kind: "document",
+          name: "input.txt",
+          storedPath: expect.stringContaining("documents"),
+          checksum: expect.stringMatching(/^[a-f0-9]{64}$/),
+        })],
+      }));
+      expect(chatContextRuntime.recordSessionAttachments.mock.invocationCallOrder[0])
+        .toBeLessThan(chatContextRuntime.routeTaskTurn.mock.invocationCallOrder[0]);
+      expect(chatContextRuntime.recordAssistantMessage).toHaveBeenCalledWith({
+        clientId: "c1",
+        turn: expect.objectContaining({
+          sessionId: "S-20260627-local",
+        }),
+        message: expect.stringContaining("W-20260627-0001"),
+        at: expect.any(String),
+      });
+      expect(chatContextRuntime.completeTaskRun).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 
   it("passes ready context engine context into the loop and commits the completed run", async () => {

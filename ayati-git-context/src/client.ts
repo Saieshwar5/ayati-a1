@@ -2,9 +2,13 @@ import { request as httpRequest, type RequestOptions } from "node:http";
 import { randomUUID } from "node:crypto";
 import type {
   ActiveContext,
+  AdoptTaskReferenceRequest,
+  AdoptTaskReferenceResponse,
   ActivateTaskRunRequest,
   AcquireMutationAuthorityRequest,
   AcquireMutationAuthorityResponse,
+  BindTaskAttachmentsRequest,
+  BindTaskAttachmentsResponse,
   CheckpointMutationRequest,
   CheckpointMutationResponse,
   AppendConversationRequest,
@@ -28,6 +32,8 @@ import type {
   MountTaskResponse,
   RecordRunStepRequest,
   RecordRunStepResponse,
+  RecordSessionAttachmentsRequest,
+  RecordSessionAttachmentsResponse,
   SnapshotTaskRunEvidenceRequest,
   SnapshotTaskRunEvidenceResponse,
   StartRunRequest,
@@ -141,6 +147,36 @@ export class GitContextClient implements GitContextService {
       "POST",
       "/sessions/" + encodeURIComponent(input.sessionId)
         + "/tasks/" + encodeURIComponent(input.taskId) + "/mount",
+      input,
+    );
+  }
+
+  async recordSessionAttachments(
+    input: RecordSessionAttachmentsRequest,
+  ): Promise<RecordSessionAttachmentsResponse> {
+    return await this.requestJson<RecordSessionAttachmentsResponse>(
+      "POST",
+      "/sessions/" + encodeURIComponent(input.sessionId) + "/attachments",
+      input,
+    );
+  }
+
+  async bindTaskAttachments(
+    input: BindTaskAttachmentsRequest,
+  ): Promise<BindTaskAttachmentsResponse> {
+    return await this.requestJson<BindTaskAttachmentsResponse>(
+      "POST",
+      "/runs/" + encodeURIComponent(input.runId) + "/task-attachments",
+      input,
+    );
+  }
+
+  async adoptTaskReference(
+    input: AdoptTaskReferenceRequest,
+  ): Promise<AdoptTaskReferenceResponse> {
+    return await this.requestJson<AdoptTaskReferenceResponse>(
+      "POST",
+      "/mutation-authorities/" + encodeURIComponent(input.authorityId) + "/adopt-reference",
       input,
     );
   }

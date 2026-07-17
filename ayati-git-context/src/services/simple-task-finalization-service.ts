@@ -53,8 +53,15 @@ import {
   readTaskInitialization,
   updateTaskHead,
 } from "../repositories/task-records.js";
+import {
+  markRunTaskAttachmentsCommitted,
+  markRunTaskAttachmentsRecoveryRequired,
+  readRunTaskAttachmentBindings,
+} from "../repositories/task-attachment-records.js";
 import { renderTaskRunCommit, type TaskRunCommitOutcome } from "../tasks/task-commit-metadata.js";
 import { reduceSimpleTaskContext } from "../tasks/simple-task-context-reducer.js";
+import { renderTaskReferences } from "../tasks/task-references.js";
+import { TASK_REFERENCES_PATH } from "../tasks/task-repository-layout.js";
 import { validateTaskRepository } from "../tasks/task-repository-validator.js";
 
 export type SimpleTaskFinalizationHook = (
@@ -263,11 +270,41 @@ export class SimpleTaskFinalizationService {
       completion: input.completion,
       hasVerifiedChanges: verifiedPaths.length > 0,
     });
+    const attachmentBindings = readRunTaskAttachmentBindings(
+      this.options.database,
+      input.runId,
+    );
+    const invalidBinding = attachmentBindings.find((binding) =>
+      binding.taskId !== input.taskId
+      || binding.taskRequestId !== authority.taskRequestId
+      || binding.phase === "recovery_required"
+    );
+    if (invalidBinding) {
+      throw recovery("V1 finalization found an invalid task attachment binding.", {
+        referenceId: invalidBinding.referenceId,
+        phase: invalidBinding.phase,
+      });
+    }
+    const references = new Map(
+      validation.references.map((reference) => [reference.id, reference]),
+    );
+    for (const binding of attachmentBindings) {
+      references.set(binding.referenceId, binding.reference);
+    }
+    const renderedReferences = renderTaskReferences(
+      [...references.values()].sort((left, right) => left.id.localeCompare(right.id)),
+    );
+    const currentReferences = renderTaskReferences(validation.references);
+    const referenceWrites = renderedReferences === currentReferences
+      ? []
+      : [{ path: TASK_REFERENCES_PATH, content: renderedReferences }];
+    const contextWrites = [...context.contextWrites, ...referenceWrites]
+      .sort((left, right) => left.path.localeCompare(right.path));
     const stagedPaths = [...new Set([
       ...verifiedPaths,
-      ...context.contextWrites.map((write) => write.path),
+      ...contextWrites.map((write) => write.path),
     ])].sort();
-    const contextBefore = await Promise.all(context.contextWrites.map(async (write) => ({
+    const contextBefore = await Promise.all(contextWrites.map(async (write) => ({
       path: write.path,
       sha256: contentHash(await readFile(resolve(authority.repositoryPath, write.path), "utf8")),
     })));
@@ -276,10 +313,10 @@ export class SimpleTaskFinalizationService {
       task,
       authority,
       plan: {
-        commitRequired: context.commitRequired || verifiedPaths.length > 0,
+        commitRequired: context.commitRequired || verifiedPaths.length > 0 || referenceWrites.length > 0,
         verifiedPaths,
         verifiedState,
-        contextWrites: context.contextWrites,
+        contextWrites,
         contextBefore,
         stagedPaths,
         commitMessage: "",
@@ -337,6 +374,12 @@ export class SimpleTaskFinalizationService {
         database: this.options.database,
         requestId: input.requestId,
       });
+      markRunTaskAttachmentsRecoveryRequired(
+        this.options.database,
+        record.runId,
+        error instanceof Error ? error.message : String(error),
+        input.at,
+      );
       throw error;
     }
   }
@@ -398,6 +441,12 @@ export class SimpleTaskFinalizationService {
           at,
         );
       }
+      markRunTaskAttachmentsCommitted(
+        this.options.database,
+        record.runId,
+        commit.head,
+        at,
+      );
       updateSimpleTaskFinalization(this.options.database, {
         runId: record.runId,
         phase: "completed",

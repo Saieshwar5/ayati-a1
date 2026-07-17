@@ -178,6 +178,14 @@ async function verifyExistingCommit(input: {
     input.head,
     input.plan.verifiedPaths,
   );
+  for (const write of input.plan.contextWrites) {
+    const committed = await runGit(["show", input.head + ":" + write.path], {
+      cwd: input.repositoryPath,
+    });
+    if (committed !== write.content.trimEnd()) {
+      throw mismatch("Task HEAD does not contain the journaled V1 context.", input, input.head);
+    }
+  }
   if (parent !== input.baseHead
     || message.trim() !== input.plan.commitMessage.trim()
     || JSON.stringify(paths) !== JSON.stringify(input.plan.stagedPaths)
@@ -194,7 +202,8 @@ async function readIdentity(repositoryPath: string): Promise<{ head: string; bra
 }
 
 function requireContextPath(path: string): void {
-  if (path === ".ayati/task.md" || /^\.ayati\/requests\/R-\d{4}-.+\.md$/.test(path)) {
+  if (path === ".ayati/task.md" || path === ".ayati/references.md"
+    || /^\.ayati\/requests\/R-\d{4}-.+\.md$/.test(path)) {
     return;
   }
   throw recovery("V1 finalization plan contains an unsupported engine-owned path.", { path });

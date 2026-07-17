@@ -7,11 +7,13 @@ import type {
   RunWorkStateInput,
   SelectedTaskRunResponse,
   TaskPlacement,
+  RecordSessionAttachmentsResponse,
 } from "ayati-git-context";
 import { GitContextObserver } from "ayati-git-context";
 import {
   type ContextEngineMachineContext,
   type ContextRunStepRecord,
+  type ContextSessionAttachmentRecord,
   type HarnessRunResultForContext,
   type TaskAssetRecord,
 } from "../context-engine/index.js";
@@ -120,7 +122,12 @@ export interface GitContextRuntime {
     runId?: string;
     [key: string]: unknown;
   }): Promise<ConversationRef | null>;
-  recordSessionAttachments(input: unknown): Promise<null>;
+  recordSessionAttachments(input: {
+    turn: GitContextPreparedTurn | null;
+    attachments: ContextSessionAttachmentRecord[];
+    at: string;
+    [key: string]: unknown;
+  }): Promise<RecordSessionAttachmentsResponse | null>;
   buildActiveContext(sessionId: string): Promise<ContextEngineMachineContext>;
 }
 
@@ -233,7 +240,7 @@ class AppGitContextRuntime implements GitContextRuntime {
       outcome: "succeeded",
       data: { selectionMode: "created", promoted: selected.runPromoted },
     });
-    return await this.routedTurn(selected, input.turn);
+    return await this.routedTurn(selected, input.turn, input.at);
   }
 
   async activateTaskTurn(input: {
@@ -263,7 +270,7 @@ class AppGitContextRuntime implements GitContextRuntime {
       outcome: "succeeded",
       data: { selectionMode: "activated", promoted: selected.runPromoted },
     });
-    return await this.routedTurn(selected, input.turn);
+    return await this.routedTurn(selected, input.turn, input.at);
   }
 
   async finalizeSessionRun(input: {
@@ -429,8 +436,21 @@ class AppGitContextRuntime implements GitContextRuntime {
     return response.conversation;
   }
 
-  async recordSessionAttachments(_input: unknown): Promise<null> {
-    return null;
+  async recordSessionAttachments(input: {
+    turn: GitContextPreparedTurn | null;
+    attachments: ContextSessionAttachmentRecord[];
+    at: string;
+  }): Promise<RecordSessionAttachmentsResponse | null> {
+    if (!input.turn || input.attachments.length === 0) return null;
+    const response = await this.options.service.recordSessionAttachments({
+      requestId: randomUUID(),
+      sessionId: input.turn.sessionId,
+      conversationId: input.turn.conversationId,
+      attachments: input.attachments,
+      at: input.at,
+    });
+    this.contextCache.markDirty(input.turn.sessionId);
+    return response;
   }
 
   async buildActiveContext(sessionId: string): Promise<ContextEngineMachineContext> {
@@ -501,7 +521,16 @@ class AppGitContextRuntime implements GitContextRuntime {
   private async routedTurn(
     selected: SelectedTaskRunResponse,
     turn: GitContextPreparedTurn,
+    at: string,
   ): Promise<GitContextRoutedTurn> {
+    await this.options.service.bindTaskAttachments({
+      requestId: randomUUID(),
+      sessionId: turn.sessionId,
+      conversationId: turn.conversationId,
+      runId: selected.run.runId,
+      taskId: selected.task.taskId,
+      at,
+    });
     const context = await this.refreshActiveContext(turn.sessionId);
     return {
       status: "ready",
