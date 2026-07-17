@@ -16,6 +16,7 @@ import type { ContextDatabase } from "../database/database.js";
 import {
   beginRecoverableIdempotent,
   completeRecoverableIdempotent,
+  hasRecoverableIdempotencyRequest,
   markRecoverableIdempotencyFailed,
 } from "../database/idempotency.js";
 import { GitContextServiceError } from "../errors.js";
@@ -35,20 +36,28 @@ import {
 } from "../repositories/task-mount-records.js";
 import {
   activateTask,
+  allocateSimpleTask,
   allocateTask,
   readInitializingTasks,
   readTaskCatalogEntry,
   readTaskCatalogEntries,
   readTaskInitialization,
   resolveTaskWorkingDirectory,
+  type TaskInitializationRecord,
 } from "../repositories/task-records.js";
 import { readTaskContext } from "../tasks/task-context-reader.js";
+import {
+  completeSimpleTaskCreation,
+  ensureSimpleTaskRepository,
+  type SimpleTaskCreationHook,
+} from "../tasks/simple-task-repository-creator.js";
 
 export interface TaskLifecycleServiceOptions {
   database: ContextDatabase;
   dataRoot: string;
   workspaceRoot: string;
   now: () => string;
+  simpleTaskCreationHook?: SimpleTaskCreationHook;
 }
 
 export class TaskLifecycleService {
@@ -57,6 +66,7 @@ export class TaskLifecycleService {
   private readonly workspaceRoot: string;
   private readonly taskRoot: string;
   private readonly now: () => string;
+  private readonly simpleTaskCreationHook?: SimpleTaskCreationHook;
 
   constructor(options: TaskLifecycleServiceOptions) {
     this.database = options.database;
@@ -64,6 +74,7 @@ export class TaskLifecycleService {
     this.workspaceRoot = options.workspaceRoot;
     this.taskRoot = join(options.workspaceRoot, "tasks");
     this.now = options.now;
+    this.simpleTaskCreationHook = options.simpleTaskCreationHook;
   }
 
   async createTask(
@@ -102,6 +113,61 @@ export class TaskLifecycleService {
         task,
         created: pending.result.created,
       };
+      return completeRecoverableIdempotent({
+        database: this.database,
+        requestId: input.requestId,
+        result,
+        now: input.at,
+      });
+    } catch (error) {
+      markRecoverableIdempotencyFailed({
+        database: this.database,
+        requestId: input.requestId,
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Staged V1 creator. The default task-run route remains on createTask until
+   * direct V1 mutation and finalization are available.
+   */
+  async createSimpleTask(input: CreateTaskRequest): Promise<CreateTaskResponse> {
+    const normalized = normalizeTaskInput(input);
+    validateSimpleTaskCreationInput(input);
+    const recovering = hasRecoverableIdempotencyRequest({
+      database: this.database,
+      requestId: input.requestId,
+      operation: "create_simple_task",
+      payload: input,
+    });
+    type CreationRecord = { taskId: string; created: boolean } | CreateTaskResponse;
+    const pending = beginRecoverableIdempotent<CreationRecord>({
+      database: this.database,
+      requestId: input.requestId,
+      operation: "create_simple_task",
+      payload: input,
+      now: input.at,
+      execute: () => {
+        const task = allocateSimpleTask(
+          this.database,
+          this.taskRoot,
+          input,
+          normalized,
+        );
+        return { taskId: task.taskId, created: true };
+      },
+    });
+    const taskId = "taskId" in pending.result
+      ? pending.result.taskId
+      : pending.result.task.taskId;
+    if (pending.completed && "task" in pending.result) return pending.result;
+    try {
+      const record = readTaskInitialization(this.database, taskId);
+      if (!record) throw taskNotFound(taskId);
+      await this.simpleTaskCreationHook?.("allocated", record);
+      const task = await this.initializeSimpleTask(record, input.at, recovering);
+      const result: CreateTaskResponse = { task, created: pending.result.created };
       return completeRecoverableIdempotent({
         database: this.database,
         requestId: input.requestId,
@@ -249,14 +315,23 @@ export class TaskLifecycleService {
 
   async recoverInitializingState(): Promise<void> {
     for (const task of readInitializingTasks(this.database)) {
-      if (task.layoutVersion !== "legacy_independent_v0") continue;
       try {
-        const head = await ensureCanonicalTaskRepository({
-          task,
-          dataRoot: this.dataRoot,
-        });
-        const workingHead = await ensureTaskWorkingDirectory({ ...task, head });
-        activateTask(this.database, task.taskId, workingHead, this.now());
+        if (task.layoutVersion === "simple_repository_v1") {
+          const head = await ensureSimpleTaskRepository({
+            task,
+            taskRoot: this.taskRoot,
+            recovering: true,
+          });
+          activateTask(this.database, task.taskId, head, this.now());
+          await completeSimpleTaskCreation(task);
+        } else {
+          const head = await ensureCanonicalTaskRepository({
+            task,
+            dataRoot: this.dataRoot,
+          });
+          const workingHead = await ensureTaskWorkingDirectory({ ...task, head });
+          activateTask(this.database, task.taskId, workingHead, this.now());
+        }
       } catch {
         // One unusable user-requested directory must not prevent unrelated
         // sessions and tasks from recovering. Retrying the original request
@@ -321,6 +396,43 @@ export class TaskLifecycleService {
     });
     const workingHead = await ensureTaskWorkingDirectory({ ...record, head });
     return activateTask(this.database, taskId, workingHead, at);
+  }
+
+  private async initializeSimpleTask(
+    record: TaskInitializationRecord,
+    at: string,
+    recovering: boolean,
+  ): Promise<TaskCatalogEntry> {
+    if (record.layoutVersion !== "simple_repository_v1") {
+      throw new GitContextServiceError({
+        code: "RECOVERY_REQUIRED",
+        message: "V1 creation request is bound to a legacy task allocation.",
+        details: { taskId: record.taskId, layoutVersion: record.layoutVersion },
+      });
+    }
+    if (record.status !== "initializing") {
+      await completeSimpleTaskCreation(record);
+      const task = this.requireActiveTask(record.taskId);
+      const context = await this.readContext(task);
+      if (context.task.head !== task.head) {
+        throw new GitContextServiceError({
+          code: "TASK_HEAD_MISMATCH",
+          message: "Recovered V1 task HEAD does not match its catalog entry.",
+          details: { taskId: task.taskId, catalogHead: task.head, actualHead: context.task.head },
+        });
+      }
+      return task;
+    }
+    const head = await ensureSimpleTaskRepository({
+      task: record,
+      taskRoot: this.taskRoot,
+      recovering,
+      ...(this.simpleTaskCreationHook ? { onPhase: this.simpleTaskCreationHook } : {}),
+    });
+    const task = activateTask(this.database, record.taskId, head, at);
+    await this.simpleTaskCreationHook?.("catalog_activated", record);
+    await completeSimpleTaskCreation(record);
+    return task;
   }
 
   private requireActiveTask(taskId: string): TaskCatalogEntry {
@@ -390,6 +502,21 @@ function normalizeTaskInput(input: CreateTaskRequest): {
 function validateTaskId(taskId: string): void {
   if (!/^[TW]-\d{8}-\d{4}$/.test(taskId)) {
     throw taskNotFound(taskId);
+  }
+}
+
+function validateSimpleTaskCreationInput(input: CreateTaskRequest): void {
+  if (input.placement.mode !== "managed") {
+    throw new GitContextServiceError({
+      code: "INVALID_REQUEST",
+      message: "V1 task creation currently supports managed placement only.",
+    });
+  }
+  if (!Number.isFinite(Date.parse(input.at))) {
+    throw new GitContextServiceError({
+      code: "INVALID_REQUEST",
+      message: "V1 task creation time must be a valid timestamp.",
+    });
   }
 }
 

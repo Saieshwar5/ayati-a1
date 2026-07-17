@@ -2,8 +2,9 @@
 
 Last updated: 2026-07-17
 
-Current status: repository contracts and read-only V1 context are implemented.
-V1 creation and mutation remain intentionally disabled.
+Current status: repository contracts, read-only context, and the isolated V1
+creation/recovery engine are implemented. Default routing and V1 mutation
+remain intentionally disabled.
 
 ## Planning
 
@@ -81,16 +82,16 @@ Exit gate:
 
 ## Phase 3: V1 Task Creation
 
-- [ ] Allocate `T-*` IDs and managed paths.
-- [ ] Create normal non-bare repository directly under task root.
-- [ ] Write full standard scaffold.
-- [ ] Create deterministic identity commit.
-- [ ] Add idempotent creation/recovery.
-- [ ] Remove bare/clone creation from the V1 path.
+- [x] Allocate `T-*` IDs and managed paths.
+- [x] Create normal non-bare repository directly under task root.
+- [x] Write full standard scaffold.
+- [x] Create deterministic identity commit.
+- [x] Add idempotent creation/recovery.
+- [x] Remove bare/clone creation from the V1 path.
 
 Exit gate:
 
-- [ ] A new task has exactly one canonical repository directory.
+- [x] A new task has exactly one canonical repository directory.
 
 ## Phase 4: Request Lifecycle
 
@@ -209,7 +210,7 @@ Exit gate:
 ## Verification
 
 - [x] Focused schema tests pass.
-- [ ] Focused repository lifecycle tests pass.
+- [x] Focused repository lifecycle tests pass.
 - [ ] Crash/failure-injection matrix passes.
 - [ ] Migration cohort tests pass.
 - [x] `pnpm --filter ayati-git-context test` passes.
@@ -287,3 +288,33 @@ Add dated entries here after each verified implementation slice. Include:
   from filesystem shape.
 - Next slice: Phase 3 V1 task creation, with normal repositories under the
   configured task root and idempotent initialization recovery.
+
+### 2026-07-17: Isolated V1 task creation and recovery
+
+- Branch: `refactor/simple-task-repository-v1`
+- Commit: the implementation commit containing this entry.
+- Added deterministic `T-YYYYMMDD-NNNN` allocation and one normal repository
+  at `workspace/tasks/<task-id>-<slug>/`, with repository and working paths
+  intentionally identical.
+- Added atomic creation of `.gitignore`, the task card, initial `R-0001`
+  request, empty references manifest, and inbox `.gitkeep`, followed by one
+  deterministic V1 identity commit and committed-repository validation.
+- Added idempotent recovery from allocation, directory creation, Git init,
+  scaffold writing, identity commit, repository validation, and catalog
+  activation boundaries. Startup recovery can finish initializing V1 rows.
+- Added a short-lived task-specific ownership marker. Recovery accepts only
+  that marker, an exact generated scaffold, or a valid identity commit; empty
+  pre-existing and otherwise ambiguous directories remain untouched and
+  blocked across retries.
+- The creator is deliberately staged on `TaskLifecycleService.createSimpleTask`.
+  Existing `createTask` and task-run promotion remain legacy until direct V1
+  mutation and finalization are implemented, preventing a half-working
+  create-then-mount flow.
+- Focused result: 1 creation test file and 13 tests passed. Package result: 14
+  files and 119 tests passed; package build passed.
+- Workspace result: CLI 38 tests, Git Context 119 tests, and backend 844 tests
+  passed (1,001 total); full workspace build passed.
+- No bare repository, clone, remote, session mount, or gitlink is created by
+  the V1 path.
+- Next slice: Phase 4 request lifecycle, beginning with deterministic request
+  creation/queueing and the one-active-request invariant.

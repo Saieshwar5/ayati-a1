@@ -8,6 +8,7 @@ import type {
 } from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
 import { GitContextServiceError } from "../errors.js";
+import { taskDirectoryName } from "../tasks/task-repository-layout.js";
 
 interface TaskRow {
   task_id: string;
@@ -92,6 +93,61 @@ export function allocateTask(
   const task = readTaskInitialization(database, taskId);
   if (!task) {
     throw new Error("Allocated task could not be read: " + taskId);
+  }
+  return task;
+}
+
+export function allocateSimpleTask(
+  database: ContextDatabase,
+  taskRoot: string,
+  input: CreateTaskRequest,
+  normalized: { title: string; objective: string },
+): TaskInitializationRecord {
+  if (input.placement.mode !== "managed") {
+    throw new GitContextServiceError({
+      code: "INVALID_REQUEST",
+      message: "V1 task repositories must use managed placement under the configured task root.",
+    });
+  }
+  const datePart = input.sessionId.match(/^S-(\d{8})-/)?.[1]
+    ?? input.at.slice(0, 10).replaceAll("-", "");
+  const prefix = "T-" + datePart + "-";
+  const row = database.prepare([
+    "SELECT COALESCE(MAX(CAST(substr(task_id, 12) AS INTEGER)), 0) + 1 AS next",
+    "FROM tasks WHERE task_id LIKE ?",
+  ].join(" ")).get(prefix + "%") as { next: number };
+  const taskId = prefix + String(Number(row.next)).padStart(4, "0");
+  const repositoryPath = join(taskRoot, taskDirectoryName(taskId, normalized.title));
+  const owner = findOverlappingTaskRoot(database, repositoryPath);
+  if (owner) {
+    throw new GitContextServiceError({
+      code: "INVALID_REQUEST",
+      message: "The allocated V1 task directory overlaps an existing task root.",
+      details: {
+        repositoryPath,
+        taskId: owner.task_id,
+        existingWorkingDirectory: owner.working_path,
+      },
+    });
+  }
+  database.prepare([
+    "INSERT INTO tasks(",
+    "task_id, layout_version, repository_path, working_path, durable_branch, head_sha,",
+    "title_cache, objective_cache, status, created_session_id, created_at, updated_at",
+    ") VALUES (?, 'simple_repository_v1', ?, ?, 'main', NULL, ?, ?, 'initializing', ?, ?, ?)",
+  ].join(" ")).run(
+    taskId,
+    repositoryPath,
+    repositoryPath,
+    normalized.title,
+    normalized.objective,
+    input.sessionId,
+    input.at,
+    input.at,
+  );
+  const task = readTaskInitialization(database, taskId);
+  if (!task) {
+    throw new Error("Allocated V1 task could not be read: " + taskId);
   }
   return task;
 }
