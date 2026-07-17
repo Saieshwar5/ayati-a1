@@ -14,6 +14,7 @@ import {
   beginRecoverableIdempotent,
   completeRecoverableIdempotent,
   executeIdempotent,
+  hasRecoverableIdempotencyRequest,
   markRecoverableIdempotencyFailed,
   readCompletedIdempotent,
 } from "../database/idempotency.js";
@@ -36,12 +37,17 @@ import {
   type MutationAuthorityRecord,
 } from "../repositories/mutation-authority-records.js";
 import { bindActiveRunToTask } from "../repositories/run-records.js";
+import {
+  readTaskRequestRoutePlan,
+  updateTaskRequestRoutePlan,
+} from "../repositories/task-request-route-plan-records.js";
 import { readTaskMount } from "../repositories/task-mount-records.js";
 import {
   readTaskCatalogEntry,
   readTaskInitialization,
 } from "../repositories/task-records.js";
 import { validateTaskRepository } from "../tasks/task-repository-validator.js";
+import { resolvePlannedTaskRequestState } from "../tasks/planned-task-request.js";
 
 const AUTHORITY_LIFETIME_MS = 15 * 60 * 1_000;
 
@@ -179,7 +185,27 @@ export class MutationBoundaryService {
         details: { taskId: task.taskId },
       });
     }
-    assertTaskMutationUnlocked(this.database, input.taskId, input.at);
+    const routePlan = readTaskRequestRoutePlan(this.database, input.runId);
+    if (routePlan && (routePlan.sessionId !== input.sessionId
+      || routePlan.taskId !== input.taskId
+      || routePlan.taskRequestId !== input.taskRequestId
+      || routePlan.baseHead !== input.expectedTaskHead
+      || !["planned", "authority_acquired"].includes(routePlan.phase))) {
+      throw new GitContextServiceError({
+        code: "RECOVERY_REQUIRED",
+        message: "V1 mutation authority does not match the pending request plan.",
+        details: { runId: input.runId, taskId: input.taskId, phase: routePlan.phase },
+      });
+    }
+    const recoveringAuthority = hasRecoverableIdempotencyRequest({
+      database: this.database,
+      requestId: input.requestId,
+      operation: "acquire_mutation_authority",
+      payload: input,
+    });
+    if (!recoveringAuthority) {
+      assertTaskMutationUnlocked(this.database, input.taskId, input.at);
+    }
     const before = await this.validateSimpleTaskState(input, task);
     requireCleanSimpleTask(before, input.taskId);
     const targets = await resolveMutationTargets(before.repositoryPath, input.targets);
@@ -242,13 +268,23 @@ export class MutationBoundaryService {
           details: { taskId: input.taskId, authorityId: authority.authorityId },
         });
       }
-      bindActiveRunToTask(
-        this.database,
-        input.sessionId,
-        input.runId,
-        input.taskId,
-        input.taskRequestId,
-      );
+      this.database.transaction(() => {
+        bindActiveRunToTask(
+          this.database,
+          input.sessionId,
+          input.runId,
+          input.taskId,
+          input.taskRequestId,
+        );
+        if (routePlan) {
+          updateTaskRequestRoutePlan(this.database, {
+            runId: input.runId,
+            phase: "authority_acquired",
+            authorityId: authority.authorityId,
+            at: input.at,
+          });
+        }
+      });
       return completeRecoverableIdempotent({
         database: this.database,
         requestId: input.requestId,
@@ -256,12 +292,23 @@ export class MutationBoundaryService {
         now: input.at,
       });
     } catch (error) {
-      updateMutationAuthorityVerification(this.database, authority.authorityId, {
-        status: "recovery_required",
-        provenance: emptyProvenance(),
-        outcome: "post_lock_validation_failed",
-        at: input.at,
-        error: error instanceof Error ? error.message : String(error),
+      this.database.transaction(() => {
+        updateMutationAuthorityVerification(this.database, authority.authorityId, {
+          status: "recovery_required",
+          provenance: emptyProvenance(),
+          outcome: "post_lock_validation_failed",
+          at: input.at,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        if (routePlan) {
+          updateTaskRequestRoutePlan(this.database, {
+            runId: input.runId,
+            phase: "recovery_required",
+            authorityId: authority.authorityId,
+            error: error instanceof Error ? error.message : String(error),
+            at: input.at,
+          });
+        }
       });
       markRecoverableIdempotencyFailed({ database: this.database, requestId: input.requestId });
       throw error;
@@ -279,7 +326,7 @@ export class MutationBoundaryService {
       taskRoot: this.taskRoot!,
       repositoryPath: task.repositoryPath,
       expectedTaskId: task.taskId,
-      requestReadMode: "current",
+      requestReadMode: "all",
     });
     if (validation.head !== task.head) {
       throw taskHeadMismatch(input.taskId, task.head, validation.head);
@@ -295,14 +342,18 @@ export class MutationBoundaryService {
         },
       });
     }
-    if (validation.currentRequest?.id !== input.taskRequestId) {
+    const routePlan = readTaskRequestRoutePlan(this.database, input.runId);
+    const effectiveRequest = routePlan
+      ? resolvePlannedTaskRequestState(routePlan, validation).taskRequest
+      : validation.currentRequest;
+    if (effectiveRequest?.id !== input.taskRequestId) {
       throw new GitContextServiceError({
         code: "TASK_CURRENT_REQUEST_INVALID",
         message: "Mutation request does not match the task repository's active request.",
         details: {
           taskId: task.taskId,
           requestedTaskRequestId: input.taskRequestId,
-          activeTaskRequestId: validation.currentRequest?.id ?? null,
+          activeTaskRequestId: effectiveRequest?.id ?? null,
         },
       });
     }

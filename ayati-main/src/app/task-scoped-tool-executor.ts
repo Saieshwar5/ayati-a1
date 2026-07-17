@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { lstat, readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
-import type { GitContextService, MutationTarget, TaskContextProjection } from "ayati-git-context";
+import type { GitContextService, MutationTarget } from "ayati-git-context";
 import type {
   MountedToolGroup,
   ToolExecutor,
@@ -66,11 +66,12 @@ class TaskScopedToolExecutor implements ToolExecutor {
     }
     const active = await this.gitContext.getActiveContext({ sessionId: context.sessionId });
     const task = active.activeTask;
-    if (!task?.checkoutPath || active.run?.run.runId !== context.runId) {
+    if (!task || active.run?.run.runId !== context.runId) {
       return await this.base.execute(toolName, originalInput, context);
     }
-    const scopedInput = scopeToolInput(toolName, originalInput, task);
     const resourceRoot = task.workingDirectory || task.checkoutPath;
+    if (!resourceRoot) return await this.base.execute(toolName, originalInput, context);
+    const scopedInput = scopeToolInput(toolName, originalInput, resourceRoot);
     const scopedContext: ToolExecutionContext = {
       ...context,
       resourceScope: {
@@ -104,6 +105,9 @@ class TaskScopedToolExecutor implements ToolExecutor {
       sessionId: context.sessionId,
       runId: context.runId,
       taskId: task.task.taskId,
+      ...(task.task.layoutVersion === "simple_repository_v1" && active.run.run.taskRequestId
+        ? { taskRequestId: active.run.run.taskRequestId }
+        : {}),
       expectedTaskHead: task.task.head,
       targets,
       at: new Date().toISOString(),
@@ -116,7 +120,8 @@ class TaskScopedToolExecutor implements ToolExecutor {
       toolStatus: result.ok ? "completed" : "failed",
       at: new Date().toISOString(),
     });
-    if (verified.status === "verified") {
+    if (verified.status === "verified"
+      && task.task.layoutVersion !== "simple_repository_v1") {
       const refreshed = await this.gitContext.getActiveContext({ sessionId: context.sessionId });
       const conversation = refreshed.session?.pendingConversationContext.find(
         (candidate) => candidate.conversation.conversationId === active.run?.run.conversationId,
@@ -147,9 +152,9 @@ class TaskScopedToolExecutor implements ToolExecutor {
 function scopeToolInput(
   toolName: string,
   value: unknown,
-  task: TaskContextProjection,
+  resourceRoot: string,
 ): unknown {
-  if (!task.checkoutPath || !value || typeof value !== "object" || Array.isArray(value)) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
     return value;
   }
   const input = structuredClone(value as Record<string, unknown>);
@@ -175,7 +180,7 @@ function scopeToolInput(
     });
   }
   if ((toolName === "shell" || toolName.startsWith("shell_")) && !("cwd" in input)) {
-    input["cwd"] = task.workingDirectory || task.checkoutPath;
+    input["cwd"] = resourceRoot;
   }
   return input;
 }

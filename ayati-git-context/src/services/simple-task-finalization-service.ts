@@ -54,6 +54,10 @@ import {
   updateTaskHead,
 } from "../repositories/task-records.js";
 import {
+  readTaskRequestRoutePlan,
+  updateTaskRequestRoutePlan,
+} from "../repositories/task-request-route-plan-records.js";
+import {
   markRunTaskAttachmentsCommitted,
   markRunTaskAttachmentsRecoveryRequired,
   readRunTaskAttachmentBindings,
@@ -63,6 +67,7 @@ import { reduceSimpleTaskContext } from "../tasks/simple-task-context-reducer.js
 import { renderTaskReferences } from "../tasks/task-references.js";
 import { TASK_REFERENCES_PATH } from "../tasks/task-repository-layout.js";
 import { validateTaskRepository } from "../tasks/task-repository-validator.js";
+import { resolvePlannedTaskRequestState } from "../tasks/planned-task-request.js";
 
 export type SimpleTaskFinalizationHook = (
   phase: "plan_persisted" | "commit_created",
@@ -202,6 +207,15 @@ export class SimpleTaskFinalizationService {
           error: error instanceof Error ? error.message : String(error),
           at,
         });
+        const routePlan = readTaskRequestRoutePlan(this.options.database, record.runId);
+        if (routePlan) {
+          updateTaskRequestRoutePlan(this.options.database, {
+            runId: record.runId,
+            phase: "recovery_required",
+            error: error instanceof Error ? error.message : String(error),
+            at,
+          });
+        }
       }
     }
   }
@@ -236,13 +250,29 @@ export class SimpleTaskFinalizationService {
       taskRoot: this.options.taskRoot,
       repositoryPath: task.repositoryPath,
       expectedTaskId: input.taskId,
-      requestReadMode: "current",
+      requestReadMode: "all",
     });
     if (validation.head !== authority.beforeHead || validation.branch !== authority.branch) {
       throw headMismatch(input.taskId, authority.beforeHead, validation.head);
     }
-    if (validation.currentRequest?.id !== authority.taskRequestId) {
-      throw recovery("V1 finalization request no longer matches committed task context.");
+    const routePlan = readTaskRequestRoutePlan(this.options.database, input.runId);
+    if (routePlan && (routePlan.authorityId !== authority.authorityId
+      || routePlan.phase !== "authority_acquired")) {
+      throw recovery("V1 finalization request plan does not match mutation authority.", {
+        routePlanPhase: routePlan.phase,
+      });
+    }
+    const planned = routePlan
+      ? resolvePlannedTaskRequestState(routePlan, validation)
+      : validation.currentRequest
+        ? {
+            taskCard: validation.taskCard,
+            taskRequest: validation.currentRequest,
+            requestCreated: false,
+          }
+        : undefined;
+    if (!planned || planned.taskRequest.id !== authority.taskRequestId) {
+      throw recovery("V1 finalization request no longer matches task context.");
     }
     const provenance = await readMutationProvenance(
       authority.repositoryPath,
@@ -260,8 +290,8 @@ export class SimpleTaskFinalizationService {
     assertCheckpointablePaths(verifiedPaths);
     await verifyCompletionAssets(authority.repositoryPath, input.completion);
     const context = reduceSimpleTaskContext({
-      taskCard: validation.taskCard,
-      taskRequest: validation.currentRequest,
+      taskCard: planned.taskCard,
+      taskRequest: planned.taskRequest,
       workState,
       outcome: input.outcome,
       validation: input.validation,
@@ -298,7 +328,19 @@ export class SimpleTaskFinalizationService {
     const referenceWrites = renderedReferences === currentReferences
       ? []
       : [{ path: TASK_REFERENCES_PATH, content: renderedReferences }];
-    const contextWrites = [...context.contextWrites, ...referenceWrites]
+    const applyRoutePlan = Boolean(routePlan?.changePlan)
+      && (context.commitRequired || verifiedPaths.length > 0 || referenceWrites.length > 0);
+    const desiredWrites = new Map<string, string>();
+    if (applyRoutePlan) {
+      for (const write of routePlan!.changePlan!.writes) {
+        desiredWrites.set(write.path, write.content);
+      }
+    }
+    for (const write of [...context.contextWrites, ...referenceWrites]) {
+      desiredWrites.set(write.path, write.content);
+    }
+    const contextWrites = [...desiredWrites.entries()]
+      .map(([path, content]) => ({ path, content }))
       .sort((left, right) => left.path.localeCompare(right.path));
     const stagedPaths = [...new Set([
       ...verifiedPaths,
@@ -306,14 +348,15 @@ export class SimpleTaskFinalizationService {
     ])].sort();
     const contextBefore = await Promise.all(contextWrites.map(async (write) => ({
       path: write.path,
-      sha256: contentHash(await readFile(resolve(authority.repositoryPath, write.path), "utf8")),
+      sha256: await readContextHash(authority.repositoryPath, write.path),
     })));
     return {
       run,
       task,
       authority,
       plan: {
-        commitRequired: context.commitRequired || verifiedPaths.length > 0 || referenceWrites.length > 0,
+        commitRequired: context.commitRequired || verifiedPaths.length > 0
+          || referenceWrites.length > 0 || applyRoutePlan,
         verifiedPaths,
         verifiedState,
         contextWrites,
@@ -380,6 +423,15 @@ export class SimpleTaskFinalizationService {
         error instanceof Error ? error.message : String(error),
         input.at,
       );
+      const routePlan = readTaskRequestRoutePlan(this.options.database, record.runId);
+      if (routePlan) {
+        updateTaskRequestRoutePlan(this.options.database, {
+          runId: record.runId,
+          phase: "recovery_required",
+          error: error instanceof Error ? error.message : String(error),
+          at: input.at,
+        });
+      }
       throw error;
     }
   }
@@ -447,6 +499,15 @@ export class SimpleTaskFinalizationService {
         commit.head,
         at,
       );
+      const routePlan = readTaskRequestRoutePlan(this.options.database, record.runId);
+      if (routePlan) {
+        updateTaskRequestRoutePlan(this.options.database, {
+          runId: record.runId,
+          phase: record.plan.commitRequired ? "committed" : "discarded",
+          commitHead: commit.head,
+          at,
+        });
+      }
       updateSimpleTaskFinalization(this.options.database, {
         runId: record.runId,
         phase: "completed",
@@ -455,6 +516,15 @@ export class SimpleTaskFinalizationService {
         at,
       });
     });
+  }
+}
+
+async function readContextHash(repositoryPath: string, path: string): Promise<string> {
+  try {
+    return contentHash(await readFile(resolve(repositoryPath, path), "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing";
+    throw error;
   }
 }
 

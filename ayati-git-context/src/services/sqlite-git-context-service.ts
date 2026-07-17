@@ -30,6 +30,8 @@ import {
   type ListTasksResponse,
   type MountTaskRequest,
   type MountTaskResponse,
+  type PlanTaskRequestRouteRequest,
+  type PlanTaskRequestRouteResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
   type RecordSessionAttachmentsRequest,
@@ -82,6 +84,7 @@ import {
 import { SessionSummaryHotCache } from "./session-summary-hot-cache.js";
 import { SessionRunLifecycleService } from "./session-run-lifecycle-service.js";
 import { TaskRunSelectionService } from "./task-run-selection-service.js";
+import { TaskRequestRoutingService } from "./task-request-routing-service.js";
 import { readTaskMount } from "../repositories/task-mount-records.js";
 import { GitContextObserver } from "../observability.js";
 import { GitContextServiceObservability } from "./service-observability.js";
@@ -114,6 +117,7 @@ export class SqliteGitContextService implements GitContextService {
   private readonly sessionRuns: SessionRunLifecycleService;
   private readonly taskLifecycle: TaskLifecycleService;
   private readonly taskSelection: TaskRunSelectionService;
+  private readonly taskRequestRouting: TaskRequestRoutingService;
   private readonly mutationBoundary: MutationBoundaryService;
   private readonly taskCheckpoint: TaskCheckpointService;
   private readonly taskRunEvidence: TaskRunEvidenceService;
@@ -136,6 +140,7 @@ export class SqliteGitContextService implements GitContextService {
     this.conversationCache = new ConversationHotCache(this.database);
     this.sessionRuns = new SessionRunLifecycleService(this.database);
     const workspaceRoot = options.workspaceRoot ?? join(this.dataRoot, "workspace");
+    const taskRoot = join(workspaceRoot, "tasks");
     this.taskLifecycle = new TaskLifecycleService({
       database: this.database,
       dataRoot: this.dataRoot,
@@ -148,19 +153,23 @@ export class SqliteGitContextService implements GitContextService {
       this.sessionRuns,
       this.observer,
     );
+    this.taskRequestRouting = new TaskRequestRoutingService({
+      database: this.database,
+      taskRoot,
+    });
     this.mutationBoundary = new MutationBoundaryService(
       this.database,
-      join(workspaceRoot, "tasks"),
+      taskRoot,
     );
     this.taskCheckpoint = new TaskCheckpointService(this.database);
     this.taskRunEvidence = new TaskRunEvidenceService(this.database);
     this.taskRunFinalization = new TaskRunFinalizationService(
       this.database,
-      join(workspaceRoot, "tasks"),
+      taskRoot,
     );
     this.taskAttachments = new TaskAttachmentService({
       database: this.database,
-      taskRoot: join(workspaceRoot, "tasks"),
+      taskRoot,
     });
     this.dailySessionRollover = new DailySessionRolloverService({
       database: this.database,
@@ -225,7 +234,7 @@ export class SqliteGitContextService implements GitContextService {
         this.database,
         session.sessionId,
       );
-      const taskCandidates = this.taskLifecycle.listTasks({ limit: 20 }).tasks;
+      const taskCandidates = await this.taskLifecycle.listRoutingCandidates({ limit: 20 });
       const readContext = buildReadContext(this.database, session.sessionId);
       const attachments = this.taskAttachments.sessionProjection(session.sessionId);
       const { revision, pendingDigest } = activeContextRevision({
@@ -265,9 +274,12 @@ export class SqliteGitContextService implements GitContextService {
           : {}),
         ...(run?.run.taskId
           ? {
-              activeTask: await this.taskLifecycle.readContext(
-                (await this.taskLifecycle.getTask({ taskId: run.run.taskId })).task,
-                readTaskMount(this.database, session.sessionId, run.run.taskId)?.workingPath,
+              activeTask: await this.taskRequestRouting.projectContext(
+                run.run.runId,
+                await this.taskLifecycle.readContext(
+                  (await this.taskLifecycle.getTask({ taskId: run.run.taskId })).task,
+                  readTaskMount(this.database, session.sessionId, run.run.taskId)?.workingPath,
+                ),
               ),
             }
           : {}),
@@ -374,7 +386,7 @@ export class SqliteGitContextService implements GitContextService {
         }
         const session = this.requireWritableSession(input.sessionId);
         const run = this.sessionRuns.getActive(input.sessionId);
-        const taskCandidates = this.taskLifecycle.listTasks({ limit: 20 }).tasks;
+        const taskCandidates = await this.taskLifecycle.listRoutingCandidates({ limit: 20 });
         const readContext = buildReadContext(this.database, input.sessionId);
         const attachments = this.taskAttachments.sessionProjection(input.sessionId);
         const revision = activeContextRevision({
@@ -473,6 +485,23 @@ export class SqliteGitContextService implements GitContextService {
         taskId: result.task.taskId,
       });
       this.events.taskSelected("activated", result);
+      return result;
+    });
+  }
+
+  async planTaskRequestRoute(
+    input: PlanTaskRequestRouteRequest,
+  ): Promise<PlanTaskRequestRouteResponse> {
+    return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
+      this.requireWritableSession(input.sessionId);
+      const result = await this.taskRequestRouting.plan(input);
+      this.sessionRuns.refresh(input.runId);
+      this.invalidateContext("task_request_route_planned", {
+        sessionId: input.sessionId,
+        runId: input.runId,
+        taskId: input.taskId,
+      });
       return result;
     });
   }

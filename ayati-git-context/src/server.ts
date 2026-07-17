@@ -16,6 +16,7 @@ import {
   isFinalizeSessionRunRequest,
   isFinalizeTaskRunRequest,
   isMountTaskRequest,
+  isPlanTaskRequestRouteRequest,
   isRecordRunStepRequest,
   isRecordSessionAttachmentsRequest,
   isSnapshotTaskRunEvidenceRequest,
@@ -230,6 +231,20 @@ export class GitContextHttpServer {
           throw invalidRequest("Invalid activate-task-run request.");
         }
         sendJson(response, 200, await this.service.activateTaskRun(body));
+        return;
+      }
+
+      const requestRouteMatch = url.pathname.match(/^\/runs\/([^/]+)\/task-request-route$/);
+      if (method === "POST" && requestRouteMatch) {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isPlanTaskRequestRouteRequest(body)) {
+          throw invalidRequest("Invalid task-request-route request.");
+        }
+        const runId = decodePathComponent(requestRouteMatch[1] ?? "");
+        if (body.runId !== runId) {
+          throw invalidRequest("Run ID in request path and body must match.");
+        }
+        sendJson(response, 200, await this.service.planTaskRequestRoute(body));
         return;
       }
 

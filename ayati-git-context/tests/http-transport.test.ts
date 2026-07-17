@@ -30,6 +30,8 @@ import {
   type HealthResponse,
   type MountTaskRequest,
   type MountTaskResponse,
+  type PlanTaskRequestRouteRequest,
+  type PlanTaskRequestRouteResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
   type RecordSessionAttachmentsRequest,
@@ -149,6 +151,25 @@ describe("Git Context Engine HTTP transport", () => {
     })).resolves.toEqual({
       recorded: 1,
       sessionAssetIds: ["SA-http-attachment"],
+    });
+
+    await expect(client.planTaskRequestRoute({
+      requestId: "REQ-route",
+      sessionId: ensured.session.sessionId,
+      conversationId: appended.conversation.conversationId,
+      runId: "R-20260712-0001",
+      taskId: "T-20260712-0001",
+      expectedTaskHead: "a".repeat(40),
+      route: {
+        kind: "continue_active_request",
+        requestId: "R-0001",
+        reason: "Continue the active bounded request.",
+      },
+      at: "2026-07-12T10:00:01+05:30",
+    })).resolves.toMatchObject({
+      taskId: "T-20260712-0001",
+      taskRequestId: "R-0001",
+      phase: "planned",
     });
 
     await expect(client.bindTaskAttachments({
@@ -520,6 +541,29 @@ class TestGitContextService implements GitContextService {
         status: "ready",
       },
       created: true,
+    };
+  }
+
+  async planTaskRequestRoute(
+    input: PlanTaskRequestRouteRequest,
+  ): Promise<PlanTaskRequestRouteResponse> {
+    const taskRequestId = input.route.kind === "continue_active_request"
+      ? input.route.requestId
+      : "R-0002";
+    return {
+      run: {
+        runId: input.runId,
+        sessionId: input.sessionId,
+        conversationId: input.conversationId,
+        runClass: "task",
+        taskId: input.taskId,
+        taskRequestId,
+      },
+      taskId: input.taskId,
+      taskRequestId,
+      baseHead: input.expectedTaskHead,
+      phase: "planned",
+      requestCreated: input.route.kind === "create_active_request",
     };
   }
 

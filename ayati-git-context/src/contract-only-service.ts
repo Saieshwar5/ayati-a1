@@ -29,6 +29,8 @@ import {
   type ListTasksResponse,
   type MountTaskRequest,
   type MountTaskResponse,
+  type PlanTaskRequestRouteRequest,
+  type PlanTaskRequestRouteResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
   type RecordSessionAttachmentsRequest,
@@ -80,6 +82,12 @@ export class ContractOnlyGitContextService implements GitContextService {
   }
 
   async activateTaskRun(_input: ActivateTaskRunRequest): Promise<SelectedTaskRunResponse> {
+    throw notReady();
+  }
+
+  async planTaskRequestRoute(
+    _input: PlanTaskRequestRouteRequest,
+  ): Promise<PlanTaskRequestRouteResponse> {
     throw notReady();
   }
 

@@ -10,6 +10,7 @@ import {
   isFinalizeSessionRunRequest,
   isFinalizeTaskRunRequest,
   isMountTaskRequest,
+  isPlanTaskRequestRouteRequest,
   isRecordRunStepRequest,
   isRecordSessionAttachmentsRequest,
   isRequestEnvelope,
@@ -106,6 +107,50 @@ describe("Git Context Engine contracts", () => {
       objective: "Build something.",
       placement: { mode: "managed" },
       at: "2026-07-12T10:00:00+05:30",
+    })).toBe(false);
+  });
+
+  it("validates narrow V1 task request route plans", () => {
+    const base = {
+      requestId: "REQ-route",
+      sessionId: "S-20260717-local",
+      conversationId: "C-000001",
+      runId: "R-20260717-0001",
+      taskId: "T-20260717-0001",
+      expectedTaskHead: "a".repeat(40),
+      at: "2026-07-17T16:00:00+05:30",
+    };
+    expect(isPlanTaskRequestRouteRequest({
+      ...base,
+      route: {
+        kind: "continue_active_request",
+        requestId: "R-0001",
+        reason: "Continue the unfinished bounded outcome.",
+      },
+    })).toBe(true);
+    expect(isPlanTaskRequestRouteRequest({
+      ...base,
+      route: {
+        kind: "create_active_request",
+        reason: "Start the next bounded outcome in this task.",
+        title: "Next lesson",
+        request: "Create the next lesson.",
+        acceptance: ["The lesson is verified."],
+        constraints: [],
+      },
+    })).toBe(true);
+    expect(isPlanTaskRequestRouteRequest({
+      ...base,
+      route: { kind: "create_queued_request", reason: "Not a mutating route." },
+    })).toBe(false);
+    expect(isPlanTaskRequestRouteRequest({
+      ...base,
+      taskId: "W-20260717-0001",
+      route: {
+        kind: "continue_active_request",
+        requestId: "R-0001",
+        reason: "Legacy tasks do not use this writer.",
+      },
     })).toBe(false);
   });
 

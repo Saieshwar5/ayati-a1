@@ -8,6 +8,7 @@ import type {
   MountTaskResponse,
   SessionRef,
   TaskCatalogEntry,
+  TaskCandidate,
   TaskContextProjection,
   ListTasksRequest,
   ListTasksResponse,
@@ -217,6 +218,7 @@ export class TaskLifecycleService {
         limit,
       }).map((task) => ({
         taskId: task.taskId,
+        layoutVersion: task.layoutVersion,
         title: task.title,
         objective: task.objective,
         status: task.status,
@@ -225,6 +227,48 @@ export class TaskLifecycleService {
         updatedAt: task.updatedAt,
       })),
     };
+  }
+
+  async listRoutingCandidates(input: ListTasksRequest): Promise<TaskCandidate[]> {
+    const limit = Math.min(Math.max(input.limit ?? 20, 1), 100);
+    const tasks = readTaskCatalogEntries(this.database, {
+      ...(input.query?.trim() ? { query: input.query.trim() } : {}),
+      limit,
+    });
+    return await Promise.all(tasks.map(async (task): Promise<TaskCandidate> => {
+      const base: TaskCandidate = {
+        taskId: task.taskId,
+        layoutVersion: task.layoutVersion,
+        title: task.title,
+        objective: task.objective,
+        status: task.status,
+        head: task.head,
+        workingDirectory: task.workingPath,
+        updatedAt: task.updatedAt,
+      };
+      if (task.layoutVersion !== "simple_repository_v1") return base;
+      try {
+        const context = await this.readContext(task);
+        return {
+          ...base,
+          title: context.title,
+          objective: context.objective,
+          lifecycleStatus: context.lifecycleStatus,
+          repositoryHealth: context.repositoryHealth,
+          ...(context.currentRequest
+            ? {
+                currentRequest: {
+                  id: context.currentRequest.id,
+                  title: context.currentRequest.title,
+                  status: context.currentRequest.status,
+                },
+              }
+            : {}),
+        };
+      } catch {
+        return { ...base, repositoryHealth: "unavailable" };
+      }
+    }));
   }
 
   async mountTask(

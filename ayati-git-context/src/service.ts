@@ -28,6 +28,8 @@ import type {
   ListTasksResponse,
   MountTaskRequest,
   MountTaskResponse,
+  PlanTaskRequestRouteRequest,
+  PlanTaskRequestRouteResponse,
   RecordRunStepRequest,
   RecordRunStepResponse,
   RecordSessionAttachmentsRequest,
@@ -49,6 +51,9 @@ export interface GitContextService {
   createTask(input: CreateTaskRequest): Promise<CreateTaskResponse>;
   createTaskRun(input: CreateTaskRunRequest): Promise<SelectedTaskRunResponse>;
   activateTaskRun(input: ActivateTaskRunRequest): Promise<SelectedTaskRunResponse>;
+  planTaskRequestRoute(
+    input: PlanTaskRequestRouteRequest,
+  ): Promise<PlanTaskRequestRouteResponse>;
   listTasks(input: ListTasksRequest): Promise<ListTasksResponse>;
   getTask(input: GetTaskRequest): Promise<GetTaskResponse>;
   mountTask(input: MountTaskRequest): Promise<MountTaskResponse>;

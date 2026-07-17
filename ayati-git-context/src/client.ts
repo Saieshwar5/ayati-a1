@@ -30,6 +30,8 @@ import type {
   ListTasksResponse,
   MountTaskRequest,
   MountTaskResponse,
+  PlanTaskRequestRouteRequest,
+  PlanTaskRequestRouteResponse,
   RecordRunStepRequest,
   RecordRunStepResponse,
   RecordSessionAttachmentsRequest,
@@ -125,6 +127,16 @@ export class GitContextClient implements GitContextService {
 
   async activateTaskRun(input: ActivateTaskRunRequest): Promise<SelectedTaskRunResponse> {
     return await this.requestJson<SelectedTaskRunResponse>("POST", "/task-runs/activate", input);
+  }
+
+  async planTaskRequestRoute(
+    input: PlanTaskRequestRouteRequest,
+  ): Promise<PlanTaskRequestRouteResponse> {
+    return await this.requestJson<PlanTaskRequestRouteResponse>(
+      "POST",
+      "/runs/" + encodeURIComponent(input.runId) + "/task-request-route",
+      input,
+    );
   }
 
   async listTasks(input: ListTasksRequest): Promise<ListTasksResponse> {

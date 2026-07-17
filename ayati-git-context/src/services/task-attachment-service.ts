@@ -15,6 +15,7 @@ import { GitContextServiceError } from "../errors.js";
 import { readConversation } from "../repositories/conversation-records.js";
 import { readMutationAuthority } from "../repositories/mutation-authority-records.js";
 import { readRunEvidence } from "../repositories/run-records.js";
+import { readTaskRequestRoutePlan } from "../repositories/task-request-route-plan-records.js";
 import {
   countSessionAttachments,
   readConversationAttachments,
@@ -39,6 +40,7 @@ import { nextReferenceId } from "../tasks/task-references.js";
 import type { TaskReference } from "../tasks/task-references.js";
 import { normalizePortableTaskPath } from "../tasks/task-repository-layout.js";
 import { validateTaskRepository } from "../tasks/task-repository-validator.js";
+import { resolvePlannedTaskRequestState } from "../tasks/planned-task-request.js";
 
 export class TaskAttachmentService {
   constructor(private readonly options: {
@@ -110,10 +112,20 @@ export class TaskAttachmentService {
       taskRoot: this.options.taskRoot,
       repositoryPath: task.repositoryPath,
       expectedTaskId: task.taskId,
-      requestReadMode: "current",
+      requestReadMode: "all",
     });
-    const taskRequest = validation.currentRequest;
-    if (!taskRequest || taskRequest.status !== "active") {
+    const routePlan = readTaskRequestRoutePlan(this.options.database, input.runId);
+    if (routePlan && routePlan.phase !== "planned"
+      && routePlan.phase !== "authority_acquired") {
+      throw invalid("Attachment binding requires a mutation-ready task request plan.", {
+        phase: routePlan.phase,
+      });
+    }
+    const taskRequest = routePlan
+      ? resolvePlannedTaskRequestState(routePlan, validation).taskRequest
+      : validation.currentRequest;
+    if (!taskRequest || taskRequest.status !== "active"
+      || run.taskRequestId !== taskRequest.id) {
       throw invalid("Attachment binding requires an active V1 task request.");
     }
     const attachments = readConversationAttachments(

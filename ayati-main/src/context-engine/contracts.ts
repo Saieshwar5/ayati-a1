@@ -300,8 +300,18 @@ export interface ContextEngineMachineContext {
   readContext?: ContextReadContext;
   taskCandidates?: Array<{
     taskId: string;
+    layoutVersion: "legacy_independent_v0" | "simple_repository_v1";
     title: string;
     objective: string;
+    status: "initializing" | "active" | "archived";
+    lifecycleStatus?: "active" | "paused" | "archived";
+    repositoryHealth?: "ready" | "dirty_external" | "unavailable";
+    currentRequest?: {
+      id: string;
+      title: string;
+      status: "queued" | "active" | "blocked" | "done" | "dropped";
+    };
+    head: string;
     workingDirectory: string;
     updatedAt: string;
   }>;

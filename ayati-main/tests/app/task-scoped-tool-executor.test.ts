@@ -89,6 +89,57 @@ describe("task-scoped tool executor", () => {
     }));
   });
 
+  it("uses the V1 working directory and leaves verified changes for finalization", async () => {
+    const workingDirectory = mkdtempSync(join(tmpdir(), "ayati-v1-task-"));
+    temporaryDirectories.push(workingDirectory);
+    const execute = vi.fn(async () => ({ ok: true, output: "wrote lesson" }));
+    const acquireMutationAuthority = vi.fn(async () => ({
+      authority: { authorityId: "A-v1", lockToken: "lock-v1" },
+    }));
+    const checkpointMutation = vi.fn();
+    const service = {
+      getActiveContext: vi.fn(async () => v1ActiveContext(workingDirectory)),
+      acquireMutationAuthority,
+      verifyMutation: vi.fn(async () => ({
+        authorityId: "A-v1",
+        status: "verified",
+        verified: true,
+        outcome: "verified_changes",
+        provenance: {},
+      })),
+      checkpointMutation,
+    } as unknown as GitContextService;
+    const executor = createTaskScopedToolExecutor({ base: baseExecutor(execute), gitContext: service });
+
+    const result = await executor.execute("write_files", {
+      files: [{ path: join(workingDirectory, "lesson.md"), content: "Lesson" }],
+    }, {
+      clientId: "client-1",
+      sessionId: "S-1",
+      runId: "R-1",
+      stepNumber: 1,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(acquireMutationAuthority).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: "T-20260713-0001",
+      taskRequestId: "R-0002",
+      targets: [{ path: "lesson.md", kind: "file" }],
+    }));
+    expect(checkpointMutation).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledWith(
+      "write_files",
+      expect.anything(),
+      expect.objectContaining({
+        resourceScope: {
+          kind: "task",
+          rootPath: workingDirectory,
+          taskId: "T-20260713-0001",
+        },
+      }),
+    );
+  });
+
   it("uses the task checkout as the trusted filesystem root without a model escape flag", async () => {
     const checkoutPath = mkdtempSync(join(tmpdir(), "ayati-task-checkout-"));
     temporaryDirectories.push(checkoutPath);
@@ -435,4 +486,20 @@ function activeContext(checkoutPath: string) {
     },
     warnings: [],
   };
+}
+
+function v1ActiveContext(workingDirectory: string) {
+  const context = structuredClone(activeContext(workingDirectory));
+  context.activeTask.task = {
+    ...context.activeTask.task,
+    taskId: "T-20260713-0001",
+    layoutVersion: "simple_repository_v1",
+    repositoryPath: workingDirectory,
+    workingPath: workingDirectory,
+  } as typeof context.activeTask.task;
+  delete (context.activeTask as { checkoutPath?: string }).checkoutPath;
+  context.activeTask.workingDirectory = workingDirectory;
+  context.run.run.taskId = "T-20260713-0001";
+  (context.run.run as typeof context.run.run & { taskRequestId: string }).taskRequestId = "R-0002";
+  return context;
 }

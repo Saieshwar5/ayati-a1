@@ -1,4 +1,4 @@
-export const GIT_CONTEXT_PROTOCOL_VERSION = 21;
+export const GIT_CONTEXT_PROTOCOL_VERSION = 22;
 
 export type SessionId = string;
 export type TaskId = string;
@@ -305,9 +305,17 @@ export interface TaskContextProjection {
 
 export interface TaskCandidate {
   taskId: TaskId;
+  layoutVersion: TaskRepositoryLayout;
   title: string;
   objective: string;
   status: TaskStatus;
+  lifecycleStatus?: "active" | "paused" | "archived";
+  repositoryHealth?: "ready" | "dirty_external" | "unavailable";
+  currentRequest?: {
+    id: string;
+    title: string;
+    status: "queued" | "active" | "blocked" | "done" | "dropped";
+  };
   head: string;
   workingDirectory: string;
   updatedAt: string;
@@ -447,6 +455,47 @@ export interface CreateTaskRunRequest extends GitContextRequestEnvelope, SelectT
 export interface ActivateTaskRunRequest extends GitContextRequestEnvelope, SelectTaskRunInput {
   taskId: TaskId;
   expectedTaskHead?: string;
+}
+
+export type TaskRequestRoute =
+  | {
+      kind: "continue_active_request";
+      requestId: string;
+      reason: string;
+    }
+  | {
+      kind: "create_active_request";
+      reason: string;
+      title: string;
+      request: string;
+      acceptance: string[];
+      constraints: string[];
+    };
+
+export type TaskRequestRoutePlanPhase =
+  | "planned"
+  | "authority_acquired"
+  | "committed"
+  | "discarded"
+  | "recovery_required";
+
+export interface PlanTaskRequestRouteRequest extends GitContextRequestEnvelope {
+  sessionId: SessionId;
+  conversationId: ConversationId;
+  runId: RunId;
+  taskId: TaskId;
+  expectedTaskHead: string;
+  route: TaskRequestRoute;
+  at: string;
+}
+
+export interface PlanTaskRequestRouteResponse {
+  run: RunRef;
+  taskId: TaskId;
+  taskRequestId: string;
+  baseHead: string;
+  phase: TaskRequestRoutePlanPhase;
+  requestCreated: boolean;
 }
 
 export interface SelectedTaskRunResponse {
@@ -769,6 +818,31 @@ export function isActivateTaskRunRequest(value: unknown): value is ActivateTaskR
     && (value["expectedTaskHead"] === undefined
       || /^[a-f0-9]{40}$/.test(String(value["expectedTaskHead"])))
     && isTaskRunSelection(value);
+}
+
+export function isPlanTaskRequestRouteRequest(
+  value: unknown,
+): value is PlanTaskRequestRouteRequest {
+  if (!isRequestEnvelope(value) || !isRecord(value["route"])) {
+    return false;
+  }
+  const route = value["route"];
+  const common = isNonEmptyString(value["sessionId"])
+    && isNonEmptyString(value["conversationId"])
+    && isNonEmptyString(value["runId"])
+    && /^T-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
+    && /^[a-f0-9]{40}$/.test(String(value["expectedTaskHead"] ?? ""))
+    && isNonEmptyString(value["at"])
+    && isBoundedString(route["reason"], 500);
+  if (!common) return false;
+  if (route["kind"] === "continue_active_request") {
+    return /^R-\d{4}$/.test(String(route["requestId"] ?? ""));
+  }
+  return route["kind"] === "create_active_request"
+    && isBoundedString(route["title"], 120)
+    && isBoundedString(route["request"], 2_000)
+    && isBoundedStringArray(route["acceptance"], 50, 500)
+    && isBoundedStringArray(route["constraints"], 50, 500);
 }
 
 export function isMountTaskRequest(value: unknown): value is MountTaskRequest {

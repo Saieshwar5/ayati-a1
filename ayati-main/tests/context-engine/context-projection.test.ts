@@ -66,6 +66,47 @@ describe("context engine projection", () => {
       runId: "R-20260714-0004",
     }]);
   });
+
+  it("preserves compact V1 lifecycle and request state for routing", () => {
+    const active = activeTaskContext("/workspace/aurora-coffee-site");
+    active.taskCandidates = [{
+      taskId: "T-20260714-0002",
+      layoutVersion: "simple_repository_v1",
+      title: "Machine learning course",
+      objective: "Learn machine learning in bounded lessons.",
+      status: "active",
+      lifecycleStatus: "active",
+      repositoryHealth: "ready",
+      currentRequest: {
+        id: "R-0003",
+        title: "Learn model evaluation",
+        status: "active",
+      },
+      head: "e".repeat(40),
+      workingDirectory: "/workspace/tasks/T-20260714-0002-machine-learning-course",
+      updatedAt: "2026-07-14T11:00:00.000Z",
+    }];
+
+    const projection = buildContextEngineProjection(active);
+
+    expect(projection.taskCandidates).toEqual([{
+      taskId: "T-20260714-0002",
+      layoutVersion: "simple_repository_v1",
+      title: "Machine learning course",
+      objective: "Learn machine learning in bounded lessons.",
+      status: "active",
+      lifecycleStatus: "active",
+      repositoryHealth: "ready",
+      currentRequest: {
+        id: "R-0003",
+        title: "Learn model evaluation",
+        status: "active",
+      },
+      head: "e".repeat(40),
+      workingDirectory: "/workspace/tasks/T-20260714-0002-machine-learning-course",
+      updatedAt: "2026-07-14T11:00:00.000Z",
+    }]);
+  });
 });
 
 function activeTaskContext(checkoutPath: string): ActiveContext {

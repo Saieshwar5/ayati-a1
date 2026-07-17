@@ -5,8 +5,9 @@ Last updated: 2026-07-17
 Current status: repository contracts, read-only context, isolated creation,
 request planning, direct mutation, single-commit finalization, and durable
 attachments/references are implemented. The Phase 8 state-aware routing policy
-is implemented; candidate/request projection, applying request plans, and
-default V1 routing remain intentionally disabled.
+and live request-plan bridge are implemented, including compact V1 candidates,
+durable request reservations, direct authority handoff, and one-commit request
+application. Default V1 task creation/routing remains intentionally disabled.
 
 ## Planning
 
@@ -172,15 +173,15 @@ Slice progress:
 - [x] Distinguish continuation, active/queued request creation, task selection,
   task creation, read-only access, clarification, and lifecycle transition.
 - [x] Add task/request/run semantics to stable harness routing guidance.
-- [ ] Project compact lifecycle/current-request state for V1 task candidates.
-- [ ] Persist and apply resolved request plans through the live V1 run path.
+- [x] Project compact lifecycle/current-request state for V1 task candidates.
+- [x] Persist and apply resolved request plans through the live V1 run path.
 - [ ] Switch default live routing from legacy task activation to V1.
 
-- [ ] Update routing around task/request/run separation.
-- [ ] Preserve read-first session runs.
-- [ ] Ensure request completion does not archive task.
-- [ ] Support active task with no current request.
-- [ ] Require lifecycle transition before archived/paused mutation.
+- [x] Update routing around task/request/run separation.
+- [x] Preserve read-first session runs.
+- [x] Ensure request completion does not archive task.
+- [x] Support active task with no current request.
+- [x] Require lifecycle transition before archived/paused mutation.
 - [ ] Cover learning, website, computer-use, analysis, and automation flows.
 
 Exit gate:
@@ -510,3 +511,45 @@ Add dated entries here after each verified implementation slice. Include:
 - Next slice: project compact V1 task lifecycle/current-request state into
   routing candidates, then persist and apply a resolved request plan when the
   same session run is promoted for its first mutation.
+
+### 2026-07-17: Live V1 request-plan bridge
+
+- Branch: `refactor/simple-task-repository-v1`
+- Commit: the implementation commit containing this entry.
+- Added protocol 22 request-route contracts for two mutation-ready decisions:
+  continue the exact active request or create one exact active request. Queued
+  work, task creation, ambiguous ownership, and lifecycle transitions remain
+  outside this writer boundary.
+- Added SQLite migration 16 with one durable route-plan journal per run and an
+  exclusive pending-plan reservation per task. Planning records the expected
+  task HEAD, exact request identity, normalized decision, and deterministic
+  request change plan without modifying the task repository.
+- The same session run is promoted and bound to the selected V1 task/request
+  when the route plan is persisted. Compact candidates now expose layout,
+  lifecycle status, repository health, and current request identity; active
+  context overlays a still-pending planned request without presenting it as a
+  committed repository file.
+- Mutation authority revalidates the journal against the clean repository
+  after locking and records the authority handoff. Attachment binding uses the
+  same planned request identity, so retained inputs can be associated before
+  the request file exists in Git.
+- V1 finalization merges planned task-card/request writes, verified deliverable
+  changes, reference updates, and reduced outcome state into one exact commit.
+  Failed no-change work discards an uncommitted new request. Commit-before-
+  acknowledgement recovery recognizes the exact Git result and completes both
+  finalization and route journals without a duplicate commit.
+- Fixed task-scoped execution for V1 repositories: direct working directories
+  are now resource-scoped, authority includes the bound request ID, and
+  verified changes remain pending for V1 single-commit finalization instead of
+  entering the legacy per-action checkpoint path.
+- Default task creation and the model-facing legacy activation tool are not
+  switched in this slice. Existing legacy task behavior remains available.
+- Focused evidence: route creation/application, failed-plan discard,
+  commit-interruption recovery, request-route contract validation, and V1
+  executor scoping all passed.
+- Workspace result: CLI 38 tests, Git Context 175 tests, and backend 846 tests
+  passed (1,059 total); the full workspace build passed.
+- Next slice: teach the model-facing Git Context routing tool to submit these
+  explicit V1 request decisions and add a mount-free V1 create/select response,
+  then switch default new-task creation only after compatibility coverage is
+  green.

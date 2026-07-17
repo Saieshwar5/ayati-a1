@@ -477,6 +477,33 @@ const MIGRATIONS: Migration[] = [
       "ON task_attachment_bindings(run_id, phase, reference_id);",
     ].join("\n"),
   },
+  {
+    version: 16,
+    sql: [
+      "CREATE TABLE task_request_route_plans (",
+      "  run_id TEXT PRIMARY KEY REFERENCES runs(run_id),",
+      "  request_id TEXT NOT NULL UNIQUE,",
+      "  session_id TEXT NOT NULL REFERENCES sessions(session_id),",
+      "  conversation_id TEXT NOT NULL REFERENCES conversation_segments(conversation_id),",
+      "  task_id TEXT NOT NULL REFERENCES tasks(task_id),",
+      "  task_request_id TEXT NOT NULL,",
+      "  base_head TEXT NOT NULL,",
+      "  route_json TEXT NOT NULL,",
+      "  change_plan_json TEXT,",
+      "  phase TEXT NOT NULL CHECK (phase IN ('planned', 'authority_acquired', 'committed', 'discarded', 'recovery_required')),",
+      "  authority_id TEXT REFERENCES task_mutation_authorities(authority_id),",
+      "  commit_head TEXT,",
+      "  created_at TEXT NOT NULL,",
+      "  updated_at TEXT NOT NULL,",
+      "  last_error TEXT",
+      ");",
+      "CREATE UNIQUE INDEX task_request_route_plans_active_task",
+      "ON task_request_route_plans(task_id)",
+      "WHERE phase IN ('planned', 'authority_acquired', 'recovery_required');",
+      "CREATE INDEX task_request_route_plans_recovery",
+      "ON task_request_route_plans(phase, updated_at);",
+    ].join("\n"),
+  },
 ];
 
 export function applyMigrations(database: DatabaseSync, now: () => string): void {
