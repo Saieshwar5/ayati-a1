@@ -20,6 +20,7 @@ interface RunRow {
   session_id: string;
   conversation_id: string;
   task_id: string | null;
+  task_request_id: string | null;
   run_class: RunRef["runClass"];
 }
 
@@ -116,7 +117,7 @@ export function startTaskRun(
 
 export function readActiveRun(database: ContextDatabase, sessionId: string): RunRef | undefined {
   const row = database.prepare([
-    "SELECT run_id, session_id, conversation_id, task_id, run_class",
+    "SELECT run_id, session_id, conversation_id, task_id, task_request_id, run_class",
     "FROM runs WHERE session_id = ? AND status = 'running' LIMIT 1",
   ].join(" ")).get(sessionId) as RunRow | undefined;
   return row ? runRef(row) : undefined;
@@ -131,7 +132,7 @@ export function readActiveRunIds(database: ContextDatabase): string[] {
 
 export function readRun(database: ContextDatabase, runId: string): RunRef | undefined {
   const row = database.prepare([
-    "SELECT run_id, session_id, conversation_id, task_id, run_class",
+    "SELECT run_id, session_id, conversation_id, task_id, task_request_id, run_class",
     "FROM runs WHERE run_id = ?",
   ].join(" ")).get(runId) as RunRow | undefined;
   return row ? runRef(row) : undefined;
@@ -142,7 +143,7 @@ export function readRunEvidence(
   runId: string,
 ): RunEvidenceRecord | undefined {
   const row = database.prepare([
-    "SELECT run_id, session_id, conversation_id, task_id, run_class, status, trigger,",
+    "SELECT run_id, session_id, conversation_id, task_id, task_request_id, run_class, status, trigger,",
     "started_at, completed_at, step_count FROM runs WHERE run_id = ?",
   ].join(" ")).get(runId) as RunEvidenceRow | undefined;
   if (!row) return undefined;
@@ -217,9 +218,10 @@ export function bindActiveRunToTask(
   sessionId: string,
   runId: string,
   taskId: string,
+  taskRequestId?: string,
 ): RunRef {
   const row = database.prepare([
-    "SELECT run_id, session_id, conversation_id, task_id, run_class",
+    "SELECT run_id, session_id, conversation_id, task_id, task_request_id, run_class",
     "FROM runs WHERE run_id = ? AND session_id = ? AND status = 'running'",
   ].join(" ")).get(runId, sessionId) as RunRow | undefined;
   if (!row) {
@@ -236,8 +238,22 @@ export function bindActiveRunToTask(
       details: { sessionId, runId, activeTaskId: row.task_id, requestedTaskId: taskId },
     });
   }
-  database.prepare("UPDATE runs SET task_id = ?, run_class = 'task' WHERE run_id = ?")
-    .run(taskId, runId);
+  if (row.task_request_id && row.task_request_id !== taskRequestId) {
+    throw new GitContextServiceError({
+      code: "MUTATION_REQUIRES_TASK",
+      message: "Active run is already owned by a different task request.",
+      details: {
+        sessionId,
+        runId,
+        activeTaskRequestId: row.task_request_id,
+        requestedTaskRequestId: taskRequestId ?? null,
+      },
+    });
+  }
+  database.prepare([
+    "UPDATE runs SET task_id = ?, task_request_id = COALESCE(?, task_request_id),",
+    "run_class = 'task' WHERE run_id = ?",
+  ].join(" ")).run(taskId, taskRequestId ?? null, runId);
   database.prepare([
     "UPDATE conversation_segments SET task_id = ?, run_id = ? WHERE conversation_id = ?",
   ].join(" ")).run(taskId, runId, row.conversation_id);
@@ -247,6 +263,7 @@ export function bindActiveRunToTask(
     conversationId: row.conversation_id,
     runClass: "task",
     taskId,
+    ...(taskRequestId ? { taskRequestId } : {}),
   };
 }
 
@@ -329,6 +346,7 @@ function runRef(row: RunRow): RunRef {
     conversationId: row.conversation_id,
     runClass: row.run_class,
     ...(row.task_id ? { taskId: row.task_id } : {}),
+    ...(row.task_request_id ? { taskRequestId: row.task_request_id } : {}),
   };
 }
 

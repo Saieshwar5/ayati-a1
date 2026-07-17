@@ -2,6 +2,7 @@ import type {
   MutationAuthorityStatus,
   MutationProvenance,
   ResolvedMutationTarget,
+  TaskRepositoryLayout,
 } from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
 import { GitContextServiceError } from "../errors.js";
@@ -11,6 +12,9 @@ interface MutationAuthorityRow {
   session_id: string;
   run_id: string;
   task_id: string;
+  repository_layout: TaskRepositoryLayout;
+  repository_path: string;
+  task_request_id: string | null;
   checkout_path: string;
   canonical_repository: string;
   branch: string;
@@ -31,6 +35,9 @@ export interface MutationAuthorityRecord {
   sessionId: string;
   runId: string;
   taskId: string;
+  repositoryLayout: TaskRepositoryLayout;
+  repositoryPath: string;
+  taskRequestId?: string;
   checkoutPath: string;
   canonicalRepository: string;
   branch: string;
@@ -50,6 +57,9 @@ export function insertMutationAuthority(database: ContextDatabase, input: {
   sessionId: string;
   runId: string;
   taskId: string;
+  repositoryLayout: TaskRepositoryLayout;
+  repositoryPath: string;
+  taskRequestId?: string;
   checkoutPath: string;
   canonicalRepository: string;
   branch: string;
@@ -59,22 +69,26 @@ export function insertMutationAuthority(database: ContextDatabase, input: {
   acquiredAt: string;
   expiresAt: string;
 }): MutationAuthorityRecord {
-  assertTaskMutationUnlocked(database, input.taskId);
+  assertTaskMutationUnlocked(database, input.taskId, input.acquiredAt);
   const row = database.prepare([
     "SELECT COUNT(*) + 1 AS next FROM task_mutation_authorities WHERE run_id = ?",
   ].join(" ")).get(input.runId) as { next: number };
   const authorityId = input.runId + "-M-" + String(Number(row.next)).padStart(4, "0");
   database.prepare([
     "INSERT INTO task_mutation_authorities(",
-    "authority_id, session_id, run_id, task_id, checkout_path, canonical_repository,",
-    "branch, before_head, lock_token_hash, authorized_targets_json, status, acquired_at,",
+    "authority_id, session_id, run_id, task_id, repository_layout, repository_path,",
+    "task_request_id, checkout_path, canonical_repository, branch, before_head,",
+    "lock_token_hash, authorized_targets_json, status, acquired_at,",
     "expires_at, verified_at, released_at, verification_json, last_error",
-    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL, NULL, NULL, NULL)",
+    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL, NULL, NULL, NULL)",
   ].join(" ")).run(
     authorityId,
     input.sessionId,
     input.runId,
     input.taskId,
+    input.repositoryLayout,
+    input.repositoryPath,
+    input.taskRequestId ?? null,
     input.checkoutPath,
     input.canonicalRepository,
     input.branch,
@@ -94,9 +108,29 @@ export function insertMutationAuthority(database: ContextDatabase, input: {
 export function assertTaskMutationUnlocked(
   database: ContextDatabase,
   taskId: string,
+  at?: string,
 ): void {
   const blocking = readBlockingAuthority(database, taskId);
   if (blocking) {
+    if (blocking.status === "active" && at && isExpired(blocking.expiresAt, at)) {
+      updateMutationAuthorityVerification(database, blocking.authorityId, {
+        status: "recovery_required",
+        provenance: emptyProvenance(),
+        outcome: "lease_expired",
+        at,
+        error: "Mutation authority lease expired before deterministic release.",
+      });
+      throw new GitContextServiceError({
+        code: "RECOVERY_REQUIRED",
+        message: "The previous task mutation lease expired and requires recovery.",
+        details: {
+          taskId,
+          authorityId: blocking.authorityId,
+          runId: blocking.runId,
+          expiredAt: blocking.expiresAt,
+        },
+      });
+    }
     throw new GitContextServiceError({
       code: "TASK_LOCKED",
       message: "Task already has an active mutation authority.",
@@ -185,8 +219,9 @@ function readBlockingAuthority(
 
 function authoritySelect(): string {
   return [
-    "SELECT authority_id, session_id, run_id, task_id, checkout_path,",
-    "canonical_repository, branch, before_head, lock_token_hash,",
+    "SELECT authority_id, session_id, run_id, task_id, repository_layout,",
+    "repository_path, task_request_id, checkout_path, canonical_repository,",
+    "branch, before_head, lock_token_hash,",
     "authorized_targets_json, status, acquired_at, expires_at, verified_at,",
     "released_at, verification_json, last_error FROM task_mutation_authorities",
   ].join(" ");
@@ -198,6 +233,9 @@ function mutationAuthorityRecord(row: MutationAuthorityRow): MutationAuthorityRe
     sessionId: row.session_id,
     runId: row.run_id,
     taskId: row.task_id,
+    repositoryLayout: row.repository_layout,
+    repositoryPath: row.repository_path,
+    ...(row.task_request_id ? { taskRequestId: row.task_request_id } : {}),
     checkoutPath: row.checkout_path,
     canonicalRepository: row.canonical_repository,
     branch: row.branch,
@@ -213,5 +251,21 @@ function mutationAuthorityRecord(row: MutationAuthorityRow): MutationAuthorityRe
       ? { verification: JSON.parse(row.verification_json) as unknown }
       : {}),
     ...(row.last_error ? { lastError: row.last_error } : {}),
+  };
+}
+
+function isExpired(expiresAt: string, at: string): boolean {
+  const expires = Date.parse(expiresAt);
+  const current = Date.parse(at);
+  return Number.isFinite(expires) && Number.isFinite(current) && expires <= current;
+}
+
+function emptyProvenance(): MutationProvenance {
+  return {
+    created: [],
+    modified: [],
+    deleted: [],
+    renamed: [],
+    unexpectedPaths: [],
   };
 }

@@ -1,4 +1,4 @@
-export const GIT_CONTEXT_PROTOCOL_VERSION = 18;
+export const GIT_CONTEXT_PROTOCOL_VERSION = 19;
 
 export type SessionId = string;
 export type TaskId = string;
@@ -92,8 +92,13 @@ export interface MutationAuthority {
   sessionId: SessionId;
   runId: RunId;
   taskId: TaskId;
-  checkoutPath: string;
-  canonicalRepository: string;
+  repositoryLayout: TaskRepositoryLayout;
+  repositoryPath: string;
+  taskRequestId?: string;
+  /** Legacy session-mounted checkout. Omitted for simple_repository_v1. */
+  checkoutPath?: string;
+  /** Legacy bare repository. Omitted for simple_repository_v1. */
+  canonicalRepository?: string;
   branch: string;
   beforeHead: string;
   targets: ResolvedMutationTarget[];
@@ -115,6 +120,7 @@ export interface RunRef {
   conversationId: ConversationId;
   runClass: RunClass;
   taskId?: TaskId;
+  taskRequestId?: string;
 }
 
 export interface ConversationRef {
@@ -431,6 +437,8 @@ export interface AcquireMutationAuthorityRequest extends GitContextRequestEnvelo
   sessionId: SessionId;
   runId: RunId;
   taskId: TaskId;
+  /** Required for simple_repository_v1 and must name its active request. */
+  taskRequestId?: string;
   expectedTaskHead?: string;
   targets: MutationTarget[];
   at: string;
@@ -699,7 +707,9 @@ export function isAcquireMutationAuthorityRequest(
   }
   return isNonEmptyString(value["sessionId"])
     && isNonEmptyString(value["runId"])
-    && /^W-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
+    && /^[TW]-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
+    && (value["taskRequestId"] === undefined
+      || /^R-\d{4}$/.test(String(value["taskRequestId"])))
     && (value["expectedTaskHead"] === undefined
       || /^[a-f0-9]{40}$/.test(String(value["expectedTaskHead"])))
     && Array.isArray(value["targets"])

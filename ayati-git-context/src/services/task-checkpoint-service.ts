@@ -46,6 +46,13 @@ export class TaskCheckpointService {
       });
     }
     verifyMutationLockToken(authority, input.lockToken);
+    if (authority.repositoryLayout === "simple_repository_v1") {
+      throw new GitContextServiceError({
+        code: "SERVICE_NOT_READY",
+        message: "V1 mutation finalization is owned by the Phase 6 single-commit path.",
+        details: { authorityId: authority.authorityId, taskId: authority.taskId },
+      });
+    }
     const existing = readTaskCheckpoint(this.database, input.authorityId);
     if (!existing && authority.status !== "verified") {
       throw new GitContextServiceError({

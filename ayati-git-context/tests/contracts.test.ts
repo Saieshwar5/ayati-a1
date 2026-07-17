@@ -132,6 +132,16 @@ describe("Git Context Engine contracts", () => {
       at: "2026-07-12T10:02:00+05:30",
     })).toBe(true);
     expect(isAcquireMutationAuthorityRequest({
+      requestId: "REQ-v1-authority",
+      sessionId: "S-20260717-local",
+      runId: "R-20260717-0001",
+      taskId: "T-20260717-0001",
+      taskRequestId: "R-0001",
+      expectedTaskHead: "a".repeat(40),
+      targets: [{ path: "src/app.ts", kind: "file" }],
+      at: "2026-07-17T10:02:00+05:30",
+    })).toBe(true);
+    expect(isAcquireMutationAuthorityRequest({
       requestId: "REQ-authority",
       sessionId: "S-20260712-local",
       runId: "R-20260712-0001",

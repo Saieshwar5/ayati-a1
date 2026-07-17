@@ -107,16 +107,16 @@ Exit gate:
 
 ## Phase 5: Direct Mutation Authority
 
-- [ ] Bind authority to one task repository path and base HEAD.
-- [ ] Add exclusive task lock.
-- [ ] Remove V1 mount/canonical-repository duplication from authority.
-- [ ] Preserve bounded targets, symlink safety, Git provenance, and
+- [x] Bind authority to one task repository path and base HEAD.
+- [x] Add exclusive task lock.
+- [x] Remove V1 mount/canonical-repository duplication from authority.
+- [x] Preserve bounded targets, symlink safety, Git provenance, and
   verification.
-- [ ] Block unjournaled dirty state conservatively.
+- [x] Block unjournaled dirty state conservatively.
 
 Exit gate:
 
-- [ ] Exactly one run can mutate a task safely without a session submodule.
+- [x] Exactly one run can mutate a task safely without a session submodule.
 
 ## Phase 6: Single-Commit Finalization
 
@@ -346,3 +346,39 @@ Add dated entries here after each verified implementation slice. Include:
   task card, and request files unchanged.
 - Next slice: Phase 5 direct V1 mutation authority, binding one run and request
   to the single repository path without mounts, clones, pushes, or gitlinks.
+
+### 2026-07-17: Direct V1 mutation authority
+
+- Branch: `refactor/simple-task-repository-v1`
+- Commit: the implementation commit containing this entry.
+- Added layout-aware mutation authority persistence with one direct repository
+  path, base HEAD, active task-request identity, run/session ownership, bounded
+  targets, hashed lease token, expiry, verification, and recovery state.
+- V1 acquisition validates the normal repository, committed task identity,
+  durable branch, expected HEAD, current active request, clean working tree,
+  and canonical targets. It acquires the exclusive task lease, rechecks the
+  filesystem state and targets, then promotes the same session run to the task
+  and request without creating a mount or session submodule.
+- Preserved the legacy mount/bare-repository authority path. Compatibility
+  columns remain in SQLite for existing rows, but V1 responses and behavior
+  expose and use only `repositoryPath`; legacy checkout and canonical fields
+  are omitted from V1 authority responses.
+- Preserved portable bounded targets, root/`.git`/`.ayati` rejection, symlink
+  containment, token verification, Git-derived create/modify/delete/rename
+  provenance, unexpected-path recovery, failed-tool handling, and idempotency.
+- V1 provenance compares directly with the base HEAD. Ignored inbox bytes are
+  excluded from normal mutation provenance while the tracked inbox `.gitkeep`
+  remains protected engine-owned state.
+- Added deterministic expired-lease conversion to `recovery_required` and
+  conservative rejection of unjournaled dirt without reset, checkout, clean,
+  stash, deletion, or automatic baseline capture.
+- V1 verified changes remain in the direct working repository. The legacy
+  checkpoint service rejects V1 authorities so Phase 5 cannot accidentally
+  stage them through the old mount/push/gitlink lifecycle; Phase 6 owns the
+  single final task commit.
+- Package result: 16 files and 143 tests passed; package build passed.
+- Workspace result: CLI 38 tests, Git Context 143 tests, and backend 844 tests
+  passed (1,025 total); full workspace build passed.
+- Next slice: Phase 6 single-commit V1 finalization, including deterministic
+  task/request reduction, exact staging, one task commit, journal
+  acknowledgement, and safe lease release.

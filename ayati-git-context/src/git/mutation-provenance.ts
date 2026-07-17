@@ -8,6 +8,7 @@ export async function readMutationProvenance(
   checkoutPath: string,
   targets: ResolvedMutationTarget[],
   baseline: "head" | "index" = "head",
+  options: { excludedPathPrefixes?: string[]; includedPaths?: string[] } = {},
 ): Promise<MutationProvenance> {
   const difference = await runGitRaw([
     "diff",
@@ -31,6 +32,21 @@ export async function readMutationProvenance(
   }
   await detectExactRenames(checkoutPath, created, deleted, renamed, baseline);
 
+  const excluded = options.excludedPathPrefixes ?? [];
+  for (const collection of [created, modified, deleted]) {
+    for (const path of collection) {
+      if (isExcluded(path, excluded, options.includedPaths ?? [])) collection.delete(path);
+    }
+  }
+  for (let index = renamed.length - 1; index >= 0; index -= 1) {
+    const item = renamed[index];
+    if (item
+      && isExcluded(item.from, excluded, options.includedPaths ?? [])
+      && isExcluded(item.to, excluded, options.includedPaths ?? [])) {
+      renamed.splice(index, 1);
+    }
+  }
+
   const changedPaths = new Set<string>([
     ...created,
     ...modified,
@@ -47,6 +63,11 @@ export async function readMutationProvenance(
     renamed: renamed.sort((left, right) => left.from.localeCompare(right.from)),
     unexpectedPaths,
   };
+}
+
+function isExcluded(path: string, prefixes: string[], includedPaths: string[]): boolean {
+  return !includedPaths.includes(path)
+    && prefixes.some((prefix) => path === prefix || path.startsWith(prefix));
 }
 
 async function detectExactRenames(

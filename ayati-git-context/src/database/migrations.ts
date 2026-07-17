@@ -398,6 +398,19 @@ const MIGRATIONS: Migration[] = [
       "  CHECK (layout_version IN ('legacy_independent_v0', 'simple_repository_v1'));",
     ].join("\n"),
   },
+  {
+    version: 13,
+    sql: [
+      "ALTER TABLE runs ADD COLUMN task_request_id TEXT;",
+      "ALTER TABLE task_mutation_authorities ADD COLUMN repository_layout TEXT NOT NULL",
+      "  DEFAULT 'legacy_independent_v0'",
+      "  CHECK (repository_layout IN ('legacy_independent_v0', 'simple_repository_v1'));",
+      "ALTER TABLE task_mutation_authorities ADD COLUMN repository_path TEXT;",
+      "ALTER TABLE task_mutation_authorities ADD COLUMN task_request_id TEXT;",
+      "UPDATE task_mutation_authorities SET repository_path = checkout_path",
+      "WHERE repository_path IS NULL;",
+    ].join("\n"),
+  },
 ];
 
 export function applyMigrations(database: DatabaseSync, now: () => string): void {

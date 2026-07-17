@@ -127,10 +127,11 @@ export class SqliteGitContextService implements GitContextService {
     this.sessionRegistry = new SessionRegistryCache(this.database);
     this.conversationCache = new ConversationHotCache(this.database);
     this.sessionRuns = new SessionRunLifecycleService(this.database);
+    const workspaceRoot = options.workspaceRoot ?? join(this.dataRoot, "workspace");
     this.taskLifecycle = new TaskLifecycleService({
       database: this.database,
       dataRoot: this.dataRoot,
-      workspaceRoot: options.workspaceRoot ?? join(this.dataRoot, "workspace"),
+      workspaceRoot,
       now: this.now,
     });
     this.taskSelection = new TaskRunSelectionService(
@@ -139,7 +140,10 @@ export class SqliteGitContextService implements GitContextService {
       this.sessionRuns,
       this.observer,
     );
-    this.mutationBoundary = new MutationBoundaryService(this.database);
+    this.mutationBoundary = new MutationBoundaryService(
+      this.database,
+      join(workspaceRoot, "tasks"),
+    );
     this.taskCheckpoint = new TaskCheckpointService(this.database);
     this.taskRunEvidence = new TaskRunEvidenceService(this.database);
     this.taskRunFinalization = new TaskRunFinalizationService(this.database);
