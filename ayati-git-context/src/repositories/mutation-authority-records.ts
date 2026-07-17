@@ -156,6 +156,17 @@ export function readMutationAuthority(
   return row ? mutationAuthorityRecord(row) : undefined;
 }
 
+export function readMutationAuthorityForRun(
+  database: ContextDatabase,
+  runId: string,
+): MutationAuthorityRecord | undefined {
+  const row = database.prepare([
+    authoritySelect(),
+    "WHERE run_id = ? ORDER BY acquired_at DESC LIMIT 1",
+  ].join(" ")).get(runId) as MutationAuthorityRow | undefined;
+  return row ? mutationAuthorityRecord(row) : undefined;
+}
+
 export function hasMutationAuthorityForRun(
   database: ContextDatabase,
   runId: string,
@@ -175,6 +186,7 @@ export function updateMutationAuthorityVerification(
     outcome: string;
     at: string;
     error?: string;
+    stateFingerprint?: string;
   },
 ): void {
   database.prepare([
@@ -185,7 +197,11 @@ export function updateMutationAuthorityVerification(
     input.status,
     input.at,
     input.status === "released" ? input.at : null,
-    JSON.stringify({ outcome: input.outcome, provenance: input.provenance }),
+    JSON.stringify({
+      outcome: input.outcome,
+      provenance: input.provenance,
+      ...(input.stateFingerprint ? { stateFingerprint: input.stateFingerprint } : {}),
+    }),
     input.error ?? null,
     authorityId,
   );
@@ -204,6 +220,8 @@ export function releaseCheckpointedMutationAuthority(
     throw new Error("Verified mutation authority could not be released: " + authorityId);
   }
 }
+
+export const releaseVerifiedMutationAuthority = releaseCheckpointedMutationAuthority;
 
 function readBlockingAuthority(
   database: ContextDatabase,

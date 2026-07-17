@@ -120,16 +120,16 @@ Exit gate:
 
 ## Phase 6: Single-Commit Finalization
 
-- [ ] Add deterministic task-card/request reducer.
-- [ ] Stage only verified task paths and rendered context paths.
-- [ ] Create one final run commit with required trailers.
-- [ ] Persist before/after identity in the run/session journal.
-- [ ] Add acknowledgement recovery from matching commit trailer.
-- [ ] Remove V1 push/gitlink/session commit finalization steps.
+- [x] Add deterministic task-card/request reducer.
+- [x] Stage only verified task paths and rendered context paths.
+- [x] Create one final run commit with required trailers.
+- [x] Persist before/after identity in the run/session journal.
+- [x] Add acknowledgement recovery from matching commit trailer.
+- [x] Remove V1 push/gitlink/session commit finalization steps.
 
 Exit gate:
 
-- [ ] One mutating run creates at most one task commit and is fully continuable
+- [x] One mutating run creates at most one task commit and is fully continuable
   from Git.
 
 ## Phase 7: Attachments And References
@@ -382,3 +382,44 @@ Add dated entries here after each verified implementation slice. Include:
 - Next slice: Phase 6 single-commit V1 finalization, including deterministic
   task/request reduction, exact staging, one task commit, journal
   acknowledgement, and safe lease release.
+
+### 2026-07-17: Single-commit V1 finalization
+
+- Branch: `refactor/simple-task-repository-v1`
+- Commit: the implementation commit containing this entry.
+- Added a separate V1 finalization path and durable finalization journal. The
+  journal records the authority, base HEAD, exact reduction plan, verified
+  file-state fingerprint, context before-hashes, expected staged paths, commit
+  identity, and acknowledgement phase before filesystem mutation begins.
+- Added a deterministic task/request reducer for done, incomplete, blocked,
+  needs-user, and failed outcomes. The reducer keeps the long-lived task
+  active, advances request state and current-request identity consistently,
+  and records only verified completion assets as important task paths.
+- Engine-owned task and request context is rendered separately from tool-owned
+  changes. Finalization checks the planned before-hashes so it never silently
+  overwrites context edited after the journal was created.
+- V1 finalization stages only the exact verified tool paths and rendered
+  context paths, rejects any additional dirty or staged path, and rechecks
+  verified content and file modes before staging, after staging, and in the
+  committed tree.
+- A successful mutating run creates exactly one direct task-repository commit
+  whose parent is the authority base HEAD and whose message and changed paths
+  match the journal. No clone, push, session mount, gitlink update, or session
+  repository commit participates in the V1 path.
+- Context-only successful outcomes can create the one final commit. A failed
+  run with no verified changes leaves task context and HEAD unchanged while
+  still closing the run safely.
+- Startup recovery recognizes an exact committed-but-unacknowledged result by
+  parent, message, path set, and content fingerprint, then acknowledges it
+  without creating a duplicate commit. A semantically identical retry may use
+  a new transport request ID; changed retry payloads are rejected.
+- Completion asset normalization now uses the direct V1 working directory
+  when no legacy checkout path exists. Legacy finalization behavior remains
+  available and unchanged.
+- The V1 creator is still staged behind `createSimpleTask`; default task
+  creation remains on the legacy route until a later intentional cutover.
+- Package result: 17 files and 153 tests passed; package build passed.
+- Workspace result: CLI 38 tests, Git Context 153 tests, and backend 844 tests
+  passed (1,035 total); full workspace build passed.
+- Next slice: Phase 7 attachments and references, beginning with durable input
+  retention, atomic inbox placement, and checksum/provenance records.

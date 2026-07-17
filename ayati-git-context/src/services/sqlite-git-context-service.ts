@@ -146,7 +146,10 @@ export class SqliteGitContextService implements GitContextService {
     );
     this.taskCheckpoint = new TaskCheckpointService(this.database);
     this.taskRunEvidence = new TaskRunEvidenceService(this.database);
-    this.taskRunFinalization = new TaskRunFinalizationService(this.database);
+    this.taskRunFinalization = new TaskRunFinalizationService(
+      this.database,
+      join(workspaceRoot, "tasks"),
+    );
     this.dailySessionRollover = new DailySessionRolloverService({
       database: this.database,
       dataRoot: this.dataRoot,
@@ -745,6 +748,7 @@ export class SqliteGitContextService implements GitContextService {
         this.conversationCache.refreshSession(this.database, session.sessionId);
       }
       await this.taskLifecycle.recoverInitializingState();
+      await this.taskRunFinalization.recoverSimpleTaskFinalizations(this.now());
       await this.reconcileLatestDailySession(this.now());
       this.startupRecovered = true;
       this.startRolloverTimer();

@@ -312,7 +312,7 @@ class AppGitContextRuntime implements GitContextRuntime {
     const active = await this.loadActiveContext(input.turn.sessionId);
     const assets = completionAssets(
       input.result.verifiedCompletionAssets ?? [],
-      active.activeTask?.checkoutPath,
+      active.activeTask?.checkoutPath ?? active.activeTask?.workingDirectory,
     );
     this.observer.emit({
       level: "info",

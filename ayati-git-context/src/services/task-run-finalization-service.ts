@@ -50,14 +50,34 @@ import {
   writeAndStageRunEvidence,
 } from "../runs/run-evidence-files.js";
 import { renderRunEvidence, renderStepEvidence } from "../runs/run-evidence-renderer.js";
+import { SimpleTaskFinalizationService } from "./simple-task-finalization-service.js";
 
 export class TaskRunFinalizationService {
-  constructor(private readonly database: ContextDatabase) {}
+  private readonly simpleTaskFinalization?: SimpleTaskFinalizationService;
+
+  constructor(
+    private readonly database: ContextDatabase,
+    taskRoot?: string,
+  ) {
+    this.simpleTaskFinalization = taskRoot
+      ? new SimpleTaskFinalizationService({ database, taskRoot })
+      : undefined;
+  }
 
   async finalize(
     input: FinalizeTaskRunRequest,
     session: SessionRef,
   ): Promise<FinalizeTaskRunResponse> {
+    const layoutTask = readTaskInitialization(this.database, input.taskId);
+    if (layoutTask?.layoutVersion === "simple_repository_v1") {
+      if (!this.simpleTaskFinalization) {
+        throw new GitContextServiceError({
+          code: "SERVICE_NOT_READY",
+          message: "V1 finalization requires the configured task root.",
+        });
+      }
+      return await this.simpleTaskFinalization.finalize(input, session);
+    }
     const existing = readTaskRunFinalization(this.database, input.runId);
     const run = readRunEvidence(this.database, input.runId);
     if (!run || run.sessionId !== input.sessionId || run.taskId !== input.taskId
@@ -215,6 +235,10 @@ export class TaskRunFinalizationService {
       markRecoverableIdempotencyFailed({ database: this.database, requestId: input.requestId });
       throw error;
     }
+  }
+
+  async recoverSimpleTaskFinalizations(at: string): Promise<void> {
+    await this.simpleTaskFinalization?.recoverCommittedFinalizations(at);
   }
 
   private async finalizeTask(

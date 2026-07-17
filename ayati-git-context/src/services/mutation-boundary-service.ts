@@ -23,6 +23,7 @@ import {
   readMutationProvenance,
 } from "../git/mutation-provenance.js";
 import { runGit } from "../git/git-process.js";
+import { readSimpleTaskMutationState } from "../git/simple-task-repository-transaction.js";
 import { ensureTaskSubmodule } from "../git/task-submodule.js";
 import { verifyCanonicalTaskRepository } from "../git/task-repository.js";
 import { resolveMutationTargets } from "../mutations/path-authority.js";
@@ -346,13 +347,24 @@ export class MutationBoundaryService {
           }
         : {},
     );
+    const stateFingerprint = authority.repositoryLayout === "simple_repository_v1"
+      ? await readSimpleTaskMutationState(
+          authority.repositoryPath,
+          mutationPaths(provenance),
+        )
+      : undefined;
     return executeIdempotent({
       database: this.database,
       requestId: input.requestId,
       operation: "verify_mutation",
       payload: input,
       now: input.at,
-      execute: () => this.reduceVerification(authority, input, provenance),
+      execute: () => this.reduceVerification(
+        authority,
+        input,
+        provenance,
+        stateFingerprint,
+      ),
     });
   }
 
@@ -398,6 +410,7 @@ export class MutationBoundaryService {
     authority: MutationAuthorityRecord,
     input: VerifyMutationRequest,
     provenance: MutationProvenance,
+    stateFingerprint?: string,
   ): VerifyMutationResponse {
     verifyMutationLockToken(authority, input.lockToken);
     if (authority.status !== "active") {
@@ -414,7 +427,10 @@ export class MutationBoundaryService {
     let result: Omit<VerifyMutationResponse, "authorityId" | "provenance">;
     if (!hasChanges) {
       result = {
-        status: "released",
+        status: authority.repositoryLayout === "simple_repository_v1"
+          && input.toolStatus === "completed"
+          ? "verified"
+          : "released",
         verified: input.toolStatus === "completed",
         outcome: "no_changes",
       };
@@ -442,6 +458,7 @@ export class MutationBoundaryService {
       provenance,
       outcome: result.outcome,
       at: input.at,
+      ...(stateFingerprint ? { stateFingerprint } : {}),
       ...(result.status === "recovery_required"
         ? { error: "Mutation requires deterministic recovery before another task owner can proceed." }
         : {}),
@@ -574,4 +591,13 @@ function taskHeadMismatch(
     retryable: true,
     details: { taskId, expectedHead: expectedHead ?? null, actualHead },
   });
+}
+
+function mutationPaths(provenance: MutationProvenance): string[] {
+  return [...new Set([
+    ...provenance.created,
+    ...provenance.modified,
+    ...provenance.deleted,
+    ...provenance.renamed.flatMap((entry) => [entry.from, entry.to]),
+  ])].sort();
 }

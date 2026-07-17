@@ -1,4 +1,4 @@
-export const GIT_CONTEXT_PROTOCOL_VERSION = 19;
+export const GIT_CONTEXT_PROTOCOL_VERSION = 20;
 
 export type SessionId = string;
 export type TaskId = string;
@@ -547,10 +547,11 @@ export interface FinalizeTaskRunResponse {
   taskHeadBefore: string;
   taskHeadAfter: string;
   taskFinalizationCommit: string;
-  sessionCommit: string;
+  taskCommitCreated?: boolean;
+  sessionCommit?: string;
   conversationHash: string;
-  runFile: string;
-  stepsFile: string;
+  runFile?: string;
+  stepsFile?: string;
 }
 
 export interface FinalizeSessionRunRequest extends GitContextRequestEnvelope {
@@ -761,7 +762,7 @@ export function isFinalizeTaskRunRequest(value: unknown): value is FinalizeTaskR
   }
   return isNonEmptyString(value["sessionId"])
     && isNonEmptyString(value["runId"])
-    && /^W-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
+    && /^[TW]-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
     && isTaskRunOutcome(value["outcome"])
     && isBoundedString(value["conversationSummary"], 2_000)
     && isBoundedString(value["summary"], 2_000)

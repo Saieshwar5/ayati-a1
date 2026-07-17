@@ -234,6 +234,25 @@ describe("Git Context Engine contracts", () => {
       at: "2026-07-12T10:06:00+05:30",
     })).toBe(true);
     expect(isFinalizeTaskRunRequest({
+      requestId: "REQ-finalize-v1",
+      sessionId: "S-20260717-local",
+      runId: "R-20260717-0001",
+      taskId: "T-20260717-0001",
+      outcome: "done",
+      conversationSummary: "The V1 task work is complete.",
+      summary: "The verified V1 outcome is durable.",
+      validation: "passed",
+      completion: {
+        accepted: true,
+        assets: [],
+        missing: [],
+        failures: [],
+        criteria: [{ criterion: "The work is verified.", passed: true }],
+      },
+      assistantResponse: "The V1 task is complete.",
+      at: "2026-07-17T10:06:00+05:30",
+    })).toBe(true);
+    expect(isFinalizeTaskRunRequest({
       requestId: "REQ-finalize",
       sessionId: "S-20260712-local",
       runId: "R-20260712-0001",
