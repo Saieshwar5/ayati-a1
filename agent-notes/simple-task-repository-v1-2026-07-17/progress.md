@@ -1,0 +1,245 @@
+# Progress
+
+Last updated: 2026-07-17
+
+Current status: design accepted and master plan prepared. Runtime implementation
+has not started.
+
+## Planning
+
+- [x] Inspect current repository state and branch.
+- [x] Read stable product, architecture, harness, context, and testing docs.
+- [x] Review earlier git-native, run-first, task lifecycle, migration, and task
+  discovery plans.
+- [x] Inspect current task repository, working checkout, submodule, task-state,
+  read-context, mutation, and finalization implementation.
+- [x] Identify task as durable workstream rather than finite run outcome.
+- [x] Introduce bounded request as a separate durable concept.
+- [x] Define one normal managed task repository as canonical and working state.
+- [x] Remove mandatory session submodules from the target V1 lifecycle.
+- [x] Define task card, requests, references manifest, and ignored inbox.
+- [x] Define read, mutation, finalization, reopening, attachment, and recovery
+  lifecycles.
+- [x] Define migration cohorts and non-destructive cutover.
+- [x] Define deterministic test and failure-injection coverage.
+- [x] Record accepted decisions and planning conversation.
+- [x] Add the plan to `agent-notes/README.md`.
+
+## Implementation Gate
+
+Before implementation begins:
+
+- [ ] User approves the first implementation slice.
+- [ ] Create `refactor/simple-task-repository-v1` or another agreed behavior
+  branch from the correct integration point.
+- [ ] Confirm clean worktree and test baseline.
+- [ ] Read every file in this plan directory.
+- [ ] Reconcile any implementation completed after this plan's inspection.
+- [ ] Show expected files, migration impact, and focused tests for Slice 1.
+
+## Phase 0: Contracts And Fixtures
+
+- [ ] Add learning, coding, computer-use, analysis, and automation repository
+  fixtures.
+- [ ] Add invalid/malformed/legacy fixtures.
+- [ ] Define stable error codes.
+- [ ] Record baseline package and workspace tests.
+
+Exit gate:
+
+- [ ] Typed fixtures express the repository contract without changing live
+  behavior.
+
+## Phase 1: Repository Schemas
+
+- [ ] Implement task layout module.
+- [ ] Implement task card parser, validator, and renderer.
+- [ ] Implement request parser, validator, and renderer.
+- [ ] Implement references manifest parser, validator, and renderer.
+- [ ] Implement task/request transition validation.
+- [ ] Implement commit metadata parser and renderer.
+- [ ] Implement V1 repository validator.
+- [ ] Add schema and security tests.
+
+Exit gate:
+
+- [ ] All schemas round-trip deterministically and reject malformed state.
+
+## Phase 2: Read-Only V1 Context
+
+- [ ] Add catalog layout/version dispatch.
+- [ ] Implement V1 task read projection from committed Git state.
+- [ ] Read only the current request by default.
+- [ ] Parse bounded semantic commit history.
+- [ ] Use curated important paths.
+- [ ] Report repository health separately.
+- [ ] Prove no read-side mount/lock/write behavior.
+
+Exit gate:
+
+- [ ] Valid V1 tasks can be read at any time without activation.
+
+## Phase 3: V1 Task Creation
+
+- [ ] Allocate `T-*` IDs and managed paths.
+- [ ] Create normal non-bare repository directly under task root.
+- [ ] Write full standard scaffold.
+- [ ] Create deterministic identity commit.
+- [ ] Add idempotent creation/recovery.
+- [ ] Remove bare/clone creation from the V1 path.
+
+Exit gate:
+
+- [ ] A new task has exactly one canonical repository directory.
+
+## Phase 4: Request Lifecycle
+
+- [ ] Create and queue requests.
+- [ ] Activate at most one request.
+- [ ] Block/resume, complete, drop, and explicitly reopen requests.
+- [ ] Keep task card current request consistent.
+- [ ] Integrate request routing rules.
+
+Exit gate:
+
+- [ ] Multiple features/lessons remain naturally inside one task.
+
+## Phase 5: Direct Mutation Authority
+
+- [ ] Bind authority to one task repository path and base HEAD.
+- [ ] Add exclusive task lock.
+- [ ] Remove V1 mount/canonical-repository duplication from authority.
+- [ ] Preserve bounded targets, symlink safety, Git provenance, and
+  verification.
+- [ ] Block unjournaled dirty state conservatively.
+
+Exit gate:
+
+- [ ] Exactly one run can mutate a task safely without a session submodule.
+
+## Phase 6: Single-Commit Finalization
+
+- [ ] Add deterministic task-card/request reducer.
+- [ ] Stage only verified task paths and rendered context paths.
+- [ ] Create one final run commit with required trailers.
+- [ ] Persist before/after identity in the run/session journal.
+- [ ] Add acknowledgement recovery from matching commit trailer.
+- [ ] Remove V1 push/gitlink/session commit finalization steps.
+
+Exit gate:
+
+- [ ] One mutating run creates at most one task commit and is fully continuable
+  from Git.
+
+## Phase 7: Attachments And References
+
+- [ ] Retain attachments durably before routing.
+- [ ] Place resolved task inputs atomically in ignored inbox.
+- [ ] Write checksum/provenance reference entries.
+- [ ] Detect missing/changed inputs on reuse.
+- [ ] Add explicit verified adoption into tracked task paths.
+- [ ] Cover shared attachment relationships.
+
+Exit gate:
+
+- [ ] Input provenance is durable without falsely claiming ignored bytes are
+  recoverable from Git.
+
+## Phase 7A: External Computer-Use Outcomes
+
+- [ ] Bind external mutation to one task, request, and run.
+- [ ] Preserve existing approval and irreversible-action policies.
+- [ ] Verify external outcomes deterministically where possible.
+- [ ] Extract stable non-secret identifiers or safe receipts.
+- [ ] Create context-only task commits when no normal file is appropriate.
+- [ ] Keep raw page/screenshot/tool evidence outside task Git by default.
+- [ ] Never describe Git revert as undoing external state.
+
+Exit gate:
+
+- [ ] Verified computer-use work can continue from task Git without pretending
+  Git owns the external system.
+
+## Phase 8: Routing And Status Semantics
+
+- [ ] Update routing around task/request/run separation.
+- [ ] Preserve read-first session runs.
+- [ ] Ensure request completion does not archive task.
+- [ ] Support active task with no current request.
+- [ ] Require lifecycle transition before archived/paused mutation.
+- [ ] Cover learning, website, computer-use, analysis, and automation flows.
+
+Exit gate:
+
+- [ ] The agent consistently chooses continue request, create request, choose
+  another task, create task, read only, or clarify.
+
+## Phase 9: Migration
+
+- [ ] Add dry-run inventory and cohort classification.
+- [ ] Add per-task quiescence/migration lock.
+- [ ] Migrate clean managed tasks with one V1 migration commit.
+- [ ] Preserve `W-*` IDs and ancestry.
+- [ ] Preserve old bare repositories read-only.
+- [ ] Preserve historical session gitlinks.
+- [ ] Block dirty, diverged, invalid, and external-path cohorts safely.
+- [ ] Prove only one writer per task.
+
+Exit gate:
+
+- [ ] Migrated tasks continue through V1 without rewriting or losing legacy
+  history.
+
+## Phase 10: Cutover And Cleanup
+
+- [ ] Make V1 default for new managed tasks.
+- [ ] Stop new session mounts for V1 tasks.
+- [ ] Stop old finalization services from writing V1 tasks.
+- [ ] Remove normal bare repository creation.
+- [ ] Remove normal task push and gitlink staging.
+- [ ] Remove obsolete mount writes and recovery paths.
+- [ ] Keep only necessary read-only legacy adapters.
+- [ ] Update package and stable architecture docs.
+- [ ] Remove contradictory old current-path docs.
+
+Exit gate:
+
+- [ ] No normal V1 task mutation depends on submodules or a bare local mirror.
+
+## Verification
+
+- [ ] Focused schema tests pass.
+- [ ] Focused repository lifecycle tests pass.
+- [ ] Crash/failure-injection matrix passes.
+- [ ] Migration cohort tests pass.
+- [ ] `pnpm --filter ayati-git-context test` passes.
+- [ ] `pnpm --filter ayati-git-context build` passes.
+- [ ] Relevant `ayati-main` app/harness tests pass.
+- [ ] `pnpm --filter ayati-main test` passes.
+- [ ] `pnpm --filter ayati-main build` passes.
+- [ ] `pnpm test` passes.
+- [ ] `pnpm build` passes.
+- [ ] Five live acceptance scenarios pass and are manually inspected.
+
+## Deferred After V1
+
+- [ ] Rich task discovery and navigation.
+- [ ] Resource ownership catalog integration.
+- [ ] Smart views, starring, frequency, and categories.
+- [ ] Semantic/embedding search if later justified.
+- [ ] Content-addressed attachment backup.
+- [ ] Remote Git synchronization and collaboration.
+- [ ] Multi-agent mutation/merge workflow.
+- [ ] Optional measured safety checkpoints.
+- [ ] Explicit external-change capture workflow.
+
+## Implementation Log
+
+Add dated entries here after each verified implementation slice. Include:
+
+- branch and commit
+- behavior changed
+- paths changed
+- tests run and results
+- migration/recovery evidence
+- remaining blockers or decisions

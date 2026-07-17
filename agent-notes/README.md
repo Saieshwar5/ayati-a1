@@ -18,6 +18,13 @@ Recommended structure:
 
 Current plans:
 
+- `simple-task-repository-v1-2026-07-17/README.md`: accepted master plan for
+  simplifying task continuity around one normal independent Git repository per
+  durable workstream, standardized task/request/reference context under
+  `.ayati/`, read-any-time access, one verified commit per mutating run, and
+  migration away from mandatory bare mirrors and session task submodules. When
+  older task-repository topology plans conflict with it, this plan controls new
+  implementation.
 - `git-context-engine-service-migration-2026-07-12/README.md`: master
   migration plan for making Git Context Engine an independent Git-and-SQLite
   service, storing daily conversation and task-run evidence on session main,
