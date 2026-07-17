@@ -49,7 +49,7 @@ describe("repair policy", () => {
     });
     expect(signal.allowedNextActions).toEqual([
       "Inspect the task candidates in context and call git_context_activate_task for an exact matching task.",
-      "Call git_context_create_task with title, objective, reason, and explicit requested-or-managed placement for distinct new durable work.",
+      "Call git_context_create_task with title, objective, and reason for distinct new durable work.",
       "Ask a short clarification directly if the request is unclear.",
     ]);
   });

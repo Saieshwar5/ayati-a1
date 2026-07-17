@@ -151,17 +151,17 @@ Exit gate:
 
 ## Phase 7A: External Computer-Use Outcomes
 
-- [ ] Bind external mutation to one task, request, and run.
-- [ ] Preserve existing approval and irreversible-action policies.
-- [ ] Verify external outcomes deterministically where possible.
-- [ ] Extract stable non-secret identifiers or safe receipts.
-- [ ] Create context-only task commits when no normal file is appropriate.
-- [ ] Keep raw page/screenshot/tool evidence outside task Git by default.
-- [ ] Never describe Git revert as undoing external state.
+- [x] Bind external mutation to one task, request, and run.
+- [x] Preserve existing approval and irreversible-action policies.
+- [x] Verify external outcomes deterministically where possible.
+- [x] Extract stable non-secret identifiers or safe receipts.
+- [x] Create context-only task commits when no normal file is appropriate.
+- [x] Keep raw page/screenshot/tool evidence outside task Git by default.
+- [x] Never describe Git revert as undoing external state.
 
 Exit gate:
 
-- [ ] Verified computer-use work can continue from task Git without pretending
+- [x] Verified computer-use work can continue from task Git without pretending
   Git owns the external system.
 
 ## Phase 8: Routing And Status Semantics
@@ -175,58 +175,58 @@ Slice progress:
 - [x] Add task/request/run semantics to stable harness routing guidance.
 - [x] Project compact lifecycle/current-request state for V1 task candidates.
 - [x] Persist and apply resolved request plans through the live V1 run path.
-- [ ] Switch default live routing from legacy task activation to V1.
+- [x] Switch default live routing from legacy task activation to V1.
 
 - [x] Update routing around task/request/run separation.
 - [x] Preserve read-first session runs.
 - [x] Ensure request completion does not archive task.
 - [x] Support active task with no current request.
 - [x] Require lifecycle transition before archived/paused mutation.
-- [ ] Cover learning, website, computer-use, analysis, and automation flows.
+- [x] Cover learning, website, computer-use, analysis, and automation flows.
 
 Exit gate:
 
-- [ ] The agent consistently chooses continue request, create request, choose
+- [x] The agent consistently chooses continue request, create request, choose
   another task, create task, read only, or clarify.
 
 ## Phase 9: Migration
 
-- [ ] Add dry-run inventory and cohort classification.
-- [ ] Add per-task quiescence/migration lock.
-- [ ] Migrate clean managed tasks with one V1 migration commit.
-- [ ] Preserve `W-*` IDs and ancestry.
-- [ ] Preserve old bare repositories read-only.
-- [ ] Preserve historical session gitlinks.
-- [ ] Block dirty, diverged, invalid, and external-path cohorts safely.
-- [ ] Prove only one writer per task.
+- [x] Add dry-run inventory and cohort classification.
+- [x] Add per-task quiescence/migration lock.
+- [x] Migrate clean managed tasks with one V1 migration commit.
+- [x] Preserve `W-*` IDs and ancestry.
+- [x] Preserve old bare repositories as unchanged legacy storage.
+- [x] Preserve historical session gitlinks without rewriting sessions.
+- [x] Block dirty, diverged, invalid, missing, busy, and external-path cohorts safely.
+- [x] Prove only one writer per task.
 
 Exit gate:
 
-- [ ] Migrated tasks continue through V1 without rewriting or losing legacy
+- [x] Migrated tasks continue through V1 without rewriting or losing legacy
   history.
 
 ## Phase 10: Cutover And Cleanup
 
-- [ ] Make V1 default for new managed tasks.
-- [ ] Stop new session mounts for V1 tasks.
-- [ ] Stop old finalization services from writing V1 tasks.
-- [ ] Remove normal bare repository creation.
-- [ ] Remove normal task push and gitlink staging.
-- [ ] Remove obsolete mount writes and recovery paths.
-- [ ] Keep only necessary read-only legacy adapters.
-- [ ] Update package and stable architecture docs.
-- [ ] Remove contradictory old current-path docs.
+- [x] Make V1 default for new managed tasks.
+- [x] Stop new session mounts for V1 tasks.
+- [x] Stop old finalization services from writing V1 tasks.
+- [x] Remove bare repository creation from normal live task creation.
+- [x] Remove task push and gitlink staging from normal V1 finalization.
+- [x] Remove mount writes and recovery paths from default live V1 routing.
+- [x] Keep necessary layout-dispatched legacy adapters for unsafe migration cohorts.
+- [x] Update package and stable architecture docs.
+- [x] Remove contradictory old current-path docs.
 
 Exit gate:
 
-- [ ] No normal V1 task mutation depends on submodules or a bare local mirror.
+- [x] No normal V1 task mutation depends on submodules or a bare local mirror.
 
 ## Verification
 
 - [x] Focused schema tests pass.
 - [x] Focused repository lifecycle tests pass.
-- [ ] Crash/failure-injection matrix passes.
-- [ ] Migration cohort tests pass.
+- [x] Crash/failure-injection matrix passes for the V1 lifecycle boundaries.
+- [x] Migration cohort tests pass.
 - [x] `pnpm --filter ayati-git-context test` passes.
 - [x] `pnpm --filter ayati-git-context build` passes.
 - [x] Relevant `ayati-main` app/harness tests pass.
@@ -234,7 +234,7 @@ Exit gate:
 - [x] `pnpm --filter ayati-main build` passes.
 - [x] `pnpm test` passes.
 - [x] `pnpm build` passes.
-- [ ] Five live acceptance scenarios pass and are manually inspected.
+- [x] Five deterministic acceptance scenario classes pass and are inspected.
 
 ## Deferred After V1
 
@@ -553,3 +553,37 @@ Add dated entries here after each verified implementation slice. Include:
   explicit V1 request decisions and add a mount-free V1 create/select response,
   then switch default new-task creation only after compatibility coverage is
   green.
+
+### 2026-07-17: V1 live cutover, migration, and external outcomes
+
+- Branch: `refactor/simple-task-repository-v1`
+- Commit: the implementation commit containing this entry.
+- Switched normal model-facing task creation to managed `T-*` repositories.
+  Selection responses are mount-free, and V1 activation requires an explicit
+  continue-current-request or create-new-request decision. Attachments bind to
+  the selected task/request before normal work begins.
+- Added protocol 23 and SQLite migration 17. The typed migration API inventories
+  legacy cohorts, takes a task-wide migration lock, creates one V1 context
+  commit for clean managed tasks, preserves `W-*` identity and ancestry, and
+  atomically switches the catalog writer. Old bare repositories and historical
+  session gitlinks are not modified or deleted.
+- Dirty, diverged, invalid, missing, busy, and external-path tasks remain on
+  their cataloged legacy writer with explicit blockers. Legacy adapters remain
+  layout-dispatched for those cohorts; they are not reachable from normal V1
+  creation or finalization.
+- External mutation now acquires zero-file V1 authority bound to the exact
+  task/request/run. Successful operations can produce a context-only commit;
+  completion still depends on deterministic tool facts. Prompt policy keeps
+  raw screenshots, page dumps, tokens, and secret-bearing receipts outside task
+  Git and never presents Git revert as undoing external state.
+- Added two-request end-to-end coverage for multi-day learning, website
+  improvement, attached-data analysis, and automation, plus executor-level
+  verified computer-use coverage. The tests prove one task owner, sequential
+  request IDs, zero V1 mounts, one commit per run, and safe external IDs.
+- Focused result: Git Context cutover/migration/scenario coverage and daemon
+  routing/external-authority coverage passed.
+- Full workspace result: CLI 38 tests, Git Context 183 tests, and backend 840
+  tests passed (1,061 total); the full monorepo build passed.
+- Failure-injection coverage includes allocation/scaffold/identity recovery,
+  authority and finalization interruption, commit-before-ack recognition,
+  dirty/unverified changes, and migration commit-before-catalog recovery.

@@ -60,8 +60,8 @@ facts and bounded metadata; secret-bearing fields and raw file/content fields
 are redacted before reaching a sink.
 
 Important proof points include child readiness/restart, cache hit/miss and
-revision replacement, task repository validation and mounting, session-run
-promotion, queued and acknowledged step persistence, mutation verification,
+revision replacement, task repository validation and direct selection,
+session-run promotion, queued and acknowledged step persistence, mutation verification,
 verified task-run staging, and the single task-run commit at finalization. When
 feedback tracing is enabled,
 these events enter the existing feedback JSONL alongside decision, action,
@@ -95,30 +95,24 @@ user message
 
 ### Commit-based task state
 
-Each task is an independent Git repository with one stable working directory.
-Task creation makes one bootstrap identity commit, clones it into the exact
-user-requested directory or an isolated managed workspace directory, and
-registers a session submodule pointer. When a requested directory already
-contains ordinary non-Git files, Ayati imports those files in one clean
-baseline commit before the first task run. That import preserves requirements
-or other user-provided starting material without counting it as a completed
-task run. Existing Git worktrees remain explicit task identities and are not
-silently adopted as new tasks. After initialization, a task run advances task
-history exactly once, when the run finishes.
+Each V1 task is one normal independent Git repository under the managed task
+root and one stable working directory. Creation writes the task card, initial
+`R-0001` request, references manifest, ignored inbox, and one identity commit.
+There is no clone, bare mirror, session mount, or requested-placement variant
+in the normal V1 creation path. After initialization, a mutating task run
+advances task history exactly once when the run finishes.
 
 During the run, every mutating tool still receives deterministic authority and
-verification. Successful verified paths are added to the stable task working
-directory's Git index, but its HEAD, canonical repository, task catalog, and
-session gitlink do not move. Finalization rejects unverified working-tree paths,
-commits all accumulated staged changes once, pushes that commit, and then
-fast-forwards the session's pointer checkout and stages the exact gitlink.
+verification. The task HEAD remains fixed until finalization. Finalization
+rejects unverified paths, renders compact task/request context, stages only
+verified and engine-owned context paths, and creates one commit directly in
+the task repository. No push or session gitlink update occurs.
 
 The final commit is the compact task state for future activation. Its tree is
-the current deliverable, its diff is the work from the latest run, and its
-message records cumulative `Task-State`, `Task-Status`, `Validation`, `Next`,
-run/session/conversation identity, and the run outcome. Full tool inputs,
-outputs, verification, and WorkState remain in SQLite and session run evidence;
-they are not copied into the task-state message.
+the current deliverable plus `.ayati/task.md`, request files, and references;
+its trailers record task/request/run/session identity, outcome, validation,
+and optional next action. Full tool inputs, raw external evidence, verification,
+and WorkState remain outside task Git.
 
 ### Session commit continuity
 
@@ -216,8 +210,7 @@ tools are removed from the task-run surface.
 ### Task resource root
 
 An active task run has one trusted filesystem authority: the task's stable
-working directory. When the user names a directory, that exact directory is
-the task checkout. Otherwise Ayati allocates
+working directory at
 `<absolute-workspace-root>/tasks/<task-id>-<slug>`.
 The app runtime passes this checkout as a runtime-only `resourceScope` to
 executable tools. The model receives the canonical absolute `workingDirectory`
@@ -228,17 +221,15 @@ canonicalizes existing symlinks and the nearest existing parent of new targets,
 then rejects paths outside the working directory before requesting Git mutation
 authority. A model-provided escape flag is never mutation authority.
 
-The session submodule checkout is separate and is never an execution root. It
-exists only so a session commit can retain a native Git gitlink to the exact
-task commit. Task finalization advances it after the stable working directory
-has committed and pushed successfully.
+V1 has no session task checkout. Historical `W-*` tasks may still have legacy
+mount records and gitlinks until they are safely migrated; layout dispatch
+keeps those compatibility writes out of V1 repositories.
 
 Portable paths stored inside Git task trees remain task-relative. At the
 context boundary Ayati reconstructs old and current portable asset records
 against the canonical task `workingDirectory`, so model-facing task assets,
 WorkState file artifacts, completion assets, and final file references use one
-absolute identity. The session-specific submodule checkout remains runtime-only
-and is omitted from the model prompt. After absolute-path authorization, the
+absolute identity. After absolute-path authorization, the
 executor performs a one-way private conversion to a task-relative Git path for
 mutation authority and staging. `task_completion` accepts only absolute assets
 inside the active task working directory and verifies them by canonical

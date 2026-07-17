@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isAcquireMutationAuthorityRequest,
   isAdoptTaskReferenceRequest,
+  isActivateTaskRunRequest,
   isAppendConversationRequest,
   isBindTaskAttachmentsRequest,
   isCheckpointMutationRequest,
@@ -414,6 +415,39 @@ describe("Git Context Engine contracts", () => {
       workState: emptyRunWorkState(),
       at: "2026-07-12T10:00:00+05:30",
     })).toBe(false);
+  });
+
+  it("requires an explicit request decision for V1 task activation", () => {
+    const base = {
+      requestId: "REQ-activate-v1",
+      sessionId: "S-20260717-local",
+      conversationId: "C-1",
+      trigger: "user" as const,
+      workState: emptyRunWorkState(),
+      taskId: "T-20260717-0001",
+      expectedTaskHead: "a".repeat(40),
+      at: "2026-07-17T20:00:00+05:30",
+    };
+    expect(isActivateTaskRunRequest(base)).toBe(false);
+    expect(isActivateTaskRunRequest({
+      ...base,
+      route: {
+        kind: "continue_active_request",
+        requestId: "R-0001",
+        reason: "Continue the unfinished request.",
+      },
+    })).toBe(true);
+    expect(isActivateTaskRunRequest({
+      ...base,
+      route: {
+        kind: "create_active_request",
+        title: "Add a lesson",
+        request: "Add the next lesson.",
+        acceptance: ["The lesson is verified."],
+        constraints: [],
+        reason: "This is a separate outcome in the same task.",
+      },
+    })).toBe(true);
   });
 
   it("validates session-run finalization with done WorkState", () => {

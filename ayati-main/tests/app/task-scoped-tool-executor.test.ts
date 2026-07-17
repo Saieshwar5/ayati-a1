@@ -140,6 +140,69 @@ describe("task-scoped tool executor", () => {
     );
   });
 
+  it("binds a verified external outcome to the V1 task and request with no file target", async () => {
+    const workingDirectory = mkdtempSync(join(tmpdir(), "ayati-v1-external-"));
+    temporaryDirectories.push(workingDirectory);
+    const execute = vi.fn(async () => ({
+      ok: true,
+      output: "Application submitted as APP-1042.",
+      v2: {
+        transportOk: true,
+        operationStatus: "succeeded" as const,
+        code: "EXTERNAL_ACTION_COMPLETED",
+        message: "Application submitted.",
+        verification: {
+          status: "passed" as const,
+          summary: "External system confirmed APP-1042.",
+          assertions: [],
+          facts: [{ kind: "external_identifier", message: "Application APP-1042 confirmed." }],
+          artifacts: [],
+        },
+      },
+    }));
+    const acquireMutationAuthority = vi.fn(async () => ({
+      authority: { authorityId: "A-external", lockToken: "lock-external" },
+    }));
+    const verifyMutation = vi.fn(async () => ({
+      authorityId: "A-external",
+      status: "verified",
+      verified: true,
+      outcome: "no_changes",
+      provenance: { created: [], modified: [], deleted: [], renamed: [], unexpectedPaths: [] },
+    }));
+    const service = {
+      getActiveContext: vi.fn(async () => v1ActiveContext(workingDirectory)),
+      acquireMutationAuthority,
+      verifyMutation,
+    } as unknown as GitContextService;
+    const executor = createTaskScopedToolExecutor({
+      base: {
+        ...baseExecutor(execute),
+        list: () => ["file_fetch_url"],
+      },
+      gitContext: service,
+    });
+
+    const result = await executor.execute("file_fetch_url", {
+      url: "https://example.test/application",
+    }, {
+      sessionId: "S-1",
+      runId: "R-1",
+      stepNumber: 2,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(acquireMutationAuthority).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: "T-20260713-0001",
+      taskRequestId: "R-0002",
+      targets: [],
+    }));
+    expect(verifyMutation).toHaveBeenCalledWith(expect.objectContaining({
+      authorityId: "A-external",
+      toolStatus: "completed",
+    }));
+  });
+
   it("uses the task checkout as the trusted filesystem root without a model escape flag", async () => {
     const checkoutPath = mkdtempSync(join(tmpdir(), "ayati-task-checkout-"));
     temporaryDirectories.push(checkoutPath);

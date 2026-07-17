@@ -27,6 +27,10 @@ import {
   type HealthResponse,
   type ListTasksRequest,
   type ListTasksResponse,
+  type InventoryTaskMigrationsRequest,
+  type InventoryTaskMigrationsResponse,
+  type MigrateTaskRepositoryRequest,
+  type MigrateTaskRepositoryResponse,
   type MountTaskRequest,
   type MountTaskResponse,
   type PlanTaskRequestRouteRequest,
@@ -92,6 +96,18 @@ export class ContractOnlyGitContextService implements GitContextService {
   }
 
   async listTasks(_input: ListTasksRequest): Promise<ListTasksResponse> {
+    throw notReady();
+  }
+
+  async inventoryTaskMigrations(
+    _input: InventoryTaskMigrationsRequest,
+  ): Promise<InventoryTaskMigrationsResponse> {
+    throw notReady();
+  }
+
+  async migrateTaskRepository(
+    _input: MigrateTaskRepositoryRequest,
+  ): Promise<MigrateTaskRepositoryResponse> {
     throw notReady();
   }
 

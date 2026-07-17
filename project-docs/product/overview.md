@@ -27,16 +27,15 @@ Primary value:
 
 - A local-first autonomous agent daemon with composable capabilities.
 - A stable backend loop that can use different model providers.
-- Default daily git context for task/work continuity, including conversation,
-  active task refs, work branches, task state, assets, actions, evidence, and
-  commit metadata.
+- Default daily git context for task/work continuity, with one normal `T-*`
+  repository per durable task, explicit request files, task state, references,
+  verified outcomes, and commit metadata.
 - Run-first execution: provider-handled turns can perform read-only work in a
   session run, and promote that same run into a task run only when mutation
   becomes necessary.
-- Turn-aware task routing: obvious same-task follow-ups are bound
-  automatically, while the agent can search/read tasks and route ambiguous or
-  new durable work through activate, create, or clarify tools before normal
-  work tools run.
+- Turn-aware task routing: the agent can search/read tasks and route work by
+  creating one V1 task or selecting an existing task with an explicit
+  continue-current-request or create-new-request decision.
 - Personal and episodic memory for personalization and recall.
 - Structured context packs that keep recent conversation, selected git
   task context, task assets, hot evidence, and personal memory available to the

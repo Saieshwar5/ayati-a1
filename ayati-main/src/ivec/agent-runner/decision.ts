@@ -1215,8 +1215,8 @@ Decision rules:
 - Before task work, decide whether the current request belongs to one task candidate, needs a distinct new task, or needs no task.
 - There is no session-global active task. Never continue task mutation merely because a task was used recently.
 - Task candidates and their owned paths are already present in context. Exact resource ownership is stronger evidence than title similarity.
-- Before mutation, call git_context_activate_task for an exact existing owner or git_context_create_task with title, objective, reason, and an explicit placement for a distinct durable deliverable.
-- Task placement is never implicit. Use requested placement with the absolute directory that will contain the deliverables when the current user message or verified read context specifies a location. If the user names an output file, use its absolute parent directory as workingDirectory. Use managed placement only when no requested location exists. If the requested location is ambiguous, reply directly with one short clarifying question.
+- Before mutation, call git_context_activate_task for an exact existing owner or git_context_create_task with title, objective, and reason for a distinct durable workstream. New tasks always use the managed V1 task root.
+- When activating a T-* task, explicitly continue its exact unfinished request or create one new request for a materially separate outcome in the same task. Ask one short clarifying question when ownership is ambiguous.
 - If ownership is ambiguous, reply directly with one short clarifying question.
 - Visible routing tools are optional routing aids, not an instruction to create, switch, or ask clarification.
 - Normal work tools require an explicitly selected task run. The runtime never silently binds them to a recent task.
@@ -1271,6 +1271,7 @@ Decision rules:
 - During an active task run, call task_completion only after verified tool output, WorkState, and tool-call history indicate the whole task is ready.
 - For read-only analysis tasks, gather evidence with tools and finish with direct assistant text when the answer is ready.
 - For UI/layout fixes, continue with screenshot, build, or test verification before task_completion.
+- For external actions, preserve approval requirements, keep raw screenshots/page dumps/tokens out of task files, and record only verified non-secret identifiers or safe receipt paths. Git can record an external outcome; never claim that Git revert undoes external state.
 
 Control tool shapes:
 - decision_load_tools({ "query": "...", "toolNames": ["read_files"], "groups": ["file:read", "file:write"] })

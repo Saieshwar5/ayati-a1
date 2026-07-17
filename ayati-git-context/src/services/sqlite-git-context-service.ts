@@ -28,6 +28,10 @@ import {
   type HealthResponse,
   type ListTasksRequest,
   type ListTasksResponse,
+  type InventoryTaskMigrationsRequest,
+  type InventoryTaskMigrationsResponse,
+  type MigrateTaskRepositoryRequest,
+  type MigrateTaskRepositoryResponse,
   type MountTaskRequest,
   type MountTaskResponse,
   type PlanTaskRequestRouteRequest,
@@ -85,6 +89,7 @@ import { SessionSummaryHotCache } from "./session-summary-hot-cache.js";
 import { SessionRunLifecycleService } from "./session-run-lifecycle-service.js";
 import { TaskRunSelectionService } from "./task-run-selection-service.js";
 import { TaskRequestRoutingService } from "./task-request-routing-service.js";
+import { TaskRepositoryMigrationService } from "./task-repository-migration-service.js";
 import { readTaskMount } from "../repositories/task-mount-records.js";
 import { GitContextObserver } from "../observability.js";
 import { GitContextServiceObservability } from "./service-observability.js";
@@ -118,6 +123,7 @@ export class SqliteGitContextService implements GitContextService {
   private readonly taskLifecycle: TaskLifecycleService;
   private readonly taskSelection: TaskRunSelectionService;
   private readonly taskRequestRouting: TaskRequestRoutingService;
+  private readonly taskRepositoryMigration: TaskRepositoryMigrationService;
   private readonly mutationBoundary: MutationBoundaryService;
   private readonly taskCheckpoint: TaskCheckpointService;
   private readonly taskRunEvidence: TaskRunEvidenceService;
@@ -147,16 +153,21 @@ export class SqliteGitContextService implements GitContextService {
       workspaceRoot,
       now: this.now,
     });
-    this.taskSelection = new TaskRunSelectionService(
-      this.database,
-      this.taskLifecycle,
-      this.sessionRuns,
-      this.observer,
-    );
     this.taskRequestRouting = new TaskRequestRoutingService({
       database: this.database,
       taskRoot,
     });
+    this.taskRepositoryMigration = new TaskRepositoryMigrationService({
+      database: this.database,
+      taskRoot,
+    });
+    this.taskSelection = new TaskRunSelectionService(
+      this.database,
+      this.taskLifecycle,
+      this.sessionRuns,
+      this.taskRequestRouting,
+      this.observer,
+    );
     this.mutationBoundary = new MutationBoundaryService(
       this.database,
       taskRoot,
@@ -440,6 +451,8 @@ export class SqliteGitContextService implements GitContextService {
       await this.ensureStartupRecovery();
       const session = this.requireWritableSession(input.sessionId);
       verifyExpectedHead(session, input.expectedHead);
+      // Compatibility API for legacy fixtures and explicit migration tooling.
+      // Normal live creation goes through createTaskRun and is V1-only.
       const result = await this.taskLifecycle.createTask(input);
       this.invalidateContext("task_created", { sessionId: input.sessionId, taskId: result.task.taskId });
       this.events.emit({
@@ -510,6 +523,26 @@ export class SqliteGitContextService implements GitContextService {
     return await this.queue.enqueue(async () => {
       await this.ensureStartupRecovery();
       return this.taskLifecycle.listTasks(input);
+    });
+  }
+
+  async inventoryTaskMigrations(
+    input: InventoryTaskMigrationsRequest,
+  ): Promise<InventoryTaskMigrationsResponse> {
+    return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
+      return await this.taskRepositoryMigration.inventory(input);
+    });
+  }
+
+  async migrateTaskRepository(
+    input: MigrateTaskRepositoryRequest,
+  ): Promise<MigrateTaskRepositoryResponse> {
+    return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
+      const result = await this.taskRepositoryMigration.migrate(input);
+      this.invalidateContext("task_repository_migrated", { taskId: input.taskId });
+      return result;
     });
   }
 

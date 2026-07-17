@@ -1,4 +1,4 @@
-export const GIT_CONTEXT_PROTOCOL_VERSION = 22;
+export const GIT_CONTEXT_PROTOCOL_VERSION = 23;
 
 export type SessionId = string;
 export type TaskId = string;
@@ -415,6 +415,52 @@ export interface ListTasksResponse {
   tasks: TaskCandidate[];
 }
 
+export type TaskMigrationCohort =
+  | "already_v1"
+  | "managed_clean"
+  | "external_path"
+  | "dirty"
+  | "missing_checkout"
+  | "diverged"
+  | "busy"
+  | "invalid";
+
+export interface TaskMigrationInventory {
+  taskId: TaskId;
+  layoutVersion: TaskRepositoryLayout;
+  cohort: TaskMigrationCohort;
+  migrationStatus: "not_required" | "pending" | "in_progress" | "completed" | "blocked";
+  catalogHead: string;
+  workingPath: string;
+  workingHead?: string;
+  legacyRepositoryPath?: string;
+  legacyHead?: string;
+  dirtyPaths: string[];
+  blockers: string[];
+}
+
+export interface InventoryTaskMigrationsRequest {
+  taskId?: TaskId;
+}
+
+export interface InventoryTaskMigrationsResponse {
+  tasks: TaskMigrationInventory[];
+}
+
+export interface MigrateTaskRepositoryRequest extends GitContextRequestEnvelope {
+  taskId: TaskId;
+  expectedTaskHead: string;
+  at: string;
+}
+
+export interface MigrateTaskRepositoryResponse {
+  task: TaskCatalogEntry;
+  migrated: boolean;
+  baseHead: string;
+  migrationCommit: string;
+  legacyRepositoryPath: string;
+}
+
 export interface GetTaskRequest {
   taskId: TaskId;
 }
@@ -455,6 +501,8 @@ export interface CreateTaskRunRequest extends GitContextRequestEnvelope, SelectT
 export interface ActivateTaskRunRequest extends GitContextRequestEnvelope, SelectTaskRunInput {
   taskId: TaskId;
   expectedTaskHead?: string;
+  /** Required when selecting a simple_repository_v1 task. Ignored by the legacy reader. */
+  route?: TaskRequestRoute;
 }
 
 export type TaskRequestRoute =
@@ -500,7 +548,9 @@ export interface PlanTaskRequestRouteResponse {
 
 export interface SelectedTaskRunResponse {
   task: TaskCatalogEntry;
-  mount: TaskMountRef;
+  repositoryLayout: TaskRepositoryLayout;
+  /** Legacy session submodule. V1 selections work directly in task.workingPath. */
+  mount?: TaskMountRef;
   run: RunRef;
   context: TaskContextProjection;
   taskCreated: boolean;
@@ -760,6 +810,13 @@ export function isRequestEnvelope(
   return value["expectedHead"] === undefined || isNonEmptyString(value["expectedHead"]);
 }
 
+export function isMigrateTaskRepositoryRequest(value: unknown): value is MigrateTaskRepositoryRequest {
+  return isRequestEnvelope(value)
+    && isNonEmptyString(value["taskId"])
+    && isNonEmptyString(value["expectedTaskHead"])
+    && isNonEmptyString(value["at"]);
+}
+
 export function isEnsureActiveSessionRequest(value: unknown): value is EnsureActiveSessionRequest {
   if (!isRequestEnvelope(value)) {
     return false;
@@ -814,27 +871,35 @@ export function isActivateTaskRunRequest(value: unknown): value is ActivateTaskR
   if (!isRequestEnvelope(value)) {
     return false;
   }
-  return /^W-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
+  const taskId = String(value["taskId"] ?? "");
+  return /^[TW]-\d{8}-\d{4}$/.test(taskId)
     && (value["expectedTaskHead"] === undefined
       || /^[a-f0-9]{40}$/.test(String(value["expectedTaskHead"])))
+    && (taskId.startsWith("T-")
+      ? isTaskRequestRoute(value["route"])
+      : value["route"] === undefined || isTaskRequestRoute(value["route"]))
     && isTaskRunSelection(value);
 }
 
 export function isPlanTaskRequestRouteRequest(
   value: unknown,
 ): value is PlanTaskRequestRouteRequest {
-  if (!isRequestEnvelope(value) || !isRecord(value["route"])) {
+  if (!isRequestEnvelope(value) || !isTaskRequestRoute(value["route"])) {
     return false;
   }
-  const route = value["route"];
   const common = isNonEmptyString(value["sessionId"])
     && isNonEmptyString(value["conversationId"])
     && isNonEmptyString(value["runId"])
     && /^T-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
     && /^[a-f0-9]{40}$/.test(String(value["expectedTaskHead"] ?? ""))
-    && isNonEmptyString(value["at"])
-    && isBoundedString(route["reason"], 500);
+    && isNonEmptyString(value["at"]);
   if (!common) return false;
+  return true;
+}
+
+function isTaskRequestRoute(value: unknown): value is TaskRequestRoute {
+  if (!isRecord(value) || !isBoundedString(value["reason"], 500)) return false;
+  const route = value;
   if (route["kind"] === "continue_active_request") {
     return /^R-\d{4}$/.test(String(route["requestId"] ?? ""));
   }

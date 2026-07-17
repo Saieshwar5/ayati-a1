@@ -78,8 +78,8 @@ export function allocateTask(
   database.prepare([
     "INSERT INTO tasks(",
     "task_id, layout_version, repository_path, working_path, durable_branch, head_sha, title_cache, objective_cache,",
-    "status, created_session_id, created_at, updated_at",
-    ") VALUES (?, 'legacy_independent_v0', ?, ?, 'main', NULL, ?, ?, 'initializing', ?, ?, ?)",
+    "status, created_session_id, created_at, updated_at, migration_status",
+    ") VALUES (?, 'legacy_independent_v0', ?, ?, 'main', NULL, ?, ?, 'initializing', ?, ?, ?, 'pending')",
   ].join(" ")).run(
     taskId,
     repositoryPath,
@@ -190,6 +190,46 @@ export function readInitializingTasks(
     "WHERE status = 'initializing' ORDER BY created_at, task_id",
   ].join(" ")).all() as unknown as TaskRow[];
   return rows.map(initializationRecord);
+}
+
+export function readAllTaskInitializations(
+  database: ContextDatabase,
+): TaskInitializationRecord[] {
+  const rows = database.prepare([
+    taskSelect(),
+    "ORDER BY created_at, task_id",
+  ].join(" ")).all() as unknown as TaskRow[];
+  return rows.map(initializationRecord).filter((task) => Boolean(task.head));
+}
+
+export function completeTaskRepositoryMigration(database: ContextDatabase, input: {
+  taskId: string;
+  expectedHead: string;
+  repositoryPath: string;
+  migrationCommit: string;
+  legacyRepositoryPath: string;
+  at: string;
+}): TaskCatalogEntry {
+  const result = database.prepare([
+    "UPDATE tasks SET layout_version = 'simple_repository_v1', repository_path = working_path,",
+    "head_sha = ?, legacy_repository_path = ?, migrated_from_head = ?, migration_commit = ?,",
+    "migration_status = 'completed', updated_at = ?",
+    "WHERE task_id = ? AND layout_version = 'legacy_independent_v0' AND head_sha = ? AND working_path = ?",
+  ].join(" ")).run(
+    input.migrationCommit,
+    input.legacyRepositoryPath,
+    input.expectedHead,
+    input.migrationCommit,
+    input.at,
+    input.taskId,
+    input.expectedHead,
+    input.repositoryPath,
+  );
+  const task = readTaskCatalogEntry(database, input.taskId);
+  if (Number(result.changes) !== 1 || !task) {
+    throw new Error("Task catalog changed while completing repository migration: " + input.taskId);
+  }
+  return task;
 }
 
 export function activateTask(

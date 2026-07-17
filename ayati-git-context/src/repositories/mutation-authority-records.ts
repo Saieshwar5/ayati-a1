@@ -110,6 +110,17 @@ export function assertTaskMutationUnlocked(
   taskId: string,
   at?: string,
 ): void {
+  const migration = database.prepare([
+    "SELECT phase FROM task_repository_migrations WHERE task_id = ? AND phase IN ('in_progress', 'committed')",
+  ].join(" ")).get(taskId) as { phase: string } | undefined;
+  if (migration) {
+    throw new GitContextServiceError({
+      code: "TASK_LOCKED",
+      message: "Task repository migration owns the task writer.",
+      retryable: true,
+      details: { taskId, migrationPhase: migration.phase },
+    });
+  }
   const blocking = readBlockingAuthority(database, taskId);
   if (blocking) {
     if (blocking.status === "active" && at && isExpired(blocking.expiresAt, at)) {

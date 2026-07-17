@@ -8,15 +8,10 @@ import {
   okJsonResult,
   succeededContract,
 } from "../contract-helpers.js";
-import {
-  parseTaskPlacement,
-  resolveTaskPlacement,
-  type TaskPlacementInput,
-} from "./task-placement.js";
+import type { TaskRequestRoute } from "ayati-git-context";
 
 export interface GitContextSkillDeps {
   service: GitContextService;
-  workspaceRoot: string;
 }
 
 const PROMPT = [
@@ -29,9 +24,10 @@ const PROMPT = [
   "Use git_context_activate_task when the request continues or changes an existing task.",
   "Use git_context_create_task only when the request starts a distinct durable deliverable.",
   "Never default an unclear mutation to the most recent task. Ask the user when ownership remains ambiguous.",
-  "Every new task must declare placement explicitly: requested or managed.",
-  "For requested placement, provide the absolute directory that will contain the deliverables as workingDirectory. If the user names an output file, use its parent directory.",
-  "Use managed placement only when no requested location exists. Never silently replace a requested location with a managed directory.",
+  "Every new task is created as one normal repository under the managed task directory.",
+  "When activating a T-* task, explicitly choose requestDecision=continue for its unfinished current request or requestDecision=create for a materially separate outcome in the same task.",
+  "Do not create a new task merely because the current request is complete; create a new request in the existing task when the durable workstream is the same.",
+  "For external actions, keep only verified non-secret identifiers or safe receipt paths in durable task context; Git does not own or undo external state.",
   "After either tool succeeds, use absolute paths rooted inside the returned workingDirectory for every host filesystem tool call.",
 ].join("\n");
 
@@ -52,35 +48,15 @@ function createTaskTool(deps: GitContextSkillDeps): ToolDefinition {
   const service = deps.service;
   return {
     name: "git_context_create_task",
-    description: "Create a distinct durable task repository in the requested or managed working directory, register its session pointer, and start its task run.",
+    description: "Create one managed mount-free V1 task repository and start its initial request run.",
     inputSchema: {
       type: "object",
       properties: {
         title: { type: "string", description: "Short durable task title." },
         objective: { type: "string", description: "Concrete deliverable or durable objective." },
-        placement: {
-          type: "object",
-          description: "Explicit placement decision. Use requested with an absolute workingDirectory when the user message or verified read context specifies a location. If the user specifies an output file, use its parent directory. Use managed only when no location was requested.",
-          properties: {
-            mode: { enum: ["requested", "managed"] },
-            workingDirectory: { type: "string", description: "Absolute directory that will contain task deliverables. This must be a directory, not an output file path. Omit for managed mode." },
-          },
-          required: ["mode"],
-          additionalProperties: false,
-          anyOf: [
-            {
-              properties: { mode: { const: "requested" }, workingDirectory: { type: "string" } },
-              required: ["mode", "workingDirectory"],
-            },
-            {
-              properties: { mode: { const: "managed" } },
-              required: ["mode"],
-            },
-          ],
-        },
         reason: { type: "string", description: "Why this request is a new task instead of an existing task." },
       },
-      required: ["title", "objective", "placement", "reason"],
+      required: ["title", "objective", "reason"],
       additionalProperties: false,
     },
     outputSchema: routingOutputSchema(),
@@ -101,10 +77,6 @@ function createTaskTool(deps: GitContextSkillDeps): ToolDefinition {
         if (!conversation || conversation.status !== "active") {
           return routingError("No active conversation exists for task creation.");
         }
-        const placement = resolveTaskPlacement(parsed.placement, active, deps.workspaceRoot);
-        if (!placement.ok) {
-          return routingError(placement.message);
-        }
         const selected = await service.createTaskRun({
           requestId: randomUUID(),
           sessionId: parsed.sessionId,
@@ -114,7 +86,15 @@ function createTaskTool(deps: GitContextSkillDeps): ToolDefinition {
           workState: active.run?.workState ?? initialWorkState(),
           title: parsed.title,
           objective: parsed.objective,
-          placement: placement.placement,
+          placement: { mode: "managed" },
+          at: new Date().toISOString(),
+        });
+        await service.bindTaskAttachments({
+          requestId: randomUUID(),
+          sessionId: parsed.sessionId,
+          conversationId: conversation.conversationId,
+          runId: selected.run.runId,
+          taskId: selected.task.taskId,
           at: new Date().toISOString(),
         });
         return routingSuccess(service, parsed.sessionId, selected.task.taskId, selected.run.runId, "created");
@@ -128,12 +108,26 @@ function createTaskTool(deps: GitContextSkillDeps): ToolDefinition {
 function activateTaskTool(service: GitContextService): ToolDefinition {
   return {
     name: "git_context_activate_task",
-    description: "Mount an existing durable task repository and start or promote the current run for it.",
+    description: "Select an existing task. T-* tasks require an explicit decision to continue the current request or create a new active request; W-* tasks use the legacy compatibility reader.",
     inputSchema: {
       type: "object",
       properties: {
-        taskId: { type: "string", pattern: "^W-[0-9]{8}-[0-9]{4}$", description: "Exact task id from current task candidates." },
+        taskId: { type: "string", pattern: "^[TW]-[0-9]{8}-[0-9]{4}$", description: "Exact task id from current task candidates." },
         reason: { type: "string", description: "Why the current request belongs to this task and its resources." },
+        requestDecision: {
+          type: "object",
+          description: "Required for T-* tasks. Continue the exact unfinished request, or create one materially separate request in the same task.",
+          properties: {
+            kind: { enum: ["continue", "create"] },
+            requestId: { type: "string", pattern: "^R-[0-9]{4}$" },
+            title: { type: "string" },
+            request: { type: "string" },
+            acceptance: { type: "array", items: { type: "string" } },
+            constraints: { type: "array", items: { type: "string" } },
+          },
+          required: ["kind"],
+          additionalProperties: false,
+        },
       },
       required: ["taskId", "reason"],
       additionalProperties: false,
@@ -164,6 +158,15 @@ function activateTaskTool(service: GitContextService): ToolDefinition {
           trigger: conversationTrigger(active, conversation.conversationId),
           workState: active.run?.workState ?? initialWorkState(),
           taskId: parsed.taskId,
+          ...(parsed.route ? { route: parsed.route } : {}),
+          at: new Date().toISOString(),
+        });
+        await service.bindTaskAttachments({
+          requestId: randomUUID(),
+          sessionId: parsed.sessionId,
+          conversationId: conversation.conversationId,
+          runId: selected.run.runId,
+          taskId: selected.task.taskId,
           at: new Date().toISOString(),
         });
         return routingSuccess(service, parsed.sessionId, selected.task.taskId, selected.run.runId, "activated");
@@ -243,34 +246,64 @@ function parseCreateInput(input: unknown, context?: ToolExecutionContext): {
   sessionId: string;
   title: string;
   objective: string;
-  placement: TaskPlacementInput;
   reason: string;
 } | ToolResult {
   const record = objectInput(input);
   const sessionId = context?.sessionId?.trim();
   const title = stringField(record, "title");
   const objective = stringField(record, "objective");
-  const placement = parseTaskPlacement(record["placement"]);
   const reason = stringField(record, "reason");
-  if (!sessionId || !title || !objective || !placement || !reason) {
-    return routingError("sessionId, title, objective, placement, and reason are required.");
+  if (!sessionId || !title || !objective || !reason) {
+    return routingError("sessionId, title, objective, and reason are required.");
   }
-  return { sessionId, title, objective, placement, reason };
+  return { sessionId, title, objective, reason };
 }
 
 function parseActivateInput(input: unknown, context?: ToolExecutionContext): {
   sessionId: string;
   taskId: string;
   reason: string;
+  route?: TaskRequestRoute;
 } | ToolResult {
   const record = objectInput(input);
   const sessionId = context?.sessionId?.trim();
   const taskId = stringField(record, "taskId");
   const reason = stringField(record, "reason");
-  if (!sessionId || !taskId || !/^W-\d{8}-\d{4}$/.test(taskId) || !reason) {
+  if (!sessionId || !taskId || !/^[TW]-\d{8}-\d{4}$/.test(taskId) || !reason) {
     return routingError("sessionId, a valid taskId, and reason are required.");
   }
-  return { sessionId, taskId, reason };
+  const route = parseRequestDecision(record["requestDecision"], reason);
+  if (taskId.startsWith("T-") && !route) {
+    return routingError("T-* task activation requires requestDecision=continue or requestDecision=create with complete request details.");
+  }
+  return { sessionId, taskId, reason, ...(route ? { route } : {}) };
+}
+
+function parseRequestDecision(value: unknown, reason: string): TaskRequestRoute | undefined {
+  const record = objectInput(value);
+  if (record["kind"] === "continue") {
+    const requestId = stringField(record, "requestId");
+    return requestId && /^R-\d{4}$/.test(requestId)
+      ? { kind: "continue_active_request", requestId, reason }
+      : undefined;
+  }
+  if (record["kind"] === "create") {
+    const title = stringField(record, "title");
+    const request = stringField(record, "request");
+    const acceptance = stringArray(record["acceptance"]);
+    const constraints = stringArray(record["constraints"]);
+    return title && request && acceptance.length > 0
+      ? { kind: "create_active_request", title, request, acceptance, constraints, reason }
+      : undefined;
+  }
+  return undefined;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+        .map((item) => item.trim())
+    : [];
 }
 
 function objectInput(value: unknown): Record<string, unknown> {

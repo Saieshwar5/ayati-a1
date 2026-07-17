@@ -26,6 +26,10 @@ import type {
   HealthResponse,
   ListTasksRequest,
   ListTasksResponse,
+  InventoryTaskMigrationsRequest,
+  InventoryTaskMigrationsResponse,
+  MigrateTaskRepositoryRequest,
+  MigrateTaskRepositoryResponse,
   MountTaskRequest,
   MountTaskResponse,
   PlanTaskRequestRouteRequest,
@@ -55,6 +59,12 @@ export interface GitContextService {
     input: PlanTaskRequestRouteRequest,
   ): Promise<PlanTaskRequestRouteResponse>;
   listTasks(input: ListTasksRequest): Promise<ListTasksResponse>;
+  inventoryTaskMigrations(
+    input: InventoryTaskMigrationsRequest,
+  ): Promise<InventoryTaskMigrationsResponse>;
+  migrateTaskRepository(
+    input: MigrateTaskRepositoryRequest,
+  ): Promise<MigrateTaskRepositoryResponse>;
   getTask(input: GetTaskRequest): Promise<GetTaskResponse>;
   mountTask(input: MountTaskRequest): Promise<MountTaskResponse>;
   recordSessionAttachments(

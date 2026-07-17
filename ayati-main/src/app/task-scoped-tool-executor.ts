@@ -84,8 +84,41 @@ class TaskScopedToolExecutor implements ToolExecutor {
     if (scopeError) {
       return taskScopeFailure(scopeError.code, scopeError.message);
     }
-    if (taxonomy.effect === "read_only" || taxonomy.effect === "external_mutation") {
+    if (taxonomy.effect === "read_only") {
       return await this.base.execute(toolName, scopedInput, scopedContext);
+    }
+    if (taxonomy.effect === "external_mutation") {
+      if (task.task.layoutVersion !== "simple_repository_v1" || !active.run.run.taskRequestId) {
+        return taskScopeFailure(
+          "TASK_RESOURCE_SCOPE_VIOLATION",
+          "External mutation requires a V1 task run bound to one active request.",
+        );
+      }
+      const acquired = await this.gitContext.acquireMutationAuthority({
+        requestId: randomUUID(),
+        sessionId: context.sessionId,
+        runId: context.runId,
+        taskId: task.task.taskId,
+        taskRequestId: active.run.run.taskRequestId,
+        expectedTaskHead: task.task.head,
+        targets: [],
+        at: new Date().toISOString(),
+      });
+      const result = await this.base.execute(toolName, scopedInput, scopedContext);
+      const verified = await this.gitContext.verifyMutation({
+        requestId: randomUUID(),
+        authorityId: acquired.authority.authorityId,
+        lockToken: acquired.authority.lockToken,
+        // A successful operation may still be semantically inconclusive. It
+        // receives a context-only commit, while task_completion continues to
+        // require the tool-owned deterministic verification facts.
+        toolStatus: result.ok ? "completed" : "failed",
+        at: new Date().toISOString(),
+      });
+      if (!verified.verified || verified.status === "recovery_required") {
+        return mutationFailure(result, "External outcome could not be bound to verified task context.");
+      }
+      return result;
     }
     if (await isReadOnlyShellValidation(toolName, scopedInput)) {
       return await this.base.execute(toolName, scopedInput, scopedContext);

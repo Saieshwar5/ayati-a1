@@ -37,6 +37,10 @@ import {
   type HealthResponse,
   type ListTasksRequest,
   type ListTasksResponse,
+  type InventoryTaskMigrationsRequest,
+  type InventoryTaskMigrationsResponse,
+  type MigrateTaskRepositoryRequest,
+  type MigrateTaskRepositoryResponse,
   type MountTaskRequest,
   type MountTaskResponse,
   type PlanTaskRequestRouteRequest,
@@ -172,6 +176,18 @@ export class ManagedGitContextProcess implements GitContextService {
 
   async listTasks(input: ListTasksRequest): Promise<ListTasksResponse> {
     return await this.invoke((client) => client.listTasks(input));
+  }
+
+  async inventoryTaskMigrations(
+    input: InventoryTaskMigrationsRequest,
+  ): Promise<InventoryTaskMigrationsResponse> {
+    return await this.invoke((client) => client.inventoryTaskMigrations(input));
+  }
+
+  async migrateTaskRepository(
+    input: MigrateTaskRepositoryRequest,
+  ): Promise<MigrateTaskRepositoryResponse> {
+    return await this.invoke((client) => client.migrateTaskRepository(input));
   }
 
   async getTask(input: GetTaskRequest): Promise<GetTaskResponse> {

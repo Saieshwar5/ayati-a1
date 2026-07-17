@@ -18,9 +18,9 @@ Main runtime flow:
    typed Git Context client to an independently managed local server over a
    Unix socket. The server alone owns context SQLite and Git writes.
 4. The context server returns active session, task candidates with stable
-   working directories, selected task, and run context. Durable work requires
-   the agent to create a task repository in a requested or managed directory,
-   or activate an existing one; no session-global active task silently owns a
+   working directories, selected task, and run context. New durable work uses
+   one managed `T-*` repository. Selecting an existing V1 task requires an
+   explicit request decision; no session-global active task silently owns a
    mutation.
 5. `IVecEngine` builds static decision context and enters the decision-action-reducer runner.
 6. The decision model returns direct assistant text for normal terminal
@@ -30,9 +30,10 @@ Main runtime flow:
    routing, and repair capabilities are prepared deterministically.
 7. Executable tool calls run through the shared action executor and are verified
    through tool contracts, assertions, and local failure policy.
-8. Verified facts update WorkState. Runtime-owned finalization asks the context
-   server to commit verified task state first and then persist session
-   conversation, run evidence, and the exact task gitlink idempotently.
+8. Verified facts update WorkState. Runtime-owned V1 finalization commits the
+   verified deliverable, request outcome, task card, and references once in the
+   task repository. SQLite retains the run journal; V1 creates no task mount,
+   push, session commit, or gitlink.
 9. Replies, feedback, notifications, or actions are sent back through the appropriate transport.
 
 Current agent harness:

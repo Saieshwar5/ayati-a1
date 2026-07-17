@@ -84,7 +84,6 @@ export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<
     }),
     createGitContextSkill({
       service: options.gitContextService,
-      workspaceRoot: options.config.workspace.root,
     }),
     createUiSkill({
       workspaceOrchestrator: options.workspaceOrchestrator,

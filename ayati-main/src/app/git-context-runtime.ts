@@ -246,6 +246,7 @@ class AppGitContextRuntime implements GitContextRuntime {
   async activateTaskTurn(input: {
     turn: GitContextPreparedTurn | null;
     taskId: string;
+    route?: import("ayati-git-context").TaskRequestRoute;
     sessionRunId?: string;
     at: string;
   }): Promise<GitContextRoutedTurn | null> {
@@ -258,6 +259,7 @@ class AppGitContextRuntime implements GitContextRuntime {
       trigger: "user",
       workState: initialWorkState(),
       taskId: input.taskId,
+      ...(input.route ? { route: input.route } : {}),
       at: input.at,
     });
     this.observer.emit({

@@ -1,6 +1,6 @@
 # Current State
 
-Last updated: 2026-07-10
+Last updated: 2026-07-17
 
 Ayati's active task-continuity path is git-native. The old task-thread and
 Activity continuation path is historical and must not be reintroduced into the
@@ -26,7 +26,15 @@ context.timeline + context.git + context.tools + context.harness + context.run +
 
 ## Implemented
 
-- Daily git context repositories with task branches.
+- Daily git context plus one normal managed `T-*` Git repository per new task.
+- Explicit task/request/run ownership: V1 activation chooses either the exact
+  unfinished request or creates a new active request in the same task.
+- Mount-free V1 creation, selection, mutation, attachment binding, and
+  single-commit finalization.
+- Dry-run legacy cohort inventory and one-commit migration for clean managed
+  `W-*` tasks; unsafe cohorts remain on the cataloged legacy writer.
+- Context-only commits for verified external outcomes, with raw evidence kept
+  outside task Git.
 - Session-store submodule as the canonical session conversation store, with
   per-message Markdown files.
 - Pending turn envelope with `unbound`, `bound`, and `clarifying` states.

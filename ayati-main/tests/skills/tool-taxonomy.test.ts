@@ -109,7 +109,7 @@ function runtimeSkills(): SkillDefinition[] {
     createDatasetSkill({ preparedAttachmentService: stub }),
     createDocumentSkill({ preparedAttachmentService: stub }),
     createFilesSkill({ fileLibrary: stub, directoryLibrary: stub }),
-    createGitContextSkill({ service: stub, workspaceRoot: "/tmp/ayati-tool-taxonomy-workspace" }),
+    createGitContextSkill({ service: stub }),
     createUiSkill({ workspaceOrchestrator: stub }),
   ];
 }

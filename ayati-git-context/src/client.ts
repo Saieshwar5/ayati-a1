@@ -28,6 +28,10 @@ import type {
   HealthResponse,
   ListTasksRequest,
   ListTasksResponse,
+  InventoryTaskMigrationsRequest,
+  InventoryTaskMigrationsResponse,
+  MigrateTaskRepositoryRequest,
+  MigrateTaskRepositoryResponse,
   MountTaskRequest,
   MountTaskResponse,
   PlanTaskRequestRouteRequest,
@@ -145,6 +149,19 @@ export class GitContextClient implements GitContextService {
     if (input.limit) params.set("limit", String(input.limit));
     const query = params.size > 0 ? "?" + params.toString() : "";
     return await this.requestJson<ListTasksResponse>("GET", "/tasks" + query);
+  }
+
+  async inventoryTaskMigrations(
+    input: InventoryTaskMigrationsRequest,
+  ): Promise<InventoryTaskMigrationsResponse> {
+    const query = input.taskId ? "?taskId=" + encodeURIComponent(input.taskId) : "";
+    return await this.requestJson<InventoryTaskMigrationsResponse>("GET", "/task-migrations" + query);
+  }
+
+  async migrateTaskRepository(
+    input: MigrateTaskRepositoryRequest,
+  ): Promise<MigrateTaskRepositoryResponse> {
+    return await this.requestJson<MigrateTaskRepositoryResponse>("POST", "/task-migrations", input);
   }
 
   async getTask(input: GetTaskRequest): Promise<GetTaskResponse> {

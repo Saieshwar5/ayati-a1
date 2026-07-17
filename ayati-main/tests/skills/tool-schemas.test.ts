@@ -100,7 +100,6 @@ async function buildRuntimeTools(): Promise<ToolDefinition[]> {
     }).tools,
     ...createGitContextSkill({
       service: new ContractOnlyGitContextService(),
-      workspaceRoot: "/tmp/ayati-tool-schema-workspace",
     }).tools,
     ...createUiSkill({
       workspaceOrchestrator: new WorkspaceOrchestrator({
@@ -128,10 +127,11 @@ describe("runtime tool schemas", () => {
     expect(tools.some((tool) => tool.name.startsWith("learning_"))).toBe(false);
     expect(tools.some((tool) => tool.name.startsWith("ui_open_learning_"))).toBe(false);
     const createTask = tools.find((tool) => tool.name === "git_context_create_task");
-    expect(createTask?.inputSchema.properties?.["placement"]).toMatchObject({ type: "object" });
-    expect(createTask?.inputSchema.required).toContain("placement");
+    expect(createTask?.inputSchema.properties).not.toHaveProperty("placement");
+    expect(createTask?.inputSchema.required).toEqual(["title", "objective", "reason"]);
     expect(createTask?.inputSchema.properties).not.toHaveProperty("directory");
-    expect(createTask?.inputSchema.properties?.["placement"]?.properties).not.toHaveProperty("evidence");
+    const activateTask = tools.find((tool) => tool.name === "git_context_activate_task");
+    expect(activateTask?.inputSchema.properties?.["requestDecision"]).toMatchObject({ type: "object" });
     expect(createTask?.outputSchema.properties?.["workingDirectory"]).toMatchObject({ type: "string" });
     expect(createTask?.outputSchema.properties).not.toHaveProperty("checkoutPath");
     expect(issues).toEqual([]);

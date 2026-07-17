@@ -504,6 +504,30 @@ const MIGRATIONS: Migration[] = [
       "ON task_request_route_plans(phase, updated_at);",
     ].join("\n"),
   },
+  {
+    version: 17,
+    sql: [
+      "ALTER TABLE tasks ADD COLUMN legacy_repository_path TEXT;",
+      "ALTER TABLE tasks ADD COLUMN migrated_from_head TEXT;",
+      "ALTER TABLE tasks ADD COLUMN migration_commit TEXT;",
+      "ALTER TABLE tasks ADD COLUMN migration_status TEXT NOT NULL DEFAULT 'not_required'",
+      "  CHECK (migration_status IN ('not_required', 'pending', 'in_progress', 'completed', 'blocked'));",
+      "UPDATE tasks SET migration_status = 'pending' WHERE layout_version = 'legacy_independent_v0';",
+      "CREATE TABLE task_repository_migrations (",
+      "  task_id TEXT PRIMARY KEY REFERENCES tasks(task_id),",
+      "  request_id TEXT NOT NULL UNIQUE,",
+      "  phase TEXT NOT NULL CHECK (phase IN ('in_progress', 'committed', 'completed', 'blocked')),",
+      "  legacy_repository_path TEXT NOT NULL,",
+      "  working_path TEXT NOT NULL,",
+      "  base_head TEXT NOT NULL,",
+      "  migration_commit TEXT,",
+      "  created_at TEXT NOT NULL,",
+      "  updated_at TEXT NOT NULL,",
+      "  last_error TEXT",
+      ");",
+      "CREATE INDEX task_repository_migrations_phase ON task_repository_migrations(phase, updated_at);",
+    ].join("\n"),
+  },
 ];
 
 export function applyMigrations(database: DatabaseSync, now: () => string): void {

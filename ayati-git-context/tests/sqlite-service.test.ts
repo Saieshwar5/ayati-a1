@@ -1051,7 +1051,7 @@ describe("SQLite Git Context service", () => {
     })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
   });
 
-  it("creates, mounts, runs, and finalizes a task through one high-level selection", async () => {
+  it("creates, selects, runs, and finalizes a mount-free V1 task", async () => {
     const { service, database } = await createService();
     const session = await ensureSession(service);
     const systemEventContent = "system event context line\n".repeat(1_000)
@@ -1100,15 +1100,17 @@ describe("SQLite Git Context service", () => {
 
     expect(selected).toMatchObject({
       taskCreated: true,
-      mountCreated: true,
+      mountCreated: false,
       runPromoted: false,
-      run: { runClass: "task", taskId: "W-20260712-0001" },
+      repositoryLayout: "simple_repository_v1",
+      run: { runClass: "task", taskId: "T-20260712-0001", taskRequestId: "R-0001" },
       context: {
         title: "Small Research Task",
         objective: "Keep a durable research note.",
       },
     });
-    expect(selected.mount.checkoutPath).toContain("tasks/W-20260712-0001");
+    expect(selected.mount).toBeUndefined();
+    expect(selected.task.workingPath).toContain("tasks/T-20260712-0001");
     expect(retried).toEqual(selected);
     expect((await service.getActiveContext({ sessionId: session.session.sessionId })).activeTask)
       .toMatchObject({ task: { taskId: selected.task.taskId } });
@@ -1125,7 +1127,7 @@ describe("SQLite Git Context service", () => {
       input: { files: [{ path: ".ayati/task.md", mode: "full" }] },
       output: { files: [{ path: ".ayati/task.md", content: "Task descriptor" }] },
       verification: { passed: true, artifacts: [".ayati/task.md"] },
-      workState: { ...emptyRunWorkState(), summary: "Task descriptor inspected." },
+      workState: { ...emptyRunWorkState(), summary: "The research task is ready for future work." },
       at: "2026-07-12T09:30:01.500+05:30",
     });
     expect((await service.getActiveContext({ sessionId: session.session.sessionId }))
@@ -1138,6 +1140,23 @@ describe("SQLite Git Context service", () => {
       }),
     ]);
 
+    const authority = await service.acquireMutationAuthority({
+      requestId: "REQ-task-run-context-authority",
+      sessionId: session.session.sessionId,
+      runId: selected.run.runId,
+      taskId: selected.task.taskId,
+      taskRequestId: "R-0001",
+      expectedTaskHead: selected.task.head,
+      targets: [],
+      at: "2026-07-12T09:30:01.750+05:30",
+    });
+    await service.verifyMutation({
+      requestId: "REQ-task-run-context-verify",
+      authorityId: authority.authority.authorityId,
+      lockToken: authority.authority.lockToken,
+      toolStatus: "completed",
+      at: "2026-07-12T09:30:01.800+05:30",
+    });
     const finalized = await service.finalizeTaskRun({
       requestId: "REQ-task-run-finalize",
       sessionId: session.session.sessionId,
@@ -1157,14 +1176,9 @@ describe("SQLite Git Context service", () => {
       assistantResponse: assistantContent,
       at: "2026-07-12T09:30:02+05:30",
     });
-    const conversationRecord = database.prepare([
-      "SELECT file_path AS filePath FROM conversation_segments",
-      "WHERE conversation_id = ?",
-    ].join(" ")).get(conversation.conversation.conversationId) as { filePath: string };
-    const conversationFile = await readFile(
-      join(session.session.repositoryPath, conversationRecord.filePath),
-      "utf8",
-    );
+    const conversationMessages = database.prepare([
+      "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY segment_sequence",
+    ].join(" ")).all(conversation.conversation.conversationId) as unknown as Array<{ role: string; content: string }>;
     const active = await service.getActiveContext({ sessionId: session.session.sessionId });
     const finalWorkState = database.prepare([
       "SELECT status, summary, open_work_json, blockers_json, next_step",
@@ -1178,15 +1192,10 @@ describe("SQLite Git Context service", () => {
     };
 
     expect(finalized.taskHeadBefore).not.toBe(finalized.taskHeadAfter);
-    expect(conversationFile).toContain("## System Event\n\n" + systemEventContent);
-    expect(conversationFile).toContain("## User\n\n" + userContent);
-    expect(conversationFile).toContain("## Assistant\n\n" + assistantContent);
-    expect(conversationFile.indexOf(systemEventContent)).toBeLessThan(
-      conversationFile.indexOf(userContent),
-    );
-    expect(conversationFile.indexOf(userContent)).toBeLessThan(
-      conversationFile.indexOf(assistantContent),
-    );
+    expect(conversationMessages).toEqual([
+      { role: "user", content: userContent },
+      { role: "assistant", content: assistantContent },
+    ]);
     expect(finalWorkState).toEqual({
       status: "done",
       summary: "The research task is ready for future work.",
@@ -1198,8 +1207,7 @@ describe("SQLite Git Context service", () => {
     expect(active.run).toBeUndefined();
     expect(active.activeTask).toBeUndefined();
     expect(active.readContext).toMatchObject({
-      afterTaskRunId: selected.run.runId,
-      entries: [],
+      entries: [expect.objectContaining({ runId: selected.run.runId, tool: "read_files" })],
     });
     expect(active.taskCandidates).toEqual(expect.arrayContaining([
       expect.objectContaining({ taskId: selected.task.taskId, title: "Small Research Task" }),
@@ -1219,19 +1227,26 @@ describe("SQLite Git Context service", () => {
       trigger: "user",
       workState: emptyRunWorkState(),
       taskId: selected.task.taskId,
+      expectedTaskHead: finalized.taskHeadAfter,
+      route: {
+        kind: "create_active_request",
+        reason: "The initial request is done and the user asked for more work in the same task.",
+        title: "Continue the research",
+        request: "Continue the research task with a new bounded outcome.",
+        acceptance: ["The next research outcome is verified."],
+        constraints: [],
+      },
       at: "2026-07-12T09:30:04+05:30",
     });
     expect(continuation.context).toMatchObject({
       title: "Small Research Task",
       summary: "The research task is ready for future work.",
-      taskStatus: "done",
-      latestOutcome: "done",
+      currentRequest: { id: "R-0002", status: "active" },
+      latestOutcome: "completed",
       validation: "passed",
       recentCommits: expect.arrayContaining([expect.objectContaining({
-        taskState: "The research task is ready for future work.",
-        taskStatus: "done",
+        outcome: "completed",
         runId: selected.run.runId,
-        stateVersion: 1,
       })]),
     });
   });
@@ -1522,7 +1537,7 @@ describe("SQLite Git Context service", () => {
       .toBe(commitCountBefore);
   });
 
-  it("completes pending rollover only after a normal task-run session commit", async () => {
+  it("keeps rollover pending while unrelated session work remains after V1 finalization", async () => {
     const { service, database } = await createService();
     const first = await ensureSession(service);
     const systemEvent = await service.appendConversation({
@@ -1559,6 +1574,24 @@ describe("SQLite Git Context service", () => {
       at: "2026-07-13T00:00:01+05:30",
     });
 
+    const authority = await service.acquireMutationAuthority({
+      requestId: "REQ-rollover-task-context-authority",
+      sessionId: first.session.sessionId,
+      runId: selected.run.runId,
+      taskId: selected.task.taskId,
+      taskRequestId: "R-0001",
+      expectedTaskHead: selected.task.head,
+      targets: [],
+      at: "2026-07-13T00:01:00+05:30",
+    });
+    await service.verifyMutation({
+      requestId: "REQ-rollover-task-context-verify",
+      authorityId: authority.authority.authorityId,
+      lockToken: authority.authority.lockToken,
+      toolStatus: "completed",
+      at: "2026-07-13T00:01:01+05:30",
+    });
+
     const finalizationInput = {
       requestId: "REQ-rollover-task-finalize",
       sessionId: first.session.sessionId,
@@ -1580,33 +1613,29 @@ describe("SQLite Git Context service", () => {
     } as const;
     const finalized = await service.finalizeTaskRun(finalizationInput);
     const active = await service.getActiveContext({});
-    const conversationRecord = database.prepare([
-      "SELECT file_path AS filePath FROM conversation_segments",
-      "WHERE conversation_id = ?",
-    ].join(" ")).get(conversation.conversation.conversationId) as { filePath: string };
-    const conversationFile = await readFile(
-      join(first.session.repositoryPath, conversationRecord.filePath),
-      "utf8",
-    );
+    const conversationMessages = database.prepare([
+      "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY segment_sequence",
+    ].join(" ")).all(conversation.conversation.conversationId) as unknown as Array<{ role: string; content: string }>;
 
     expect(pending.session.status).toBe("rollover_pending");
     expect(await git(first.session.repositoryPath, ["rev-list", "--count", "HEAD"]))
-      .toBe(String(Number(commitCountBefore) + 1));
-    expect(finalized.sessionCommit).toMatch(/^[a-f0-9]{40}$/);
-    expect(conversationFile).toContain(systemEvent.message.content);
-    expect(conversationFile).toContain(conversation.message.content);
-    expect(conversationFile).toContain("The midnight task is complete.");
+      .toBe(commitCountBefore);
+    expect(finalized.sessionCommit).toBeUndefined();
+    expect(conversationMessages).toEqual([
+      { role: "user", content: conversation.message.content },
+      { role: "assistant", content: "The midnight task is complete." },
+    ]);
     expect(database.prepare([
       "SELECT status, head_sha FROM sessions WHERE session_id = ?",
     ].join(" ")).get(first.session.sessionId)).toEqual({
-      status: "sealed",
-      head_sha: finalized.sessionCommit,
+      status: "rollover_pending",
+      head_sha: first.session.head,
     });
     expect(active.session?.session).toMatchObject({
-      sessionId: "S-20260713-local",
-      status: "open",
+      sessionId: first.session.sessionId,
+      status: "rollover_pending",
     });
-    expect(active.session?.pendingConversation).toEqual([]);
+    expect(active.session?.pendingConversation.length).toBeGreaterThan(0);
     await expect(service.finalizeTaskRun(finalizationInput)).resolves.toEqual(finalized);
   });
 

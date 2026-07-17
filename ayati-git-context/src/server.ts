@@ -12,6 +12,7 @@ import {
   isCheckpointMutationRequest,
   isCreateTaskRequest,
   isCreateTaskRunRequest,
+  isMigrateTaskRepositoryRequest,
   isEnsureActiveSessionRequest,
   isFinalizeSessionRunRequest,
   isFinalizeTaskRunRequest,
@@ -213,6 +214,23 @@ export class GitContextHttpServer {
           ...(query ? { query } : {}),
           ...(limit ? { limit } : {}),
         }));
+        return;
+      }
+
+      if (method === "GET" && url.pathname === "/task-migrations") {
+        const taskId = url.searchParams.get("taskId")?.trim();
+        sendJson(response, 200, await this.service.inventoryTaskMigrations({
+          ...(taskId ? { taskId } : {}),
+        }));
+        return;
+      }
+
+      if (method === "POST" && url.pathname === "/task-migrations") {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isMigrateTaskRepositoryRequest(body)) {
+          throw invalidRequest("Invalid migrate-task-repository request.");
+        }
+        sendJson(response, 200, await this.service.migrateTaskRepository(body));
         return;
       }
 

@@ -92,8 +92,7 @@ const FRESH_SESSION_ROUTING_RULES = [
   "Create a task only when the current user request has a concrete deliverable and enough detail to begin work now.",
   "Do not create a task for early conversation, brainstorming, vague intent, preferences, or discovery. Reply directly with one short clarifying question.",
   "A concrete deliverable means the user has specified what to make, change, analyze, or produce, and the expected output is clear enough to start without another user answer.",
-  "For clear durable work, inspect the task candidates already present in context. Activate the exact matching task, or create a task with title, objective, reason, and explicit requested-or-managed placement when the deliverable is distinct.",
-  "Use requested placement when the current user message or verified read context specifies a location. Use managed placement only when no requested location exists.",
+  "For clear durable work, inspect the task candidates already present in context. Activate the exact matching task with an explicit continue-or-create request decision, or create one managed V1 task with title, objective, and reason when the durable workstream is distinct.",
   "Never print task metadata JSON as the assistant response. Put task metadata in the native tool call arguments.",
 ];
 

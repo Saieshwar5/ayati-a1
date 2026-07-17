@@ -115,8 +115,8 @@ export class GitContextServiceObservability {
         toClass: "task",
         runIdPreserved: result.runPromoted,
         taskHead: result.task.head,
-        checkoutPath: result.mount.checkoutPath,
-        workingPath: result.mount.workingPath,
+        checkoutPath: result.mount?.checkoutPath,
+        workingPath: result.task.workingPath,
         mountCreated: result.mountCreated,
       },
     });
