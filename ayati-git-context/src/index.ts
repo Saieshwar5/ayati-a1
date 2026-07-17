@@ -14,4 +14,6 @@ export * from "./tasks/task-references.js";
 export * from "./tasks/task-repository-layout.js";
 export * from "./tasks/task-repository-validator.js";
 export * from "./tasks/task-request.js";
+export * from "./tasks/task-request-lifecycle.js";
+export * from "./tasks/task-request-routing.js";
 export * from "./write-queue.js";

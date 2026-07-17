@@ -272,6 +272,9 @@ requests. `task.md.current_request` must match the single active request or be
   not silently weaken the user's original intent.
 - Record supersession or cancellation in `Outcome`; do not delete historical
   request files.
+- Blocking the active request clears `task.md.current_request` and records a
+  task-card blocker that names the request. Resuming it restores the pointer
+  only when no other request is active.
 - Mark `done` only after acceptance is deterministically verified or the user
   explicitly accepts a non-machine-verifiable result.
 - A later correction normally receives a new request. Reopen the old request

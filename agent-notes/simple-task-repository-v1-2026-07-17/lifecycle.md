@@ -32,8 +32,11 @@ session/read-first
 -> sealed
 ```
 
-A task can be active while its current request is blocked. A run can fail while
-the request remains active. Completing a request does not archive the task.
+A task can remain active while one or more requests are blocked. A blocked
+request is not `task.md.current_request`; blocking clears that pointer and
+resuming restores it after confirming no other request is active. A run can
+fail while the request remains active. Completing a request does not archive
+the task.
 
 ## Task Creation
 

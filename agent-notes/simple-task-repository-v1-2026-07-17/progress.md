@@ -2,9 +2,9 @@
 
 Last updated: 2026-07-17
 
-Current status: repository contracts, read-only context, and the isolated V1
-creation/recovery engine are implemented. Default routing and V1 mutation
-remain intentionally disabled.
+Current status: repository contracts, read-only context, isolated creation,
+and deterministic request lifecycle planning are implemented. Applying plans,
+default routing, and V1 mutation remain intentionally disabled.
 
 ## Planning
 
@@ -95,15 +95,15 @@ Exit gate:
 
 ## Phase 4: Request Lifecycle
 
-- [ ] Create and queue requests.
-- [ ] Activate at most one request.
-- [ ] Block/resume, complete, drop, and explicitly reopen requests.
-- [ ] Keep task card current request consistent.
-- [ ] Integrate request routing rules.
+- [x] Create and queue requests.
+- [x] Activate at most one request.
+- [x] Block/resume, complete, drop, and explicitly reopen requests.
+- [x] Keep task card current request consistent.
+- [x] Integrate request routing rules.
 
 Exit gate:
 
-- [ ] Multiple features/lessons remain naturally inside one task.
+- [x] Multiple features/lessons remain naturally inside one task.
 
 ## Phase 5: Direct Mutation Authority
 
@@ -318,3 +318,31 @@ Add dated entries here after each verified implementation slice. Include:
   the V1 path.
 - Next slice: Phase 4 request lifecycle, beginning with deterministic request
   creation/queueing and the one-active-request invariant.
+
+### 2026-07-17: Deterministic request lifecycle planning
+
+- Branch: `refactor/simple-task-repository-v1`
+- Commit: the implementation commit containing this entry.
+- Added a pure request lifecycle planner for create, activate, block, resume,
+  complete, drop, explicit reopen, read, and list operations.
+- Plans bind to an expected Git HEAD and contain exact rendered task-card and
+  request writes, changed request state, completion evidence, and an explicit
+  empty delete set. The planner performs no Git, filesystem, SQLite, mount,
+  lock, or commit operation.
+- Enforced monotonic request IDs, at most one active request, task-card pointer
+  consistency, terminal dropped state, explicit same-intention reopen, and
+  verified or user-accepted completion.
+- Resolved the blocked-request wording conflict: blocking clears
+  `task.md.current_request` and records a request-named task blocker; resuming
+  restores the pointer only when no other request is active.
+- Added the explicit routing decision vocabulary for continuing, creating an
+  active or queued request, selecting another task, creating a task, read-only
+  work, and clarification. No keyword routing heuristic was introduced.
+- Focused result: 1 lifecycle test file and 14 tests passed. Package result: 15
+  files and 133 tests passed; package build passed.
+- Workspace result: CLI 38 tests, Git Context 133 tests, and backend 844 tests
+  passed (1,015 total); full workspace build passed.
+- A real committed V1 fixture proves planning leaves repository HEAD, status,
+  task card, and request files unchanged.
+- Next slice: Phase 5 direct V1 mutation authority, binding one run and request
+  to the single repository path without mounts, clones, pushes, or gitlinks.
