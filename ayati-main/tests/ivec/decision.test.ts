@@ -173,6 +173,9 @@ describe("parseAgentDecision", () => {
     expect(systemPrompt).toContain("Use ask_user_feedback only during an active task run");
     expect(systemPrompt).toContain("Do not use ask_user_feedback for final responses");
     expect(systemPrompt).toContain("There is no session-global active task");
+    expect(systemPrompt).toContain("Treat a task as a long-lived workstream");
+    expect(systemPrompt).toContain("A separate feature, lesson, analysis, or independently completable improvement belongs to a new request in the same task");
+    expect(systemPrompt).toContain("Request completion does not archive its task");
     expect(systemPrompt).toContain("Exact resource ownership is stronger evidence than title similarity");
     expect(systemPrompt).toContain("If ownership is ambiguous, reply directly with one short clarifying question");
     expect(systemPrompt).toContain("Normal work tools require an explicitly selected task run");

@@ -20,7 +20,10 @@ export interface GitContextSkillDeps {
 }
 
 const PROMPT = [
-  "Tasks are independent Git repositories with one stable working directory and a session-owned Git pointer.",
+  "Tasks are long-lived workstreams stored in independent Git repositories with one stable working directory.",
+  "A request is one bounded feature, lesson, analysis, or improvement inside a task; a run is only the current attempt.",
+  "Continue the current request only when the user is still pursuing its unfinished outcome. A materially separate outcome belongs to a new request in the same task, not automatically to a new task.",
+  "Completing one request does not complete or archive its task. A task may remain active with no current request.",
   "There is no session-global active task. Each task run owns exactly one task.",
   "The current context includes recent task candidates. Resource ownership and existing task files are stronger routing signals than text similarity.",
   "Use git_context_activate_task when the request continues or changes an existing task.",

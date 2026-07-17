@@ -4,8 +4,9 @@ Last updated: 2026-07-17
 
 Current status: repository contracts, read-only context, isolated creation,
 request planning, direct mutation, single-commit finalization, and durable
-attachments/references are implemented. Applying request plans and default V1
-routing remain intentionally disabled.
+attachments/references are implemented. The Phase 8 state-aware routing policy
+is implemented; candidate/request projection, applying request plans, and
+default V1 routing remain intentionally disabled.
 
 ## Planning
 
@@ -163,6 +164,17 @@ Exit gate:
   Git owns the external system.
 
 ## Phase 8: Routing And Status Semantics
+
+Slice progress:
+
+- [x] Resolve explicit routing decisions against durable task/request state.
+- [x] Make exact task/resource ownership outrank weak candidate similarity.
+- [x] Distinguish continuation, active/queued request creation, task selection,
+  task creation, read-only access, clarification, and lifecycle transition.
+- [x] Add task/request/run semantics to stable harness routing guidance.
+- [ ] Project compact lifecycle/current-request state for V1 task candidates.
+- [ ] Persist and apply resolved request plans through the live V1 run path.
+- [ ] Switch default live routing from legacy task activation to V1.
 
 - [ ] Update routing around task/request/run separation.
 - [ ] Preserve read-first session runs.
@@ -465,3 +477,36 @@ Add dated entries here after each verified implementation slice. Include:
 - Next slice: Phase 7A external computer-use outcomes, beginning with typed
   task/request/run binding and deterministic safe-receipt capture for verified
   external mutations.
+
+### 2026-07-17: State-aware task/request routing policy
+
+- Branch: `refactor/simple-task-repository-v1`
+- Commit: the implementation commit containing this entry.
+- Phase 7A external computer-use durability was explicitly deprioritized so
+  the core task lifecycle can become usable first.
+- Extended the Phase 4 routing vocabulary into a pure state-aware resolver.
+  It validates explicit decisions against whole task/request state without
+  using keyword heuristics or performing Git, filesystem, SQLite, mount, lock,
+  task creation, or request mutation side effects.
+- The resolver distinguishes continuing the exact active request, planning a
+  new active or queued request in the same task, selecting another task,
+  creating a distinct task, read-only access, clarification, and required
+  paused/archived lifecycle transitions.
+- Exact user-supplied task identity and proven resource ownership are strong
+  evidence. Conflicting or multiple strong owners produce clarification rather
+  than silently choosing a recent or textually similar task.
+- Read-only routing may name active, paused, or archived tasks without
+  reopening them. Mutation-oriented routing for paused or archived tasks
+  produces an explicit lifecycle-transition requirement.
+- Updated stable harness and Git Context skill guidance with the durable model:
+  task is a long-lived workstream, request is one bounded outcome, and run is
+  one attempt. Request completion does not archive its task.
+- Focused result: 2 Git Context routing/lifecycle files and 25 tests passed;
+  4 harness routing/decision/schema files and 65 tests passed.
+- Workspace result: CLI 38 tests, Git Context 170 tests, and backend 844 tests
+  passed (1,052 total); the full workspace build passed.
+- No protocol, database, repository, or default live-routing behavior changed
+  in this policy slice.
+- Next slice: project compact V1 task lifecycle/current-request state into
+  routing candidates, then persist and apply a resolved request plan when the
+  same session run is promoted for its first mutation.

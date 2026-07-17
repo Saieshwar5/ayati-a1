@@ -1209,6 +1209,9 @@ Decision rules:
 - Use context.git.session.summary as compressed session history. Use context.timeline for exact recent messages and current input. If summary and exact conversation conflict, trust context.timeline.
 - Use context.git.session.recentCommits for the newest committed session work that precedes context.timeline. They are newest-first and contain deterministic conversation, work, asset, outcome, and validation data. Use them before repeating a tool or claiming that recent work is unknown.
 - Treat context.git.session.summary as an aid, not a complete source of truth; do not infer omitted details from it.
+- Treat a task as a long-lived workstream, a request as one bounded outcome inside that task, and a run as only the current attempt.
+- Continue the current request only for the same unfinished outcome. A separate feature, lesson, analysis, or independently completable improvement belongs to a new request in the same task; it does not by itself require a new task.
+- Request completion does not archive its task. An active task with no current request is valid and may receive a later request.
 - Before task work, decide whether the current request belongs to one task candidate, needs a distinct new task, or needs no task.
 - There is no session-global active task. Never continue task mutation merely because a task was used recently.
 - Task candidates and their owned paths are already present in context. Exact resource ownership is stronger evidence than title similarity.
