@@ -1,10 +1,11 @@
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type {
-  CreateTaskRequest,
+  GitContextRequestEnvelope,
+  SessionId,
   TaskCatalogEntry,
   TaskRef,
-  TaskRepositoryLayout,
   TaskStatus,
+  TaskPlacement,
 } from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
 import { GitContextServiceError } from "../errors.js";
@@ -12,10 +13,8 @@ import { taskDirectoryName } from "../tasks/task-repository-layout.js";
 
 interface TaskRow {
   task_id: string;
-  layout_version: TaskRepositoryLayout;
   repository_path: string;
-  working_path: string;
-  durable_branch: string;
+  branch: string;
   head_sha: string | null;
   title_cache: string;
   objective_cache: string;
@@ -27,7 +26,6 @@ interface TaskRow {
 
 export interface TaskInitializationRecord {
   taskId: string;
-  layoutVersion: TaskRepositoryLayout;
   repositoryPath: string;
   workingPath: string;
   branch: string;
@@ -40,67 +38,16 @@ export interface TaskInitializationRecord {
   updatedAt: string;
 }
 
-export function allocateTask(
-  database: ContextDatabase,
-  dataRoot: string,
-  input: CreateTaskRequest,
-  normalized: { title: string; objective: string },
-  workspaceRoot: string = join(dataRoot, "workspace"),
-): TaskInitializationRecord {
-  const datePart = input.sessionId.match(/^S-(\d{8})-/)?.[1]
-    ?? input.at.slice(0, 10).replaceAll("-", "");
-  const prefix = "W-" + datePart + "-";
-  const row = database.prepare([
-    "SELECT COALESCE(MAX(CAST(substr(task_id, 12) AS INTEGER)), 0) + 1 AS next",
-    "FROM tasks WHERE task_id LIKE ?",
-  ].join(" ")).get(prefix + "%") as { next: number };
-  const taskId = prefix + String(Number(row.next)).padStart(4, "0");
-  const repositoryPath = join(
-    dataRoot,
-    "tasks",
-    taskId + "-" + taskSlug(normalized.title) + ".git",
-  );
-  const workingPath = input.placement.mode === "requested"
-    ? resolveTaskWorkingDirectory(workspaceRoot, input.placement.workingDirectory)
-    : join(workspaceRoot, "tasks", taskId + "-" + taskSlug(normalized.title));
-  const owner = findOverlappingTaskRoot(database, workingPath);
-  if (owner) {
-    throw new GitContextServiceError({
-      code: "INVALID_REQUEST",
-      message: "The requested working directory overlaps an existing task root.",
-      details: {
-        workingDirectory: workingPath,
-        taskId: owner.task_id,
-        existingWorkingDirectory: owner.working_path,
-      },
-    });
-  }
-  database.prepare([
-    "INSERT INTO tasks(",
-    "task_id, layout_version, repository_path, working_path, durable_branch, head_sha, title_cache, objective_cache,",
-    "status, created_session_id, created_at, updated_at, migration_status",
-    ") VALUES (?, 'legacy_independent_v0', ?, ?, 'main', NULL, ?, ?, 'initializing', ?, ?, ?, 'pending')",
-  ].join(" ")).run(
-    taskId,
-    repositoryPath,
-    workingPath,
-    normalized.title,
-    normalized.objective,
-    input.sessionId,
-    input.at,
-    input.at,
-  );
-  const task = readTaskInitialization(database, taskId);
-  if (!task) {
-    throw new Error("Allocated task could not be read: " + taskId);
-  }
-  return task;
+interface SimpleTaskAllocationInput extends GitContextRequestEnvelope {
+  sessionId: SessionId;
+  placement: TaskPlacement;
+  at: string;
 }
 
 export function allocateSimpleTask(
   database: ContextDatabase,
   taskRoot: string,
-  input: CreateTaskRequest,
+  input: SimpleTaskAllocationInput,
   normalized: { title: string; objective: string },
 ): TaskInitializationRecord {
   if (input.placement.mode !== "managed") {
@@ -126,18 +73,17 @@ export function allocateSimpleTask(
       details: {
         repositoryPath,
         taskId: owner.task_id,
-        existingWorkingDirectory: owner.working_path,
+        existingWorkingDirectory: owner.repository_path,
       },
     });
   }
   database.prepare([
     "INSERT INTO tasks(",
-    "task_id, layout_version, repository_path, working_path, durable_branch, head_sha,",
+    "task_id, repository_path, branch, head_sha,",
     "title_cache, objective_cache, status, created_session_id, created_at, updated_at",
-    ") VALUES (?, 'simple_repository_v1', ?, ?, 'main', NULL, ?, ?, 'initializing', ?, ?, ?)",
+    ") VALUES (?, ?, 'main', NULL, ?, ?, 'initializing', ?, ?, ?)",
   ].join(" ")).run(
     taskId,
-    repositoryPath,
     repositoryPath,
     normalized.title,
     normalized.objective,
@@ -155,11 +101,11 @@ export function allocateSimpleTask(
 function findOverlappingTaskRoot(
   database: ContextDatabase,
   workingPath: string,
-): { task_id: string; working_path: string } | undefined {
+): { task_id: string; repository_path: string } | undefined {
   const tasks = database.prepare(
-    "SELECT task_id, working_path FROM tasks WHERE working_path IS NOT NULL",
-  ).all() as unknown as Array<{ task_id: string; working_path: string }>;
-  return tasks.find((task) => pathsOverlap(workingPath, task.working_path));
+    "SELECT task_id, repository_path FROM tasks",
+  ).all() as unknown as Array<{ task_id: string; repository_path: string }>;
+  return tasks.find((task) => pathsOverlap(workingPath, task.repository_path));
 }
 
 function pathsOverlap(left: string, right: string): boolean {
@@ -187,49 +133,10 @@ export function readInitializingTasks(
 ): TaskInitializationRecord[] {
   const rows = database.prepare([
     taskSelect(),
-    "WHERE status = 'initializing' ORDER BY created_at, task_id",
-  ].join(" ")).all() as unknown as TaskRow[];
-  return rows.map(initializationRecord);
-}
-
-export function readAllTaskInitializations(
-  database: ContextDatabase,
-): TaskInitializationRecord[] {
-  const rows = database.prepare([
-    taskSelect(),
+    "WHERE status = 'initializing'",
     "ORDER BY created_at, task_id",
   ].join(" ")).all() as unknown as TaskRow[];
-  return rows.map(initializationRecord).filter((task) => Boolean(task.head));
-}
-
-export function completeTaskRepositoryMigration(database: ContextDatabase, input: {
-  taskId: string;
-  expectedHead: string;
-  repositoryPath: string;
-  migrationCommit: string;
-  legacyRepositoryPath: string;
-  at: string;
-}): TaskCatalogEntry {
-  const result = database.prepare([
-    "UPDATE tasks SET layout_version = 'simple_repository_v1', repository_path = working_path,",
-    "head_sha = ?, legacy_repository_path = ?, migrated_from_head = ?, migration_commit = ?,",
-    "migration_status = 'completed', updated_at = ?",
-    "WHERE task_id = ? AND layout_version = 'legacy_independent_v0' AND head_sha = ? AND working_path = ?",
-  ].join(" ")).run(
-    input.migrationCommit,
-    input.legacyRepositoryPath,
-    input.expectedHead,
-    input.migrationCommit,
-    input.at,
-    input.taskId,
-    input.expectedHead,
-    input.repositoryPath,
-  );
-  const task = readTaskCatalogEntry(database, input.taskId);
-  if (Number(result.changes) !== 1 || !task) {
-    throw new Error("Task catalog changed while completing repository migration: " + input.taskId);
-  }
-  return task;
+  return rows.map(initializationRecord);
 }
 
 export function activateTask(
@@ -268,12 +175,14 @@ export function readTaskCatalogEntries(
   const rows = query
     ? database.prepare([
         taskSelect(),
-        "WHERE status = 'active' AND (lower(title_cache) LIKE ? OR lower(objective_cache) LIKE ? OR lower(working_path) LIKE ?)",
+        "WHERE status = 'active'",
+        "AND (lower(title_cache) LIKE ? OR lower(objective_cache) LIKE ? OR lower(repository_path) LIKE ?)",
         "ORDER BY updated_at DESC, task_id DESC LIMIT ?",
       ].join(" ")).all("%" + query + "%", "%" + query + "%", "%" + query + "%", input.limit)
     : database.prepare([
         taskSelect(),
-        "WHERE status = 'active' ORDER BY updated_at DESC, task_id DESC LIMIT ?",
+        "WHERE status = 'active'",
+        "ORDER BY updated_at DESC, task_id DESC LIMIT ?",
       ].join(" ")).all(input.limit);
   return (rows as unknown as TaskRow[])
     .filter((row) => Boolean(row.head_sha))
@@ -307,18 +216,17 @@ function readTaskRow(database: ContextDatabase, taskId: string): TaskRow | undef
 
 function taskSelect(): string {
   return [
-    "SELECT task_id, layout_version, repository_path, durable_branch, head_sha, title_cache,",
-    "working_path, objective_cache, status, created_session_id, created_at, updated_at FROM tasks",
+    "SELECT task_id, repository_path, branch, head_sha, title_cache,",
+    "objective_cache, status, created_session_id, created_at, updated_at FROM tasks",
   ].join(" ");
 }
 
 function initializationRecord(row: TaskRow): TaskInitializationRecord {
   return {
     taskId: row.task_id,
-    layoutVersion: row.layout_version,
     repositoryPath: row.repository_path,
-    workingPath: row.working_path,
-    branch: row.durable_branch,
+    workingPath: row.repository_path,
+    branch: row.branch,
     head: row.head_sha,
     title: row.title_cache,
     objective: row.objective_cache,
@@ -335,10 +243,9 @@ function catalogEntry(row: TaskRow): TaskCatalogEntry {
   }
   const task: TaskRef = {
     taskId: row.task_id,
-    layoutVersion: row.layout_version,
     repositoryPath: row.repository_path,
-    workingPath: row.working_path,
-    branch: row.durable_branch,
+    workingPath: row.repository_path,
+    branch: row.branch,
     head: row.head_sha,
   };
   return {
@@ -350,29 +257,4 @@ function catalogEntry(row: TaskRow): TaskCatalogEntry {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
-}
-
-export function resolveTaskWorkingDirectory(workspaceRoot: string, value: string): string {
-  const normalized = value.trim().replaceAll("\\", "/");
-  const workspaceRelative = normalized.replace(/^(?:workspace|work_space)\//, "");
-  const result = isAbsolute(normalized)
-    ? resolve(normalized)
-    : resolve(workspaceRoot, workspaceRelative);
-  if (result === resolve(workspaceRoot)) {
-    throw new GitContextServiceError({
-      code: "INVALID_REQUEST",
-      message: "A task must use a bounded directory inside or outside the workspace, not the workspace root itself.",
-    });
-  }
-  return result;
-}
-
-function taskSlug(title: string): string {
-  const slug = title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 48)
-    .replace(/-+$/g, "");
-  return slug || "task";
 }

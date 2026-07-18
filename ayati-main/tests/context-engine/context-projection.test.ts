@@ -7,26 +7,25 @@ import {
 } from "../../src/ivec/agent-runner/prompt-context.js";
 
 describe("context engine projection", () => {
-  it("keeps runtime checkout authority separate while exposing the user-facing working directory", () => {
-    const checkoutPath = "/workspace/aurora-coffee-site";
-    const projection = buildContextEngineProjection(activeTaskContext(checkoutPath));
+  it("exposes one authoritative task working directory", () => {
+    const workingDirectory = "/workspace/aurora-coffee-site";
+    const projection = buildContextEngineProjection(activeTaskContext(workingDirectory));
 
-    expect(projection.task?.checkoutPath).toBe(checkoutPath);
+    expect(projection.task?.workingDirectory).toBe(workingDirectory);
 
     const promptContext = projectAgentPromptContext({
       context: { timeline: [], gitContext: projection },
     });
     const prompt = projectAgentStateViewForPrompt({ context: promptContext });
     expect(prompt.context.git?.current.task).toBeDefined();
-    expect(prompt.context.git?.current.task).not.toHaveProperty("checkoutPath");
-    expect(prompt.context.git?.current.task?.identity.workingDirectory).toBe(checkoutPath);
+    expect(prompt.context.git?.current.task?.identity.workingDirectory).toBe(workingDirectory);
     expect(prompt.context.git?.current.task?.assets).toEqual([
       expect.objectContaining({ path: "/workspace/aurora-coffee-site/index.html" }),
     ]);
   });
 
   it("preserves recent session commits in the provider-facing prompt", () => {
-    const active = activeTaskContext("/internal/session/tasks/W-20260714-0001");
+    const active = activeTaskContext("/internal/session/tasks/T-20260714-0001");
     if (!active.session) throw new Error("Expected a session fixture.");
     active.session.recentCommits = [{
       commit: "d".repeat(40),
@@ -40,7 +39,7 @@ describe("context engine projection", () => {
       ],
       outcome: "done",
       validation: "passed",
-      taskId: "W-20260714-0001",
+      taskId: "T-20260714-0001",
       runId: "R-20260714-0004",
     }];
 
@@ -56,13 +55,13 @@ describe("context engine projection", () => {
       conversationSummary: "The user requested an Aurora Coffee website.",
       workSummary: "Created and validated the responsive website.",
       assets: [
-        { path: "/internal/session/tasks/W-20260714-0001/aurora-coffee-site/index.html", description: "Main website page" },
-        { path: "/internal/session/tasks/W-20260714-0001/aurora-coffee-site/styles.css", description: "Responsive styling" },
+        { path: "/internal/session/tasks/T-20260714-0001/aurora-coffee-site/index.html", description: "Main website page" },
+        { path: "/internal/session/tasks/T-20260714-0001/aurora-coffee-site/styles.css", description: "Responsive styling" },
       ],
       outcome: "done",
       validation: "passed",
       at: "2026-07-14T10:30:00.000Z",
-      workId: "W-20260714-0001",
+      workId: "T-20260714-0001",
       runId: "R-20260714-0004",
     }]);
   });
@@ -71,7 +70,6 @@ describe("context engine projection", () => {
     const active = activeTaskContext("/workspace/aurora-coffee-site");
     active.taskCandidates = [{
       taskId: "T-20260714-0002",
-      layoutVersion: "simple_repository_v1",
       title: "Machine learning course",
       objective: "Learn machine learning in bounded lessons.",
       status: "active",
@@ -91,7 +89,6 @@ describe("context engine projection", () => {
 
     expect(projection.taskCandidates).toEqual([{
       taskId: "T-20260714-0002",
-      layoutVersion: "simple_repository_v1",
       title: "Machine learning course",
       objective: "Learn machine learning in bounded lessons.",
       status: "active",
@@ -109,7 +106,7 @@ describe("context engine projection", () => {
   });
 });
 
-function activeTaskContext(checkoutPath: string): ActiveContext {
+function activeTaskContext(workingDirectory: string): ActiveContext {
   return {
     contextRevision: "revision-1",
     session: {
@@ -145,14 +142,13 @@ function activeTaskContext(checkoutPath: string): ActiveContext {
     },
     activeTask: {
       task: {
-        taskId: "W-20260714-0001",
-        repositoryPath: "/tasks/W-20260714-0001.git",
-        workingPath: checkoutPath,
+        taskId: "T-20260714-0001",
+        repositoryPath: workingDirectory,
+        workingPath: workingDirectory,
         branch: "main",
         head: "c".repeat(40),
       },
-      checkoutPath,
-      workingDirectory: checkoutPath,
+      workingDirectory,
       title: "Aurora Coffee website",
       objective: "Build the website.",
       summary: "Task started.",
@@ -165,7 +161,7 @@ function activeTaskContext(checkoutPath: string): ActiveContext {
         sessionId: "S-20260714-local",
         conversationId: "C-1",
         runClass: "task",
-        taskId: "W-20260714-0001",
+        taskId: "T-20260714-0001",
         status: "running",
         trigger: "user",
         startedAt: "2026-07-14T10:00:00.000Z",

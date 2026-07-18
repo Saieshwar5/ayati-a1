@@ -69,8 +69,13 @@ class TaskScopedToolExecutor implements ToolExecutor {
     if (!task || active.run?.run.runId !== context.runId) {
       return await this.base.execute(toolName, originalInput, context);
     }
-    const resourceRoot = task.workingDirectory || task.checkoutPath;
-    if (!resourceRoot) return await this.base.execute(toolName, originalInput, context);
+    const resourceRoot = task.workingDirectory;
+    if (!resourceRoot) {
+      return taskScopeFailure(
+        "TASK_RESOURCE_SCOPE_VIOLATION",
+        "The selected task has no stable working directory.",
+      );
+    }
     const scopedInput = scopeToolInput(toolName, originalInput, resourceRoot);
     const scopedContext: ToolExecutionContext = {
       ...context,
@@ -88,7 +93,7 @@ class TaskScopedToolExecutor implements ToolExecutor {
       return await this.base.execute(toolName, scopedInput, scopedContext);
     }
     if (taxonomy.effect === "external_mutation") {
-      if (task.task.layoutVersion !== "simple_repository_v1" || !active.run.run.taskRequestId) {
+      if (!active.run.run.taskRequestId) {
         return taskScopeFailure(
           "TASK_RESOURCE_SCOPE_VIOLATION",
           "External mutation requires a V1 task run bound to one active request.",
@@ -126,6 +131,12 @@ class TaskScopedToolExecutor implements ToolExecutor {
     if (toolName === "shell_session_close") {
       return await this.base.execute(toolName, scopedInput, scopedContext);
     }
+    if (!active.run.run.taskRequestId) {
+      return taskScopeFailure(
+        "TASK_RESOURCE_SCOPE_VIOLATION",
+        "Task mutation requires a V1 task run bound to one active request.",
+      );
+    }
     const targets = await mutationTargets(toolName, scopedInput, resourceRoot);
     if (targets.some((target) => target.path === ".")) {
       return taskScopeFailure(
@@ -138,9 +149,7 @@ class TaskScopedToolExecutor implements ToolExecutor {
       sessionId: context.sessionId,
       runId: context.runId,
       taskId: task.task.taskId,
-      ...(task.task.layoutVersion === "simple_repository_v1" && active.run.run.taskRequestId
-        ? { taskRequestId: active.run.run.taskRequestId }
-        : {}),
+      taskRequestId: active.run.run.taskRequestId,
       expectedTaskHead: task.task.head,
       targets,
       at: new Date().toISOString(),
@@ -153,25 +162,6 @@ class TaskScopedToolExecutor implements ToolExecutor {
       toolStatus: result.ok ? "completed" : "failed",
       at: new Date().toISOString(),
     });
-    if (verified.status === "verified"
-      && task.task.layoutVersion !== "simple_repository_v1") {
-      const refreshed = await this.gitContext.getActiveContext({ sessionId: context.sessionId });
-      const conversation = refreshed.session?.pendingConversationContext.find(
-        (candidate) => candidate.conversation.conversationId === active.run?.run.conversationId,
-      );
-      if (!conversation?.contentHash) {
-        return mutationFailure(result, "Task mutation was verified but its conversation hash is unavailable.");
-      }
-      await this.gitContext.checkpointMutation({
-        requestId: randomUUID(),
-        authorityId: acquired.authority.authorityId,
-        lockToken: acquired.authority.lockToken,
-        purpose: toolName + " step " + String(context.stepNumber ?? 0),
-        conversationId: conversation.conversation.conversationId,
-        conversationHash: conversation.contentHash,
-        at: new Date().toISOString(),
-      });
-    }
     if (!verified.verified || verified.status === "recovery_required") {
       return mutationFailure(
         result,
@@ -221,11 +211,11 @@ function scopeToolInput(
 async function mutationTargets(
   toolName: string,
   value: unknown,
-  checkoutPath: string,
+  workingDirectory: string,
 ): Promise<MutationTarget[]> {
   const requestedTargets = collectMutationTargetInputs(toolName, value);
   const converted = requestedTargets
-    .map((target) => ({ ...target, path: relative(checkoutPath, target.path) }))
+    .map((target) => ({ ...target, path: relative(workingDirectory, target.path) }))
     .filter((target) => target.path === "." || (!target.path.startsWith("..") && !isAbsolute(target.path)));
   const deduplicated = new Map<string, { path: string; kind?: MutationTarget["kind"] }>();
   for (const target of converted.length > 0 ? converted : [{ path: "." }]) {
@@ -234,7 +224,7 @@ async function mutationTargets(
   if (deduplicated.size > 1) deduplicated.delete(".");
   return await Promise.all([...deduplicated.values()].map(async (target) => ({
     path: target.path,
-    kind: target.kind ?? await mutationTargetKind(toolName, target.path, checkoutPath),
+    kind: target.kind ?? await mutationTargetKind(toolName, target.path, workingDirectory),
   })));
 }
 
@@ -262,10 +252,10 @@ function collectMutationTargetInputs(
 async function mutationTargetKind(
   toolName: string,
   path: string,
-  checkoutPath: string,
+  workingDirectory: string,
 ): Promise<MutationTarget["kind"]> {
   try {
-    return (await lstat(resolve(checkoutPath, path))).isDirectory() ? "directory" : "file";
+    return (await lstat(resolve(workingDirectory, path))).isDirectory() ? "directory" : "file";
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
@@ -313,9 +303,9 @@ async function isReadOnlyShellValidation(toolName: string, value: unknown): Prom
 
 async function validateResourceScope(
   value: unknown,
-  checkoutPath: string,
+  workingDirectory: string,
 ): Promise<{ code: "ABSOLUTE_PATH_REQUIRED" | "PATH_OUTSIDE_TASK_ROOT"; message: string } | undefined> {
-  const canonicalRoot = await canonicalizeAbsolutePath(checkoutPath);
+  const canonicalRoot = await canonicalizeAbsolutePath(workingDirectory);
   for (const path of collectPaths(value)) {
     const required = requireAbsolutePath(path);
     if (!required.ok) {

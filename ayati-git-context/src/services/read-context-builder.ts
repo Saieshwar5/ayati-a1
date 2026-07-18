@@ -101,9 +101,9 @@ function readTaskCommitBoundary(
 ): TaskCommitBoundaryRow | undefined {
   return database.prepare([
     "SELECT r.run_id, r.run_sequence",
-    "FROM task_run_finalizations f",
-    "JOIN runs r ON r.run_id = f.run_id",
-    "WHERE f.session_id = ? AND f.phase = 'completed'",
+    "FROM runs r",
+    "WHERE r.session_id = ? AND EXISTS (SELECT 1 FROM simple_task_finalizations f",
+    "  WHERE f.run_id = r.run_id AND f.phase = 'completed' AND f.commit_created = 1)",
     "ORDER BY r.run_sequence DESC LIMIT 1",
   ].join(" ")).get(sessionId) as TaskCommitBoundaryRow | undefined;
 }

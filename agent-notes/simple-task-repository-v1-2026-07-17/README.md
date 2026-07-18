@@ -2,12 +2,13 @@
 
 Created: 2026-07-17
 
-Status: accepted master plan. Planning documents are being prepared; runtime
-implementation has not started.
+Status: accepted master plan with the main V1 repository path implemented.
+Creation, reading, direct mutation, finalization, attachments, and the default
+model-facing `T-*` route are working. The plan is not complete until the
+reliability-closure work in `implementation.md` is implemented and its
+restart/live acceptance gates pass.
 
-Implementation branch: create a new behavior-changing branch when the first
-implementation slice is approved. Do not implement runtime changes directly
-from this documentation branch.
+Implementation branch: `refactor/simple-task-repository-v1`.
 
 ## Purpose
 

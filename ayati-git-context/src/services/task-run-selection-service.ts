@@ -2,15 +2,11 @@ import type {
   ActivateTaskRunRequest,
   CreateTaskRunRequest,
   SelectedTaskRunResponse,
-  SessionRef,
   TaskCatalogEntry,
 } from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
 import { GitContextServiceError } from "../errors.js";
-import {
-  bindActiveRunToTask,
-  readRun,
-} from "../repositories/run-records.js";
+import { readRun } from "../repositories/run-records.js";
 import type { TaskLifecycleService } from "./task-lifecycle-service.js";
 import type { SessionRunLifecycleService } from "./session-run-lifecycle-service.js";
 import type { TaskRequestRoutingService } from "./task-request-routing-service.js";
@@ -27,7 +23,6 @@ export class TaskRunSelectionService {
 
   async create(
     input: CreateTaskRunRequest,
-    _session: SessionRef,
   ): Promise<SelectedTaskRunResponse> {
     this.observer.emit({
       level: "info",
@@ -36,7 +31,11 @@ export class TaskRunSelectionService {
       sessionId: input.sessionId,
       runId: input.runId,
       outcome: "started",
-      data: { mode: "create", title: input.title },
+      data: {
+        mode: "create",
+        title: input.title,
+        taskRequestDecision: "initial",
+      },
     });
     const creation = await this.taskLifecycle.createSimpleTask({
       requestId: input.requestId + ":task",
@@ -54,19 +53,37 @@ export class TaskRunSelectionService {
       runId: input.runId,
       taskId: creation.task.taskId,
       outcome: "succeeded",
-      data: { taskHead: creation.task.head, newlyCreated: creation.created },
+      data: {
+        workingDirectory: creation.task.workingPath,
+        branch: creation.task.branch,
+        taskHead: creation.task.head,
+        newlyCreated: creation.created,
+      },
     });
     return await this.selectSimple(input, creation.task, creation.created, {
       kind: "continue_active_request",
       requestId: "R-0001",
       reason: "Continue the initial request created with the task.",
-    });
+    }, "initial");
   }
 
   async activate(
     input: ActivateTaskRunRequest,
-    session: SessionRef,
   ): Promise<SelectedTaskRunResponse> {
+    if (!/^T-\d{8}-\d{4}$/.test(input.taskId)) {
+      throw new GitContextServiceError({
+        code: "INVALID_REQUEST",
+        message: "Task-run activation supports only V1 T-* task repositories.",
+        details: { taskId: input.taskId },
+      });
+    }
+    if (!input.route) {
+      throw new GitContextServiceError({
+        code: "INVALID_REQUEST",
+        message: "V1 task activation requires an explicit continue-or-create request decision.",
+        details: { taskId: input.taskId },
+      });
+    }
     this.observer.emit({
       level: "info",
       event: "task_activation_requested",
@@ -75,7 +92,15 @@ export class TaskRunSelectionService {
       runId: input.runId,
       taskId: input.taskId,
       outcome: "started",
-      data: { mode: "activate" },
+      data: {
+        mode: "activate",
+        taskRequestDecision: input.route.kind === "continue_active_request"
+          ? "continue"
+          : "create",
+        taskRequestId: input.route.kind === "continue_active_request"
+          ? input.route.requestId
+          : undefined,
+      },
     });
     const response = await this.taskLifecycle.getTask({ taskId: input.taskId });
     if (input.expectedTaskHead && response.task.head !== input.expectedTaskHead) {
@@ -97,86 +122,19 @@ export class TaskRunSelectionService {
       runId: input.runId,
       taskId: response.task.taskId,
       outcome: "succeeded",
-      data: { taskHead: response.task.head },
-    });
-    if (response.task.layoutVersion === "simple_repository_v1") {
-      if (!input.route) {
-        throw new GitContextServiceError({
-          code: "INVALID_REQUEST",
-          message: "V1 task activation requires an explicit continue-or-create request decision.",
-          details: { taskId: input.taskId },
-        });
-      }
-      return await this.selectSimple(input, response.task, false, input.route);
-    }
-    return await this.selectLegacy(input, session, response.task, false);
-  }
-
-  private async selectLegacy(
-    input: CreateTaskRunRequest | ActivateTaskRunRequest,
-    session: SessionRef,
-    task: TaskCatalogEntry,
-    taskCreated: boolean,
-  ): Promise<SelectedTaskRunResponse> {
-    const mounted = await this.taskLifecycle.mountTask({
-      requestId: input.requestId + ":mount",
-      sessionId: input.sessionId,
-      taskId: task.taskId,
-      expectedTaskHead: task.head,
-      at: input.at,
-    }, session);
-    this.observer.emit({
-      level: "info",
-      event: "task_mounted",
-      requestId: input.requestId,
-      sessionId: input.sessionId,
-      runId: input.runId,
-      taskId: task.taskId,
-      outcome: "succeeded",
       data: {
-        created: mounted.created,
-        mountedHead: mounted.mount.mountedHead,
-        checkoutPath: mounted.mount.workingPath,
+        workingDirectory: response.task.workingPath,
+        branch: response.task.branch,
+        taskHead: response.task.head,
       },
     });
-    if (input.runId) {
-      const existing = readRun(this.database, input.runId);
-      this.observer.emit({
-        level: "info",
-        event: "run_promotion_started",
-        requestId: input.requestId,
-        sessionId: input.sessionId,
-        conversationId: input.conversationId,
-        runId: input.runId,
-        taskId: task.taskId,
-        outcome: "started",
-        data: {
-          fromClass: existing?.runClass ?? "unknown",
-          toClass: "task",
-          preservedRunId: true,
-        },
-      });
-    }
-    const run = input.runId
-      ? this.promoteExistingRun(input, task.taskId)
-      : bindActiveRunToTask(this.database, input.sessionId, this.sessionRuns.start({
-          requestId: input.requestId + ":run",
-          sessionId: input.sessionId,
-          conversationId: input.conversationId,
-          trigger: input.trigger,
-          workState: input.workState,
-          at: input.at,
-        }, input.at).run.runId, task.taskId);
-    return {
-      task,
-      repositoryLayout: task.layoutVersion,
-      mount: mounted.mount,
-      run,
-      context: await this.taskLifecycle.readContext(task, mounted.mount.workingPath),
-      taskCreated,
-      mountCreated: mounted.created,
-      runPromoted: Boolean(input.runId),
-    };
+    return await this.selectSimple(
+      input,
+      response.task,
+      false,
+      input.route,
+      input.route.kind === "continue_active_request" ? "continue" : "create",
+    );
   }
 
   private async selectSimple(
@@ -184,8 +142,9 @@ export class TaskRunSelectionService {
     task: TaskCatalogEntry,
     taskCreated: boolean,
     route: NonNullable<ActivateTaskRunRequest["route"]>,
+    taskRequestDecision: "initial" | "continue" | "create",
   ): Promise<SelectedTaskRunResponse> {
-    if (input.runId) this.assertPromotableRun(input);
+    if (input.runId) this.assertBindableRun(input);
     const run = input.runId
       ? readRun(this.database, input.runId)!
       : this.sessionRuns.start({
@@ -213,23 +172,23 @@ export class TaskRunSelectionService {
     );
     return {
       task,
-      repositoryLayout: "simple_repository_v1",
       run: selectedRun,
       context,
       taskCreated,
-      mountCreated: false,
-      runPromoted: Boolean(input.runId),
+      sessionRunBound: Boolean(input.runId),
+      taskRequestDecision,
+      taskRequestCreated: taskRequestDecision === "initial" ? true : planned.requestCreated,
     };
   }
 
-  private assertPromotableRun(input: CreateTaskRunRequest | ActivateTaskRunRequest): void {
+  private assertBindableRun(input: CreateTaskRunRequest | ActivateTaskRunRequest): void {
     const existing = readRun(this.database, input.runId!);
     if (!existing
       || existing.sessionId !== input.sessionId
       || existing.conversationId !== input.conversationId) {
       throw new GitContextServiceError({
         code: "RUN_NOT_ACTIVE",
-        message: "The session run cannot be promoted for this conversation.",
+        message: "The session run cannot be bound to this task for the conversation.",
         details: {
           sessionId: input.sessionId,
           conversationId: input.conversationId,
@@ -239,24 +198,4 @@ export class TaskRunSelectionService {
     }
   }
 
-  private promoteExistingRun(
-    input: CreateTaskRunRequest | ActivateTaskRunRequest,
-    taskId: string,
-  ) {
-    const existing = readRun(this.database, input.runId!);
-    if (!existing
-      || existing.sessionId !== input.sessionId
-      || existing.conversationId !== input.conversationId) {
-      throw new GitContextServiceError({
-        code: "RUN_NOT_ACTIVE",
-        message: "The session run cannot be promoted for this conversation.",
-        details: {
-          sessionId: input.sessionId,
-          conversationId: input.conversationId,
-          runId: input.runId,
-        },
-      });
-    }
-    return bindActiveRunToTask(this.database, input.sessionId, input.runId!, taskId);
-  }
 }

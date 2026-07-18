@@ -29,9 +29,10 @@ Read these first before major code changes:
 1. `product/overview.md`
 2. `engineering/README.md`
 3. `engineering/architecture/overview.md`
-4. `engineering/architecture/agent-harness.md`
-5. `engineering/architecture/context-and-memory.md`
-6. `engineering/testing.md`
+4. `engineering/architecture/task-repositories.md`
+5. `engineering/architecture/agent-harness.md`
+6. `engineering/architecture/context-and-memory.md`
+7. `engineering/testing.md`
 
 For user ideas, plans, decisions, and next-action notes that should guide what
 an agent works on next, use `../agent-notes/` instead of `project-docs/`.

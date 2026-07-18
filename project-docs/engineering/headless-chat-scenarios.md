@@ -44,8 +44,8 @@ This enters the normal human-message path:
 WebSocket
 -> IVecEngine.handleMessage
 -> ChatTurnRuntime.processChat
--> git context/session store
--> task routing
+-> Git Context session repository and SQLite run lifecycle
+-> explicit V1 task/request selection when mutation is needed
 -> agent loop inputKind=user_message
 -> reply / feedback / progress / error
 ```
@@ -205,13 +205,13 @@ answer.
 When feedback tracing is enabled, read these files after each turn:
 
 ```text
-ayati-main/data/feedback/latest.json
+ayati-main/data/feedback/latest-session.json
 ayati-main/data/feedback/latest-summary.json
 ayati-main/data/feedback/triage-summary.json
 ```
 
 For raw turn-level events, use the session JSONL file referenced by
-`latest.json`, usually:
+`latest-session.json`, usually:
 
 ```text
 ayati-main/data/feedback/YYYY-MM-DD/session-<sessionId>.jsonl
@@ -220,6 +220,58 @@ ayati-main/data/feedback/YYYY-MM-DD/session-<sessionId>.jsonl
 The triage summary is the highest-signal file for quick evaluation. It tells
 whether the latest run is healthy, needs review, or failed, and lists repair or
 runtime findings.
+
+Generate a readable lifecycle report for the latest trace with:
+
+```bash
+pnpm feedback:git-context
+```
+
+Or point it at an exact captured trace:
+
+```bash
+pnpm feedback:git-context -- --input ayati-main/data/feedback/YYYY-MM-DD/session-<sessionId>.jsonl
+```
+
+The report correlates daemon and Git Context transport events, checks paired
+operations, and renders one lifecycle row per task run. Read the row from left
+to right: task/run identity, selection mode, explicit request decision,
+request identity, stable working directory, finalization, and commit.
+
+## V1 Repository Acceptance
+
+Do not judge a durable scenario only from its final reply. After a task turn,
+use the Git Context trace/catalog data to locate the selected `T-*` repository
+and verify:
+
+- it is a normal independent Git repository;
+- the working directory is the stable task repository;
+- `.ayati/task.md` describes the current state and next step;
+- `.ayati/requests/` records the selected request and outcome;
+- `.ayati/inbox/` remains ignored;
+- curated references are tracked deliberately;
+- the deliverable exists beside `.ayati/`;
+- finalization produced the expected single task commit; and
+- reopening after daemon restart selects the same repository and requires the
+  intended continue-vs-new-request decision.
+
+Cross-check these repository facts against
+`latest-summary.json.contextEngine.taskLifecycle`. Treat disagreement between
+the feedback lifecycle and the repository itself as a test failure even when
+the final reply sounds correct.
+
+For a new task, expect a `T-*` identity.
+
+Recommended scenario families:
+
+- learning: add a lesson, stop, reopen, continue it, then create the next
+  request in the same task;
+- website: create a site, reopen it, add a feature, and verify existing files
+  and Git ancestry remain intact;
+- analysis: attach data, keep large inputs out of Git, and persist compact
+  conclusions/references;
+- automation: verify both repository artifacts and external outcomes, clearly
+  marking anything the current evidence contract cannot prove.
 
 ## Report Expectations
 
@@ -235,6 +287,9 @@ After a scenario, the coding agent should produce a report with:
 - important repair codes or warning signals
 - artifacts or files the scenario expected
 - whether expected files exist
+- selected task id, request decision/id, stable working directory, and commit
+- `.ayati/` contract and ignored-inbox inspection result
+- restart/reopen result when continuity is part of the scenario
 - whether the final answer was useful to a human
 - suggested improvements if behavior was poor
 

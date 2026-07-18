@@ -75,7 +75,6 @@ async function ensureRepository(input: {
   recovering: boolean;
   onPhase?: SimpleTaskCreationHook;
 }): Promise<string> {
-  requireV1Record(input.task);
   await mkdir(input.taskRoot, { recursive: true });
   const taskRoot = await realpath(input.taskRoot);
   const target = resolve(input.task.repositoryPath);
@@ -340,12 +339,6 @@ async function readHead(repositoryPath: string): Promise<string | undefined> {
     return await runGit(["rev-parse", "HEAD"], { cwd: repositoryPath });
   } catch {
     return undefined;
-  }
-}
-
-function requireV1Record(task: TaskInitializationRecord): void {
-  if (task.layoutVersion !== "simple_repository_v1") {
-    throw invalidRepository(task, "Simple repository creator received a legacy task record.");
   }
 }
 

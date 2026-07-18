@@ -11,10 +11,10 @@ import { pulseTool } from "../../src/skills/builtins/pulse/index.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnInput } from "../../src/core/contracts/llm-protocol.js";
 import type {
-  GitMemoryChatContextPreparedTurn,
-  GitMemoryChatContextRoutedTurn,
-  GitMemoryChatContextRuntime,
-} from "../../src/app/git-memory-chat-context-runtime.js";
+  GitContextPreparedTurn,
+  GitContextRoutedTurn,
+  GitContextRuntime,
+} from "../../src/app/git-context-runtime.js";
 
 let nextPort = 9200;
 
@@ -101,9 +101,9 @@ function messageContentToText(content: unknown): string {
     .join("\n");
 }
 
-function createReadyChatContextRuntime(): GitMemoryChatContextRuntime {
-  const prepared = readyGitMemoryPreparedTurn();
-  const routed = readyGitMemoryRoutedTurn();
+function createReadyChatContextRuntime(): GitContextRuntime {
+  const prepared = readyGitContextPreparedTurn();
+  const routed = readyGitContextRoutedTurn();
   return {
     prepareUserTurn: vi.fn().mockResolvedValue(prepared),
     routeTaskTurn: vi.fn().mockResolvedValue(routed),
@@ -137,43 +137,41 @@ function createReadyChatContextRuntime(): GitMemoryChatContextRuntime {
   };
 }
 
-function readyGitMemoryPreparedTurn(): GitMemoryChatContextPreparedTurn {
+function readyGitContextPreparedTurn(): GitContextPreparedTurn {
   return {
     status: "ready",
     sessionId: "S-20260627-local",
-    repoPath: "/tmp/ayati-git-memory/S-20260627-local",
+    repoPath: "/tmp/ayati-git-context/S-20260627-local",
     initialized: false,
     messageSeq: 1,
     context: {
       session: {
-        sessionId: "S-20260627-local",
+        meta: { sessionId: "S-20260627-local", assetCount: 0 },
         conversationTail: [],
         activityTail: [],
-        taskCount: 1,
       },
       focus: { status: "none" },
     },
   };
 }
 
-function readyGitMemoryRoutedTurn(): Extract<GitMemoryChatContextRoutedTurn, { status: "ready" }> {
+function readyGitContextRoutedTurn(): Extract<GitContextRoutedTurn, { status: "ready" }> {
   const context = {
     session: {
-      sessionId: "S-20260627-local",
+      meta: { sessionId: "S-20260627-local", assetCount: 0 },
       conversationTail: [],
       activityTail: [],
-      taskCount: 1,
     },
     focus: {
       status: "active" as const,
-      taskId: "W-20260627-0001",
-      branch: "task/W-20260627-0001-upload-test",
-      ref: "refs/heads/task/W-20260627-0001-upload-test",
+      taskId: "T-20260627-0001",
+      branch: "task/T-20260627-0001-upload-test",
+      ref: "refs/heads/task/T-20260627-0001-upload-test",
     },
     task: {
-      ref: "refs/heads/task/W-20260627-0001-upload-test",
-      taskId: "W-20260627-0001",
-      branch: "task/W-20260627-0001-upload-test",
+      ref: "refs/heads/task/T-20260627-0001-upload-test",
+      taskId: "T-20260627-0001",
+      branch: "task/T-20260627-0001-upload-test",
       title: "Upload test",
       objective: "Handle uploaded attachment",
       status: "in_progress",
@@ -189,12 +187,12 @@ function readyGitMemoryRoutedTurn(): Extract<GitMemoryChatContextRoutedTurn, { s
   };
   return {
     status: "ready",
-    mode: "continue_active_task",
+    mode: "activated",
     sessionId: "S-20260627-local",
-    taskId: "W-20260627-0001",
+    taskId: "T-20260627-0001",
     runId: "R-20260627-0001",
-    branch: "task/W-20260627-0001-upload-test",
-    ref: "refs/heads/task/W-20260627-0001-upload-test",
+    branch: "task/T-20260627-0001-upload-test",
+    ref: "refs/heads/task/T-20260627-0001-upload-test",
     conversationRefs: [{ fromSeq: 1, toSeq: 1 }],
     confidence: "deterministic",
     reason: "test fixture",
@@ -202,19 +200,18 @@ function readyGitMemoryRoutedTurn(): Extract<GitMemoryChatContextRoutedTurn, { s
     harnessContext: {
       contextEngine: {
         session: {
-          sessionId: "S-20260627-local",
+          meta: { sessionId: "S-20260627-local", assetCount: 0 },
           conversationTail: [],
           activityTail: [],
-          assetCount: 0,
         },
         focus: {
           status: "active",
-          ref: "refs/heads/task/W-20260627-0001-upload-test",
-          workId: "W-20260627-0001",
+          ref: "refs/heads/task/T-20260627-0001-upload-test",
+          workId: "T-20260627-0001",
         },
         task: {
-          ref: "refs/heads/task/W-20260627-0001-upload-test",
-          workId: "W-20260627-0001",
+          ref: "refs/heads/task/T-20260627-0001-upload-test",
+          workId: "T-20260627-0001",
           title: "Upload test",
           objective: "Handle uploaded attachment",
           status: "in_progress",
@@ -483,11 +480,7 @@ describe("UploadServer", () => {
         expect(prompt).toContain("policy.txt");
         return {
           type: "assistant",
-          content: JSON.stringify({
-            kind: "reply",
-            message: "I can see the attached policy document.",
-            status: "completed",
-          }),
+          content: "I can see the attached policy document.",
         };
       }),
     };
@@ -597,11 +590,7 @@ describe("UploadServer", () => {
         expect(prompt).toContain('"mimeType": "image/png"');
         return {
           type: "assistant",
-          content: JSON.stringify({
-            kind: "reply",
-            message: "I can see the attached image.",
-            status: "completed",
-          }),
+          content: "I can see the attached image.",
         };
       }),
     };

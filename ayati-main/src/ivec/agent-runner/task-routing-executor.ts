@@ -49,8 +49,16 @@ export type TurnRoutingUpdate =
       sessionId: string;
       taskId: string;
       branch: string;
-      mode?: string;
+      mode?: "created" | "activated";
       runId: string;
+      workingDirectory?: string;
+      taskHead?: string;
+      taskCreated?: boolean;
+      requestDecision?: "initial" | "continue" | "create";
+      taskRequestId?: string;
+      taskRequestStatus?: "queued" | "active" | "blocked" | "done" | "dropped";
+      taskRequestCreated?: boolean;
+      sessionRunBound?: boolean;
       harnessContext: HarnessContextInput;
     }
   | {
@@ -153,7 +161,12 @@ export function extractTurnRoutingUpdate(calls: ActToolCallRecord[]): TurnRoutin
       const taskId = readString(record["taskId"]);
       const branch = readString(record["branch"]);
       const runId = readString(record["runId"]);
-      const mode = readString(record["mode"]);
+      const mode = readSelectionMode(record["mode"]);
+      const workingDirectory = readString(record["workingDirectory"]);
+      const taskHead = readString(record["taskHead"]);
+      const requestDecision = readRequestDecision(record["requestDecision"]);
+      const taskRequestId = readString(record["taskRequestId"]);
+      const taskRequestStatus = readTaskRequestStatus(record["taskRequestStatus"]);
       if (sessionId && taskId && branch && runId) {
         return {
           status: "ready",
@@ -162,6 +175,18 @@ export function extractTurnRoutingUpdate(calls: ActToolCallRecord[]): TurnRoutin
           branch,
           ...(mode ? { mode } : {}),
           runId,
+          ...(workingDirectory ? { workingDirectory } : {}),
+          ...(taskHead ? { taskHead } : {}),
+          ...(typeof record["taskCreated"] === "boolean" ? { taskCreated: record["taskCreated"] } : {}),
+          ...(requestDecision ? { requestDecision } : {}),
+          ...(taskRequestId ? { taskRequestId } : {}),
+          ...(taskRequestStatus ? { taskRequestStatus } : {}),
+          ...(typeof record["taskRequestCreated"] === "boolean"
+            ? { taskRequestCreated: record["taskRequestCreated"] }
+            : {}),
+          ...(typeof record["sessionRunBound"] === "boolean"
+            ? { sessionRunBound: record["sessionRunBound"] }
+            : {}),
           harnessContext,
         };
       }
@@ -174,6 +199,22 @@ export function extractTurnRoutingUpdate(calls: ActToolCallRecord[]): TurnRoutin
     }
   }
   return null;
+}
+
+function readSelectionMode(value: unknown): "created" | "activated" | undefined {
+  return value === "created" || value === "activated" ? value : undefined;
+}
+
+function readRequestDecision(value: unknown): "initial" | "continue" | "create" | undefined {
+  return value === "initial" || value === "continue" || value === "create"
+    ? value
+    : undefined;
+}
+
+function readTaskRequestStatus(value: unknown): "queued" | "active" | "blocked" | "done" | "dropped" | undefined {
+  return value === "queued" || value === "active" || value === "blocked" || value === "done" || value === "dropped"
+    ? value
+    : undefined;
 }
 
 function validatePendingRoutingAction(input: ExecutePendingRoutingActionInput): string | undefined {
@@ -204,7 +245,7 @@ function validatePendingRoutingAction(input: ExecutePendingRoutingActionInput): 
       return `Allowed tool '${tool}' was not selected for this decision.`;
     }
     if (input.readOnlySessionAction && !isReadOnlyTool(tool)) {
-      return `Allowed tool '${tool}' cannot run in a session read-only action before task promotion.`;
+      return `Allowed tool '${tool}' cannot run in a session read-only action before task binding.`;
     }
   }
   for (const call of action.calls) {
@@ -216,7 +257,7 @@ function validatePendingRoutingAction(input: ExecutePendingRoutingActionInput): 
     }
     if (input.readOnlySessionAction) {
       if (!isReadOnlyTool(call.tool)) {
-        return `Tool '${call.tool}' cannot run in a session read-only action before task promotion.`;
+        return `Tool '${call.tool}' cannot run in a session read-only action before task binding.`;
       }
     } else if (!isGitContextAllowedDuringPendingRouting(call.tool)) {
       return [

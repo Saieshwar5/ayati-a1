@@ -22,6 +22,12 @@ describe("repair policy", () => {
       });
       expect(REPAIR_CODE_CATALOG[code].allowedNextActions.length).toBeGreaterThan(0);
     }
+    expect(REPAIR_CODE_CATALOG.R_LOAD_TOOLS_USED_AS_ACTION.allowedNextActions).toContain(
+      "Use the native decision_load_tools control tool.",
+    );
+    expect(REPAIR_CODE_CATALOG.R_LOAD_TOOLS_USED_AS_ACTION.allowedNextActions).not.toContain(
+      "Do not put load_tools in executable action calls.",
+    );
   });
 
   it("creates a repair signal with catalog defaults and compact detail fields", () => {
@@ -37,7 +43,7 @@ describe("repair policy", () => {
       code: "R_FRESH_SESSION_NEEDS_TASK",
       severity: "repairable",
       source: "runner.guard",
-      message: "No active task exists yet. Normal work tools cannot run before task promotion.",
+      message: "No active task exists yet. Normal work tools cannot run before task binding.",
       blockedTargets: ["write_files", "shell"],
       missingFields: [],
       invalidFields: [],

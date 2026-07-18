@@ -27,14 +27,6 @@ export type ContextSessionActivityRecord =
     }
   | {
       seq: number;
-      type: "task_branch_created";
-      at: string;
-      workId: string;
-      branch: string;
-      ref: string;
-    }
-  | {
-      seq: number;
       type: "run_started";
       at: string;
       runId: string;
@@ -300,7 +292,6 @@ export interface ContextEngineMachineContext {
   readContext?: ContextReadContext;
   taskCandidates?: Array<{
     taskId: string;
-    layoutVersion: "legacy_independent_v0" | "simple_repository_v1";
     title: string;
     objective: string;
     status: "initializing" | "active" | "archived";
@@ -316,8 +307,6 @@ export interface ContextEngineMachineContext {
     updatedAt: string;
   }>;
   task?: {
-    /** Runtime-only active task checkout. Prompt projection intentionally omits it. */
-    checkoutPath?: string;
     /** Stable user-facing directory where task files are edited. */
     workingDirectory?: string;
     ref: string;

@@ -9,12 +9,10 @@ import type {
   AcquireMutationAuthorityResponse,
   BindTaskAttachmentsRequest,
   BindTaskAttachmentsResponse,
-  CheckpointMutationRequest,
-  CheckpointMutationResponse,
+  CompleteContextTurnRequest,
+  CompleteContextTurnResponse,
   AppendConversationRequest,
   AppendConversationResponse,
-  CreateTaskRequest,
-  CreateTaskResponse,
   CreateTaskRunRequest,
   EnsureActiveSessionRequest,
   EnsureActiveSessionResponse,
@@ -28,20 +26,14 @@ import type {
   HealthResponse,
   ListTasksRequest,
   ListTasksResponse,
-  InventoryTaskMigrationsRequest,
-  InventoryTaskMigrationsResponse,
-  MigrateTaskRepositoryRequest,
-  MigrateTaskRepositoryResponse,
-  MountTaskRequest,
-  MountTaskResponse,
   PlanTaskRequestRouteRequest,
   PlanTaskRequestRouteResponse,
+  PrepareContextTurnRequest,
+  PrepareContextTurnResponse,
   RecordRunStepRequest,
   RecordRunStepResponse,
   RecordSessionAttachmentsRequest,
   RecordSessionAttachmentsResponse,
-  SnapshotTaskRunEvidenceRequest,
-  SnapshotTaskRunEvidenceResponse,
   StartRunRequest,
   StartRunResponse,
   SelectedTaskRunResponse,
@@ -105,6 +97,26 @@ export class GitContextClient implements GitContextService {
     );
   }
 
+  async prepareContextTurn(
+    input: PrepareContextTurnRequest,
+  ): Promise<PrepareContextTurnResponse> {
+    return await this.requestJson<PrepareContextTurnResponse>(
+      "POST",
+      "/context/turns/prepare",
+      input,
+    );
+  }
+
+  async completeContextTurn(
+    input: CompleteContextTurnRequest,
+  ): Promise<CompleteContextTurnResponse> {
+    return await this.requestJson<CompleteContextTurnResponse>(
+      "POST",
+      "/context/turns/complete",
+      input,
+    );
+  }
+
   async ensureActiveSession(input: EnsureActiveSessionRequest): Promise<EnsureActiveSessionResponse> {
     return await this.requestJson<EnsureActiveSessionResponse>(
       "POST",
@@ -119,10 +131,6 @@ export class GitContextClient implements GitContextService {
       "/conversations/append",
       input,
     );
-  }
-
-  async createTask(input: CreateTaskRequest): Promise<CreateTaskResponse> {
-    return await this.requestJson<CreateTaskResponse>("POST", "/tasks", input);
   }
 
   async createTaskRun(input: CreateTaskRunRequest): Promise<SelectedTaskRunResponse> {
@@ -151,32 +159,10 @@ export class GitContextClient implements GitContextService {
     return await this.requestJson<ListTasksResponse>("GET", "/tasks" + query);
   }
 
-  async inventoryTaskMigrations(
-    input: InventoryTaskMigrationsRequest,
-  ): Promise<InventoryTaskMigrationsResponse> {
-    const query = input.taskId ? "?taskId=" + encodeURIComponent(input.taskId) : "";
-    return await this.requestJson<InventoryTaskMigrationsResponse>("GET", "/task-migrations" + query);
-  }
-
-  async migrateTaskRepository(
-    input: MigrateTaskRepositoryRequest,
-  ): Promise<MigrateTaskRepositoryResponse> {
-    return await this.requestJson<MigrateTaskRepositoryResponse>("POST", "/task-migrations", input);
-  }
-
   async getTask(input: GetTaskRequest): Promise<GetTaskResponse> {
     return await this.requestJson<GetTaskResponse>(
       "GET",
       "/tasks/" + encodeURIComponent(input.taskId),
-    );
-  }
-
-  async mountTask(input: MountTaskRequest): Promise<MountTaskResponse> {
-    return await this.requestJson<MountTaskResponse>(
-      "POST",
-      "/sessions/" + encodeURIComponent(input.sessionId)
-        + "/tasks/" + encodeURIComponent(input.taskId) + "/mount",
-      input,
     );
   }
 
@@ -225,26 +211,6 @@ export class GitContextClient implements GitContextService {
     return await this.requestJson<VerifyMutationResponse>(
       "POST",
       "/mutation-authorities/" + encodeURIComponent(input.authorityId) + "/verify",
-      input,
-    );
-  }
-
-  async checkpointMutation(
-    input: CheckpointMutationRequest,
-  ): Promise<CheckpointMutationResponse> {
-    return await this.requestJson<CheckpointMutationResponse>(
-      "POST",
-      "/mutation-authorities/" + encodeURIComponent(input.authorityId) + "/checkpoint",
-      input,
-    );
-  }
-
-  async snapshotTaskRunEvidence(
-    input: SnapshotTaskRunEvidenceRequest,
-  ): Promise<SnapshotTaskRunEvidenceResponse> {
-    return await this.requestJson<SnapshotTaskRunEvidenceResponse>(
-      "POST",
-      "/runs/" + encodeURIComponent(input.runId) + "/evidence/snapshot",
       input,
     );
   }

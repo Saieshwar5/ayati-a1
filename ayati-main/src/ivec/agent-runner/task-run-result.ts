@@ -89,11 +89,11 @@ export function buildTaskAssets(state: LoopState): TaskAssetRecord[] {
 
 export function buildVerifiedCompletionAssets(state: LoopState): TaskAssetRecord[] {
   return (state.completionAssets ?? []).map((asset) => ({
-    assetId: stableAssetId(asset.kind, asset.resolvedPath),
+    assetId: stableAssetId(asset.kind, asset.path),
     role: "generated",
     kind: asset.kind,
-    name: asset.resolvedPath.split("/").pop() || asset.resolvedPath,
-    path: asset.resolvedPath,
+    name: asset.path.split("/").pop() || asset.path,
+    path: asset.path,
     description: asset.description,
   }));
 }

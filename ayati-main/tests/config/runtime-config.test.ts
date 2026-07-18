@@ -135,18 +135,6 @@ describe("ayati runtime config", () => {
     expect(resolveGitContextStoreDir("custom-context")).toMatch(/\/ayati-main\/custom-context$/);
   });
 
-  it("preserves legacy upload host, port, and CORS fallbacks", () => {
-    const config = loadAyatiRuntimeConfig({
-      AYATI_UPLOAD_HOST: " 192.168.1.25 ",
-      AYATI_UPLOAD_PORT: "9091",
-      AYATI_UPLOAD_ALLOW_ORIGIN: " https://legacy.example ",
-    });
-
-    expect(config.http.host).toBe("192.168.1.25");
-    expect(config.http.port).toBe(9091);
-    expect(config.http.allowOrigin).toBe("https://legacy.example");
-  });
-
   it("falls back for invalid positive integer values", () => {
     const config = loadAyatiRuntimeConfig({
       AYATI_HTTP_PORT: "-1",

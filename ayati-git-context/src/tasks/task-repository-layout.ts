@@ -9,7 +9,7 @@ export const TASK_INBOX_KEEP_PATH = ".ayati/inbox/.gitkeep";
 export const TASK_SCHEMA = "ayati.task/v1";
 export const TASK_REQUEST_SCHEMA = "ayati.request/v1";
 
-const TASK_ID_PATTERN = /^[TW]-\d{8}-\d{4}$/;
+const TASK_ID_PATTERN = /^T-\d{8}-\d{4}$/;
 const REQUEST_ID_PATTERN = /^R-\d{4}$/;
 const REFERENCE_ID_PATTERN = /^REF-\d{4}$/;
 
@@ -29,7 +29,7 @@ export function requireTaskId(value: string): string {
   if (!isTaskId(value)) {
     throw new GitContextServiceError({
       code: "TASK_CARD_INVALID",
-      message: "Task ID must use T-YYYYMMDD-NNNN or a legacy W-YYYYMMDD-NNNN identity.",
+      message: "Task ID must use T-YYYYMMDD-NNNN.",
       details: { field: "id", value },
     });
   }

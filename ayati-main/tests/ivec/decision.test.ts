@@ -9,58 +9,19 @@ import {
   ContextInputLimitError,
   ContextRunCapacityError,
 } from "../../src/prompt/context-compilation-receipt.js";
-import { callAgentDecision, parseAgentDecision } from "../../src/ivec/agent-runner/decision.js";
+import { callAgentDecision } from "../../src/ivec/agent-runner/decision.js";
 import type { AgentFeedbackEventInput, AgentFeedbackLedger } from "../../src/ivec/feedback-ledger.js";
 import type { AgentStateView } from "../../src/ivec/agent-runner/state-view.js";
 import { createRunMetrics } from "../../src/ivec/metrics.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
+import { nativeDecisionFixture } from "./native-decision-fixture.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
 });
 
-describe("parseAgentDecision", () => {
-  it("ignores model-provided action assertions", () => {
-    const decision = parseAgentDecision(JSON.stringify({
-      kind: "act",
-      action: {
-        mode: "single",
-        calls: [{
-          id: "call_1",
-          tool: "write_files",
-          input: { files: [] },
-          dependsOn: [],
-          purpose: "Create files",
-        }],
-        allowedTools: ["write_files"],
-        assertions: [{
-          id: "model_invented_check",
-          kind: "html_contains",
-          text: "Organic Vegetables",
-        }],
-      },
-    }));
-
-    expect(decision.kind).toBe("act");
-    if (decision.kind !== "act") {
-      throw new Error("Expected act decision.");
-    }
-    expect(decision.action.assertions).toEqual([]);
-  });
-
-  it("parses optional working notes", () => {
-    const decision = parseAgentDecision(JSON.stringify({
-      kind: "reply",
-      status: "completed",
-      message: "Done",
-      workingNotes: ["  RAM used is 3.5Gi.  ", ""],
-    }));
-
-    expect(decision.kind).toBe("reply");
-    expect(decision.workingNotes).toEqual(["RAM used is 3.5Gi."]);
-  });
-
+describe("callAgentDecision", () => {
   it("accepts direct assistant text as a terminal reply", async () => {
     vi.stubEnv("AYATI_AGENT_TRACE", "1");
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -101,7 +62,7 @@ describe("parseAgentDecision", () => {
       ],
       outcome: "done",
       validation: "passed",
-      workId: "W-20260714-0001",
+      workId: "T-20260714-0001",
       runId: "R-20260714-0004",
     };
 
@@ -165,21 +126,20 @@ describe("parseAgentDecision", () => {
 
     const messages = generateTurn.mock.calls[0]?.[0]?.messages ?? [];
     const systemPrompt = messages.find((message) => message.role === "system")?.content ?? "";
-    expect(systemPrompt).toContain("Autonomous execution policy: for actionable user requests, prefer progress over discussion.");
-    expect(systemPrompt).toContain("Use direct assistant text for normal terminal replies.");
-    expect(systemPrompt).toContain("Use direct assistant text only as a terminal response");
-    expect(systemPrompt).toContain("Do not use direct assistant text to say you will do future work.");
-    expect(systemPrompt).toContain("call the selected executable tool directly");
-    expect(systemPrompt).toContain("Use ask_user_feedback only during an active task run");
-    expect(systemPrompt).toContain("Do not use ask_user_feedback for final responses");
+    expect(systemPrompt).toContain("Prefer progress over discussion for actionable requests.");
+    expect(systemPrompt).toContain("Use direct assistant text only for pure conversation");
+    expect(systemPrompt).toContain("Do not use a final reply to promise future work.");
+    expect(systemPrompt).toContain("Call the selected tool directly");
+    expect(systemPrompt).toContain("ask_user_feedback is available only during an active task run");
+    expect(systemPrompt).toContain("Do not use ask_user_feedback for casual conversation");
     expect(systemPrompt).toContain("There is no session-global active task");
-    expect(systemPrompt).toContain("Treat a task as a long-lived workstream");
-    expect(systemPrompt).toContain("A separate feature, lesson, analysis, or independently completable improvement belongs to a new request in the same task");
-    expect(systemPrompt).toContain("Request completion does not archive its task");
+    expect(systemPrompt).toContain("A task is a long-lived workstream");
+    expect(systemPrompt).toContain("A separate feature, lesson, analysis, or independently completable improvement normally becomes a new request");
+    expect(systemPrompt).toContain("Completing a request does not archive its task");
     expect(systemPrompt).toContain("Exact resource ownership is stronger evidence than title similarity");
-    expect(systemPrompt).toContain("If ownership is ambiguous, reply directly with one short clarifying question");
-    expect(systemPrompt).toContain("Normal work tools require an explicitly selected task run");
-    expect(systemPrompt).toContain("Do not tell the user tools are missing.");
+    expect(systemPrompt).toContain("If ownership is ambiguous, ask one short clarification question");
+    expect(systemPrompt).toContain("Normal mutation tools require an explicitly selected task run");
+    expect(systemPrompt).toContain("Do not tell the user that tools are missing.");
     expect(systemPrompt).not.toContain("decision_act");
   });
 
@@ -196,26 +156,23 @@ describe("parseAgentDecision", () => {
 
     const messages = generateTurn.mock.calls[0]?.[0]?.messages ?? [];
     const systemPrompt = messages.find((message) => message.role === "system")?.content ?? "";
-    expect(systemPrompt).toContain("Prefer the grouped context paths");
+    expect(systemPrompt).toContain("Use only the current grouped paths");
     expect(systemPrompt).toContain("context.git.current.task");
     expect(systemPrompt).toContain("context.git.session.attachments");
-    expect(systemPrompt).toContain("Use context.git.session.summary as compressed session history");
-    expect(systemPrompt).toContain("Use context.timeline for exact recent messages and current input");
-    expect(systemPrompt).toContain("If summary and exact conversation conflict, trust context.timeline");
-    expect(systemPrompt).toContain("kind=\"checkpoint\" is a structured summary of its covered older sequence range");
-    expect(systemPrompt).toContain("Exact timeline events after it remain authoritative");
-    expect(systemPrompt).toContain("do not infer omitted details from it");
+    expect(systemPrompt).toContain("Use context.git.session.summary as compressed older history");
+    expect(systemPrompt).toContain("context.timeline as exact recent history");
+    expect(systemPrompt).toContain("exact later items override an older checkpoint or summary");
+    expect(systemPrompt).toContain("Do not infer details omitted from a summary");
     expect(systemPrompt).toContain("context.run.status");
     expect(systemPrompt).toContain("context.run.workState");
     expect(systemPrompt).toContain("context.run.toolCalls");
-    expect(systemPrompt).toContain("mode=\"summary\"");
     expect(systemPrompt).toContain("outputPreview");
     expect(systemPrompt).toContain("stepRef");
     expect(systemPrompt).toContain("evidenceRef");
-    expect(systemPrompt).toContain("use a narrow normal domain read");
-    expect(systemPrompt).toContain("When context.run.contextPressure is present, work in small verifiable steps");
-    expect(systemPrompt).toContain("context.run.contextPressure.recommendedMode is a runtime escalation signal");
-    expect(systemPrompt).toContain("Do not summarize or rewrite timeline, task, session, work-state, or source tool records yourself");
+    expect(systemPrompt).toContain("use a narrow read");
+    expect(systemPrompt).toContain("When context.run.contextPressure is present");
+    expect(systemPrompt).toContain("follow its recommended mode");
+    expect(systemPrompt).toContain("Do not rewrite or summarize runtime-owned timeline");
     expect(systemPrompt).not.toContain("context.scratch");
     expect(systemPrompt).not.toContain("context.run.progress");
     expect(systemPrompt).not.toContain("context.run.feedback");
@@ -225,7 +182,9 @@ describe("parseAgentDecision", () => {
     expect(systemPrompt).not.toContain("context.run.trace");
     expect(systemPrompt).toContain("context.tools.active");
     expect(systemPrompt).toContain("context.personal.memorySnapshot");
-    expect(systemPrompt).toContain("Legacy fields such as context.gitContext");
+    expect(systemPrompt).not.toContain("context.gitContext");
+    expect(systemPrompt).not.toContain("State view.progress");
+    expect(systemPrompt).not.toContain("State view.workingFeedback");
   });
 
   it("does not promote legacy git context in prompt state breakdown metrics", async () => {
@@ -440,7 +399,7 @@ describe("parseAgentDecision", () => {
   it("records a pressure-only tool projection plan without changing the request", async () => {
     const generateTurn = vi.fn().mockResolvedValue({
       type: "assistant",
-      content: JSON.stringify({ kind: "reply", status: "completed", message: "Done" }),
+      content: "Done",
     });
     const provider: LlmProvider = {
       name: "fake-provider",
@@ -520,7 +479,7 @@ describe("parseAgentDecision", () => {
   it("enforces tool projection and admits the measured final request", async () => {
     const generateTurn = vi.fn().mockResolvedValue({
       type: "assistant",
-      content: JSON.stringify({ kind: "reply", status: "completed", message: "Done" }),
+      content: "Done",
     });
     const countInputTokens = vi.fn()
       .mockResolvedValueOnce({ provider: "fake-provider", model: "test-model", inputTokens: 101_000, exact: true })
@@ -609,7 +568,7 @@ describe("parseAgentDecision", () => {
   it("sheds low-value session context before touching the exact timeline", async () => {
     const generateTurn = vi.fn().mockResolvedValue({
       type: "assistant",
-      content: JSON.stringify({ kind: "reply", status: "completed", message: "Continue" }),
+      content: "Continue",
     });
     const countInputTokens = vi.fn(async (turnInput: LlmTurnInput) => {
       const state = promptStateFromTurn(turnInput);
@@ -709,7 +668,7 @@ describe("parseAgentDecision", () => {
       }
       return {
         type: "assistant",
-        content: JSON.stringify({ kind: "reply", status: "completed", message: "Recovered" }),
+        content: "Recovered",
       };
     });
     const countInputTokens = vi.fn(async (turnInput: LlmTurnInput) => {
@@ -941,7 +900,7 @@ describe("parseAgentDecision", () => {
       })
       .mockResolvedValueOnce({
         type: "assistant",
-        content: JSON.stringify({ kind: "reply", status: "completed", message: "Repaired" }),
+        content: "Repaired",
       });
     const countInputTokens = vi.fn()
       .mockResolvedValueOnce({ provider: "fake-provider", model: "test-model", inputTokens: 101_000, exact: true })
@@ -996,7 +955,7 @@ describe("parseAgentDecision", () => {
           }
         : {
             type: "assistant",
-            content: JSON.stringify({ kind: "reply", status: "completed", message: "Repaired" }),
+            content: "Repaired",
           };
     });
     const countInputTokens = vi.fn(async (turnInput: LlmTurnInput) => {
@@ -1121,7 +1080,7 @@ describe("parseAgentDecision", () => {
       if (turnInput.responseFormat) throw new Error("Timeline checkpoint should not run.");
       return {
         type: "assistant",
-        content: JSON.stringify({ kind: "reply", status: "completed", message: "Recovered" }),
+        content: "Recovered",
       };
     });
     const countInputTokens = vi.fn()
@@ -1164,7 +1123,7 @@ describe("parseAgentDecision", () => {
     const generateTurn = vi.fn(async (turnInput: LlmTurnInput): Promise<LlmTurnOutput> => {
       return turnInput.responseFormat
         ? { type: "assistant", content: "invalid-checkpoint" }
-        : { type: "assistant", content: JSON.stringify({ kind: "reply", status: "completed", message: "Fallback" }) };
+        : { type: "assistant", content: "Fallback" };
     });
     const provider: LlmProvider = {
       name: "fake-provider",
@@ -1392,7 +1351,7 @@ describe("parseAgentDecision", () => {
     expect(promptStateView.context).not.toHaveProperty("scratch");
   });
 
-  it("repairs act decisions that reference unselected tools into load_tools", async () => {
+  it("repairs multiple native tool calls into one load_tools request", async () => {
     const badAction = {
       kind: "act",
       action: {
@@ -1443,13 +1402,10 @@ describe("parseAgentDecision", () => {
     expect(generateTurn).toHaveBeenCalledTimes(2);
     const repairMessages = generateTurn.mock.calls[1]?.[0]?.messages ?? [];
     const repairPrompt = repairMessages.at(-1)?.content;
-    expect(repairPrompt).toContain("Repair code: R_LOAD_TOOLS_USED_AS_ACTION");
-    expect(repairPrompt).toContain("Blocked targets: shell, load_tools");
-    expect(repairPrompt).toContain("Use the native decision_load_tools control tool.");
-    expect(feedback.events.find((event) => event.event === "protocol_violation")?.data).toMatchObject({
+    expect(repairPrompt).toContain("Repair code: R_MULTIPLE_NATIVE_TOOL_CALLS");
+    expect(feedback.events.find((event) => event.event === "parse_failed")?.data).toMatchObject({
       repair: {
-        code: "R_LOAD_TOOLS_USED_AS_ACTION",
-        blockedTargets: ["shell", "load_tools"],
+        code: "R_MULTIPLE_NATIVE_TOOL_CALLS",
       },
     });
   });
@@ -2125,7 +2081,15 @@ describe("parseAgentDecision", () => {
       taskCompletionAvailable: true,
     });
 
-    expect(generateTurn.mock.calls[0]?.[0]?.tools?.map((tool) => tool.name)).toContain("task_completion");
+    const taskCompletionTool = generateTurn.mock.calls[0]?.[0]?.tools
+      ?.find((tool) => tool.name === "task_completion");
+    expect(taskCompletionTool).toBeDefined();
+    expect(JSON.stringify(taskCompletionTool?.inputSchema)).toContain(
+      "Portable path relative to the active task repository root.",
+    );
+    expect(JSON.stringify(taskCompletionTool?.inputSchema)).not.toContain(
+      "Canonical absolute path of the completed file or directory.",
+    );
     expect(decision).toEqual({
       kind: "task_completion",
       request: {
@@ -2265,7 +2229,7 @@ function createProvider(
   const generateTurn = vi.fn(async () => {
     const content = responses[Math.min(index, responses.length - 1)] ?? "";
     index++;
-    return { type: "assistant" as const, content };
+    return nativeDecisionFixture(content);
   });
   return {
     provider: {

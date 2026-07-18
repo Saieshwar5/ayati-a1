@@ -17,9 +17,9 @@ afterEach(() => {
 });
 
 describe("task-scoped tool executor", () => {
-  it("accepts absolute mutation paths and checkpoints verified task changes", async () => {
-    const checkoutPath = mkdtempSync(join(tmpdir(), "ayati-task-checkout-"));
-    temporaryDirectories.push(checkoutPath);
+  it("accepts absolute V1 mutation paths and leaves verified changes for finalization", async () => {
+    const repositoryPath = mkdtempSync(join(tmpdir(), "ayati-task-repository-"));
+    temporaryDirectories.push(repositoryPath);
     const execute = vi.fn(async () => ({ ok: true, output: "wrote README" }));
     const base = baseExecutor(execute);
     const acquireMutationAuthority = vi.fn(async () => ({
@@ -35,25 +35,15 @@ describe("task-scoped tool executor", () => {
       outcome: "verified_changes",
       provenance: {},
     }));
-    const checkpointMutation = vi.fn(async () => ({
-      authorityId: "A-1",
-      taskId: "W-20260713-0001",
-      runId: "R-1",
-      beforeHead: "a".repeat(40),
-      checkpointHead: "b".repeat(40),
-      stagedPaths: ["README"],
-      sessionGitlinkUpdated: true,
-    }));
     const service = {
-      getActiveContext: vi.fn(async () => activeContext(checkoutPath)),
+      getActiveContext: vi.fn(async () => v1ActiveContext(repositoryPath)),
       acquireMutationAuthority,
       verifyMutation,
-      checkpointMutation,
     } as unknown as GitContextService;
     const executor = createTaskScopedToolExecutor({ base, gitContext: service });
 
     const result = await executor.execute("write_files", {
-      files: [{ path: join(checkoutPath, "README"), content: "Task context" }],
+      files: [{ path: join(repositoryPath, "README"), content: "Task context" }],
       createDirs: true,
     }, {
       clientId: "client-1",
@@ -66,26 +56,21 @@ describe("task-scoped tool executor", () => {
     expect(execute).toHaveBeenCalledWith(
       "write_files",
       expect.objectContaining({
-        files: [expect.objectContaining({ path: join(checkoutPath, "README") })],
+        files: [expect.objectContaining({ path: join(repositoryPath, "README") })],
       }),
       expect.objectContaining({ runId: "R-1" }),
     );
     expect(acquireMutationAuthority).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: "S-1",
       runId: "R-1",
-      taskId: "W-20260713-0001",
+      taskId: "T-20260713-0001",
+      taskRequestId: "R-0002",
       targets: [{ path: "README", kind: "file" }],
     }));
     expect(verifyMutation).toHaveBeenCalledWith(expect.objectContaining({
       authorityId: "A-1",
       lockToken: "lock-1",
       toolStatus: "completed",
-    }));
-    expect(checkpointMutation).toHaveBeenCalledWith(expect.objectContaining({
-      authorityId: "A-1",
-      purpose: "write_files step 3",
-      conversationId: "C-1",
-      conversationHash: "conversation-hash",
     }));
   });
 
@@ -96,7 +81,6 @@ describe("task-scoped tool executor", () => {
     const acquireMutationAuthority = vi.fn(async () => ({
       authority: { authorityId: "A-v1", lockToken: "lock-v1" },
     }));
-    const checkpointMutation = vi.fn();
     const service = {
       getActiveContext: vi.fn(async () => v1ActiveContext(workingDirectory)),
       acquireMutationAuthority,
@@ -107,7 +91,6 @@ describe("task-scoped tool executor", () => {
         outcome: "verified_changes",
         provenance: {},
       })),
-      checkpointMutation,
     } as unknown as GitContextService;
     const executor = createTaskScopedToolExecutor({ base: baseExecutor(execute), gitContext: service });
 
@@ -126,7 +109,6 @@ describe("task-scoped tool executor", () => {
       taskRequestId: "R-0002",
       targets: [{ path: "lesson.md", kind: "file" }],
     }));
-    expect(checkpointMutation).not.toHaveBeenCalled();
     expect(execute).toHaveBeenCalledWith(
       "write_files",
       expect.anything(),
@@ -204,13 +186,13 @@ describe("task-scoped tool executor", () => {
   });
 
   it("uses the task checkout as the trusted filesystem root without a model escape flag", async () => {
-    const checkoutPath = mkdtempSync(join(tmpdir(), "ayati-task-checkout-"));
-    temporaryDirectories.push(checkoutPath);
+    const repositoryPath = mkdtempSync(join(tmpdir(), "ayati-task-repository-"));
+    temporaryDirectories.push(repositoryPath);
     const acquireMutationAuthority = vi.fn(async () => ({
       authority: { authorityId: "A-2", lockToken: "lock-2" },
     }));
     const service = {
-      getActiveContext: vi.fn(async () => activeContext(checkoutPath)),
+      getActiveContext: vi.fn(async () => v1ActiveContext(repositoryPath)),
       acquireMutationAuthority,
       verifyMutation: vi.fn(async () => ({
         authorityId: "A-2",
@@ -225,15 +207,6 @@ describe("task-scoped tool executor", () => {
           unexpectedPaths: [],
         },
       })),
-      checkpointMutation: vi.fn(async () => ({
-        authorityId: "A-2",
-        taskId: "W-20260713-0001",
-        runId: "R-1",
-        beforeHead: "a".repeat(40),
-        checkpointHead: "b".repeat(40),
-        stagedPaths: ["site/index.html"],
-        sessionGitlinkUpdated: true,
-      })),
     } as unknown as GitContextService;
     const executor = createTaskScopedToolExecutor({
       base: createToolExecutor([writeFilesTool]),
@@ -241,7 +214,7 @@ describe("task-scoped tool executor", () => {
     });
 
     const result = await executor.execute("write_files", {
-      files: [{ path: join(checkoutPath, "site/index.html"), content: "<h1>Aurora Coffee</h1>" }],
+      files: [{ path: join(repositoryPath, "site/index.html"), content: "<h1>Aurora Coffee</h1>" }],
       createDirs: true,
       allowExternalPath: true,
     }, {
@@ -252,20 +225,20 @@ describe("task-scoped tool executor", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(existsSync(join(checkoutPath, "site/index.html"))).toBe(true);
-    expect(readFileSync(join(checkoutPath, "site/index.html"), "utf-8")).toContain("Aurora Coffee");
+    expect(existsSync(join(repositoryPath, "site/index.html"))).toBe(true);
+    expect(readFileSync(join(repositoryPath, "site/index.html"), "utf-8")).toContain("Aurora Coffee");
     expect(acquireMutationAuthority).toHaveBeenCalledWith(expect.objectContaining({
       targets: [{ path: "site/index.html", kind: "file" }],
     }));
   });
 
   it("runs node syntax validation in the task checkout without mutation authority", async () => {
-    const checkoutPath = mkdtempSync(join(tmpdir(), "ayati-task-checkout-"));
-    temporaryDirectories.push(checkoutPath);
-    writeFileSync(join(checkoutPath, "app.js"), "const ready = true;\n", "utf-8");
+    const repositoryPath = mkdtempSync(join(tmpdir(), "ayati-task-repository-"));
+    temporaryDirectories.push(repositoryPath);
+    writeFileSync(join(repositoryPath, "app.js"), "const ready = true;\n", "utf-8");
     const acquireMutationAuthority = vi.fn();
     const service = {
-      getActiveContext: vi.fn(async () => activeContext(checkoutPath)),
+      getActiveContext: vi.fn(async () => v1ActiveContext(repositoryPath)),
       acquireMutationAuthority,
     } as unknown as GitContextService;
     const executor = createTaskScopedToolExecutor({
@@ -276,10 +249,10 @@ describe("task-scoped tool executor", () => {
     const result = await executor.execute("shell", {
       cmd: [
         "set -e",
-        `ls -la ${checkoutPath}`,
-        `node --check ${join(checkoutPath, "app.js")}`,
+        `ls -la ${repositoryPath}`,
+        `node --check ${join(repositoryPath, "app.js")}`,
       ].join("\n"),
-      targets: [{ path: checkoutPath, kind: "directory" }],
+      targets: [{ path: repositoryPath, kind: "directory" }],
     }, {
       clientId: "client-1",
       sessionId: "S-1",
@@ -293,14 +266,14 @@ describe("task-scoped tool executor", () => {
   });
 
   it("authorizes shell work only through declared absolute mutation targets", async () => {
-    const checkoutPath = mkdtempSync(join(tmpdir(), "ayati-task-checkout-"));
-    temporaryDirectories.push(checkoutPath);
+    const repositoryPath = mkdtempSync(join(tmpdir(), "ayati-task-repository-"));
+    temporaryDirectories.push(repositoryPath);
     const execute = vi.fn(async () => ({ ok: true, output: "build complete" }));
     const acquireMutationAuthority = vi.fn(async () => ({
       authority: { authorityId: "A-shell", lockToken: "lock-shell" },
     }));
     const service = {
-      getActiveContext: vi.fn(async () => activeContext(checkoutPath)),
+      getActiveContext: vi.fn(async () => v1ActiveContext(repositoryPath)),
       acquireMutationAuthority,
       verifyMutation: vi.fn(async () => ({
         authorityId: "A-shell",
@@ -309,21 +282,12 @@ describe("task-scoped tool executor", () => {
         outcome: "verified_changes",
         provenance: {},
       })),
-      checkpointMutation: vi.fn(async () => ({
-        authorityId: "A-shell",
-        taskId: "W-20260713-0001",
-        runId: "R-1",
-        beforeHead: "a".repeat(40),
-        checkpointHead: "b".repeat(40),
-        stagedPaths: ["dist"],
-        sessionGitlinkUpdated: true,
-      })),
     } as unknown as GitContextService;
     const executor = createTaskScopedToolExecutor({ base: baseExecutor(execute), gitContext: service });
 
     const result = await executor.execute("shell", {
       cmd: "pnpm build",
-      targets: [{ path: join(checkoutPath, "dist"), kind: "directory" }],
+      targets: [{ path: join(repositoryPath, "dist"), kind: "directory" }],
     }, {
       clientId: "client-1",
       sessionId: "S-1",
@@ -336,18 +300,18 @@ describe("task-scoped tool executor", () => {
       targets: [{ path: "dist", kind: "directory" }],
     }));
     expect(execute).toHaveBeenCalledWith("shell", expect.objectContaining({
-      cwd: checkoutPath,
-      targets: [{ path: join(checkoutPath, "dist"), kind: "directory" }],
-    }), expect.objectContaining({ resourceScope: expect.objectContaining({ rootPath: checkoutPath }) }));
+      cwd: repositoryPath,
+      targets: [{ path: join(repositoryPath, "dist"), kind: "directory" }],
+    }), expect.objectContaining({ resourceScope: expect.objectContaining({ rootPath: repositoryPath }) }));
   });
 
   it("rejects mutation-capable shell work without declared targets", async () => {
-    const checkoutPath = mkdtempSync(join(tmpdir(), "ayati-task-checkout-"));
-    temporaryDirectories.push(checkoutPath);
+    const repositoryPath = mkdtempSync(join(tmpdir(), "ayati-task-repository-"));
+    temporaryDirectories.push(repositoryPath);
     const execute = vi.fn(async () => ({ ok: true, output: "should not run" }));
     const acquireMutationAuthority = vi.fn();
     const service = {
-      getActiveContext: vi.fn(async () => activeContext(checkoutPath)),
+      getActiveContext: vi.fn(async () => v1ActiveContext(repositoryPath)),
       acquireMutationAuthority,
     } as unknown as GitContextService;
     const executor = createTaskScopedToolExecutor({ base: baseExecutor(execute), gitContext: service });
@@ -366,12 +330,12 @@ describe("task-scoped tool executor", () => {
   });
 
   it("rejects an external task mutation before requesting authority", async () => {
-    const checkoutPath = mkdtempSync(join(tmpdir(), "ayati-task-checkout-"));
-    temporaryDirectories.push(checkoutPath);
+    const repositoryPath = mkdtempSync(join(tmpdir(), "ayati-task-repository-"));
+    temporaryDirectories.push(repositoryPath);
     const outsidePath = join(tmpdir(), `ayati-outside-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
     const acquireMutationAuthority = vi.fn();
     const service = {
-      getActiveContext: vi.fn(async () => activeContext(checkoutPath)),
+      getActiveContext: vi.fn(async () => v1ActiveContext(repositoryPath)),
       acquireMutationAuthority,
     } as unknown as GitContextService;
     const executor = createTaskScopedToolExecutor({
@@ -396,12 +360,12 @@ describe("task-scoped tool executor", () => {
   });
 
   it("rejects relative paths before the tool can create nested output", async () => {
-    const checkoutPath = mkdtempSync(join(tmpdir(), "ayati-task-checkout-"));
-    temporaryDirectories.push(checkoutPath);
+    const repositoryPath = mkdtempSync(join(tmpdir(), "ayati-task-repository-"));
+    temporaryDirectories.push(repositoryPath);
     const execute = vi.fn(async () => ({ ok: true, output: "should not run" }));
     const acquireMutationAuthority = vi.fn();
     const service = {
-      getActiveContext: vi.fn(async () => activeContext(checkoutPath)),
+      getActiveContext: vi.fn(async () => v1ActiveContext(repositoryPath)),
       acquireMutationAuthority,
     } as unknown as GitContextService;
     const executor = createTaskScopedToolExecutor({
@@ -425,18 +389,18 @@ describe("task-scoped tool executor", () => {
     expect(result.error).toContain("must be an absolute filesystem path");
     expect(execute).not.toHaveBeenCalled();
     expect(acquireMutationAuthority).not.toHaveBeenCalled();
-    expect(existsSync(join(checkoutPath, repeatedPath))).toBe(false);
+    expect(existsSync(join(repositoryPath, repeatedPath))).toBe(false);
   });
 
   it("rejects a canonical path that escapes through a symlink", async () => {
-    const checkoutPath = mkdtempSync(join(tmpdir(), "ayati-task-checkout-"));
+    const repositoryPath = mkdtempSync(join(tmpdir(), "ayati-task-repository-"));
     const outsidePath = mkdtempSync(join(tmpdir(), "ayati-task-outside-"));
-    temporaryDirectories.push(checkoutPath, outsidePath);
-    symlinkSync(outsidePath, join(checkoutPath, "linked-outside"), "dir");
+    temporaryDirectories.push(repositoryPath, outsidePath);
+    symlinkSync(outsidePath, join(repositoryPath, "linked-outside"), "dir");
     const execute = vi.fn(async () => ({ ok: true, output: "should not run" }));
     const acquireMutationAuthority = vi.fn();
     const service = {
-      getActiveContext: vi.fn(async () => activeContext(checkoutPath)),
+      getActiveContext: vi.fn(async () => v1ActiveContext(repositoryPath)),
       acquireMutationAuthority,
     } as unknown as GitContextService;
     const executor = createTaskScopedToolExecutor({
@@ -445,7 +409,7 @@ describe("task-scoped tool executor", () => {
     });
 
     const result = await executor.execute("write_files", {
-      files: [{ path: join(checkoutPath, "linked-outside/escaped.txt"), content: "not allowed" }],
+      files: [{ path: join(repositoryPath, "linked-outside/escaped.txt"), content: "not allowed" }],
       createDirs: true,
     }, {
       clientId: "client-1",
@@ -471,7 +435,7 @@ function baseExecutor(execute: ReturnType<typeof vi.fn>): ToolExecutor {
   };
 }
 
-function activeContext(checkoutPath: string) {
+function v1ActiveContext(workingDirectory: string) {
   return {
     contextRevision: "sha256:test-context",
     session: {
@@ -504,14 +468,13 @@ function activeContext(checkoutPath: string) {
     },
     activeTask: {
       task: {
-        taskId: "W-20260713-0001",
-        repositoryPath: "/task.git",
-        workingPath: checkoutPath,
+        taskId: "T-20260713-0001",
+        repositoryPath: workingDirectory,
+        workingPath: workingDirectory,
         branch: "main",
         head: "d".repeat(40),
       },
-      checkoutPath,
-      workingDirectory: checkoutPath,
+      workingDirectory,
       title: "Task",
       objective: "Build the task deliverable.",
       summary: "Task in progress.",
@@ -524,7 +487,8 @@ function activeContext(checkoutPath: string) {
         sessionId: "S-1",
         conversationId: "C-1",
         runClass: "task",
-        taskId: "W-20260713-0001",
+        taskId: "T-20260713-0001",
+        taskRequestId: "R-0002",
         trigger: "user",
         status: "running",
         startedAt: "2026-07-13T09:00:00+05:30",
@@ -549,20 +513,4 @@ function activeContext(checkoutPath: string) {
     },
     warnings: [],
   };
-}
-
-function v1ActiveContext(workingDirectory: string) {
-  const context = structuredClone(activeContext(workingDirectory));
-  context.activeTask.task = {
-    ...context.activeTask.task,
-    taskId: "T-20260713-0001",
-    layoutVersion: "simple_repository_v1",
-    repositoryPath: workingDirectory,
-    workingPath: workingDirectory,
-  } as typeof context.activeTask.task;
-  delete (context.activeTask as { checkoutPath?: string }).checkoutPath;
-  context.activeTask.workingDirectory = workingDirectory;
-  context.run.run.taskId = "T-20260713-0001";
-  (context.run.run as typeof context.run.run & { taskRequestId: string }).taskRequestId = "R-0002";
-  return context;
 }

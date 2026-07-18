@@ -2,6 +2,27 @@ import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ContextEngineMachineContext } from "../context-engine/index.js";
 import { devWarn } from "../shared/index.js";
+import {
+  compactFeedbackTaskLifecycle,
+  mergeFeedbackTaskLifecycle,
+  readFeedbackTaskLifecycle,
+  type FeedbackTaskLifecycle,
+} from "./git-context-feedback-model.js";
+import { buildGitContextLifecycleFindings } from "./git-context-feedback-triage.js";
+import {
+  readFeedbackConversationPersistenceState,
+  type FeedbackConversationPersistenceState,
+} from "./conversation-persistence-feedback.js";
+import {
+  deriveFeedbackExecutionOutcome,
+  type FeedbackExecutionEvidence,
+  type FeedbackExecutionOutcome,
+} from "./execution-outcome-feedback.js";
+import {
+  buildExecutionOutcomeFindings,
+  isHealthyConversationOutcome,
+  type FeedbackExecutionTriageInput,
+} from "./execution-outcome-triage.js";
 
 export interface AgentFeedbackEventInput {
   clientId?: string;
@@ -32,6 +53,8 @@ export interface AgentFeedbackLatestSummary {
   actionSteps?: number;
   verificationPassed?: boolean;
   basedOnVerifiedFacts?: boolean;
+  conversationPersistence?: FeedbackConversationPersistenceState;
+  execution?: FeedbackExecutionOutcome;
   contextEngine?: AgentFeedbackContextEngineSummary;
   warnings: string[];
   rawPath: string;
@@ -51,7 +74,6 @@ export interface AgentFeedbackContextEngineSummary {
   routeSource?: AgentFeedbackContextRouteSource;
   finalizationStatus?: AgentFeedbackContextFinalizationStatus;
   activeTaskId?: string;
-  activeBranch?: string;
   taskId?: string;
   branch?: string;
   ref?: string;
@@ -75,7 +97,7 @@ export interface AgentFeedbackContextEngineSummary {
   runClass?: "session" | "task";
   workStateRevision?: number;
   lastPersistedStep?: number;
-  promotionCompleted?: boolean;
+  taskLifecycle?: FeedbackTaskLifecycle;
   warningCodes?: string[];
 }
 
@@ -153,6 +175,10 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
   private droppedEvents = 0;
   private readonly feedbackSignals = new Map<string, Set<string>>();
   private readonly contextEngineSignals = new Map<string, AgentFeedbackContextEngineSummary>();
+  private readonly conversationPersistenceSignals = new Map<
+    string,
+    FeedbackConversationPersistenceState
+  >();
   private readonly latestSummaries = new Map<string, AgentFeedbackLatestSummary>();
 
   constructor(options: AgentFeedbackLedgerOptions) {
@@ -178,6 +204,7 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
     };
     this.recordFeedbackSignals(event);
     this.recordContextEngineSignals(event);
+    this.recordConversationPersistenceSignal(event);
 
     if (this.queue.length >= this.maxQueueSize) {
       this.queue.shift();
@@ -274,9 +301,6 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
     const latestSession = [...batch].reverse().find((event) => Boolean(event.sessionId));
     if (latestSession) {
       await writeFeedbackPointer(this.dataDir, "latest-session.json", latestSession);
-      // Keep the original pointer as a backwards-compatible alias for the
-      // latest user/session execution, never for process-only activity.
-      await writeFeedbackPointer(this.dataDir, "latest.json", latestSession);
     }
     const latestRun = [...batch].reverse().find((event) => Boolean(event.sessionId && event.runId));
     if (latestRun) {
@@ -302,11 +326,13 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
       const triagePath = join(this.dataDir, "feedback", "triage-summary.json");
       await writeFile(triagePath, `${JSON.stringify(triage, null, 2)}\n`, "utf-8");
     } else {
-      const contextEvent = [...batch].reverse().find((event) => event.stage === "context_engine" && feedbackScopeKey(event));
-      const scopeKey = contextEvent ? feedbackScopeKey(contextEvent) : undefined;
+      const signalEvent = [...batch].reverse().find((event) =>
+        feedbackScopeKey(event) && hasCompactSummarySignal(event)
+      );
+      const scopeKey = signalEvent ? feedbackScopeKey(signalEvent) : undefined;
       const previousSummary = scopeKey ? this.latestSummaries.get(scopeKey) : undefined;
-      if (contextEvent && scopeKey && previousSummary) {
-        const summary = this.withLatestContextEngineSignals(previousSummary, contextEvent);
+      if (signalEvent && scopeKey && previousSummary) {
+        const summary = this.withLatestSignals(previousSummary, signalEvent);
         this.latestSummaries.set(scopeKey, summary);
         const summaryPath = join(this.dataDir, "feedback", "latest-summary.json");
         await mkdir(dirname(summaryPath), { recursive: true });
@@ -387,9 +413,20 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
     }
   }
 
+  private recordConversationPersistenceSignal(event: AgentFeedbackEvent): void {
+    const key = feedbackScopeKey(event);
+    const persistence = conversationPersistenceFromEvent(event);
+    if (key && persistence) {
+      this.conversationPersistenceSignals.set(key, persistence);
+    }
+  }
+
   private buildLatestSummary(event: AgentFeedbackEvent): AgentFeedbackLatestSummary {
     const feedbackSummary = readFeedbackSummary(event) ?? {};
     const rawWarnings = Array.isArray(feedbackSummary["warnings"]) ? feedbackSummary["warnings"] : [];
+    const verificationPassed = typeof feedbackSummary["verificationPassed"] === "boolean"
+      ? feedbackSummary["verificationPassed"]
+      : undefined;
     const signalWarnings = this.feedbackSignals.get(feedbackScopeKey(event) ?? "") ?? new Set<string>();
     const warnings = uniqueStrings([
       ...rawWarnings.filter((warning): warning is string => typeof warning === "string" && warning.length > 0),
@@ -400,8 +437,11 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
       readContextEngineFeedbackSummary(feedbackSummary["contextEngine"]),
       this.contextEngineSignals.get(feedbackScopeKey(event) ?? ""),
     );
+    const conversationPersistence = readFeedbackConversationPersistenceState(
+      feedbackSummary["conversationPersistence"],
+    ) ?? this.conversationPersistenceSignals.get(feedbackScopeKey(event) ?? "");
 
-    return {
+    const summary: AgentFeedbackLatestSummary = {
       updatedAt: event.ts,
       tsMs: event.tsMs,
       ...(event.sessionId ? { sessionId: event.sessionId } : {}),
@@ -413,15 +453,19 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
       ...(typeof feedbackSummary["toolCalls"] === "number" ? { toolCalls: feedbackSummary["toolCalls"] } : {}),
       ...(typeof feedbackSummary["toolLoadDecisions"] === "number" ? { toolLoadDecisions: feedbackSummary["toolLoadDecisions"] } : {}),
       ...(typeof feedbackSummary["actionSteps"] === "number" ? { actionSteps: feedbackSummary["actionSteps"] } : {}),
-      ...(typeof feedbackSummary["verificationPassed"] === "boolean" ? { verificationPassed: feedbackSummary["verificationPassed"] } : {}),
       ...(typeof feedbackSummary["basedOnVerifiedFacts"] === "boolean" ? { basedOnVerifiedFacts: feedbackSummary["basedOnVerifiedFacts"] } : {}),
+      ...(conversationPersistence ? { conversationPersistence } : {}),
       ...(contextEngine ? { contextEngine } : {}),
       warnings,
       rawPath: feedbackRelativePath(event).replace(/\\/g, "/"),
     };
+    return {
+      ...summary,
+      execution: deriveFeedbackExecutionOutcome(executionEvidence(summary, verificationPassed)),
+    };
   }
 
-  private withLatestContextEngineSignals(
+  private withLatestSignals(
     summary: AgentFeedbackLatestSummary,
     event: AgentFeedbackEvent,
   ): AgentFeedbackLatestSummary {
@@ -430,18 +474,67 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
       this.contextEngineSignals.get(feedbackScopeKey(event) ?? ""),
     );
     const signalWarnings = this.feedbackSignals.get(feedbackScopeKey(event) ?? "") ?? new Set<string>();
-    return {
+    const conversationPersistence = this.conversationPersistenceSignals.get(
+      feedbackScopeKey(event) ?? "",
+    );
+    const next: AgentFeedbackLatestSummary = {
       ...summary,
       updatedAt: event.ts,
       tsMs: event.tsMs,
       ...(event.runId ? { runId: event.runId } : {}),
+      ...(conversationPersistence ? { conversationPersistence } : {}),
       ...(contextEngine ? { contextEngine } : {}),
       warnings: uniqueStrings([
         ...summary.warnings,
         ...signalWarnings,
       ]),
     };
+    return {
+      ...next,
+      execution: deriveFeedbackExecutionOutcome(executionEvidence(next)),
+    };
   }
+}
+
+function executionEvidence(
+  summary: AgentFeedbackLatestSummary,
+  verificationPassed?: boolean,
+): FeedbackExecutionEvidence {
+  const context = summary.contextEngine;
+  const lifecycle = context?.taskLifecycle;
+  const finalization = lifecycle?.finalization;
+  const warningSet = new Set(summary.warnings);
+  return {
+    actionSteps: summary.actionSteps,
+    verificationPassed: verificationPassed
+      ?? (summary.execution?.verification === "passed"
+        ? true
+        : summary.execution?.verification === "failed" ? false : undefined),
+    verificationFailed: warningSet.has("verification_failed")
+      || warningSet.has("R_VERIFICATION_FAILED"),
+    runClass: context?.runClass,
+    taskSelected: lifecycle?.run?.selectedAs === "task"
+      || Boolean(context?.taskId && context.runId),
+    finalizationStatus: finalization?.status ?? context?.finalizationStatus,
+    committed: context?.committed ?? (finalization?.status === "committed"),
+    commitIdentity: finalization?.commit ?? context?.commit,
+    commitCreated: finalization?.commitCreated,
+  };
+}
+
+function executionTriageInput(
+  summary: AgentFeedbackLatestSummary,
+): FeedbackExecutionTriageInput {
+  const context = summary.contextEngine;
+  const lifecycle = context?.taskLifecycle;
+  return {
+    execution: summary.execution,
+    actionSteps: summary.actionSteps,
+    taskRun: context?.runClass === "task"
+      || lifecycle?.run?.selectedAs === "task"
+      || Boolean(context?.taskId && context.runId),
+    commitIdentity: lifecycle?.finalization?.commit ?? context?.commit,
+  };
 }
 
 export function buildContextEngineFeedbackSummary(input: {
@@ -459,6 +552,7 @@ export function buildContextEngineFeedbackSummary(input: {
   commit?: string;
   conversationRefs?: AgentFeedbackContextEngineSummary["conversationRefs"];
   warningCodes?: string[];
+  taskLifecycle?: FeedbackTaskLifecycle;
 }): AgentFeedbackContextEngineSummary | undefined {
   const context = input.context;
   const pendingTurn = context?.pendingTurn;
@@ -471,6 +565,25 @@ export function buildContextEngineFeedbackSummary(input: {
   const branch = input.branch ?? pendingTurn?.branch ?? branchFromRef(ref);
   const taskId = input.taskId ?? pendingTurn?.workId ?? task?.workId ?? activeTaskId;
   const runId = input.runId ?? pendingTurn?.runId;
+  const candidate = context?.taskCandidates?.find((item) => item.taskId === taskId);
+  const contextTaskLifecycle = taskId ? compactFeedbackTaskLifecycle({
+    repository: {
+      taskId,
+      workingDirectory: candidate?.workingDirectory ?? task?.workingDirectory,
+      branch,
+      health: candidate?.repositoryHealth,
+      headBefore: candidate?.head,
+    },
+    request: candidate?.currentRequest ? {
+      requestId: candidate.currentRequest.id,
+      status: candidate.currentRequest.status,
+    } : undefined,
+    run: runId ? {
+      runId,
+      selectedAs: taskId ? "task" : "session",
+    } : undefined,
+  }) : undefined;
+  const taskLifecycle = mergeFeedbackTaskLifecycle(contextTaskLifecycle, input.taskLifecycle);
 
   return compactContextEngineFeedbackSummary({
     ...(input.pendingTurnStatus ?? pendingTurn?.routingStatus ? { pendingTurnStatus: input.pendingTurnStatus ?? pendingTurn?.routingStatus } : {}),
@@ -485,7 +598,6 @@ export function buildContextEngineFeedbackSummary(input: {
     ...(input.routeSource ? { routeSource: input.routeSource } : {}),
     ...(input.finalizationStatus ? { finalizationStatus: input.finalizationStatus } : {}),
     ...(activeTaskId ? { activeTaskId } : {}),
-    ...(activeRef ? { activeBranch: branchFromRef(activeRef) ?? activeRef } : {}),
     ...(taskId ? { taskId } : {}),
     ...(branch ? { branch } : {}),
     ...(ref ? { ref } : {}),
@@ -500,6 +612,7 @@ export function buildContextEngineFeedbackSummary(input: {
       recentEvidenceCount: task.recentEvidence.length,
     } : {}),
     ...(input.warningCodes && input.warningCodes.length > 0 ? { warningCodes: uniqueStrings(input.warningCodes) } : {}),
+    ...(taskLifecycle ? { taskLifecycle } : {}),
   });
 }
 
@@ -507,6 +620,14 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
   const findings: AgentFeedbackTriageFinding[] = [];
   const warningSet = new Set(summary.warnings);
   const contextEngine = summary.contextEngine;
+  const executionTriage = executionTriageInput(summary);
+
+  findings.push(...buildGitContextLifecycleFindings({
+    lifecycle: contextEngine?.taskLifecycle,
+    pendingTurnStatus: contextEngine?.pendingTurnStatus,
+    runClass: contextEngine?.runClass,
+  }));
+  findings.push(...buildExecutionOutcomeFindings(executionTriage));
 
   if (summary.status && summary.status !== "completed") {
     findings.push({
@@ -558,7 +679,9 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
     });
   }
 
-  if (warningSet.has("verification_failed") || summary.verificationPassed === false && (summary.actionSteps ?? 0) > 0) {
+  if (warningSet.has("verification_failed")
+    || summary.execution?.verification === "failed"
+    || summary.verificationPassed === false && (summary.actionSteps ?? 0) > 0) {
     findings.push({
       code: "verification_failed",
       severity: "warning",
@@ -692,25 +815,6 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
     });
   }
 
-  if (
-    contextEngine?.pendingTurnStatus === "unbound"
-    && summary.status
-    && (
-      Boolean(contextEngine.taskId)
-      || Boolean(contextEngine.runId)
-      || (summary.actionSteps ?? 0) > 0
-      || contextEngine.finalizationStatus === "failed"
-    )
-  ) {
-    findings.push({
-      code: "pending_turn_unbound_at_final",
-      severity: "warning",
-      title: "Pending turn was still unbound",
-      details: "The latest summary ended while git-context task ownership was still unbound.",
-      recommendation: "Check routing feedback and ensure normal task tools are gated until the turn is bound or clarified.",
-    });
-  }
-
   if (contextEngine?.finalizationStatus === "failed") {
     findings.push({
       code: "context_engine_commit_failed",
@@ -748,16 +852,6 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
     });
   }
 
-  if (contextEngine?.pendingTurnStatus === "clarifying" && contextEngine.runId) {
-    findings.push({
-      code: "clarification_with_task_run",
-      severity: "warning",
-      title: "Clarification state has a run id",
-      details: "A clarifying pending turn should not allocate a task run before ownership is clear.",
-      recommendation: "Inspect turn-aware routing tool results and pending-turn state transitions.",
-    });
-  }
-
   if ((summary.iterations ?? 0) >= 10) {
     findings.push({
       code: "many_iterations",
@@ -769,13 +863,21 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
   }
 
   if (findings.length === 0) {
-    findings.push({
-      code: "healthy_run",
-      severity: "info",
-      title: "No triage findings",
-      details: "The latest run completed without recorded warning signals.",
-      recommendation: "Use benchmark and live feedback aggregates to find broader recurring issues.",
-    });
+    findings.push(isHealthyConversationOutcome(executionTriage)
+      ? {
+          code: "healthy_conversation",
+          severity: "info",
+          title: "Healthy direct conversation",
+          details: "Messages were saved and no executable verification, task finalization, or task commit was required.",
+          recommendation: "No action is required for this turn.",
+        }
+      : {
+          code: "healthy_run",
+          severity: "info",
+          title: "No triage findings",
+          details: "The latest run completed without recorded warning signals.",
+          recommendation: "Use benchmark and live feedback aggregates to find broader recurring issues.",
+        });
   }
 
   const outcome = findings.some((finding) => finding.severity === "error")
@@ -965,13 +1067,30 @@ function contextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFeedbac
   const direct = event.stage === "context_engine"
     ? readContextEngineFeedbackSummary(event.data)
     : undefined;
-  const inferred = event.stage === "context_engine"
+  const inferred = event.stage === "context_engine" || event.stage === "git_context_service"
     ? inferContextEngineFeedbackFromEvent(event)
     : undefined;
   return mergeContextEngineFeedbackSummary(
     mergeContextEngineFeedbackSummary(fromNested, fromData),
     mergeContextEngineFeedbackSummary(direct, inferred),
   );
+}
+
+function conversationPersistenceFromEvent(
+  event: AgentFeedbackEvent,
+): FeedbackConversationPersistenceState | undefined {
+  const fromSummary = readFeedbackConversationPersistenceState(
+    readFeedbackSummary(event)?.["conversationPersistence"],
+  );
+  const fromEvent = event.event === "conversation_persisted"
+    ? readFeedbackConversationPersistenceState(event.data?.["conversationPersistence"])
+    : undefined;
+  return fromEvent ?? fromSummary;
+}
+
+function hasCompactSummarySignal(event: AgentFeedbackEvent): boolean {
+  return contextEngineFeedbackFromEvent(event) !== undefined
+    || conversationPersistenceFromEvent(event) !== undefined;
 }
 
 function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFeedbackContextEngineSummary | undefined {
@@ -996,15 +1115,55 @@ function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFe
     });
   }
   if (event.event === "session_run_started") {
-    return compactContextEngineFeedbackSummary({ runClass: "session", ...(event.runId ? { runId: event.runId } : {}) });
+    return compactContextEngineFeedbackSummary({
+      runClass: "session",
+      ...(event.runId ? {
+        runId: event.runId,
+        taskLifecycle: {
+          run: {
+            runId: event.runId,
+            startedAs: "session",
+            selectedAs: "session",
+            sessionRunBound: false,
+          },
+        },
+      } : {}),
+    });
   }
   if (event.event === "task_run_selected") {
+    const taskId = readStringValue(data["taskId"]);
+    const runId = event.runId ?? readStringValue(data["runId"]);
+    const selectionMode = readSelectionMode(data["selectionMode"]);
+    const requestDecision = readTaskRequestDecision(data["taskRequestDecision"]);
+    const requestStatus = readTaskRequestStatus(data["taskRequestStatus"]);
     return compactContextEngineFeedbackSummary({
       runClass: "task",
-      promotionCompleted: data["promoted"] === true,
-      ...(readStringValue(data["selectionMode"]) ? { routeMode: readStringValue(data["selectionMode"]) } : {}),
-      ...(readStringValue(data["taskId"]) ? { taskId: readStringValue(data["taskId"]) } : {}),
-      ...(event.runId ? { runId: event.runId } : {}),
+      ...(selectionMode ? { routeMode: selectionMode } : {}),
+      ...(taskId ? { taskId } : {}),
+      ...(runId ? { runId } : {}),
+      taskLifecycle: {
+        repository: {
+          taskId,
+          workingDirectory: readStringValue(data["workingDirectory"]),
+          branch: readStringValue(data["branch"]),
+          selectionMode,
+          taskCreated: readBooleanValue(data["taskCreated"]),
+          headBefore: readStringValue(data["taskHead"]),
+        },
+        request: {
+          decision: requestDecision,
+          requestId: readStringValue(data["taskRequestId"]),
+          status: requestStatus,
+          created: readBooleanValue(data["taskRequestCreated"]),
+        },
+        run: {
+          runId,
+          startedAs: data["sessionRunBound"] === true ? "session" : "none",
+          selectedAs: "task",
+          sessionRunBound: data["sessionRunBound"] === true,
+        },
+        finalization: { status: "not_started" },
+      },
     });
   }
   if (event.event === "run_step_persistence_acknowledged") {
@@ -1104,6 +1263,61 @@ function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFe
       ...(event.runId ? { runId: event.runId } : {}),
     });
   }
+  if (event.event === "task_finalization_started") {
+    const taskId = readStringValue(data["taskId"]);
+    const runId = event.runId ?? readStringValue(data["runId"]);
+    return compactContextEngineFeedbackSummary({
+      finalizationStatus: "started",
+      committed: false,
+      ...(taskId ? { taskId } : {}),
+      ...(runId ? { runId } : {}),
+      taskLifecycle: {
+        repository: {
+          taskId,
+          workingDirectory: readStringValue(data["workingDirectory"]),
+        },
+        request: { requestId: readStringValue(data["taskRequestId"]) },
+        run: { runId, selectedAs: "task" },
+        finalization: {
+          status: "started",
+          outcome: readFinalizationOutcome(data["requestedOutcome"]),
+          validation: readFinalizationValidation(data["validation"]),
+        },
+      },
+    });
+  }
+  if (event.event === "task_finalization_completed") {
+    const taskId = readStringValue(data["taskId"]);
+    const runId = event.runId ?? readStringValue(data["runId"]);
+    const commit = readStringValue(data["taskCommit"]);
+    const headBefore = readStringValue(data["taskHeadBefore"]);
+    const headAfter = readStringValue(data["taskHeadAfter"]);
+    return compactContextEngineFeedbackSummary({
+      finalizationStatus: "committed",
+      committed: true,
+      ...(taskId ? { taskId } : {}),
+      ...(runId ? { runId } : {}),
+      ...(commit ? { commit } : {}),
+      taskLifecycle: {
+        repository: {
+          taskId,
+          workingDirectory: readStringValue(data["workingDirectory"]),
+          headBefore,
+          headAfter,
+        },
+        request: { requestId: readStringValue(data["taskRequestId"]) },
+        run: { runId, selectedAs: "task" },
+        finalization: {
+          status: "committed",
+          outcome: readFinalizationOutcome(data["outcome"]),
+          commit,
+          commitCreated: readBooleanValue(data["taskCommitCreated"]),
+          headBefore,
+          headAfter,
+        },
+      },
+    });
+  }
   if (event.event === "finalization_started") {
     return compactContextEngineFeedbackSummary({
       finalizationStatus: "started",
@@ -1147,7 +1361,6 @@ function readContextEngineFeedbackSummary(value: unknown): AgentFeedbackContextE
     ...(readRouteSource(record["routeSource"]) ? { routeSource: readRouteSource(record["routeSource"]) } : {}),
     ...(readFinalizationStatus(record["finalizationStatus"]) ? { finalizationStatus: readFinalizationStatus(record["finalizationStatus"]) } : {}),
     ...(readStringValue(record["activeTaskId"]) ? { activeTaskId: readStringValue(record["activeTaskId"]) } : {}),
-    ...(readStringValue(record["activeBranch"]) ? { activeBranch: readStringValue(record["activeBranch"]) } : {}),
     ...(readStringValue(record["taskId"]) ? { taskId: readStringValue(record["taskId"]) } : {}),
     ...(readStringValue(record["branch"]) ? { branch: readStringValue(record["branch"]) } : {}),
     ...(readStringValue(record["ref"]) ? { ref: readStringValue(record["ref"]) } : {}),
@@ -1168,7 +1381,9 @@ function readContextEngineFeedbackSummary(value: unknown): AgentFeedbackContextE
     ...(readRunClass(record["runClass"]) ? { runClass: readRunClass(record["runClass"]) } : {}),
     ...(readNumberValue(record["workStateRevision"]) !== undefined ? { workStateRevision: readNumberValue(record["workStateRevision"]) } : {}),
     ...(readNumberValue(record["lastPersistedStep"]) !== undefined ? { lastPersistedStep: readNumberValue(record["lastPersistedStep"]) } : {}),
-    ...(typeof record["promotionCompleted"] === "boolean" ? { promotionCompleted: record["promotionCompleted"] } : {}),
+    ...(readFeedbackTaskLifecycle(record["taskLifecycle"])
+      ? { taskLifecycle: readFeedbackTaskLifecycle(record["taskLifecycle"]) }
+      : {}),
     ...(readStringArray(record["warningCodes"]).length > 0 ? { warningCodes: readStringArray(record["warningCodes"]) } : {}),
   });
 }
@@ -1188,6 +1403,7 @@ function mergeContextEngineFeedbackSummary(
     ...right,
     pendingTurnRange: right.pendingTurnRange ?? left.pendingTurnRange,
     conversationRefs: right.conversationRefs ?? left.conversationRefs,
+    taskLifecycle: mergeFeedbackTaskLifecycle(left.taskLifecycle, right.taskLifecycle),
     warningCodes: uniqueStrings([
       ...(left.warningCodes ?? []),
       ...(right.warningCodes ?? []),
@@ -1206,7 +1422,6 @@ function compactContextEngineFeedbackSummary(
   if (value.routeSource) output.routeSource = value.routeSource;
   if (value.finalizationStatus) output.finalizationStatus = value.finalizationStatus;
   if (value.activeTaskId) output.activeTaskId = value.activeTaskId;
-  if (value.activeBranch) output.activeBranch = value.activeBranch;
   if (value.taskId) output.taskId = value.taskId;
   if (value.branch) output.branch = value.branch;
   if (value.ref) output.ref = value.ref;
@@ -1227,7 +1442,8 @@ function compactContextEngineFeedbackSummary(
   if (value.runClass) output.runClass = value.runClass;
   if (value.workStateRevision !== undefined) output.workStateRevision = value.workStateRevision;
   if (value.lastPersistedStep !== undefined) output.lastPersistedStep = value.lastPersistedStep;
-  if (value.promotionCompleted !== undefined) output.promotionCompleted = value.promotionCompleted;
+  const taskLifecycle = compactFeedbackTaskLifecycle(value.taskLifecycle);
+  if (taskLifecycle) output.taskLifecycle = taskLifecycle;
   if (value.warningCodes && value.warningCodes.length > 0) output.warningCodes = uniqueStrings(value.warningCodes);
   return Object.keys(output).length > 0 ? output : undefined;
 }
@@ -1271,6 +1487,30 @@ function branchFromRef(ref: string | undefined): string | undefined {
 
 function readStringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function readBooleanValue(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function readSelectionMode(value: unknown): "created" | "activated" | undefined {
+  return value === "created" || value === "activated" ? value : undefined;
+}
+
+function readTaskRequestDecision(
+  value: unknown,
+): "initial" | "continue" | "create" | undefined {
+  return value === "initial" || value === "continue" || value === "create"
+    ? value
+    : undefined;
+}
+
+function readTaskRequestStatus(
+  value: unknown,
+): "queued" | "active" | "blocked" | "done" | "dropped" | undefined {
+  return value === "queued" || value === "active" || value === "blocked" || value === "done" || value === "dropped"
+    ? value
+    : undefined;
 }
 
 function readCacheStatus(value: unknown): AgentFeedbackContextEngineSummary["cacheStatus"] {
@@ -1324,6 +1564,26 @@ function readFinalizationStatus(value: unknown): AgentFeedbackContextFinalizatio
     return value;
   }
   return undefined;
+}
+
+function readFinalizationOutcome(
+  value: unknown,
+): "done" | "incomplete" | "failed" | "blocked" | "needs_user_input" | undefined {
+  return value === "done"
+    || value === "incomplete"
+    || value === "failed"
+    || value === "blocked"
+    || value === "needs_user_input"
+    ? value
+    : undefined;
+}
+
+function readFinalizationValidation(
+  value: unknown,
+): "passed" | "failed" | "not_run" | undefined {
+  return value === "passed" || value === "failed" || value === "not_run"
+    ? value
+    : undefined;
 }
 
 function readPendingTurnRange(value: unknown): AgentFeedbackContextEngineSummary["pendingTurnRange"] | undefined {

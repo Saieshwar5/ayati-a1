@@ -29,6 +29,18 @@ pnpm --filter ayati-main dev
 pnpm --filter ayati-main test
 ```
 
+Git Context service:
+
+```bash
+pnpm --filter ayati-git-context build
+pnpm --filter ayati-git-context start
+pnpm --filter ayati-git-context dev
+pnpm --filter ayati-git-context test
+```
+
+Normal local use starts Git Context through `ayati-main`; the standalone
+commands are mainly for focused service development and debugging.
+
 Backend runtime performance benchmark:
 
 ```bash

@@ -6,10 +6,11 @@ For most tasks, read in this order:
 2. `project-docs/product/overview.md`.
 3. `project-docs/engineering/README.md`.
 4. `project-docs/engineering/architecture/overview.md`.
-5. `project-docs/engineering/architecture/agent-harness.md`.
-6. `project-docs/engineering/conventions.md`.
-7. Relevant source files.
-8. Matching tests.
+5. `project-docs/engineering/architecture/task-repositories.md` for task work.
+6. `project-docs/engineering/architecture/agent-harness.md`.
+7. `project-docs/engineering/conventions.md`.
+8. Relevant source files.
+9. Matching tests.
 
 Core mental model to preserve:
 
@@ -41,15 +42,18 @@ For backend runtime tasks, prioritize:
 
 For context and memory tasks, prioritize:
 
+- `project-docs/engineering/architecture/task-repositories.md`
 - `project-docs/engineering/architecture/context-and-memory.md`
 - `project-docs/engineering/architecture/agent-harness.md`
 - `project-docs/engineering/env-vars.md` for runtime context configuration
 - `ayati-main/src/ivec/agent-runner/context-pack.ts`
 - `ayati-main/src/ivec/agent-runner/state-view.ts`
-- `ayati-main/src/context-engine/git-memory`
+- `ayati-git-context/src`
+- `ayati-main/src/app/git-context-runtime.ts`
+- `ayati-main/src/app/git-context-process.ts`
 - `ayati-main/src/skills/builtins/git-context`
-- `ayati-main/tests/context-engine/git-memory`
-- `ayati-main/tests/skills/git-context.test.ts`
+- `ayati-git-context/tests`
+- `ayati-main/tests/skills/git-context-v1-routing.test.ts`
 - `ayati-main/src/memory`
 - `ayati-main/tests/memory`
 

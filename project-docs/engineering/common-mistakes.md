@@ -20,11 +20,19 @@ Avoid these:
   using hot read context, observations, and run evidence.
 - Adding model-callable lifecycle tools for task state updates or run commits
   instead of keeping those deterministic in runtime finalization.
-- Requiring a model-callable tool just to continue the already-active task when
-  runtime can auto-bind an obvious same-task follow-up.
-- Loading every task branch, old conversation, or raw output record into the
+- Assuming a previously active or obvious task may be mutated without an
+  explicit V1 request decision.
+- Creating a new task for every feature, lesson, or run instead of adding a
+  request to the same durable workstream when ownership is clear.
+- Creating a second working copy instead of using the task repository as its
+  stable working directory.
+- Editing `.ayati/task.md` or request lifecycle files directly from the model
+  instead of letting runtime finalization own them.
+- Loading every task repository, old conversation, or raw output record into the
   default prompt instead of using compact active context, git-context retrieval,
   and narrower domain-tool calls.
+- Committing every attachment, raw tool transcript, runtime database, or
+  external-action payload into task Git.
 - Writing runtime state into source-controlled docs.
 - Ignoring `context/system-event-policy.json`.
 - Breaking CLI/server message contracts.

@@ -145,27 +145,4 @@ describe("system-event-policy", () => {
     expect(resolveSystemEventPolicy(policy, event, classification).mode).toBe("draft_then_approve");
   });
 
-  it("keeps legacy response-kind configs working", () => {
-    const legacyPolicy = {
-      defaultResponseKind: "notification",
-      rules: [
-        {
-          source: "gmail-cli",
-          eventName: "new_messages",
-          defaultResponseKind: "feedback",
-        },
-      ],
-    } as unknown as SystemEventPolicyConfig;
-
-    const event = normalizeSystemEvent({
-      source: "gmail-cli",
-      eventName: "new_messages",
-      summary: "3 new emails from work",
-      payload: {
-        unreadCount: 3,
-      },
-    });
-
-    expect(resolveSystemEventResponseKind(legacyPolicy, event)).toBe("feedback");
-  });
 });

@@ -17,16 +17,16 @@ Current product features:
 - Structured context pack with recent conversation, selected git task
   context, pending-turn state, task assets, hot evidence, personal memory, and
   current run state.
-- Git-native task routing with automatic active-task continuation,
-  turn-aware activate/create/clarify tools for semantic task ownership, and a
-  deterministic guard that keeps normal work tools behind a real task run.
+- Git-native task routing through `git_context_create_task` and
+  `git_context_activate_task`, with explicit continue-current-request or
+  create-new-request decisions for existing V1 tasks.
 - Deterministic tool verification through tool contracts, assertions, verified facts, and progress reduction.
 - Deterministic executable-tool input validation, action execution, and
   deny-by-default parallel execution for explicitly safe read-only local flows.
 - Built-in skills for shell, filesystem, calculator, SQLite database work, Python execution, documents, datasets, files, memory, recall, UI workspace control, and Pulse.
-- Default daily git context for ongoing projects, documents, automations,
-  investigations, and debugging, backed by task branches, custom refs, run
-  summaries, action records, evidence manifests, and commit trailers.
+- One independent normal `T-*` Git repository for each durable task, with a
+  compact task card, bounded requests, tracked reference provenance, verified
+  outcomes, and semantic commit trailers.
 - Git task assets for restoring user-attached
   documents, datasets, files, and directories into later follow-up runs.
 - Hot tool-output context with retention metadata, compact previews, and raw
@@ -54,7 +54,7 @@ Core product capabilities:
 - Persistent daemon runtime that can keep agent state alive across user interactions.
 - Multi-channel communication model where clients connect to the daemon.
 - Long-term personalization through personal memory and episodic recall, with
-  task continuation handled by default git context work branches and
+  task continuation handled by independent task repositories and
   runtime-owned task-run finalization.
 - General visual workbench control for coding, browsing, references, previews, scratch explanations, and other workspace-heavy tasks.
 - Computer-access layer for useful work across files, shell, Python, SQLite, documents, datasets, and generated artifacts.
@@ -68,3 +68,7 @@ Intended future capabilities:
 - Safer permissioning around high-privilege computer actions.
 - Richer proactive assistance based on user memory, time, events, and context.
 - More external integrations for real-life workflows.
+
+Current task-repository reliability gaps are documented in
+[Task Repositories](../engineering/architecture/task-repositories.md); they are
+not current product features.

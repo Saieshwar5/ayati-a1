@@ -138,7 +138,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     message: "Tool loading was used as executable work.",
     allowedNextActions: [
       "Use the native decision_load_tools control tool.",
-      "Do not put load_tools in executable action calls.",
+      "Do not put tool-loading controls in executable action calls.",
     ],
     modelFacing: true,
   },
@@ -177,7 +177,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     code: "R_FRESH_SESSION_NEEDS_TASK",
     severity: "repairable",
     source: "runner.guard",
-    message: "No active task exists yet. Normal work tools cannot run before task promotion.",
+    message: "No active task exists yet. Normal work tools cannot run before task binding.",
     allowedNextActions: [
       "Inspect the task candidates in context and call git_context_activate_task for an exact matching task.",
       "Call git_context_create_task with title, objective, and reason for distinct new durable work.",

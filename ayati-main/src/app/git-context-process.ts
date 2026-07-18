@@ -17,10 +17,8 @@ import {
   type BindTaskAttachmentsResponse,
   type AppendConversationRequest,
   type AppendConversationResponse,
-  type CheckpointMutationRequest,
-  type CheckpointMutationResponse,
-  type CreateTaskRequest,
-  type CreateTaskResponse,
+  type CompleteContextTurnRequest,
+  type CompleteContextTurnResponse,
   type CreateTaskRunRequest,
   type EnsureActiveSessionRequest,
   type EnsureActiveSessionResponse,
@@ -37,21 +35,15 @@ import {
   type HealthResponse,
   type ListTasksRequest,
   type ListTasksResponse,
-  type InventoryTaskMigrationsRequest,
-  type InventoryTaskMigrationsResponse,
-  type MigrateTaskRepositoryRequest,
-  type MigrateTaskRepositoryResponse,
-  type MountTaskRequest,
-  type MountTaskResponse,
   type PlanTaskRequestRouteRequest,
   type PlanTaskRequestRouteResponse,
+  type PrepareContextTurnRequest,
+  type PrepareContextTurnResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
   type RecordSessionAttachmentsRequest,
   type RecordSessionAttachmentsResponse,
   type SelectedTaskRunResponse,
-  type SnapshotTaskRunEvidenceRequest,
-  type SnapshotTaskRunEvidenceResponse,
   type StartRunRequest,
   type StartRunResponse,
   type VerifyMutationRequest,
@@ -148,16 +140,24 @@ export class ManagedGitContextProcess implements GitContextService {
     return await this.invoke((client) => client.getActiveContext(input));
   }
 
+  async prepareContextTurn(
+    input: PrepareContextTurnRequest,
+  ): Promise<PrepareContextTurnResponse> {
+    return await this.invoke((client) => client.prepareContextTurn(input));
+  }
+
+  async completeContextTurn(
+    input: CompleteContextTurnRequest,
+  ): Promise<CompleteContextTurnResponse> {
+    return await this.invoke((client) => client.completeContextTurn(input));
+  }
+
   async ensureActiveSession(input: EnsureActiveSessionRequest): Promise<EnsureActiveSessionResponse> {
     return await this.invoke((client) => client.ensureActiveSession(input));
   }
 
   async appendConversation(input: AppendConversationRequest): Promise<AppendConversationResponse> {
     return await this.invoke((client) => client.appendConversation(input));
-  }
-
-  async createTask(input: CreateTaskRequest): Promise<CreateTaskResponse> {
-    return await this.invoke((client) => client.createTask(input));
   }
 
   async createTaskRun(input: CreateTaskRunRequest): Promise<SelectedTaskRunResponse> {
@@ -178,24 +178,8 @@ export class ManagedGitContextProcess implements GitContextService {
     return await this.invoke((client) => client.listTasks(input));
   }
 
-  async inventoryTaskMigrations(
-    input: InventoryTaskMigrationsRequest,
-  ): Promise<InventoryTaskMigrationsResponse> {
-    return await this.invoke((client) => client.inventoryTaskMigrations(input));
-  }
-
-  async migrateTaskRepository(
-    input: MigrateTaskRepositoryRequest,
-  ): Promise<MigrateTaskRepositoryResponse> {
-    return await this.invoke((client) => client.migrateTaskRepository(input));
-  }
-
   async getTask(input: GetTaskRequest): Promise<GetTaskResponse> {
     return await this.invoke((client) => client.getTask(input));
-  }
-
-  async mountTask(input: MountTaskRequest): Promise<MountTaskResponse> {
-    return await this.invoke((client) => client.mountTask(input));
   }
 
   async recordSessionAttachments(
@@ -224,16 +208,6 @@ export class ManagedGitContextProcess implements GitContextService {
 
   async verifyMutation(input: VerifyMutationRequest): Promise<VerifyMutationResponse> {
     return await this.invoke((client) => client.verifyMutation(input));
-  }
-
-  async checkpointMutation(input: CheckpointMutationRequest): Promise<CheckpointMutationResponse> {
-    return await this.invoke((client) => client.checkpointMutation(input));
-  }
-
-  async snapshotTaskRunEvidence(
-    input: SnapshotTaskRunEvidenceRequest,
-  ): Promise<SnapshotTaskRunEvidenceResponse> {
-    return await this.invoke((client) => client.snapshotTaskRunEvidence(input));
   }
 
   async finalizeTaskRun(input: FinalizeTaskRunRequest): Promise<FinalizeTaskRunResponse> {

@@ -132,8 +132,8 @@ describe("runtime tool schemas", () => {
     expect(createTask?.inputSchema.properties).not.toHaveProperty("directory");
     const activateTask = tools.find((tool) => tool.name === "git_context_activate_task");
     expect(activateTask?.inputSchema.properties?.["requestDecision"]).toMatchObject({ type: "object" });
+    expect(activateTask?.inputSchema.required).toEqual(["taskId", "reason", "requestDecision"]);
     expect(createTask?.outputSchema.properties?.["workingDirectory"]).toMatchObject({ type: "string" });
-    expect(createTask?.outputSchema.properties).not.toHaveProperty("checkoutPath");
     expect(issues).toEqual([]);
   });
 

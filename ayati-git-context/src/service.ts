@@ -4,15 +4,13 @@ import type {
   AdoptTaskReferenceResponse,
   AcquireMutationAuthorityRequest,
   AcquireMutationAuthorityResponse,
-  CheckpointMutationRequest,
-  CheckpointMutationResponse,
+  CompleteContextTurnRequest,
+  CompleteContextTurnResponse,
   AppendConversationRequest,
   AppendConversationResponse,
   ActivateTaskRunRequest,
   BindTaskAttachmentsRequest,
   BindTaskAttachmentsResponse,
-  CreateTaskRequest,
-  CreateTaskResponse,
   CreateTaskRunRequest,
   EnsureActiveSessionRequest,
   EnsureActiveSessionResponse,
@@ -26,20 +24,14 @@ import type {
   HealthResponse,
   ListTasksRequest,
   ListTasksResponse,
-  InventoryTaskMigrationsRequest,
-  InventoryTaskMigrationsResponse,
-  MigrateTaskRepositoryRequest,
-  MigrateTaskRepositoryResponse,
-  MountTaskRequest,
-  MountTaskResponse,
   PlanTaskRequestRouteRequest,
   PlanTaskRequestRouteResponse,
+  PrepareContextTurnRequest,
+  PrepareContextTurnResponse,
   RecordRunStepRequest,
   RecordRunStepResponse,
   RecordSessionAttachmentsRequest,
   RecordSessionAttachmentsResponse,
-  SnapshotTaskRunEvidenceRequest,
-  SnapshotTaskRunEvidenceResponse,
   StartRunRequest,
   StartRunResponse,
   SelectedTaskRunResponse,
@@ -50,23 +42,17 @@ import type {
 export interface GitContextService {
   getHealth(): Promise<HealthResponse>;
   getActiveContext(input: GetActiveContextRequest): Promise<ActiveContext>;
+  prepareContextTurn(input: PrepareContextTurnRequest): Promise<PrepareContextTurnResponse>;
+  completeContextTurn(input: CompleteContextTurnRequest): Promise<CompleteContextTurnResponse>;
   ensureActiveSession(input: EnsureActiveSessionRequest): Promise<EnsureActiveSessionResponse>;
   appendConversation(input: AppendConversationRequest): Promise<AppendConversationResponse>;
-  createTask(input: CreateTaskRequest): Promise<CreateTaskResponse>;
   createTaskRun(input: CreateTaskRunRequest): Promise<SelectedTaskRunResponse>;
   activateTaskRun(input: ActivateTaskRunRequest): Promise<SelectedTaskRunResponse>;
   planTaskRequestRoute(
     input: PlanTaskRequestRouteRequest,
   ): Promise<PlanTaskRequestRouteResponse>;
   listTasks(input: ListTasksRequest): Promise<ListTasksResponse>;
-  inventoryTaskMigrations(
-    input: InventoryTaskMigrationsRequest,
-  ): Promise<InventoryTaskMigrationsResponse>;
-  migrateTaskRepository(
-    input: MigrateTaskRepositoryRequest,
-  ): Promise<MigrateTaskRepositoryResponse>;
   getTask(input: GetTaskRequest): Promise<GetTaskResponse>;
-  mountTask(input: MountTaskRequest): Promise<MountTaskResponse>;
   recordSessionAttachments(
     input: RecordSessionAttachmentsRequest,
   ): Promise<RecordSessionAttachmentsResponse>;
@@ -80,10 +66,6 @@ export interface GitContextService {
     input: AcquireMutationAuthorityRequest,
   ): Promise<AcquireMutationAuthorityResponse>;
   verifyMutation(input: VerifyMutationRequest): Promise<VerifyMutationResponse>;
-  checkpointMutation(input: CheckpointMutationRequest): Promise<CheckpointMutationResponse>;
-  snapshotTaskRunEvidence(
-    input: SnapshotTaskRunEvidenceRequest,
-  ): Promise<SnapshotTaskRunEvidenceResponse>;
   finalizeTaskRun(input: FinalizeTaskRunRequest): Promise<FinalizeTaskRunResponse>;
   finalizeSessionRun(input: FinalizeSessionRunRequest): Promise<FinalizeSessionRunResponse>;
   startRun(input: StartRunRequest): Promise<StartRunResponse>;

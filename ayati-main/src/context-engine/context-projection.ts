@@ -51,7 +51,6 @@ export function buildContextEngineProjection(
       : {}),
     taskCandidates: (active.taskCandidates ?? []).map((task) => ({
       taskId: task.taskId,
-      layoutVersion: task.layoutVersion,
       title: task.title,
       objective: task.objective,
       status: task.status,
@@ -75,7 +74,6 @@ export function buildContextEngineProjection(
             runId: run!.runId,
           },
           task: {
-            ...(activeTask.checkoutPath ? { checkoutPath: activeTask.checkoutPath } : {}),
             workingDirectory: activeTask.workingDirectory,
             ref: "refs/heads/" + activeTask.task.branch,
             workId: activeTask.task.taskId,

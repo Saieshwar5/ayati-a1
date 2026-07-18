@@ -51,8 +51,8 @@ function pendingGitContext(
   routingStatus: "unbound" | "clarifying",
   focus: ContextEngineMachineContext["focus"] = {
     status: "active",
-    ref: "refs/heads/work/W-20260630-0001-website",
-    workId: "W-20260630-0001",
+    ref: "refs/heads/task/T-20260630-0001-website",
+    workId: "T-20260630-0001",
   },
 ): ContextEngineMachineContext {
   return {

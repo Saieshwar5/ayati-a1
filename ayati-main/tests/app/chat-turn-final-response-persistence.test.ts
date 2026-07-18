@@ -42,6 +42,22 @@ describe("chat final-response persistence", () => {
       message: "HTML defines the structure of a webpage.",
     }));
   });
+
+  it("does not complete a direct response when durable persistence fails", async () => {
+    const contextRuntime = contextRuntimeFixture();
+    contextRuntime.recordAssistantMessage.mockRejectedValueOnce(
+      new Error("assistant persistence failed"),
+    );
+    const runtime = createChatTurnRuntime({
+      chatContextRuntime: contextRuntime.runtime,
+      now: () => new Date("2026-07-14T10:00:00.000Z"),
+    });
+
+    await expect(completeContextRun(runtime, completedDirectResult())).rejects.toThrow(
+      "assistant persistence failed",
+    );
+    expect(contextRuntime.finalizeSessionRun).not.toHaveBeenCalled();
+  });
 });
 
 async function completeContextRun(

@@ -886,12 +886,12 @@ function buildGitContextFixture(count: number, timestamp: string): ContextEngine
     },
     focus: {
       status: "active",
-      ref: "refs/heads/work/W-20260617-0001-runtime-performance-analysis",
-      workId: "W-20260617-0001",
+      ref: "refs/heads/main",
+      workId: "T-20260617-0001",
     },
     task: {
-      ref: "refs/heads/work/W-20260617-0001-runtime-performance-analysis",
-      workId: "W-20260617-0001",
+      ref: "refs/heads/main",
+      workId: "T-20260617-0001",
       title: "Runtime performance analysis",
       objective: "Measure non-LLM runtime performance paths.",
       status: "active",
@@ -910,7 +910,7 @@ function buildGitContextFixture(count: number, timestamp: string): ContextEngine
       recentRuns: [{
         schemaVersion: 1,
         runId: "R-20260617-0001",
-        workId: "W-20260617-0001",
+        workId: "T-20260617-0001",
         status: "completed",
         summary: "Located benchmark targets.",
         completed: ["Located benchmark targets."],

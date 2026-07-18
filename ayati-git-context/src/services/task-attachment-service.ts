@@ -98,7 +98,7 @@ export class TaskAttachmentService {
       throw invalid("Attachment binding requires the matching active task run.");
     }
     const task = readTaskInitialization(this.options.database, input.taskId);
-    if (!task?.head || task.layoutVersion !== "simple_repository_v1") {
+    if (!task?.head) {
       return executeIdempotent({
         database: this.options.database,
         requestId: input.requestId,
@@ -213,8 +213,7 @@ export class TaskAttachmentService {
     });
     if (completed) return completed;
     const authority = readMutationAuthority(this.options.database, input.authorityId);
-    if (!authority || authority.repositoryLayout !== "simple_repository_v1"
-      || authority.status !== "active" || !authority.taskRequestId) {
+    if (!authority || authority.status !== "active" || !authority.taskRequestId) {
       throw invalid("Reference adoption requires an active V1 mutation authority.");
     }
     if (hasExpired(authority.expiresAt, input.at)) {

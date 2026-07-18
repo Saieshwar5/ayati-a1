@@ -29,8 +29,27 @@ export class ActiveContextCache {
     return [...this.entries.keys()].find((key) => key.startsWith(prefix))?.slice(prefix.length);
   }
 
-  clear(): void {
+  latest(sessionId: string): ActiveContext | undefined {
+    const prefix = sessionId + ":";
+    const entry = [...this.entries.entries()].find(([key]) => key.startsWith(prefix));
+    return entry?.[1];
+  }
+
+  invalidate(sessionId: string): number {
+    let removed = 0;
+    for (const key of this.entries.keys()) {
+      if (key.startsWith(sessionId + ":")) {
+        this.entries.delete(key);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
+  clear(): number {
+    const removed = this.entries.size;
     this.entries.clear();
+    return removed;
   }
 }
 
@@ -81,7 +100,6 @@ export function activeContextRevision(input: {
       : null,
     taskCandidates: input.taskCandidates.map((task) => ({
       taskId: task.taskId,
-      layoutVersion: task.layoutVersion,
       status: task.status,
       lifecycleStatus: task.lifecycleStatus ?? null,
       repositoryHealth: task.repositoryHealth ?? null,

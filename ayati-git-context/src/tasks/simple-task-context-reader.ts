@@ -39,7 +39,6 @@ export async function readSimpleTaskContext(
   return {
     task: {
       taskId: validation.taskId,
-      layoutVersion: task.layoutVersion,
       repositoryPath: validation.repositoryPath,
       workingPath: validation.repositoryPath,
       branch: validation.branch,

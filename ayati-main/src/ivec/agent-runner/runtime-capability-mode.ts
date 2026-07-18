@@ -38,7 +38,6 @@ export interface RuntimeCapabilityMode {
   allowedActions: string[];
   blockedCapabilities: string[];
   next: string;
-  rules?: string[];
   repairCode?: RepairCode;
   allowToolLoading: boolean;
   routingSuppressedForConversation?: boolean;
@@ -64,7 +63,6 @@ export interface RuntimeCapabilityPromptContext {
   allowed: string[];
   blocked: string[];
   next: string;
-  rules?: string[];
   repairCode?: RepairCode;
   routingWindow?: RuntimeCapabilityRoutingWindow;
 }
@@ -87,14 +85,6 @@ export interface RuntimeCapabilityToolSummary {
   visibleToolCount: number;
   selectedToolCount: number;
 }
-
-const FRESH_SESSION_ROUTING_RULES = [
-  "Create a task only when the current user request has a concrete deliverable and enough detail to begin work now.",
-  "Do not create a task for early conversation, brainstorming, vague intent, preferences, or discovery. Reply directly with one short clarifying question.",
-  "A concrete deliverable means the user has specified what to make, change, analyze, or produce, and the expected output is clear enough to start without another user answer.",
-  "For clear durable work, inspect the task candidates already present in context. Activate the exact matching task with an explicit continue-or-create request decision, or create one managed V1 task with title, objective, and reason when the durable workstream is distinct.",
-  "Never print task metadata JSON as the assistant response. Put task metadata in the native tool call arguments.",
-];
 
 export function detectRuntimeCapabilityMode(input: {
   state: LoopState;
@@ -143,8 +133,8 @@ export function detectRuntimeCapabilityMode(input: {
       ? []
       : [...GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES];
     const freshBlockedCapabilities = [
-      "workspace_mutation_until_task_promotion",
-      "external_mutation_until_task_promotion",
+      "workspace_mutation_until_task_binding",
+      "external_mutation_until_task_binding",
       "task_activation",
       ...(routingSuppressedForConversation ? ["task_routing_for_conversation_only_turn"] : []),
     ];
@@ -161,12 +151,11 @@ export function detectRuntimeCapabilityMode(input: {
         ],
         blockedCapabilities: [
           ...freshBlockedCapabilities,
-          "destructive_tools_until_task_promotion",
+          "destructive_tools_until_task_binding",
         ],
         next: routingSuppressedForConversation
           ? "Answer directly or use read-only tools; this turn has no durable task-routing intent."
           : "Use read-only tools for inspection. Before durable mutation, search/activate an existing task or create a new task; ask a short clarification directly if ownership is unclear.",
-        rules: FRESH_SESSION_ROUTING_RULES,
         repairCode: "R_FRESH_SESSION_NEEDS_TASK",
         allowToolLoading: true,
       };
@@ -185,7 +174,6 @@ export function detectRuntimeCapabilityMode(input: {
       next: routingSuppressedForConversation
         ? "Answer directly or use read-only tools; this turn has no durable task-routing intent."
         : "Use read-only tools for inspection. Before durable mutation, create or activate a task, ask a short clarification directly, or reply directly for non-task chat.",
-      rules: FRESH_SESSION_ROUTING_RULES,
       repairCode: "R_FRESH_SESSION_NEEDS_TASK",
       allowToolLoading: true,
     };
@@ -267,7 +255,6 @@ export function buildRuntimeCapabilityPromptContext(mode: RuntimeCapabilityMode)
     allowed: mode.allowedActions,
     blocked: mode.blockedCapabilities,
     next: mode.next,
-    ...(mode.rules ? { rules: mode.rules } : {}),
     ...(mode.repairCode ? { repairCode: mode.repairCode } : {}),
     ...(mode.routingWindow ? { routingWindow: mode.routingWindow } : {}),
   };

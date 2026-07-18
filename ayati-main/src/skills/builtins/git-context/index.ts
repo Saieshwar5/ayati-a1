@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { GitContextService, RunWorkStateInput } from "ayati-git-context";
+import type {
+  GitContextService,
+  RunWorkStateInput,
+  SelectedTaskRunResponse,
+} from "ayati-git-context";
 import { buildContextEngineProjection } from "../../../context-engine/index.js";
 import type { SkillDefinition, ToolDefinition, ToolExecutionContext, ToolResult } from "../../types.js";
 import {
@@ -97,7 +101,7 @@ function createTaskTool(deps: GitContextSkillDeps): ToolDefinition {
           taskId: selected.task.taskId,
           at: new Date().toISOString(),
         });
-        return routingSuccess(service, parsed.sessionId, selected.task.taskId, selected.run.runId, "created");
+        return routingSuccess(service, parsed.sessionId, selected, "created");
       } catch (error) {
         return routingError(errorMessage(error));
       }
@@ -108,15 +112,15 @@ function createTaskTool(deps: GitContextSkillDeps): ToolDefinition {
 function activateTaskTool(service: GitContextService): ToolDefinition {
   return {
     name: "git_context_activate_task",
-    description: "Select an existing task. T-* tasks require an explicit decision to continue the current request or create a new active request; W-* tasks use the legacy compatibility reader.",
+    description: "Select an existing V1 task repository and explicitly continue its unfinished request or create a new active request.",
     inputSchema: {
       type: "object",
       properties: {
-        taskId: { type: "string", pattern: "^[TW]-[0-9]{8}-[0-9]{4}$", description: "Exact task id from current task candidates." },
+        taskId: { type: "string", pattern: "^T-[0-9]{8}-[0-9]{4}$", description: "Exact V1 task id from current task candidates." },
         reason: { type: "string", description: "Why the current request belongs to this task and its resources." },
         requestDecision: {
           type: "object",
-          description: "Required for T-* tasks. Continue the exact unfinished request, or create one materially separate request in the same task.",
+          description: "Continue the exact unfinished request, or create one materially separate request in the same V1 task.",
           properties: {
             kind: { enum: ["continue", "create"] },
             requestId: { type: "string", pattern: "^R-[0-9]{4}$" },
@@ -129,7 +133,7 @@ function activateTaskTool(service: GitContextService): ToolDefinition {
           additionalProperties: false,
         },
       },
-      required: ["taskId", "reason"],
+      required: ["taskId", "reason", "requestDecision"],
       additionalProperties: false,
     },
     outputSchema: routingOutputSchema(),
@@ -158,7 +162,7 @@ function activateTaskTool(service: GitContextService): ToolDefinition {
           trigger: conversationTrigger(active, conversation.conversationId),
           workState: active.run?.workState ?? initialWorkState(),
           taskId: parsed.taskId,
-          ...(parsed.route ? { route: parsed.route } : {}),
+          route: parsed.route,
           at: new Date().toISOString(),
         });
         await service.bindTaskAttachments({
@@ -169,7 +173,7 @@ function activateTaskTool(service: GitContextService): ToolDefinition {
           taskId: selected.task.taskId,
           at: new Date().toISOString(),
         });
-        return routingSuccess(service, parsed.sessionId, selected.task.taskId, selected.run.runId, "activated");
+        return routingSuccess(service, parsed.sessionId, selected, "activated");
       } catch (error) {
         return routingError(errorMessage(error));
       }
@@ -180,8 +184,7 @@ function activateTaskTool(service: GitContextService): ToolDefinition {
 async function routingSuccess(
   service: GitContextService,
   sessionId: string,
-  taskId: string,
-  runId: string,
+  selected: SelectedTaskRunResponse,
   mode: "created" | "activated",
 ): Promise<ToolResult> {
   const active = await service.getActiveContext({ sessionId });
@@ -193,11 +196,18 @@ async function routingSuccess(
     structuredContent: {
       status: "ready",
       sessionId,
-      taskId,
+      taskId: selected.task.taskId,
       branch: task.task.branch,
       mode,
-      runId,
+      runId: selected.run.runId,
       workingDirectory: task.workingDirectory,
+      taskHead: selected.task.head,
+      taskCreated: selected.taskCreated,
+      requestDecision: selected.taskRequestDecision,
+      taskRequestId: selected.run.taskRequestId,
+      taskRequestStatus: selected.context.currentRequest?.status,
+      taskRequestCreated: selected.taskRequestCreated,
+      sessionRunBound: selected.sessionRunBound,
       harnessContext: {
         contextEngine: buildContextEngineProjection(active),
       },
@@ -216,9 +226,30 @@ function routingOutputSchema() {
       mode: { enum: ["created", "activated"] },
       runId: { type: "string" },
       workingDirectory: { type: "string" },
+      taskHead: { type: "string" },
+      taskCreated: { type: "boolean" },
+      requestDecision: { enum: ["initial", "continue", "create"] },
+      taskRequestId: { type: "string" },
+      taskRequestStatus: { enum: ["queued", "active", "blocked", "done", "dropped"] },
+      taskRequestCreated: { type: "boolean" },
+      sessionRunBound: { type: "boolean" },
       harnessContext: { type: "object" },
     },
-    required: ["status", "sessionId", "taskId", "branch", "mode", "runId", "workingDirectory", "harnessContext"],
+    required: [
+      "status",
+      "sessionId",
+      "taskId",
+      "branch",
+      "mode",
+      "runId",
+      "workingDirectory",
+      "taskHead",
+      "taskCreated",
+      "requestDecision",
+      "taskRequestCreated",
+      "sessionRunBound",
+      "harnessContext",
+    ],
     additionalProperties: false,
   };
 }
@@ -263,20 +294,20 @@ function parseActivateInput(input: unknown, context?: ToolExecutionContext): {
   sessionId: string;
   taskId: string;
   reason: string;
-  route?: TaskRequestRoute;
+  route: TaskRequestRoute;
 } | ToolResult {
   const record = objectInput(input);
   const sessionId = context?.sessionId?.trim();
   const taskId = stringField(record, "taskId");
   const reason = stringField(record, "reason");
-  if (!sessionId || !taskId || !/^[TW]-\d{8}-\d{4}$/.test(taskId) || !reason) {
-    return routingError("sessionId, a valid taskId, and reason are required.");
+  if (!sessionId || !taskId || !/^T-\d{8}-\d{4}$/.test(taskId) || !reason) {
+    return routingError("sessionId, a valid V1 T-* taskId, and reason are required.");
   }
   const route = parseRequestDecision(record["requestDecision"], reason);
-  if (taskId.startsWith("T-") && !route) {
+  if (!route) {
     return routingError("T-* task activation requires requestDecision=continue or requestDecision=create with complete request details.");
   }
-  return { sessionId, taskId, reason, ...(route ? { route } : {}) };
+  return { sessionId, taskId, reason, route };
 }
 
 function parseRequestDecision(value: unknown, reason: string): TaskRequestRoute | undefined {

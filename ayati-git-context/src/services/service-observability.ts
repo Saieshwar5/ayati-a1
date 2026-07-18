@@ -84,6 +84,8 @@ export class GitContextServiceObservability {
     runId?: string;
     taskId?: string;
     previousRevision?: string;
+    scope?: "session" | "all";
+    invalidatedEntries?: number;
   }): void {
     if (input.sessionId) this.cacheCounters(input.sessionId).invalidations += 1;
     this.emit({
@@ -95,6 +97,8 @@ export class GitContextServiceObservability {
       outcome: "succeeded",
       data: {
         reason,
+        scope: input.scope ?? (input.sessionId ? "session" : "all"),
+        invalidatedEntries: input.invalidatedEntries ?? 0,
         ...(input.previousRevision ? { previousContextRevision: input.previousRevision } : {}),
       },
     });
@@ -103,7 +107,7 @@ export class GitContextServiceObservability {
   taskSelected(mode: "created" | "activated", result: SelectedTaskRunResponse): void {
     this.emit({
       level: "info",
-      event: result.runPromoted ? "run_promoted" : "task_run_started",
+      event: result.sessionRunBound ? "session_run_bound" : "task_run_started",
       sessionId: result.run.sessionId,
       conversationId: result.run.conversationId,
       runId: result.run.runId,
@@ -111,13 +115,18 @@ export class GitContextServiceObservability {
       outcome: "succeeded",
       data: {
         mode,
-        fromClass: result.runPromoted ? "session" : "none",
+        fromClass: result.sessionRunBound ? "session" : "none",
         toClass: "task",
-        runIdPreserved: result.runPromoted,
+        runIdPreserved: result.sessionRunBound,
+        sessionRunBound: result.sessionRunBound,
         taskHead: result.task.head,
-        checkoutPath: result.mount?.checkoutPath,
-        workingPath: result.task.workingPath,
-        mountCreated: result.mountCreated,
+        workingDirectory: result.context.workingDirectory,
+        branch: result.task.branch,
+        taskCreated: result.taskCreated,
+        taskRequestDecision: result.taskRequestDecision,
+        taskRequestId: result.run.taskRequestId,
+        taskRequestStatus: result.context.currentRequest?.status,
+        taskRequestCreated: result.taskRequestCreated,
       },
     });
   }

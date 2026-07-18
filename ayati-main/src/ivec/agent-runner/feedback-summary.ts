@@ -259,11 +259,7 @@ function readContextSessionMeta(
   if (session.meta) {
     return session.meta;
   }
-  const legacy = session as unknown as { sessionId?: string; assetCount?: number };
-  return {
-    sessionId: legacy.sessionId ?? "unknown",
-    assetCount: legacy.assetCount ?? session.attachments?.count ?? 0,
-  };
+  throw new Error("Git Context session metadata is required for feedback summaries.");
 }
 
 export function fingerprintPayload(value: unknown): FeedbackPayloadFingerprint {

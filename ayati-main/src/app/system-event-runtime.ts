@@ -536,6 +536,11 @@ class AppSystemEventRuntime implements SystemEventRuntime {
           taskId: routed.taskId,
           runId: routed.runId,
           conversationRefs: routed.conversationRefs,
+          taskLifecycle: routedTaskLifecycle(routed, {
+            status: "started",
+            outcome: taskOutcome(result),
+            validation: taskValidation(result),
+          }),
         }),
       },
     });
@@ -568,6 +573,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
             taskId: routed.taskId,
             runId: routed.runId,
             conversationRefs: routed.conversationRefs,
+            taskLifecycle: routedTaskLifecycle(routed, { status: "failed" }),
           }),
         },
       });
@@ -585,6 +591,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         taskId: completed.taskId,
         taskCommit: completed.taskCommit,
         ref: completed.ref,
+        taskLifecycle: completedTaskLifecycle(completed),
         contextEngine: buildContextEngineFeedbackSummary({
           context: result.harnessContext?.contextEngine,
           finalizationStatus: "committed",
@@ -594,6 +601,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
           ref: completed.ref,
           commit: completed.taskCommit,
           conversationRefs: routed.conversationRefs,
+          taskLifecycle: completedTaskLifecycle(completed),
         }),
       },
     });
@@ -900,6 +908,79 @@ function formatGitContextAmbiguityMessage(
     .map((candidate) => `- ${candidate.taskId}: ${candidate.title}`)
     .join("\n");
   return `I found multiple matching tasks for the system event. Please mention the task id to continue.\n${candidates}`;
+}
+
+function routedTaskLifecycle(
+  routed: Extract<GitContextRoutedTurn, { status: "ready" }>,
+  finalization: {
+    status: "started" | "failed";
+    outcome?: "done" | "incomplete" | "failed" | "blocked" | "needs_user_input";
+    validation?: "passed" | "failed" | "not_run";
+  },
+) {
+  return {
+    repository: {
+      taskId: routed.taskId,
+      workingDirectory: routed.workingDirectory,
+      branch: routed.branch,
+      selectionMode: routed.mode,
+      taskCreated: routed.taskCreated,
+      headBefore: routed.taskHead,
+    },
+    request: {
+      decision: routed.requestDecision,
+      requestId: routed.taskRequestId,
+      status: routed.taskRequestStatus,
+      created: routed.taskRequestCreated,
+    },
+    run: {
+      runId: routed.runId,
+      startedAs: routed.sessionRunBound ? "session" as const : "none" as const,
+      selectedAs: "task" as const,
+      sessionRunBound: routed.sessionRunBound,
+    },
+    finalization,
+  };
+}
+
+function completedTaskLifecycle(
+  completed: NonNullable<Awaited<ReturnType<GitContextRuntime["completeTaskRun"]>>>,
+) {
+  return {
+    repository: {
+      taskId: completed.taskId,
+      workingDirectory: completed.workingDirectory,
+      branch: "main",
+      headBefore: completed.taskHeadBefore,
+      headAfter: completed.taskHeadAfter,
+    },
+    request: { requestId: completed.taskRequestId },
+    run: { runId: completed.runId, selectedAs: "task" as const },
+    finalization: {
+      status: "committed" as const,
+      outcome: completed.outcome,
+      validation: completed.validation,
+      commit: completed.taskCommit,
+      commitCreated: completed.taskCommitCreated,
+      headBefore: completed.taskHeadBefore,
+      headAfter: completed.taskHeadAfter,
+    },
+  };
+}
+
+function taskOutcome(
+  result: AgentLoopResult,
+): "done" | "incomplete" | "failed" | "blocked" | "needs_user_input" {
+  if (result.workState?.status === "done") return "done";
+  if (result.status === "failed") return "failed";
+  if (result.workState?.status === "needs_user_input") return "needs_user_input";
+  if (result.workState?.status === "blocked") return "blocked";
+  return "incomplete";
+}
+
+function taskValidation(result: AgentLoopResult): "passed" | "failed" | "not_run" {
+  if (result.workState?.status === "done") return "passed";
+  return result.status === "failed" ? "failed" : "not_run";
 }
 
 function optionalString(value: unknown): string | undefined {

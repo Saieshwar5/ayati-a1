@@ -79,6 +79,17 @@ export async function main(): Promise<void> {
 
   let content: Awaited<ReturnType<typeof createContentRuntime>> | null = null;
   const wsServer = new WsServer({
+    onReplyRendered: (transportClientId, acknowledgement) => {
+      feedbackLedger.record({
+        clientId: CLIENT_ID,
+        stage: "client",
+        event: "reply_rendered",
+        data: {
+          transportClientId,
+          ...acknowledgement,
+        },
+      });
+    },
     onMessage: (transportClientId, data) => {
       const workspaceEvent = parseWorkspaceEventMessage(data);
       if (workspaceEvent) {

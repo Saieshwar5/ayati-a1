@@ -97,8 +97,6 @@ describe("simple task single-commit finalization", () => {
         commit_created: 1,
         commit_head: finalized.taskHeadAfter,
       });
-      expect(fixture.database.prepare("SELECT COUNT(*) AS count FROM session_task_mounts").get())
-        .toEqual({ count: 0 });
       expect((await fixture.service.getActiveContext({ sessionId: fixture.session.sessionId }))
         .session?.session.head).toBe(sessionHead);
     },

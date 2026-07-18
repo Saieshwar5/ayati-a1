@@ -126,6 +126,65 @@ describe("WsServer", () => {
     await closeClient(client);
   });
 
+  it("accepts a rendered acknowledgement only for a reply sent to that client", async () => {
+    const port = getPort();
+    let capturedClientId = "";
+    const onMessage = vi.fn((clientId: string) => {
+      capturedClientId = clientId;
+    });
+    const onReplyRendered = vi.fn();
+    server = new WsServer({ port, onMessage, onReplyRendered });
+    await server.start();
+
+    const client = await connectClient(port);
+    const chatReceived = new Promise<void>((resolve) => {
+      onMessage.mockImplementation((clientId: string) => {
+        capturedClientId = clientId;
+        resolve();
+      });
+    });
+    client.send(JSON.stringify({ type: "chat", content: "hello" }));
+    await chatReceived;
+
+    const replyReceived = new Promise<void>((resolve) => {
+      client.once("message", () => resolve());
+    });
+    server.send(capturedClientId, {
+      type: "reply_done",
+      turnId: "turn-rendered-1",
+      content: "Hello back.",
+      commitStatus: "skipped",
+    });
+    await replyReceived;
+
+    const acknowledgementReceived = new Promise<void>((resolve) => {
+      onReplyRendered.mockImplementation(() => resolve());
+    });
+    client.send(JSON.stringify({
+      type: "reply_rendered",
+      turnId: "turn-rendered-1",
+      renderedAt: "2026-07-18T08:30:00.000Z",
+    }));
+    await acknowledgementReceived;
+
+    expect(onReplyRendered).toHaveBeenCalledWith(capturedClientId, {
+      turnId: "turn-rendered-1",
+      renderedAt: "2026-07-18T08:30:00.000Z",
+      receivedAt: expect.any(String),
+      latencyMs: expect.any(Number),
+    });
+
+    client.send(JSON.stringify({
+      type: "reply_rendered",
+      turnId: "turn-rendered-1",
+      renderedAt: "2026-07-18T08:30:01.000Z",
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(onReplyRendered).toHaveBeenCalledTimes(1);
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    await closeClient(client);
+  });
+
   it("should reject invalid JSON and send an error back to the client", async () => {
     const port = getPort();
     const onMessage = vi.fn();

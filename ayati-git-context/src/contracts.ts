@@ -1,4 +1,4 @@
-export const GIT_CONTEXT_PROTOCOL_VERSION = 23;
+export const GIT_CONTEXT_PROTOCOL_VERSION = 32;
 
 export type SessionId = string;
 export type TaskId = string;
@@ -7,10 +7,6 @@ export type ConversationId = string;
 
 export type RunClass = "session" | "task";
 export type ConversationRole = "user" | "assistant" | "system_event";
-
-export type TaskRepositoryLayout =
-  | "legacy_independent_v0"
-  | "simple_repository_v1";
 
 export type GitContextCapability =
   | "health"
@@ -39,7 +35,6 @@ export interface SessionRef {
 
 export interface TaskRef {
   taskId: TaskId;
-  layoutVersion: TaskRepositoryLayout;
   repositoryPath: string;
   workingPath: string;
   branch: string;
@@ -55,21 +50,6 @@ export interface TaskCatalogEntry extends TaskRef {
   createdSessionId: SessionId;
   createdAt: string;
   updatedAt: string;
-}
-
-export type TaskMountStatus = "initializing" | "ready" | "recovery_required" | "removed";
-
-export interface TaskMountRef {
-  sessionId: SessionId;
-  taskId: TaskId;
-  /** Session-owned submodule checkout used only to persist the native gitlink. */
-  checkoutPath: string;
-  /** Stable user-facing checkout where task tools actually work. */
-  workingPath: string;
-  canonicalRepository: string;
-  branch: string;
-  mountedHead: string;
-  status: TaskMountStatus;
 }
 
 export interface MutationTarget {
@@ -93,13 +73,8 @@ export interface MutationAuthority {
   sessionId: SessionId;
   runId: RunId;
   taskId: TaskId;
-  repositoryLayout: TaskRepositoryLayout;
   repositoryPath: string;
   taskRequestId?: string;
-  /** Legacy session-mounted checkout. Omitted for simple_repository_v1. */
-  checkoutPath?: string;
-  /** Legacy bare repository. Omitted for simple_repository_v1. */
-  canonicalRepository?: string;
   branch: string;
   beforeHead: string;
   targets: ResolvedMutationTarget[];
@@ -132,13 +107,21 @@ export interface ConversationRef {
   status: "active" | "closed" | "committed";
 }
 
+export interface ConversationPersistenceState {
+  database: "saved";
+  materialization: "not_requested" | "pending" | "materialized" | "failed";
+  git: "not_committed" | "committed";
+  plannedPath?: string;
+  materializedPath?: string;
+  contentHash?: string;
+  committedSha?: string;
+}
+
 export interface ConversationMessage {
   messageId: string;
   conversationId: ConversationId;
   sessionSequence: number;
   segmentSequence: number;
-  /** @deprecated Use segmentSequence. */
-  sequence: number;
   role: ConversationRole;
   content: string;
   at: string;
@@ -263,8 +246,6 @@ export interface PreviousSessionCarryover {
 
 export interface TaskContextProjection {
   task: TaskRef;
-  /** Runtime filesystem authority. Kept out of the model prompt. */
-  checkoutPath?: string;
   /** User-facing task directory. May be shown to the model and user. */
   workingDirectory: string;
   title: string;
@@ -305,7 +286,6 @@ export interface TaskContextProjection {
 
 export interface TaskCandidate {
   taskId: TaskId;
-  layoutVersion: TaskRepositoryLayout;
   title: string;
   objective: string;
   status: TaskStatus;
@@ -383,6 +363,40 @@ export interface EnsureActiveSessionResponse {
   created: boolean;
 }
 
+export interface PrepareContextTurnRequest extends GitContextRequestEnvelope {
+  date: string;
+  timezone: string;
+  agentId: string;
+  role: "user" | "system_event";
+  content: string;
+  at: string;
+}
+
+export interface PrepareContextTurnResponse {
+  session: SessionRef;
+  sessionCreated: boolean;
+  conversation: ConversationRef;
+  message: ConversationMessage;
+  persistence: ConversationPersistenceState;
+  context: ActiveContext;
+}
+
+export interface CompleteContextTurnRequest extends GitContextRequestEnvelope {
+  sessionId: SessionId;
+  conversationId: ConversationId;
+  userMessageId: string;
+  assistantContent: string;
+  at: string;
+}
+
+export interface CompleteContextTurnResponse {
+  conversation: ConversationRef;
+  message: ConversationMessage;
+  persistence: ConversationPersistenceState;
+  contextRevision: string;
+  pendingDigest: string;
+}
+
 export type TaskPlacement =
   | {
       mode: "managed";
@@ -393,19 +407,6 @@ export type TaskPlacement =
       workingDirectory: string;
     };
 
-export interface CreateTaskRequest extends GitContextRequestEnvelope {
-  sessionId: SessionId;
-  title: string;
-  objective: string;
-  placement: TaskPlacement;
-  at: string;
-}
-
-export interface CreateTaskResponse {
-  task: TaskCatalogEntry;
-  created: boolean;
-}
-
 export interface ListTasksRequest {
   query?: string;
   limit?: number;
@@ -415,72 +416,14 @@ export interface ListTasksResponse {
   tasks: TaskCandidate[];
 }
 
-export type TaskMigrationCohort =
-  | "already_v1"
-  | "managed_clean"
-  | "external_path"
-  | "dirty"
-  | "missing_checkout"
-  | "diverged"
-  | "busy"
-  | "invalid";
-
-export interface TaskMigrationInventory {
-  taskId: TaskId;
-  layoutVersion: TaskRepositoryLayout;
-  cohort: TaskMigrationCohort;
-  migrationStatus: "not_required" | "pending" | "in_progress" | "completed" | "blocked";
-  catalogHead: string;
-  workingPath: string;
-  workingHead?: string;
-  legacyRepositoryPath?: string;
-  legacyHead?: string;
-  dirtyPaths: string[];
-  blockers: string[];
-}
-
-export interface InventoryTaskMigrationsRequest {
-  taskId?: TaskId;
-}
-
-export interface InventoryTaskMigrationsResponse {
-  tasks: TaskMigrationInventory[];
-}
-
-export interface MigrateTaskRepositoryRequest extends GitContextRequestEnvelope {
-  taskId: TaskId;
-  expectedTaskHead: string;
-  at: string;
-}
-
-export interface MigrateTaskRepositoryResponse {
-  task: TaskCatalogEntry;
-  migrated: boolean;
-  baseHead: string;
-  migrationCommit: string;
-  legacyRepositoryPath: string;
-}
-
 export interface GetTaskRequest {
   taskId: TaskId;
 }
 
 export interface GetTaskResponse {
   task: TaskCatalogEntry;
-  /** Durable task context. Present for simple_repository_v1 tasks. */
+  /** Durable task context. */
   context?: TaskContextProjection;
-}
-
-export interface MountTaskRequest extends GitContextRequestEnvelope {
-  sessionId: SessionId;
-  taskId: TaskId;
-  expectedTaskHead?: string;
-  at: string;
-}
-
-export interface MountTaskResponse {
-  mount: TaskMountRef;
-  created: boolean;
 }
 
 export interface SelectTaskRunInput {
@@ -501,8 +444,8 @@ export interface CreateTaskRunRequest extends GitContextRequestEnvelope, SelectT
 export interface ActivateTaskRunRequest extends GitContextRequestEnvelope, SelectTaskRunInput {
   taskId: TaskId;
   expectedTaskHead?: string;
-  /** Required when selecting a simple_repository_v1 task. Ignored by the legacy reader. */
-  route?: TaskRequestRoute;
+  /** Explicitly continue the active request or create a new request in this V1 task. */
+  route: TaskRequestRoute;
 }
 
 export type TaskRequestRoute =
@@ -548,14 +491,12 @@ export interface PlanTaskRequestRouteResponse {
 
 export interface SelectedTaskRunResponse {
   task: TaskCatalogEntry;
-  repositoryLayout: TaskRepositoryLayout;
-  /** Legacy session submodule. V1 selections work directly in task.workingPath. */
-  mount?: TaskMountRef;
   run: RunRef;
   context: TaskContextProjection;
   taskCreated: boolean;
-  mountCreated: boolean;
-  runPromoted: boolean;
+  sessionRunBound: boolean;
+  taskRequestDecision: "initial" | "continue" | "create";
+  taskRequestCreated: boolean;
 }
 
 export interface RecordSessionAttachmentsRequest extends GitContextRequestEnvelope {
@@ -618,7 +559,7 @@ export interface AcquireMutationAuthorityRequest extends GitContextRequestEnvelo
   sessionId: SessionId;
   runId: RunId;
   taskId: TaskId;
-  /** Required for simple_repository_v1 and must name its active request. */
+  /** Required for task runs and must name the active request. */
   taskRequestId?: string;
   expectedTaskHead?: string;
   targets: MutationTarget[];
@@ -642,44 +583,6 @@ export interface VerifyMutationResponse {
   verified: boolean;
   outcome: "verified_changes" | "no_changes" | "unexpected_changes" | "failed_with_changes";
   provenance: MutationProvenance;
-}
-
-export interface CheckpointMutationRequest extends GitContextRequestEnvelope {
-  authorityId: string;
-  lockToken: string;
-  purpose: string;
-  conversationId: ConversationId;
-  conversationHash: string;
-  at: string;
-}
-
-export interface CheckpointMutationResponse {
-  authorityId: string;
-  taskId: TaskId;
-  runId: RunId;
-  beforeHead: string;
-  checkpointHead: string;
-  stagedPaths: string[];
-  sessionGitlinkUpdated: boolean;
-}
-
-export interface SnapshotTaskRunEvidenceRequest extends GitContextRequestEnvelope {
-  sessionId: SessionId;
-  runId: RunId;
-  taskId: TaskId;
-  at: string;
-}
-
-export interface SnapshotTaskRunEvidenceResponse {
-  runId: RunId;
-  taskId: TaskId;
-  runFile: string;
-  stepsFile: string;
-  stepCount: number;
-  taskHeadBefore: string;
-  taskHeadAfter: string;
-  sessionHeadUnchanged: boolean;
-  staged: boolean;
 }
 
 export type TaskRunOutcome =
@@ -810,13 +713,6 @@ export function isRequestEnvelope(
   return value["expectedHead"] === undefined || isNonEmptyString(value["expectedHead"]);
 }
 
-export function isMigrateTaskRepositoryRequest(value: unknown): value is MigrateTaskRepositoryRequest {
-  return isRequestEnvelope(value)
-    && isNonEmptyString(value["taskId"])
-    && isNonEmptyString(value["expectedTaskHead"])
-    && isNonEmptyString(value["at"]);
-}
-
 export function isEnsureActiveSessionRequest(value: unknown): value is EnsureActiveSessionRequest {
   if (!isRequestEnvelope(value)) {
     return false;
@@ -825,6 +721,29 @@ export function isEnsureActiveSessionRequest(value: unknown): value is EnsureAct
     && isNonEmptyString(value["timezone"])
     && isNonEmptyString(value["agentId"])
     && optionalNonEmptyString(value["at"]);
+}
+
+export function isPrepareContextTurnRequest(value: unknown): value is PrepareContextTurnRequest {
+  if (!isRequestEnvelope(value)) {
+    return false;
+  }
+  return isNonEmptyString(value["date"])
+    && isNonEmptyString(value["timezone"])
+    && isNonEmptyString(value["agentId"])
+    && (value["role"] === "user" || value["role"] === "system_event")
+    && isNonEmptyString(value["content"])
+    && isNonEmptyString(value["at"]);
+}
+
+export function isCompleteContextTurnRequest(value: unknown): value is CompleteContextTurnRequest {
+  if (!isRequestEnvelope(value)) {
+    return false;
+  }
+  return isNonEmptyString(value["sessionId"])
+    && isNonEmptyString(value["conversationId"])
+    && isNonEmptyString(value["userMessageId"])
+    && isNonEmptyString(value["assistantContent"])
+    && isNonEmptyString(value["at"]);
 }
 
 export function isAppendConversationRequest(value: unknown): value is AppendConversationRequest {
@@ -839,7 +758,7 @@ export function isAppendConversationRequest(value: unknown): value is AppendConv
     && optionalNonEmptyString(value["taskId"]);
 }
 
-export function isCreateTaskRequest(value: unknown): value is CreateTaskRequest {
+function isCreateTaskInput(value: unknown): value is GitContextRequestEnvelope & Record<string, unknown> {
   if (!isRequestEnvelope(value)) {
     return false;
   }
@@ -851,7 +770,7 @@ export function isCreateTaskRequest(value: unknown): value is CreateTaskRequest 
 }
 
 export function isCreateTaskRunRequest(value: unknown): value is CreateTaskRunRequest {
-  return isCreateTaskRequest(value)
+  return isCreateTaskInput(value)
     && isTaskRunSelection(value as unknown as Record<string, unknown>);
 }
 
@@ -872,12 +791,10 @@ export function isActivateTaskRunRequest(value: unknown): value is ActivateTaskR
     return false;
   }
   const taskId = String(value["taskId"] ?? "");
-  return /^[TW]-\d{8}-\d{4}$/.test(taskId)
+  return /^T-\d{8}-\d{4}$/.test(taskId)
     && (value["expectedTaskHead"] === undefined
       || /^[a-f0-9]{40}$/.test(String(value["expectedTaskHead"])))
-    && (taskId.startsWith("T-")
-      ? isTaskRequestRoute(value["route"])
-      : value["route"] === undefined || isTaskRequestRoute(value["route"]))
+    && isTaskRequestRoute(value["route"])
     && isTaskRunSelection(value);
 }
 
@@ -910,32 +827,19 @@ function isTaskRequestRoute(value: unknown): value is TaskRequestRoute {
     && isBoundedStringArray(route["constraints"], 50, 500);
 }
 
-export function isMountTaskRequest(value: unknown): value is MountTaskRequest {
-  if (!isRequestEnvelope(value)) {
-    return false;
-  }
-  return isNonEmptyString(value["sessionId"])
-    && /^W-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
-    && (value["expectedTaskHead"] === undefined
-      || /^[a-f0-9]{40}$/.test(String(value["expectedTaskHead"])))
-    && isNonEmptyString(value["at"]);
-}
-
 export function isAcquireMutationAuthorityRequest(
   value: unknown,
 ): value is AcquireMutationAuthorityRequest {
   if (!isRequestEnvelope(value)) {
     return false;
   }
+  const taskId = String(value["taskId"] ?? "");
   return isNonEmptyString(value["sessionId"])
     && isNonEmptyString(value["runId"])
-    && /^[TW]-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
-    && (value["taskRequestId"] === undefined
-      || /^R-\d{4}$/.test(String(value["taskRequestId"])))
-    && (value["expectedTaskHead"] === undefined
-      || /^[a-f0-9]{40}$/.test(String(value["expectedTaskHead"])))
+    && /^T-\d{8}-\d{4}$/.test(taskId)
+    && /^R-\d{4}$/.test(String(value["taskRequestId"] ?? ""))
+    && /^[a-f0-9]{40}$/.test(String(value["expectedTaskHead"] ?? ""))
     && Array.isArray(value["targets"])
-    && value["targets"].length > 0
     && value["targets"].length <= 64
     && value["targets"].every(isMutationTarget)
     && isNonEmptyString(value["at"]);
@@ -961,7 +865,7 @@ export function isBindTaskAttachmentsRequest(
   return isNonEmptyString(value["sessionId"])
     && isNonEmptyString(value["conversationId"])
     && isNonEmptyString(value["runId"])
-    && /^[TW]-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
+    && /^T-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
     && isNonEmptyString(value["at"]);
 }
 
@@ -986,39 +890,13 @@ export function isVerifyMutationRequest(value: unknown): value is VerifyMutation
     && isNonEmptyString(value["at"]);
 }
 
-export function isCheckpointMutationRequest(
-  value: unknown,
-): value is CheckpointMutationRequest {
-  if (!isRequestEnvelope(value)) {
-    return false;
-  }
-  return isNonEmptyString(value["authorityId"])
-    && isNonEmptyString(value["lockToken"])
-    && isBoundedString(value["purpose"], 500)
-    && isNonEmptyString(value["conversationId"])
-    && /^sha256:[a-f0-9]{64}$/.test(String(value["conversationHash"] ?? ""))
-    && isNonEmptyString(value["at"]);
-}
-
-export function isSnapshotTaskRunEvidenceRequest(
-  value: unknown,
-): value is SnapshotTaskRunEvidenceRequest {
-  if (!isRequestEnvelope(value)) {
-    return false;
-  }
-  return isNonEmptyString(value["sessionId"])
-    && isNonEmptyString(value["runId"])
-    && /^W-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
-    && isNonEmptyString(value["at"]);
-}
-
 export function isFinalizeTaskRunRequest(value: unknown): value is FinalizeTaskRunRequest {
   if (!isRequestEnvelope(value)) {
     return false;
   }
   return isNonEmptyString(value["sessionId"])
     && isNonEmptyString(value["runId"])
-    && /^[TW]-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
+    && /^T-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
     && isTaskRunOutcome(value["outcome"])
     && isBoundedString(value["conversationSummary"], 2_000)
     && isBoundedString(value["summary"], 2_000)

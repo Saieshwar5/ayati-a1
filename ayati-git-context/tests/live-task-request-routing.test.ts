@@ -61,7 +61,6 @@ describe("live V1 task request routing", () => {
     const before = await fixture.service.getActiveContext({ sessionId: fixture.session.sessionId });
     expect(before.taskCandidates).toContainEqual(expect.objectContaining({
       taskId: fixture.taskId,
-      layoutVersion: "simple_repository_v1",
       lifecycleStatus: "active",
       repositoryHealth: "ready",
     }));
@@ -158,8 +157,6 @@ describe("live V1 task request routing", () => {
       phase: "committed",
       commit_head: finalized.taskHeadAfter,
     });
-    expect(fixture.database.prepare("SELECT COUNT(*) AS count FROM session_task_mounts").get())
-      .toEqual({ count: 0 });
   });
 
   it("discards a newly planned request when failed work produced no durable change", async () => {

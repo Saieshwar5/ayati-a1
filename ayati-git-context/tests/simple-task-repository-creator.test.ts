@@ -37,7 +37,6 @@ describe("simple task repository creator", () => {
       created: true,
       task: {
         taskId: "T-20260717-0001",
-        layoutVersion: "simple_repository_v1",
         branch: "main",
         status: "active",
       },
@@ -91,8 +90,6 @@ describe("simple task repository creator", () => {
       status: "completed",
       completed_at: at,
     });
-    expect(fixture.database.prepare("SELECT COUNT(*) AS count FROM session_task_mounts").get())
-      .toMatchObject({ count: 0 });
   });
 
   it("allocates deterministic distinct identities for duplicate titles", async () => {
@@ -181,7 +178,6 @@ describe("simple task repository creator", () => {
 
     expect(readTaskInitialization(fixture.database, "T-20260717-0001")).toMatchObject({
       status: "active",
-      layoutVersion: "simple_repository_v1",
       head: expect.stringMatching(/^[a-f0-9]{40}$/),
     });
     const retried = await recovering.createSimpleTask(input);

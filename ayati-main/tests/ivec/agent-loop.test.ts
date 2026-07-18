@@ -12,6 +12,7 @@ import type { SkillDefinition, ToolDefinition } from "../../src/skills/types.js"
 import { ToolCatalog } from "../../src/ivec/agent-runner/tool-catalog.js";
 import { ToolWorkingSetManager } from "../../src/ivec/agent-runner/tool-working-set.js";
 import type { AgentFeedbackEventInput, AgentFeedbackLedger } from "../../src/ivec/feedback-ledger.js";
+import { nativeDecisionFixture } from "./native-decision-fixture.js";
 
 const originalWorkspaceDir = process.env["AYATI_WORKSPACE_DIR"];
 
@@ -34,8 +35,7 @@ function cleanup(path: string): void {
 }
 
 function createProvider(responses: unknown[]): LlmProvider {
-  const queue = addExplicitCompletionToLegacyFixtures(responses)
-    .map((response) => typeof response === "string" ? response : JSON.stringify(response));
+  const queue = addExplicitCompletionToFixtures(responses).map(nativeDecisionFixture);
   return {
     name: "mock",
     version: "1.0.0",
@@ -43,16 +43,16 @@ function createProvider(responses: unknown[]): LlmProvider {
     start: vi.fn(),
     stop: vi.fn(),
     generateTurn: vi.fn().mockImplementation(async () => {
-      const content = queue.shift();
-      if (!content) {
+      const response = queue.shift();
+      if (!response) {
         throw new Error("No queued provider response");
       }
-      return { type: "assistant", content };
+      return response;
     }),
   };
 }
 
-function addExplicitCompletionToLegacyFixtures(responses: unknown[]): unknown[] {
+function addExplicitCompletionToFixtures(responses: unknown[]): unknown[] {
   const output: unknown[] = [];
   let pendingMutation = false;
   for (const response of responses) {
@@ -158,10 +158,9 @@ function fakeCreateTaskForTurnTool(): ToolDefinition {
         harnessContext: {
           contextEngine: {
             session: {
-              sessionId: "s1",
+              meta: { sessionId: "s1", assetCount: 0 },
               conversationTail: [],
               activityTail: [],
-              assetCount: 0,
             },
             focus: {
               status: "active",
@@ -257,7 +256,7 @@ function fakeActivateTaskForTurnTool(): ToolDefinition {
     async execute() {
       const structuredContent = {
         status: "ready",
-        mode: "continue_active_task",
+        mode: "activated",
         sessionId: "s1",
         taskId: "T-20260702-website",
         branch: "task/T-20260702-website",
@@ -265,10 +264,9 @@ function fakeActivateTaskForTurnTool(): ToolDefinition {
         harnessContext: {
           contextEngine: {
             session: {
-              sessionId: "s1",
+              meta: { sessionId: "s1", assetCount: 1 },
               conversationTail: [],
               activityTail: [],
-              assetCount: 1,
             },
             focus: {
               status: "active",
@@ -672,7 +670,7 @@ describe("agentLoop", () => {
           request: {
             summary: "Created the requested tea stall HTML page.",
             assets: [{
-              path: outputPath,
+              path: "tea.html",
               kind: "file",
               description: "Main tea stall HTML page",
             }],
@@ -706,12 +704,12 @@ describe("agentLoop", () => {
       expect(result.workState).not.toHaveProperty("taskNotes");
       expect(result.taskAssets).toEqual(expect.arrayContaining([
         expect.objectContaining({
-          path: outputPath,
+          path: "tea.html",
           description: "Main tea stall HTML page",
         }),
       ]));
       expect(result.verifiedCompletionAssets).toEqual([expect.objectContaining({
-        path: outputPath,
+        path: "tea.html",
         kind: "file",
         description: "Main tea stall HTML page",
       })]);
@@ -747,7 +745,7 @@ describe("agentLoop", () => {
           kind: "task_completion",
           request: {
             summary: "Created the requested website files.",
-            assets: [{ path: cssPath, kind: "file", description: "Website styling" }],
+            assets: [{ path: "site/styles.css", kind: "file", description: "Website styling" }],
           },
         },
         {
@@ -764,8 +762,8 @@ describe("agentLoop", () => {
           request: {
             summary: "Created the requested homepage and stylesheet.",
             assets: [
-              { path: indexPath, kind: "file", description: "Main website page" },
-              { path: cssPath, kind: "file", description: "Website styling" },
+              { path: "site/index.html", kind: "file", description: "Main website page" },
+              { path: "site/styles.css", kind: "file", description: "Website styling" },
             ],
           },
         },
@@ -818,7 +816,7 @@ describe("agentLoop", () => {
           kind: "task_completion",
           request: {
             summary: "Created the limited-step page.",
-            assets: [{ path: outputPath, kind: "file", description: "Requested limited-step HTML page" }],
+            assets: [{ path: "limited.html", kind: "file", description: "Requested limited-step HTML page" }],
           },
         },
         { kind: "reply", status: "completed", message: "Created and verified the requested page." },
@@ -874,7 +872,7 @@ describe("agentLoop", () => {
           kind: "task_completion",
           request: {
             summary: "Created the requested website.",
-            assets: [{ path: missingPath, kind: "file", description: "Required website stylesheet" }],
+            assets: [{ path: "styles.css", kind: "file", description: "Required website stylesheet" }],
           },
         },
         { kind: "reply", status: "completed", message: "I created the homepage, but the stylesheet still needs to be created." },
@@ -1013,10 +1011,9 @@ describe("agentLoop", () => {
         harnessContext: {
           contextEngine: {
             session: {
-              sessionId: "s1",
+              meta: { sessionId: "s1", assetCount: 0 },
               conversationTail: [],
               activityTail: [],
-              assetCount: 0,
             },
             focus: {
               status: "none",
@@ -1039,7 +1036,8 @@ describe("agentLoop", () => {
         name: "fresh_session_routing",
         repairCode: "R_FRESH_SESSION_NEEDS_TASK",
       });
-      expect(secondUserPrompt).toContain("Create a task only when the current user request has a concrete deliverable");
+      expect(secondUserPrompt).toContain("Before durable mutation, create or activate a task");
+      expect(secondUserPrompt).not.toContain("Create a task only when the current user request has a concrete deliverable");
       expect(secondUserPrompt).toContain("R_FRESH_SESSION_NEEDS_TASK");
       expect(feedbackEvents(feedback.events, "action", "started")).toHaveLength(0);
     } finally {
@@ -1280,10 +1278,9 @@ describe("agentLoop", () => {
         harnessContext: {
           contextEngine: {
             session: {
-              sessionId: "s1",
+              meta: { sessionId: "s1", assetCount: 0 },
               conversationTail: [],
               activityTail: [],
-              assetCount: 0,
             },
             focus: {
               status: "none",
@@ -1377,7 +1374,7 @@ describe("agentLoop", () => {
               tool: "git_context_activate_task",
               input: {
                 taskId: "T-20260702-website",
-                reason: "continue_active_task",
+                reason: "activated",
               },
               dependsOn: [],
               purpose: "Bind the pending turn to the existing active task before work tools run.",
@@ -1431,10 +1428,9 @@ describe("agentLoop", () => {
         harnessContext: {
           contextEngine: {
             session: {
-              sessionId: "s1",
+              meta: { sessionId: "s1", assetCount: 1 },
               conversationTail: [],
               activityTail: [],
-              assetCount: 1,
             },
             focus: {
               status: "active",
@@ -1501,7 +1497,7 @@ describe("agentLoop", () => {
     }
   });
 
-  it("repairs unavailable legacy task discovery without creating a run", async () => {
+  it("repairs unavailable task discovery without creating a run", async () => {
     const dataDir = makeTmpDir();
     try {
       const listTasksTool = fakeGitContextReadTool("git_context_list_tasks", "No tasks found.");
@@ -1559,10 +1555,9 @@ describe("agentLoop", () => {
         harnessContext: {
           contextEngine: {
             session: {
-              sessionId: "s1",
+              meta: { sessionId: "s1", assetCount: 0 },
               conversationTail: [],
               activityTail: [],
-              assetCount: 0,
             },
             focus: {
               status: "none",
@@ -1860,7 +1855,7 @@ describe("agentLoop", () => {
     }
   });
 
-  it("surfaces verification failures as repair-coded feedback", async () => {
+  it("surfaces verification failures as repair-coded feedback before the terminal reply", async () => {
     const dataDir = makeTmpDir();
     const outputPath = join(dataDir, "verify-failure.txt");
     try {
@@ -1906,7 +1901,8 @@ describe("agentLoop", () => {
         systemContext: "full system context with memory",
       });
 
-      expect(result.status).toBe("failed");
+      expect(result.status).toBe("completed");
+      expect(result.content).toBe("I could not verify the requested file.");
       expect(provider.generateTurn).toHaveBeenCalledTimes(2);
       const repairPrompt = (provider.generateTurn as any).mock.calls[1]?.[0].messages.at(-1).content as string;
       expect(repairPrompt).toContain("R_VERIFICATION_FAILED");
@@ -1924,7 +1920,7 @@ describe("agentLoop", () => {
     }
   });
 
-  it("surfaces no-progress failures as repair-coded feedback", async () => {
+  it("surfaces an empty native tool turn as repair-coded feedback before the terminal reply", async () => {
     const dataDir = makeTmpDir();
     try {
       const toolExecutor = createToolExecutor([writeFilesTool]);
@@ -1960,17 +1956,15 @@ describe("agentLoop", () => {
         systemContext: "full system context with memory",
       });
 
-      expect(result.status).toBe("failed");
+      expect(result.status).toBe("completed");
+      expect(result.content).toBe("I did not have a concrete tool action to run.");
       expect(provider.generateTurn).toHaveBeenCalledTimes(2);
       const repairPrompt = (provider.generateTurn as any).mock.calls[1]?.[0].messages.at(-1).content as string;
-      expect(repairPrompt).toContain("R_NO_PROGRESS");
+      expect(repairPrompt).toContain("R_MULTIPLE_NATIVE_TOOL_CALLS");
       expect(feedbackEvents(feedback.events, "decision", "repair_requested")[0]?.data).toMatchObject({
-        reason: "tool_protocol_violation",
+        reason: "parse_failed",
         repair: {
-          code: "R_NO_PROGRESS",
-          operatorDetails: {
-            reason: "act decision contained no tool calls",
-          },
+          code: "R_MULTIPLE_NATIVE_TOOL_CALLS",
         },
       });
     } finally {
@@ -2132,9 +2126,7 @@ describe("agentLoop", () => {
       const toolExecutor = createToolExecutor([writeFilesTool]);
       const finalDeltas: string[] = [];
       const generateTurn = vi.fn()
-        .mockResolvedValueOnce({
-          type: "assistant",
-          content: JSON.stringify({
+        .mockResolvedValueOnce(nativeDecisionFixture({
           kind: "act",
           action: {
             mode: "single",
@@ -2154,15 +2146,11 @@ describe("agentLoop", () => {
             allowedTools: ["write_files"],
             assertions: [],
           },
-          }),
-        })
-        .mockResolvedValueOnce({
-          type: "assistant",
-          content: JSON.stringify({
+        }))
+        .mockResolvedValueOnce(nativeDecisionFixture({
             kind: "task_completion",
             request: { summary: "Created the requested note file.", assets: [] },
-          }),
-        });
+        }));
       const streamTurn = vi.fn(async (
         _input: LlmTurnInput,
         callbacks: LlmTurnStreamCallbacks,
@@ -2224,7 +2212,7 @@ describe("agentLoop", () => {
     try {
       const generateTurn = vi.fn().mockResolvedValue({
         type: "assistant",
-        content: JSON.stringify({ kind: "reply", status: "completed", message: "context received" }),
+        content: "context received",
       });
       const provider: LlmProvider = {
         name: "mock",
@@ -2248,9 +2236,8 @@ describe("agentLoop", () => {
           personalMemorySnapshot: "- Prefers concise implementation notes.",
           contextEngine: {
             session: {
-              sessionId: "2026-06-12",
+              meta: { sessionId: "2026-06-12", assetCount: 1 },
               activityTail: [],
-              assetCount: 1,
               conversationTail: [
                 {
                   seq: 1,
@@ -2274,12 +2261,12 @@ describe("agentLoop", () => {
             },
             focus: {
               status: "active",
-              ref: "refs/heads/work/W-20260612-0001-todo-app",
-              workId: "W-20260612-0001",
+              ref: "refs/heads/task/T-20260612-0001-todo-app",
+              workId: "T-20260612-0001",
             },
             task: {
-              ref: "refs/heads/work/W-20260612-0001-todo-app",
-              workId: "W-20260612-0001",
+              ref: "refs/heads/task/T-20260612-0001-todo-app",
+              workId: "T-20260612-0001",
               title: "Todo app",
               objective: "Build a todo app",
               status: "active",
@@ -2307,11 +2294,11 @@ describe("agentLoop", () => {
       const systemPrompt = callInput.messages.find((message: { role: string }) => message.role === "system").content as string;
       const userPrompt = callInput.messages.find((message: { role: string }) => message.role === "user").content as string;
       const stateView = extractStateView(userPrompt);
-      expect(systemPrompt).toContain("Decision rules:");
+      expect(systemPrompt).toContain("Decision and execution rules:");
       expect(systemPrompt).toContain("Control tool shapes:");
-      expect(systemPrompt).toContain("call the selected executable tool directly");
-      expect(systemPrompt).toContain("Evidence-before-done rule:");
-      expect(userPrompt).not.toContain("Decision rules:");
+      expect(systemPrompt).toContain("Call the selected tool directly");
+      expect(systemPrompt).toContain("Do not claim durable work is complete without observed tool output");
+      expect(userPrompt).not.toContain("Decision and execution rules:");
       expect(userPrompt.indexOf("Selected tools:\n")).toBeLessThan(userPrompt.indexOf("State view:\n"));
       expect(stateView.userMessage).toBeUndefined();
       expect(stateView.goal).toBeUndefined();
@@ -2331,7 +2318,7 @@ describe("agentLoop", () => {
       expect(stateView.context.gitContext).toBeUndefined();
       expect(stateView.context.git.current.task).toMatchObject({
         identity: {
-          workId: "W-20260612-0001",
+          workId: "T-20260612-0001",
         },
         state: {
           open: ["make responsive"],
@@ -2397,47 +2384,41 @@ describe("agentLoop", () => {
       };
       const toolExecutor = createToolExecutor([ramSummaryTool, processSummaryTool]);
       const generateTurn = vi.fn()
-        .mockResolvedValueOnce({
-          type: "assistant",
-          content: JSON.stringify({
+        .mockResolvedValueOnce(nativeDecisionFixture({
             kind: "act",
             action: {
-              mode: "parallel",
-              calls: [
-                {
+              mode: "single",
+              calls: [{
                   id: "call_1",
                   tool: "read_files",
                   input: { path: "/proc/meminfo" },
                   dependsOn: [],
                   purpose: "Get RAM summary",
-                },
-                {
+              }],
+              allowedTools: ["read_files"],
+            },
+        }))
+        .mockResolvedValueOnce(nativeDecisionFixture({
+            kind: "act",
+            action: {
+              mode: "single",
+              calls: [{
                   id: "call_2",
                   tool: "search_in_files",
                   input: { path: "/proc", query: "memory" },
                   dependsOn: [],
                   purpose: "List top RAM processes",
-                },
-              ],
-              allowedTools: ["read_files", "search_in_files"],
+              }],
+              allowedTools: ["search_in_files"],
             },
-          }),
-        })
+        }))
+        .mockResolvedValueOnce(nativeDecisionFixture({
+          kind: "task_completion",
+          request: { summary: "Analyzed current RAM use and the top memory-consuming programs.", assets: [] },
+        }))
         .mockResolvedValueOnce({
           type: "assistant",
-          content: JSON.stringify({
-            kind: "task_completion",
-            request: { summary: "Analyzed current RAM use and the top memory-consuming programs.", assets: [] },
-          }),
-        })
-        .mockResolvedValueOnce({
-          type: "assistant",
-          content: JSON.stringify({
-            kind: "reply",
-            status: "completed",
-            message: "RAM used is 3.5Gi and chromium/code/node are the top RAM consumers.",
-            workingNotes: ["Fetching current free RAM and per-process memory consumption."],
-          }),
+          content: "RAM used is 3.5Gi and chromium/code/node are the top RAM consumers.",
         });
       const provider: LlmProvider = {
         name: "mock",
@@ -2461,9 +2442,9 @@ describe("agentLoop", () => {
       });
 
       expect(result.status).toBe("completed");
-      expect(generateTurn).toHaveBeenCalledTimes(3);
-      const secondCallInput = generateTurn.mock.calls[1]?.[0];
-      const userPrompt = secondCallInput.messages.find((message: { role: string }) => message.role === "user").content as string;
+      expect(generateTurn).toHaveBeenCalledTimes(4);
+      const finalCallInput = generateTurn.mock.calls[2]?.[0];
+      const userPrompt = finalCallInput.messages.find((message: { role: string }) => message.role === "user").content as string;
       const stateView = extractStateView(userPrompt);
       expect(stateView.observations).toBeUndefined();
       expect(stateView.context.run.observations).toBeUndefined();
@@ -2480,7 +2461,7 @@ describe("agentLoop", () => {
       expect(stateView.context.run.toolCalls[1].purpose).toBe("List top RAM processes");
       expect(stateView.context.run.toolCalls[1].input).toEqual({ path: "/proc", query: "memory" });
       expect(stateView.context.run.toolCalls[1].output).toContain("chromium");
-      expect(stateView.context.run.toolCalls[1].stepRef).toEqual({ runId: "r-observation", step: 1, callId: "call_2" });
+      expect(stateView.context.run.toolCalls[1].stepRef).toEqual({ runId: "r-observation", step: 2, callId: "call_2" });
       expect(stateView.context.run.toolCalls[1]).not.toHaveProperty("evidenceRef");
       expect(stateView.context.run.toolCalls[1]).not.toHaveProperty("hasMore");
       expect(JSON.stringify(stateView.context.run.workState)).not.toContain("Get RAM summary");
@@ -2497,7 +2478,7 @@ describe("agentLoop", () => {
     }
   });
 
-  it("stops when the same repair signature repeats too many times", async () => {
+  it("returns a failed reply after repeated unselected native tool calls", async () => {
     const dataDir = makeTmpDir();
     const outputPath = join(dataDir, "repeat-repair.txt");
     const badAction = {
@@ -2506,11 +2487,8 @@ describe("agentLoop", () => {
         mode: "single",
         calls: [{
           id: "call_1",
-          tool: "write_files",
-          input: {
-            createDirs: true,
-            files: [{ path: outputPath, content: "should not be written" }],
-          },
+          tool: "shell",
+          input: { command: "pwd" },
           dependsOn: [],
           purpose: "Create the requested file",
         }],
@@ -2538,18 +2516,11 @@ describe("agentLoop", () => {
       });
 
       expect(result.status).toBe("failed");
-      expect(result.content).toContain("The same repair class repeated too many times.");
+      expect(result.content).toBe("I could not form a valid tool call for this request.");
       expect(provider.generateTurn).toHaveBeenCalledTimes(3);
       expect(existsSync(outputPath)).toBe(false);
-      expect(feedbackEvents(feedback.events, "guard", "repeated_repair_failure")[0]?.data).toMatchObject({
-        repair: {
-          code: "R_REPEATED_REPAIR_FAILURE",
-          blockedTargets: ["write_files"],
-          operatorDetails: {
-            repeatedThreshold: 3,
-            previousRepairCode: "R_TOOL_NOT_SELECTED",
-          },
-        },
+      expect(feedbackEvents(feedback.events, "decision", "failed_fallback")[0]?.data).toMatchObject({
+        repair: { code: "R_TOOL_NOT_SELECTED", blockedTargets: ["shell"] },
       });
       expect(feedbackEvents(feedback.events, "final", "reply")[0]?.data).toMatchObject({
         feedbackSummary: {
@@ -2596,9 +2567,8 @@ describe("agentLoop", () => {
         harnessContext: {
           contextEngine: {
             session: {
-              sessionId: "s1",
+              meta: { sessionId: "s1", assetCount: 0 },
               activityTail: [],
-              assetCount: 0,
               conversationTail: [{
                 seq: 3,
                 role: "user",
@@ -2608,11 +2578,11 @@ describe("agentLoop", () => {
             },
             focus: {
               status: "active",
-              ref: "refs/heads/work/W-1-context",
+              ref: "refs/heads/task/W-1-context",
               workId: "W-1",
             },
             task: {
-              ref: "refs/heads/work/W-1-context",
+              ref: "refs/heads/task/W-1-context",
               workId: "W-1",
               title: "Context-sensitive task",
               objective: "Continue without losing durable task state.",

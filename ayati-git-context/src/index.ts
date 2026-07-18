@@ -1,6 +1,7 @@
 export * from "./client.js";
 export * from "./contract-only-service.js";
 export * from "./contracts.js";
+export * from "./conversations/conversation-persistence-state.js";
 export * from "./errors.js";
 export * from "./database/database.js";
 export * from "./server.js";

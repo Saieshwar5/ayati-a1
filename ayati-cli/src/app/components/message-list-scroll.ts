@@ -22,13 +22,11 @@ export function scrollByPages(
 
 export function resolveScrollTopAfterContentChange(params: {
   scrollTop: number;
-  previousMaxScrollTop: number;
   nextMaxScrollTop: number;
+  followOutput: boolean;
 }): number {
-  const { scrollTop, previousMaxScrollTop, nextMaxScrollTop } = params;
-  const wasAtBottom = scrollTop >= previousMaxScrollTop;
-
-  if (wasAtBottom) {
+  const { scrollTop, nextMaxScrollTop, followOutput } = params;
+  if (followOutput) {
     return nextMaxScrollTop;
   }
 

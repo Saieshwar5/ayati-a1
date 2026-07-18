@@ -94,10 +94,7 @@ export class ToolCatalog {
 
   promptSummary(options: { compact?: boolean; maxSkills?: number } = {}): string {
     if (options.compact) {
-      return [
-        "Hidden tools remain available through decision_load_tools.",
-        "Request them with a short query, an exact tool name, or 1-3 focused group names.",
-      ].join("\n");
+      return "Loadable tools are indexed by exact name, focused group, or query.";
     }
     const maxSkills = options.maxSkills ?? 24;
     const skills = [...this.skillSummaries.entries()]
@@ -111,13 +108,10 @@ export class ToolCatalog {
           ? ` Representative tools: ${representativeTools.join(", ")}.`
           : "";
         return `- ${id}: ${description}${toolText}`;
-      });
+    });
     return [
-      "Hidden tools are loaded by returning load_tools when selected tools are insufficient.",
-      "load_tools must include at least one selector: groups, toolNames, or query.",
-      "Prefer 1-3 small purpose-built groups together instead of one broad group.",
       `Loadable groups:\n${this.groupSummaries().map((line) => `- ${line}`).join("\n") || "- (none)"}.`,
-      "Skill summaries:",
+      "Loadable skills:",
       ...skills,
     ].join("\n");
   }

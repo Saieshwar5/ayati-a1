@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { ContextDatabase } from "../src/database/database.js";
+import { readMutationAuthority } from "../src/repositories/mutation-authority-records.js";
 import { SqliteGitContextService } from "../src/services/sqlite-git-context-service.js";
 import { TaskLifecycleService } from "../src/services/task-lifecycle-service.js";
 
@@ -21,7 +22,7 @@ afterEach(async () => {
 });
 
 describe("simple task direct mutation authority", () => {
-  it("binds one run and request directly to the V1 repository without a mount", async () => {
+  it("binds one run and request directly to the task repository", async () => {
     const fixture = await createFixture();
     const input = authorityInput(fixture, [{ path: "src/app.ts", kind: "file" }]);
 
@@ -33,15 +34,25 @@ describe("simple task direct mutation authority", () => {
       taskId: fixture.taskId,
       taskRequestId: "R-0001",
       runId: fixture.runId,
-      repositoryLayout: "simple_repository_v1",
       repositoryPath: fixture.repositoryPath,
       beforeHead: fixture.taskHead,
       branch: "main",
       status: "active",
       targets: [{ path: "src/app.ts", kind: "file" }],
     });
-    expect(acquired.authority).not.toHaveProperty("checkoutPath");
-    expect(acquired.authority).not.toHaveProperty("canonicalRepository");
+    const persisted = readMutationAuthority(
+      fixture.database,
+      acquired.authority.authorityId,
+    );
+    expect(persisted).toMatchObject({ repositoryPath: fixture.repositoryPath });
+    expect(fixture.database.prepare([
+      "SELECT repository_path, task_request_id, branch",
+      "FROM task_mutation_authorities WHERE authority_id = ?",
+    ].join(" ")).get(acquired.authority.authorityId)).toEqual({
+      repository_path: fixture.repositoryPath,
+      task_request_id: "R-0001",
+      branch: "main",
+    });
     expect(fixture.database.prepare([
       "SELECT task_id, task_request_id, run_class FROM runs WHERE run_id = ?",
     ].join(" ")).get(fixture.runId)).toEqual({
@@ -49,11 +60,9 @@ describe("simple task direct mutation authority", () => {
       task_request_id: "R-0001",
       run_class: "task",
     });
-    expect(fixture.database.prepare("SELECT COUNT(*) AS count FROM session_task_mounts").get())
-      .toEqual({ count: 0 });
   });
 
-  it("requires matching HEAD and active request identity before promotion", async () => {
+  it("requires matching HEAD and active request identity before task binding", async () => {
     const fixture = await createFixture();
 
     await expect(fixture.service.acquireMutationAuthority({
@@ -74,7 +83,7 @@ describe("simple task direct mutation authority", () => {
     });
   });
 
-  it("blocks unjournaled dirt without resetting or promoting the run", async () => {
+  it("blocks unjournaled dirt without resetting or binding the run", async () => {
     const fixture = await createFixture();
     await writeFile(join(fixture.repositoryPath, "keep-me.txt"), "external work\n", "utf8");
 
@@ -224,7 +233,7 @@ describe("simple task direct mutation authority", () => {
     });
   });
 
-  it("rejects broad or reserved targets before promotion", async () => {
+  it("rejects broad or reserved targets before authorization", async () => {
     const fixture = await createFixture();
     for (const [index, path] of [".", ".git/config", ".ayati/task.md"].entries()) {
       await expect(fixture.service.acquireMutationAuthority({
@@ -237,7 +246,7 @@ describe("simple task direct mutation authority", () => {
     ).get(fixture.runId)).toEqual({ run_class: "session" });
   });
 
-  it("detects external HEAD changes and keeps V1 out of legacy checkpointing", async () => {
+  it("detects external HEAD changes", async () => {
     const fixture = await createFixture();
     const authority = await fixture.service.acquireMutationAuthority(authorityInput(fixture, [
       { path: "src/app.ts", kind: "file" },
@@ -249,15 +258,6 @@ describe("simple task direct mutation authority", () => {
     await expect(fixture.service.verifyMutation(
       verificationInput(authority.authority),
     )).rejects.toMatchObject({ code: "TASK_HEAD_MISMATCH" });
-    await expect(fixture.service.checkpointMutation({
-      requestId: "REQ-v1-checkpoint",
-      authorityId: authority.authority.authorityId,
-      lockToken: authority.authority.lockToken,
-      purpose: "Must use V1 finalization.",
-      conversationId: fixture.conversationId,
-      conversationHash: "sha256:" + "a".repeat(64),
-      at: "2026-07-17T10:02:00+05:30",
-    })).rejects.toMatchObject({ code: "SERVICE_NOT_READY" });
   });
 });
 

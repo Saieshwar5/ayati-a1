@@ -32,7 +32,7 @@ export class TaskRequestRoutingService {
 
   async plan(input: PlanTaskRequestRouteRequest): Promise<PlanTaskRequestRouteResponse> {
     const task = readTaskInitialization(this.options.database, input.taskId);
-    if (!task?.head || task.status !== "active" || task.layoutVersion !== "simple_repository_v1") {
+    if (!task?.head || task.status !== "active") {
       throw invalid("Request planning requires an active V1 task repository.", input);
     }
     if (task.head !== input.expectedTaskHead) {
@@ -149,14 +149,14 @@ export class TaskRequestRoutingService {
           ...(changePlan ? { changePlan } : {}),
           at: input.at,
         });
-        const promoted = bindActiveRunToTask(
+        const boundRun = bindActiveRunToTask(
           this.options.database,
           input.sessionId,
           input.runId,
           input.taskId,
           taskRequestId,
         );
-        return taskRequestRoutePlanResponse(record, promoted);
+        return taskRequestRoutePlanResponse(record, boundRun);
       },
     });
     if (pending.completed) return pending.result;

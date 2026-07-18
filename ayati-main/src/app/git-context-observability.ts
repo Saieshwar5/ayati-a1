@@ -9,9 +9,10 @@ export function recordGitContextObservabilityEvent(
   ledger: AgentFeedbackLedger,
   event: GitContextObservabilityEvent,
 ): void {
+  const seq = feedbackSequence(event);
   ledger.record({
     ...(event.sessionId ? { sessionId: event.sessionId } : {}),
-    ...(event.seq !== undefined ? { seq: event.seq } : {}),
+    ...(seq !== undefined ? { seq } : {}),
     ...(event.runId ? { runId: event.runId } : {}),
     stage: event.component === "git-context-harness" ? "context_engine" : "git_context_service",
     event: event.event,
@@ -32,6 +33,15 @@ export function recordGitContextObservabilityEvent(
       ...event.data,
     },
   });
+}
+
+function feedbackSequence(event: GitContextObservabilityEvent): number | undefined {
+  if (event.seq !== undefined) return event.seq;
+  if (event.event !== "conversation_persisted") return undefined;
+  const sequence = event.data?.["conversationSequence"];
+  return typeof sequence === "number" && Number.isInteger(sequence) && sequence > 0
+    ? sequence
+    : undefined;
 }
 
 export function createHarnessGitContextObserver(

@@ -32,8 +32,7 @@ Main runtime flow:
    through tool contracts, assertions, and local failure policy.
 8. Verified facts update WorkState. Runtime-owned V1 finalization commits the
    verified deliverable, request outcome, task card, and references once in the
-   task repository. SQLite retains the run journal; V1 creates no task mount,
-   push, session commit, or gitlink.
+   task repository. SQLite retains the run journal.
 9. Replies, feedback, notifications, or actions are sent back through the appropriate transport.
 
 Current agent harness:

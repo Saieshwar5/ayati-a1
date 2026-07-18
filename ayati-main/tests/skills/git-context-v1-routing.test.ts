@@ -6,7 +6,6 @@ describe("model-facing V1 task routing", () => {
   it("submits the explicit create-request decision and binds attachments", async () => {
     const activateTaskRun = vi.fn(async (input) => ({
       task: task(),
-      repositoryLayout: "simple_repository_v1" as const,
       run: {
         runId: "RUN-1",
         sessionId: "S-1",
@@ -17,8 +16,9 @@ describe("model-facing V1 task routing", () => {
       },
       context: {} as never,
       taskCreated: false,
-      mountCreated: false,
-      runPromoted: true,
+      sessionRunBound: true,
+      taskRequestDecision: "create" as const,
+      taskRequestCreated: true,
     }));
     const bindTaskAttachments = vi.fn(async () => ({
       taskId: task().taskId,
@@ -48,6 +48,13 @@ describe("model-facing V1 task routing", () => {
     }, { sessionId: "S-1", runId: "RUN-1" });
 
     expect(result.ok).toBe(true);
+    expect(result.v2?.structuredContent).toMatchObject({
+      workingDirectory: task().workingPath,
+      requestDecision: "create",
+      taskRequestId: "R-0002",
+      taskRequestCreated: true,
+      sessionRunBound: true,
+    });
     expect(activateTaskRun).toHaveBeenCalledWith(expect.objectContaining({
       taskId: task().taskId,
       runId: "RUN-1",
@@ -70,7 +77,6 @@ describe("model-facing V1 task routing", () => {
 function task() {
   return {
     taskId: "T-20260717-0001",
-    layoutVersion: "simple_repository_v1" as const,
     repositoryPath: "/workspace/tasks/T-20260717-0001-site",
     workingPath: "/workspace/tasks/T-20260717-0001-site",
     branch: "main",

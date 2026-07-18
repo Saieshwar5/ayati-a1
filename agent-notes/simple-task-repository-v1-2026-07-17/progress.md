@@ -1,13 +1,14 @@
 # Progress
 
-Last updated: 2026-07-17
+Last updated: 2026-07-18
 
-Current status: repository contracts, read-only context, isolated creation,
-request planning, direct mutation, single-commit finalization, and durable
-attachments/references are implemented. The Phase 8 state-aware routing policy
-and live request-plan bridge are implemented, including compact V1 candidates,
-durable request reservations, direct authority handoff, and one-commit request
-application. Default V1 task creation/routing remains intentionally disabled.
+Current status: the main V1 path is implemented. New model-facing task creation
+uses mount-free `T-*` repositories, and reading, direct mutation,
+single-commit finalization, attachments, and continue-or-create request routing
+are available. A 2026-07-17 audit found that V1 is not complete: live lifecycle
+management, model-tool replay safety, catalog rebuild, migration recovery,
+typed external outcomes, and restart/live acceptance remain open. The accepted
+closure design is in the Reliability Closure section of `implementation.md`.
 
 ## Planning
 
@@ -103,6 +104,10 @@ Exit gate:
 - [x] Block/resume, complete, drop, and explicitly reopen requests.
 - [x] Keep task card current request consistent.
 - [x] Integrate request routing rules.
+- [ ] Expose live activation of a queued request.
+- [ ] Expose live resume of a blocked request.
+- [ ] Expose explicit drop and same-intention reopen operations where required.
+- [ ] Add pause, archive, and reopen transitions for the task itself.
 
 Exit gate:
 
@@ -151,17 +156,23 @@ Exit gate:
 
 ## Phase 7A: External Computer-Use Outcomes
 
-- [x] Bind external mutation to one task, request, and run.
-- [x] Preserve existing approval and irreversible-action policies.
-- [x] Verify external outcomes deterministically where possible.
-- [x] Extract stable non-secret identifiers or safe receipts.
+- [x] Add generic zero-file authority bound to one task, request, and run.
+- [ ] Add typed external action authority and a durable external outcome
+  contract.
+- [ ] Integrate real external mutating tools rather than using a file download
+  as an executor-level proxy.
+- [ ] Prove existing approval and irreversible-action policies through the live
+  external mutation path.
+- [ ] Verify real external outcomes and extract stable non-secret identifiers
+  or safe receipts.
 - [x] Create context-only task commits when no normal file is appropriate.
-- [x] Keep raw page/screenshot/tool evidence outside task Git by default.
+- [ ] Enforce safe receipt projection and exclusion of raw
+  page/screenshot/token evidence from task Git.
 - [x] Never describe Git revert as undoing external state.
 
 Exit gate:
 
-- [x] Verified computer-use work can continue from task Git without pretending
+- [ ] Verified computer-use work can continue from task Git without pretending
   Git owns the external system.
 
 ## Phase 8: Routing And Status Semantics
@@ -182,11 +193,14 @@ Slice progress:
 - [x] Ensure request completion does not archive task.
 - [x] Support active task with no current request.
 - [x] Require lifecycle transition before archived/paused mutation.
-- [x] Cover learning, website, computer-use, analysis, and automation flows.
+- [ ] Provide the live lifecycle transition that paused/archived mutation
+  requires.
+- [ ] Cover learning, website, computer-use, analysis, and automation through
+  restart and real agent routing.
 
 Exit gate:
 
-- [x] The agent consistently chooses continue request, create request, choose
+- [ ] The agent consistently chooses continue request, create request, choose
   another task, create task, read only, or clarify.
 
 ## Phase 9: Migration
@@ -197,12 +211,18 @@ Exit gate:
 - [x] Preserve `W-*` IDs and ancestry.
 - [x] Preserve old bare repositories as unchanged legacy storage.
 - [x] Preserve historical session gitlinks without rewriting sessions.
-- [x] Block dirty, diverged, invalid, missing, busy, and external-path cohorts safely.
-- [x] Prove only one writer per task.
+- [x] Block dirty, diverged, invalid, busy, and external-path cohorts safely.
+- [ ] Restore a missing managed checkout from a validated legacy bare
+  repository as required for Cohort E.
+- [ ] Recover interrupted migrations automatically at startup and keep failed
+  partial migrations non-mutating until reconciled.
+- [ ] Prove historical session gitlinks remain resolvable after migration.
+- [ ] Prove only one writer per task across every failed/restarted migration
+  boundary.
 
 Exit gate:
 
-- [x] Migrated tasks continue through V1 without rewriting or losing legacy
+- [ ] Migrated tasks continue through V1 without rewriting or losing legacy
   history.
 
 ## Phase 10: Cutover And Cleanup
@@ -214,6 +234,8 @@ Exit gate:
 - [x] Remove task push and gitlink staging from normal V1 finalization.
 - [x] Remove mount writes and recovery paths from default live V1 routing.
 - [x] Keep necessary layout-dispatched legacy adapters for unsafe migration cohorts.
+- [ ] Make the public low-level task-creation API V1 or explicitly rename and
+  restrict it as a legacy compatibility operation.
 - [x] Update package and stable architecture docs.
 - [x] Remove contradictory old current-path docs.
 
@@ -225,8 +247,9 @@ Exit gate:
 
 - [x] Focused schema tests pass.
 - [x] Focused repository lifecycle tests pass.
-- [x] Crash/failure-injection matrix passes for the V1 lifecycle boundaries.
-- [x] Migration cohort tests pass.
+- [ ] Complete the crash/failure-injection matrix for every promised V1 and
+  migration lifecycle boundary.
+- [ ] Complete every migration cohort and historical-gitlink test.
 - [x] `pnpm --filter ayati-git-context test` passes.
 - [x] `pnpm --filter ayati-git-context build` passes.
 - [x] Relevant `ayati-main` app/harness tests pass.
@@ -234,7 +257,35 @@ Exit gate:
 - [x] `pnpm --filter ayati-main build` passes.
 - [x] `pnpm test` passes.
 - [x] `pnpm build` passes.
-- [x] Five deterministic acceptance scenario classes pass and are inspected.
+- [x] Four deterministic typed-service scenario classes and one mocked
+  executor-level computer-use scenario pass.
+- [x] V1 selection feedback exposes repository layout/path/HEAD, mount result,
+  explicit request decision/identity/creation, and session-run binding.
+- [x] Latest-summary reduction, deterministic triage, and the readable live
+  report preserve repository/request/run/finalization/commit lifecycle state.
+- [x] Feedback accepts session-only clarification and valid no-change
+  finalization while reporting failed outcomes, missing telemetry, V1 mounts,
+  request contradictions, and commit/HEAD mismatches.
+- [ ] Restart the service inside continuation scenarios and validate recovery
+  from committed Git context.
+- [ ] Run and manually inspect the five live agent acceptance scenarios defined
+  in `testing.md`.
+
+## Reliability Closure
+
+- [ ] Derive stable Git Context idempotency keys from durable tool-call identity
+  so replay cannot create duplicate or orphan tasks/requests.
+- [ ] Implement live request and task lifecycle management.
+- [ ] Rebuild the task catalog from validated repositories under the managed
+  task root.
+- [ ] Harden migration recovery and failed-migration writer exclusion.
+- [ ] Implement typed external outcomes and real computer-use integration.
+- [ ] Pass restart, real-agent, and manual acceptance gates.
+
+Exit gate:
+
+- [ ] A user can create, close, reopen, continue, block/resume, pause/reopen,
+  and update a task without understanding sessions or repairing context state.
 
 ## Deferred After V1
 
@@ -247,6 +298,27 @@ Exit gate:
 - [ ] Multi-agent mutation/merge workflow.
 - [ ] Optional measured safety checkpoints.
 - [ ] Explicit external-change capture workflow.
+
+## Project Docs Alignment
+
+- [ ] Add one canonical stable task-repository architecture page.
+- [ ] Reconcile product overview, features, and non-goals with task/request/run
+  separation and the current V1 boundary.
+- [ ] Replace obsolete task-branch and `*_for_turn` descriptions across current
+  architecture, context, harness, modules, services, and data-flow docs.
+- [ ] Document current protocol, persistence, trust, security, and runtime-data
+  boundaries without presenting closure work as already implemented.
+- [ ] Update AI-agent guidance, common mistakes, feature workflow, and review
+  guidance.
+- [ ] Update testing, known gaps, headless scenarios, and current-state
+  priorities around Reliability Closure.
+- [ ] Complete the contradiction, source-path, tool/API-name, and link audit.
+
+Exit gate:
+
+- [ ] All current-facing `project-docs/` pages describe one consistent V1 task
+  architecture and clearly distinguish implemented behavior from unfinished
+  reliability work.
 
 ## Implementation Log
 
@@ -587,3 +659,33 @@ Add dated entries here after each verified implementation slice. Include:
 - Failure-injection coverage includes allocation/scaffold/identity recovery,
   authority and finalization interruption, commit-before-ack recognition,
   dirty/unverified changes, and migration commit-before-catalog recovery.
+
+### 2026-07-18: V1 live-test feedback lifecycle
+
+- Branch: `refactor/simple-task-repository-v1`
+- Commit: the implementation commit containing this entry.
+- Added protocol 24 selection semantics so creation and activation results
+  explicitly report `initial`, `continue`, `create`, or `legacy`, plus whether
+  the selected request was created. The model-facing tools expose the same
+  decision with stable repository path, layout, HEAD, mount, request, and run
+  binding facts.
+- Threaded one compact `taskLifecycle` through agent routing, chat and system
+  finalization, raw Git Context events, latest-summary reduction, and triage.
+  It keeps repository, request, run, and finalization identities together
+  instead of forcing an operator to reconstruct them from legacy branch and
+  promotion hints.
+- Triage now distinguishes a valid session-run clarification from premature
+  task binding. It reports missing V1 path/mount/request facts, contradictory
+  request creation, failed validation or non-done outcomes, missing commit
+  telemetry, and commit/HEAD disagreement. A failed no-change finalization can
+  correctly report `taskCommitCreated=false` without inventing a commit.
+- Upgraded `pnpm feedback:git-context` with V1 counts and one lifecycle table
+  per task run. It correlates selection and finalization, shows the stable
+  working directory and mount-free result, and fails on lifecycle or outcome
+  findings.
+- Added focused feedback reducer, triage, report, model-tool, and four-domain
+  V1 flow coverage. Final result: CLI 38 tests, Git Context 183 tests, and
+  backend 847 tests passed; the full monorepo build passed.
+- Remaining acceptance work is operational rather than a feedback-code gap:
+  run the real daemon/provider learning, website, analysis, and automation
+  scenarios across restart/day boundaries and retain their reports.

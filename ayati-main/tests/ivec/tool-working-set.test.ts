@@ -67,10 +67,11 @@ describe("ToolWorkingSetManager", () => {
     const compact = manager.getPromptSummary({ compact: true });
 
     expect(full).toContain("Loadable groups:");
-    expect(full).toContain("Skill summaries:");
-    expect(compact).toContain("Hidden tools remain available through decision_load_tools.");
+    expect(full).toContain("Loadable skills:");
+    expect(full).not.toContain("returning load_tools");
+    expect(compact).toContain("Loadable tools are indexed by exact name, focused group, or query.");
     expect(compact).not.toContain("Loadable groups:");
-    expect(compact).not.toContain("Skill summaries:");
+    expect(compact).not.toContain("Loadable skills:");
     expect(compact.length).toBeLessThan(full.length);
   });
 

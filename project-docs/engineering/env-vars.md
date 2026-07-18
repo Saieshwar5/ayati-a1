@@ -124,6 +124,11 @@ graceful shutdown, and each HTTP request.
 
 `AYATI_GIT_CONTEXT_AGENT_ID` controls the agent id used in daily session ids.
 
+The configured data root contains session repositories. Managed task
+repositories live under `<workspace>/tasks/`. Changing these paths relocates
+runtime state—it does not change repository ownership or make task data safe
+to commit with the Ayati source tree.
+
 Agent harness:
 
 ```env

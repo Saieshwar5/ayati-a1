@@ -16,6 +16,16 @@ interface ConversationRow {
   status: ConversationRef["status"];
 }
 
+interface ConversationMessageRow {
+  message_id: string;
+  conversation_id: string;
+  session_sequence: number;
+  segment_sequence: number;
+  role: ConversationMessage["role"];
+  content: string;
+  created_at: string;
+}
+
 export function appendConversationMessage(
   database: ContextDatabase,
   input: AppendConversationRequest,
@@ -70,7 +80,6 @@ export function appendConversationMessage(
       conversationId: conversation.conversationId,
       sessionSequence,
       segmentSequence,
-      sequence: segmentSequence,
       role: input.role,
       content: input.content,
       at: input.at,
@@ -86,25 +95,31 @@ export function readConversationMessages(
     "SELECT message_id, conversation_id, session_sequence, segment_sequence,",
     "role, content, created_at FROM messages",
     "WHERE conversation_id = ? ORDER BY segment_sequence",
-  ].join(" ")).all(conversationId) as unknown as Array<{
-    message_id: string;
-    conversation_id: string;
-    session_sequence: number;
-    segment_sequence: number;
-    role: ConversationMessage["role"];
-    content: string;
-    created_at: string;
-  }>;
-  return rows.map((row) => ({
-    messageId: row.message_id,
-    conversationId: row.conversation_id,
-    sessionSequence: Number(row.session_sequence),
-    segmentSequence: Number(row.segment_sequence),
-    sequence: Number(row.segment_sequence),
-    role: row.role,
-    content: row.content,
-    at: row.created_at,
-  }));
+  ].join(" ")).all(conversationId) as unknown as ConversationMessageRow[];
+  return rows.map(conversationMessage);
+}
+
+export function readConversationMessage(
+  database: ContextDatabase,
+  messageId: string,
+): ConversationMessage | undefined {
+  const row = database.prepare([
+    "SELECT message_id, conversation_id, session_sequence, segment_sequence,",
+    "role, content, created_at FROM messages WHERE message_id = ?",
+  ].join(" ")).get(messageId) as ConversationMessageRow | undefined;
+  return row ? conversationMessage(row) : undefined;
+}
+
+export function readLatestConversationMessage(
+  database: ContextDatabase,
+  conversationId: string,
+): ConversationMessage | undefined {
+  const row = database.prepare([
+    "SELECT message_id, conversation_id, session_sequence, segment_sequence,",
+    "role, content, created_at FROM messages",
+    "WHERE conversation_id = ? ORDER BY segment_sequence DESC LIMIT 1",
+  ].join(" ")).get(conversationId) as ConversationMessageRow | undefined;
+  return row ? conversationMessage(row) : undefined;
 }
 
 export function readPendingConversationContexts(
@@ -137,6 +152,24 @@ export function readConversation(
     "FROM conversation_segments WHERE conversation_id = ?",
   ].join(" ")).get(conversationId) as ConversationRow | undefined;
   return row ? conversationRef(row) : undefined;
+}
+
+export function readConversationBinding(
+  database: ContextDatabase,
+  conversationId: string,
+): { runId?: string; taskId?: string } | undefined {
+  const row = database.prepare([
+    "SELECT run_id, task_id FROM conversation_segments WHERE conversation_id = ?",
+  ].join(" ")).get(conversationId) as {
+    run_id: string | null;
+    task_id: string | null;
+  } | undefined;
+  return row
+    ? {
+        ...(row.run_id ? { runId: row.run_id } : {}),
+        ...(row.task_id ? { taskId: row.task_id } : {}),
+      }
+    : undefined;
 }
 
 export function readPendingConversations(
@@ -273,6 +306,18 @@ export function markPendingConversationsCommitted(
     "UPDATE conversation_segments SET status = 'committed', committed_sha = ?",
     "WHERE session_id = ? AND status = 'closed'",
   ].join(" ")).run(commit, sessionId);
+}
+
+function conversationMessage(row: ConversationMessageRow): ConversationMessage {
+  return {
+    messageId: row.message_id,
+    conversationId: row.conversation_id,
+    sessionSequence: Number(row.session_sequence),
+    segmentSequence: Number(row.segment_sequence),
+    role: row.role,
+    content: row.content,
+    at: row.created_at,
+  };
 }
 
 function createConversationForNewInput(

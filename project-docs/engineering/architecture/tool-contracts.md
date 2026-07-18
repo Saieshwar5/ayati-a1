@@ -58,6 +58,41 @@ portable task-relative path, derived after authorization. Relative references
 inside generated content—such as `./styles.css` in HTML or source imports—are
 normal project content and remain valid.
 
+## Task Routing Contract
+
+The model-facing routing tools are `git_context_create_task` and
+`git_context_activate_task`. They are single-use context mutations, not general
+filesystem tools.
+
+`git_context_create_task` creates a new V1 repository and initial request.
+`git_context_activate_task` selects an existing task; for V1 it must submit one
+of these explicit decisions:
+
+- `requestDecision.kind="continue"` with the exact unfinished request id
+- `requestDecision.kind="create"` with the new request details
+
+Both return the task/run identity, stable working directory, and refreshed
+harness context containing the selected request. V1 never requires a mount.
+The model must not edit `.ayati/`, commit, or manufacture task/request
+identifiers itself.
+
+Fresh model tool calls currently generate a new operation identity internally.
+Until a stable replay key is carried across retries, callers must not describe
+task creation as fully idempotent across independently repeated model calls.
+
+## Task Mutation and External Outcomes
+
+Task-scoped filesystem, shell, Python, and database paths must remain inside the
+selected task working directory unless a separate capability explicitly allows
+another boundary. Symlink canonicalization must happen before authorization.
+
+External actions—browser interaction, desktop control, remote APIs, messages,
+or changes outside the repository—cannot be proven by a task commit alone.
+Their contracts should return a compact outcome, target, timestamp, and
+verification/evidence pointer while excluding secrets and uncontrolled raw
+transcripts. The standardized durable task format for these outcomes is still
+deferred.
+
 ## Verification Path
 
 For a deterministic action:

@@ -3,6 +3,7 @@ import React, {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -26,6 +27,7 @@ type Props = {
   readonly height: number;
   readonly width: number;
   readonly keyboardScrollEnabled?: boolean;
+  readonly onLatestMessageVisible?: (messageId: string) => void;
 };
 
 export type MessageListHandle = {
@@ -184,23 +186,35 @@ function renderSegments(segments: DisplaySegment[], lineKey: string): React.JSX.
 }
 
 export const MessageList = forwardRef<MessageListHandle, Props>(function MessageList(
-  { messages, height, width, keyboardScrollEnabled = true },
+  {
+    messages,
+    height,
+    width,
+    keyboardScrollEnabled = true,
+    onLatestMessageVisible,
+  },
   ref,
 ): React.JSX.Element {
   const [scrollTop, setScrollTop] = useState(0);
+  const followOutputRef = useRef(true);
 
   const lines = useMemo(() => toDisplayLines(messages, width), [messages, width]);
 
   const viewportHeight = Math.max(1, height);
   const maxScrollTop = Math.max(0, lines.length - viewportHeight);
-  const previousMaxRef = useRef(0);
+  const latestMessage = messages.at(-1);
+  const latestMessageId = latestMessage?.id;
 
   const handleScrollByLines = useCallback((delta: number) => {
     if (lines.length === 0) {
       return;
     }
 
-    setScrollTop((value) => scrollByLines(value, delta, maxScrollTop));
+    setScrollTop((value) => {
+      const next = scrollByLines(value, delta, maxScrollTop);
+      followOutputRef.current = next >= maxScrollTop;
+      return next;
+    });
   }, [lines.length, maxScrollTop]);
 
   const handleScrollByPages = useCallback((pageDelta: number) => {
@@ -208,14 +222,20 @@ export const MessageList = forwardRef<MessageListHandle, Props>(function Message
       return;
     }
 
-    setScrollTop((value) => scrollByPages(value, pageDelta, viewportHeight, maxScrollTop));
+    setScrollTop((value) => {
+      const next = scrollByPages(value, pageDelta, viewportHeight, maxScrollTop);
+      followOutputRef.current = next >= maxScrollTop;
+      return next;
+    });
   }, [lines.length, maxScrollTop, viewportHeight]);
 
   const handleScrollToTop = useCallback(() => {
+    followOutputRef.current = maxScrollTop === 0;
     setScrollTop(0);
-  }, []);
+  }, [maxScrollTop]);
 
   const handleScrollToBottom = useCallback(() => {
+    followOutputRef.current = true;
     setScrollTop(maxScrollTop);
   }, [maxScrollTop]);
 
@@ -231,14 +251,27 @@ export const MessageList = forwardRef<MessageListHandle, Props>(function Message
     handleScrollToBottom,
   ]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setScrollTop((value) => resolveScrollTopAfterContentChange({
       scrollTop: value,
-      previousMaxScrollTop: previousMaxRef.current,
       nextMaxScrollTop: maxScrollTop,
+      followOutput: followOutputRef.current,
     }));
-    previousMaxRef.current = maxScrollTop;
   }, [maxScrollTop]);
+
+  useEffect(() => {
+    if (latestMessageId && scrollTop >= maxScrollTop) {
+      onLatestMessageVisible?.(latestMessageId);
+    }
+  }, [
+    latestMessage?.content,
+    latestMessage?.streaming,
+    latestMessageId,
+    lines.length,
+    maxScrollTop,
+    onLatestMessageVisible,
+    scrollTop,
+  ]);
 
   useInput((_, key) => {
     if (!keyboardScrollEnabled) {

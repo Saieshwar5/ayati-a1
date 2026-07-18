@@ -1,6 +1,6 @@
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseTaskCard, renderTaskCard } from "../src/tasks/task-card.js";
 import { renderTaskReferences } from "../src/tasks/task-references.js";
@@ -61,25 +61,6 @@ describe("simple task repository validator", () => {
     expect(await readFile(fixture.inboxPath, "utf8")).toBe("ignored input\n");
     expect(await git(fixture.repositoryPath, ["status", "--porcelain", "--untracked-files=all"]))
       .toBe("");
-  });
-
-  it("accepts a legacy W identity without rewriting it", async () => {
-    const taskRoot = await createTaskRoot();
-    const fixture = await createSimpleTaskFixture({
-      taskRoot,
-      taskId: "W-20260712-0001",
-      title: "Legacy website",
-      domain: "coding",
-    });
-
-    const result = await validateTaskRepository({
-      taskRoot,
-      repositoryPath: fixture.repositoryPath,
-      expectedTaskId: "W-20260712-0001",
-    });
-
-    expect(result.taskId).toBe("W-20260712-0001");
-    expect(basename(result.repositoryPath)).toBe("W-20260712-0001-legacy-website");
   });
 
   it("reports unjournaled working changes separately from committed context", async () => {

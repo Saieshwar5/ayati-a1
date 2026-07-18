@@ -1,9 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { buildStaticSystemContext } from "../app/static-prompt.js";
 import type { LlmProvider } from "../core/contracts/provider.js";
 import type { StaticContext } from "../context/static-context-cache.js";
-import { renderBasePromptSection } from "../prompt/sections/base.js";
-import { renderSkillsSection } from "../prompt/sections/skills.js";
-import { renderSoulSection } from "../prompt/sections/soul.js";
 import { estimateTextTokens } from "../prompt/token-estimator.js";
 import { devLog, devWarn, devError } from "../shared/index.js";
 import {
@@ -23,11 +21,6 @@ import type {
   ChatInboundMessage,
 } from "./types.js";
 
-interface StaticPromptSectionsCache {
-  head: string;
-  tail: string;
-}
-
 export interface IVecEngineOptions {
   provider?: LlmProvider;
   staticContext?: StaticContext;
@@ -44,7 +37,6 @@ export class IVecEngine {
   private readonly systemEventRuntime?: SystemEventRuntime;
   private staticSystemTokens = 0;
   private staticTokensReady = false;
-  private staticPromptSections?: StaticPromptSectionsCache;
 
   constructor(options?: IVecEngineOptions) {
     this.provider = options?.provider;
@@ -77,7 +69,6 @@ export class IVecEngine {
 
   invalidateStaticTokenCache(): void {
     this.staticTokensReady = false;
-    this.staticPromptSections = undefined;
   }
 
   handleMessage(clientId: string, data: unknown): void {
@@ -168,49 +159,13 @@ export class IVecEngine {
       return;
     }
 
-    const staticOnlyPrompt = this.buildStaticSystemContextText();
+    const staticOnlyPrompt = buildStaticSystemContext(this.staticContext) ?? "";
 
     const promptTokens = estimateTextTokens(staticOnlyPrompt);
 
     this.staticSystemTokens = promptTokens;
     this.staticTokensReady = true;
     devLog(`Static context tokens cached: ${this.staticSystemTokens} (prompt=${promptTokens})`);
-  }
-
-  private buildStaticSystemContextText(): string {
-    const sections = this.getStaticPromptSections();
-    return joinPromptSections([sections.head, sections.tail]);
-  }
-
-  private getStaticPromptSections(): StaticPromptSectionsCache {
-    if (this.staticPromptSections) {
-      return this.staticPromptSections;
-    }
-
-    if (!this.staticContext) {
-      this.staticPromptSections = {
-        head: "",
-        tail: "",
-      };
-      return this.staticPromptSections;
-    }
-
-    const head = joinPromptSections([
-      renderBasePromptSection(this.staticContext.basePrompt),
-      renderSoulSection(this.staticContext.soul),
-    ]);
-    const tail = joinPromptSections([
-      renderSkillsSection(this.staticContext.skillBlocks),
-      renderToolDirectorySection(
-        this.staticContext.toolDirectory,
-        this.shouldIncludeToolDirectoryInPrompt(),
-      ),
-    ]);
-    this.staticPromptSections = {
-      head,
-      tail,
-    };
-    return this.staticPromptSections;
   }
 
   private toSystemEventSummary(
@@ -313,9 +268,6 @@ export class IVecEngine {
     };
   }
 
-  private shouldIncludeToolDirectoryInPrompt(): boolean {
-    return process.env["PROMPT_INCLUDE_TOOL_DIRECTORY"] === "1";
-  }
 }
 
 function asOptionalString(value: unknown): string | undefined {
@@ -539,16 +491,6 @@ function parseAgentUiContext(raw: unknown): ChatInboundMessage["uiContext"] | un
     ...(monitor ? { monitor } : {}),
     ...(detectedAt ? { detectedAt } : {}),
   };
-}
-
-function joinPromptSections(sections: string[]): string {
-  return sections.filter((section) => section.trim().length > 0).join("\n\n").trim();
-}
-
-function renderToolDirectorySection(toolDirectory: string | undefined, includeToolDirectory: boolean): string {
-  if (!includeToolDirectory) return "";
-  if (!toolDirectory || toolDirectory.trim().length === 0) return "";
-  return `# Available Tools\n\n${toolDirectory}`;
 }
 
 export { IVecEngine as AgentEngine };

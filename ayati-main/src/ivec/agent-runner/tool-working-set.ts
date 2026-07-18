@@ -759,7 +759,7 @@ function summarizeLoadMessage(
         ? `No new tools matched the request. Missing selectors: ${missing.join(", ")}.`
         : "No tools matched the request.";
     case "invalid_request":
-      return "load_tools requires at least one non-empty selector: groups, toolNames, or query.";
+      return "decision_load_tools requires at least one non-empty selector: groups, toolNames, or query.";
     case "failed":
       return "Tool loading failed.";
     case "not_needed":

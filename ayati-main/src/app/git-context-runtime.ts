@@ -48,6 +48,14 @@ export type GitContextRoutedTurn =
       ref: string;
       mode: "created" | "activated";
       runId: string;
+      workingDirectory: string;
+      taskHead: string;
+      taskCreated: boolean;
+      requestDecision: "initial" | "continue" | "create";
+      taskRequestId?: string;
+      taskRequestStatus?: "queued" | "active" | "blocked" | "done" | "dropped";
+      taskRequestCreated: boolean;
+      sessionRunBound: boolean;
       conversationRefs: GitContextConversationSeqRange[];
       harnessContext: HarnessContextInput;
       context: ContextEngineMachineContext;
@@ -86,6 +94,7 @@ export interface GitContextRuntime {
   activateTaskTurn(input: {
     turn: GitContextPreparedTurn | null;
     taskId: string;
+    route: import("ayati-git-context").TaskRequestRoute;
     sessionRunId?: string;
     at: string;
     [key: string]: unknown;
@@ -111,6 +120,13 @@ export interface GitContextRuntime {
     taskId: string;
     taskCommit: string;
     ref: string;
+    workingDirectory?: string;
+    taskRequestId?: string;
+    outcome: "done" | "incomplete" | "failed" | "blocked" | "needs_user_input";
+    validation: "passed" | "failed" | "not_run";
+    taskHeadBefore: string;
+    taskHeadAfter: string;
+    taskCommitCreated?: boolean;
   } | null>;
   recordSessionRunStep(input: { turn: GitContextPreparedTurn | null; record: ContextRunStepRecord; [key: string]: unknown }): Promise<ContextEngineMachineContext | null>;
   recordTaskRunStep(input: { turn: GitContextPreparedTurn | null; record: ContextRunStepRecord; [key: string]: unknown }): Promise<ContextEngineMachineContext | null>;
@@ -238,7 +254,7 @@ class AppGitContextRuntime implements GitContextRuntime {
       runId: selected.run.runId,
       taskId: selected.task.taskId,
       outcome: "succeeded",
-      data: { selectionMode: "created", promoted: selected.runPromoted },
+      data: selectionFeedback(selected, "created"),
     });
     return await this.routedTurn(selected, input.turn, input.at);
   }
@@ -246,7 +262,7 @@ class AppGitContextRuntime implements GitContextRuntime {
   async activateTaskTurn(input: {
     turn: GitContextPreparedTurn | null;
     taskId: string;
-    route?: import("ayati-git-context").TaskRequestRoute;
+    route: import("ayati-git-context").TaskRequestRoute;
     sessionRunId?: string;
     at: string;
   }): Promise<GitContextRoutedTurn | null> {
@@ -259,7 +275,7 @@ class AppGitContextRuntime implements GitContextRuntime {
       trigger: "user",
       workState: initialWorkState(),
       taskId: input.taskId,
-      ...(input.route ? { route: input.route } : {}),
+      route: input.route,
       at: input.at,
     });
     this.observer.emit({
@@ -270,7 +286,7 @@ class AppGitContextRuntime implements GitContextRuntime {
       runId: selected.run.runId,
       taskId: selected.task.taskId,
       outcome: "succeeded",
-      data: { selectionMode: "activated", promoted: selected.runPromoted },
+      data: selectionFeedback(selected, "activated"),
     });
     return await this.routedTurn(selected, input.turn, input.at);
   }
@@ -311,7 +327,19 @@ class AppGitContextRuntime implements GitContextRuntime {
     result: HarnessRunResultForContext;
     at: string;
     assistantMessage?: string;
-  }): Promise<{ runId: string; taskId: string; taskCommit: string; ref: string } | null> {
+  }): Promise<{
+    runId: string;
+    taskId: string;
+    taskCommit: string;
+    ref: string;
+    workingDirectory?: string;
+    taskRequestId?: string;
+    outcome: "done" | "incomplete" | "failed" | "blocked" | "needs_user_input";
+    validation: "passed" | "failed" | "not_run";
+    taskHeadBefore: string;
+    taskHeadAfter: string;
+    taskCommitCreated?: boolean;
+  } | null> {
     if (!input.turn || !input.runId) return null;
     await this.drainWrites();
     const done = input.result.workState?.status === "done";
@@ -319,9 +347,11 @@ class AppGitContextRuntime implements GitContextRuntime {
     const needsUser = input.result.workState?.status === "needs_user_input";
     const blocked = input.result.workState?.status === "blocked";
     const active = await this.loadActiveContext(input.turn.sessionId);
+    const taskRequestId = active.run?.run.taskRequestId;
+    const workingDirectory = active.activeTask?.workingDirectory;
     const assets = completionAssets(
       input.result.verifiedCompletionAssets ?? [],
-      active.activeTask?.checkoutPath ?? active.activeTask?.workingDirectory,
+      active.activeTask?.workingDirectory,
     );
     this.observer.emit({
       level: "info",
@@ -366,7 +396,13 @@ class AppGitContextRuntime implements GitContextRuntime {
       outcome: failed ? "failed" : "succeeded",
       data: {
         completionOutcome: done ? "done" : failed ? "failed" : "incomplete",
+        workingDirectory,
+        taskRequestId,
+        validation: done ? "passed" : failed ? "failed" : "not_run",
+        taskHeadBefore: response.taskHeadBefore,
+        taskHeadAfter: response.taskHeadAfter,
         taskCommit: response.taskFinalizationCommit,
+        taskCommitCreated: response.taskCommitCreated,
       },
     });
     return {
@@ -374,6 +410,15 @@ class AppGitContextRuntime implements GitContextRuntime {
       taskId: response.taskId,
       taskCommit: response.taskFinalizationCommit,
       ref: "refs/heads/main",
+      ...(workingDirectory ? { workingDirectory } : {}),
+      ...(taskRequestId ? { taskRequestId } : {}),
+      outcome: response.outcome,
+      validation: done ? "passed" : failed ? "failed" : "not_run",
+      taskHeadBefore: response.taskHeadBefore,
+      taskHeadAfter: response.taskHeadAfter,
+      ...(response.taskCommitCreated !== undefined
+        ? { taskCommitCreated: response.taskCommitCreated }
+        : {}),
     };
   }
 
@@ -407,11 +452,15 @@ class AppGitContextRuntime implements GitContextRuntime {
         "Run-bound assistant responses must be persisted by session or task finalization.",
       );
     }
-    const response = await this.options.service.appendConversation({
+    if (!input.turn.currentMessageId) {
+      throw new Error("Prepared turn message identity is required for direct completion.");
+    }
+    const response = await this.options.service.completeContextTurn({
       requestId: randomUUID(),
       sessionId: input.turn.sessionId,
-      role: "assistant",
-      content: input.message,
+      conversationId: input.turn.conversationId,
+      userMessageId: input.turn.currentMessageId,
+      assistantContent: input.message,
       at: input.at,
     });
     const projection = this.contextCache.appendConversation({
@@ -472,49 +521,36 @@ class AppGitContextRuntime implements GitContextRuntime {
     content: string,
     at: string,
   ): Promise<GitContextPreparedTurn> {
-    const ensured = await this.options.service.ensureActiveSession({
+    const prepared = await this.options.service.prepareContextTurn({
       requestId: randomUUID(),
       date: localDate(at, this.options.timezone),
       timezone: this.options.timezone,
       agentId: this.options.agentId,
-      at,
-    });
-    const appended = await this.options.service.appendConversation({
-      requestId: randomUUID(),
-      sessionId: ensured.session.sessionId,
       role,
       content,
       at,
     });
-    const incrementallyUpdated = this.contextCache.appendConversation({
-      sessionId: ensured.session.sessionId,
-      conversation: appended.conversation,
-      message: appended.message,
-      contextRevision: appended.contextRevision,
-      pendingDigest: appended.pendingDigest,
-    });
-    const context = incrementallyUpdated
-      ?? await this.refreshActiveContext(ensured.session.sessionId);
+    const context = this.contextCache.set(prepared.session.sessionId, prepared.context);
     this.observer.emit({
       level: "debug",
       event: "harness_context_turn_prepared",
-      sessionId: ensured.session.sessionId,
+      sessionId: prepared.session.sessionId,
       outcome: "succeeded",
       data: {
-        source: incrementallyUpdated ? "incremental_cache" : "service_snapshot",
-        contextRevision: appended.contextRevision,
-        ...this.contextCache.getStats(ensured.session.sessionId),
+        source: "prepared_service_snapshot",
+        contextRevision: prepared.context.contextRevision,
+        ...this.contextCache.getStats(prepared.session.sessionId),
       },
     });
     return {
       status: "ready",
-      sessionId: ensured.session.sessionId,
-      repoPath: ensured.session.repositoryPath,
-      initialized: ensured.created,
-      messageSeq: appended.conversation.sequence,
-      currentMessageId: appended.message.messageId,
-      currentMessageSessionSequence: appended.message.sessionSequence,
-      conversationId: appended.conversation.conversationId,
+      sessionId: prepared.session.sessionId,
+      repoPath: prepared.session.repositoryPath,
+      initialized: prepared.sessionCreated,
+      messageSeq: prepared.conversation.sequence,
+      currentMessageId: prepared.message.messageId,
+      currentMessageSessionSequence: prepared.message.sessionSequence,
+      conversationId: prepared.conversation.conversationId,
       inputRole: role,
       context,
     };
@@ -542,6 +578,16 @@ class AppGitContextRuntime implements GitContextRuntime {
       ref: "refs/heads/" + selected.task.branch,
       mode: selected.taskCreated ? "created" : "activated",
       runId: selected.run.runId,
+      workingDirectory: selected.context.workingDirectory,
+      taskHead: selected.task.head,
+      taskCreated: selected.taskCreated,
+      requestDecision: selected.taskRequestDecision,
+      ...(selected.run.taskRequestId ? { taskRequestId: selected.run.taskRequestId } : {}),
+      ...(selected.context.currentRequest?.status
+        ? { taskRequestStatus: selected.context.currentRequest.status }
+        : {}),
+      taskRequestCreated: selected.taskRequestCreated,
+      sessionRunBound: selected.sessionRunBound,
       conversationRefs: [{ fromSeq: turn.messageSeq, toSeq: turn.messageSeq }],
       harnessContext: { contextEngine: context },
       context,
@@ -709,6 +755,24 @@ function initialWorkState(): RunWorkStateInput {
   };
 }
 
+function selectionFeedback(
+  selected: SelectedTaskRunResponse,
+  selectionMode: "created" | "activated",
+): Record<string, unknown> {
+  return {
+    selectionMode,
+    workingDirectory: selected.context.workingDirectory,
+    branch: selected.task.branch,
+    taskHead: selected.task.head,
+    taskCreated: selected.taskCreated,
+    taskRequestDecision: selected.taskRequestDecision,
+    taskRequestId: selected.run.taskRequestId,
+    taskRequestStatus: selected.context.currentRequest?.status,
+    taskRequestCreated: selected.taskRequestCreated,
+    sessionRunBound: selected.sessionRunBound,
+  };
+}
+
 function toRunWorkState(value: unknown): RunWorkStateInput {
   if (!value || typeof value !== "object" || Array.isArray(value)) return initialWorkState();
   const state = value as Record<string, unknown>;
@@ -734,22 +798,22 @@ function completedSessionWorkState(value: unknown): RunWorkStateInput {
 
 function completionAssets(
   assets: TaskAssetRecord[],
-  checkoutPath: string | undefined,
+  workingDirectory: string | undefined,
 ) {
   return assets
     .filter((asset) => asset.role === "generated" || asset.role === "output")
     .filter((asset) => Boolean(asset.path))
     .map((asset) => ({
-      path: taskRelativePath(asset.path!, checkoutPath),
+      path: taskRelativePath(asset.path!, workingDirectory),
       kind: asset.kind === "directory" ? "directory" as const : "file" as const,
       description: asset.description ?? asset.name,
       verified: true,
     }));
 }
 
-function taskRelativePath(path: string, checkoutPath?: string): string {
-  if (!checkoutPath || !isAbsolute(path)) return path;
-  const candidate = relative(checkoutPath, path);
+function taskRelativePath(path: string, workingDirectory?: string): string {
+  if (!workingDirectory || !isAbsolute(path)) return path;
+  const candidate = relative(workingDirectory, path);
   return candidate === "" ? "." : candidate;
 }
 

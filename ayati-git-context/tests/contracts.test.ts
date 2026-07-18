@@ -5,17 +5,14 @@ import {
   isActivateTaskRunRequest,
   isAppendConversationRequest,
   isBindTaskAttachmentsRequest,
-  isCheckpointMutationRequest,
-  isCreateTaskRequest,
+  isCreateTaskRunRequest,
   isEnsureActiveSessionRequest,
   isFinalizeSessionRunRequest,
   isFinalizeTaskRunRequest,
-  isMountTaskRequest,
   isPlanTaskRequestRouteRequest,
   isRecordRunStepRequest,
   isRecordSessionAttachmentsRequest,
   isRequestEnvelope,
-  isSnapshotTaskRunEvidenceRequest,
   isStartRunRequest,
   isVerifyMutationRequest,
 } from "../src/contracts.js";
@@ -77,37 +74,46 @@ describe("Git Context Engine contracts", () => {
     }
   });
 
-  it("validates bounded task creation requests", () => {
-    expect(isCreateTaskRequest({
+  it("validates bounded V1 task-run creation requests", () => {
+    const selection = {
+      conversationId: "C-000001",
+      trigger: "user" as const,
+      workState: emptyRunWorkState(),
+    };
+    expect(isCreateTaskRunRequest({
       requestId: "REQ-task",
       sessionId: "S-20260712-local",
       title: "Coffee Shop Website",
       objective: "Build a responsive coffee-shop website.",
-      placement: { mode: "requested", workingDirectory: "workspace/coffee-shop" },
-      at: "2026-07-12T10:00:00+05:30",
-    })).toBe(true);
-    expect(isCreateTaskRequest({
-      requestId: "REQ-managed-task",
-      sessionId: "S-20260712-local",
-      title: "Managed Task",
-      objective: "Build something in an Ayati-managed directory.",
       placement: { mode: "managed" },
       at: "2026-07-12T10:00:00+05:30",
+      ...selection,
     })).toBe(true);
-    expect(isCreateTaskRequest({
+    expect(isCreateTaskRunRequest({
+      requestId: "REQ-requested-task",
+      sessionId: "S-20260712-local",
+      title: "Requested Task",
+      objective: "This placement is contract-valid but rejected by the V1 lifecycle policy.",
+      placement: { mode: "requested", workingDirectory: "workspace/coffee-shop" },
+      at: "2026-07-12T10:00:00+05:30",
+      ...selection,
+    })).toBe(true);
+    expect(isCreateTaskRunRequest({
       requestId: "REQ-missing-placement",
       sessionId: "S-20260712-local",
       title: "Missing Placement",
       objective: "This request must be rejected.",
       at: "2026-07-12T10:00:00+05:30",
+      ...selection,
     })).toBe(false);
-    expect(isCreateTaskRequest({
+    expect(isCreateTaskRunRequest({
       requestId: "REQ-task",
       sessionId: "S-20260712-local",
       title: " ",
       objective: "Build something.",
       placement: { mode: "managed" },
       at: "2026-07-12T10:00:00+05:30",
+      ...selection,
     })).toBe(false);
   });
 
@@ -146,28 +152,12 @@ describe("Git Context Engine contracts", () => {
     })).toBe(false);
     expect(isPlanTaskRequestRouteRequest({
       ...base,
-      taskId: "W-20260717-0001",
+      taskId: "X-20260717-0001",
       route: {
         kind: "continue_active_request",
         requestId: "R-0001",
-        reason: "Legacy tasks do not use this writer.",
+        reason: "Unsupported task identities do not use this writer.",
       },
-    })).toBe(false);
-  });
-
-  it("validates task mount identity and expected HEAD", () => {
-    expect(isMountTaskRequest({
-      requestId: "REQ-mount",
-      sessionId: "S-20260712-local",
-      taskId: "W-20260712-0001",
-      expectedTaskHead: "a".repeat(40),
-      at: "2026-07-12T10:01:00+05:30",
-    })).toBe(true);
-    expect(isMountTaskRequest({
-      requestId: "REQ-mount",
-      sessionId: "S-20260712-local",
-      taskId: "../../escape",
-      at: "2026-07-12T10:01:00+05:30",
     })).toBe(false);
   });
 
@@ -206,13 +196,13 @@ describe("Git Context Engine contracts", () => {
       at: "2026-07-17T10:01:00+05:30",
     })).toBe(true);
     expect(isBindTaskAttachmentsRequest({
-      requestId: "REQ-bind-legacy-task",
+      requestId: "REQ-bind-invalid-prefix",
       sessionId: "S-20260717-local",
       conversationId: "C-000001",
       runId: "R-20260717-0001",
-      taskId: "W-20260717-0001",
+      taskId: "X-20260717-0001",
       at: "2026-07-17T10:01:00+05:30",
-    })).toBe(true);
+    })).toBe(false);
     expect(isBindTaskAttachmentsRequest({
       requestId: "REQ-bind-invalid-task",
       sessionId: "S-20260717-local",
@@ -244,10 +234,10 @@ describe("Git Context Engine contracts", () => {
       requestId: "REQ-authority",
       sessionId: "S-20260712-local",
       runId: "R-20260712-0001",
-      taskId: "W-20260712-0001",
+      taskId: "X-20260712-0001",
       targets: [{ path: "src/app.ts", kind: "file" }],
       at: "2026-07-12T10:02:00+05:30",
-    })).toBe(true);
+    })).toBe(false);
     expect(isAcquireMutationAuthorityRequest({
       requestId: "REQ-v1-authority",
       sessionId: "S-20260717-local",
@@ -262,7 +252,7 @@ describe("Git Context Engine contracts", () => {
       requestId: "REQ-authority",
       sessionId: "S-20260712-local",
       runId: "R-20260712-0001",
-      taskId: "W-20260712-0001",
+      taskId: "X-20260712-0001",
       targets: [],
       at: "2026-07-12T10:02:00+05:30",
     })).toBe(false);
@@ -273,24 +263,6 @@ describe("Git Context Engine contracts", () => {
       toolStatus: "completed",
       at: "2026-07-12T10:03:00+05:30",
     })).toBe(true);
-    expect(isCheckpointMutationRequest({
-      requestId: "REQ-checkpoint",
-      authorityId: "A-1",
-      lockToken: "secret-token",
-      purpose: "Create the application entry point.",
-      conversationId: "C-000001",
-      conversationHash: "sha256:" + "a".repeat(64),
-      at: "2026-07-12T10:04:00+05:30",
-    })).toBe(true);
-    expect(isCheckpointMutationRequest({
-      requestId: "REQ-checkpoint",
-      authorityId: "A-1",
-      lockToken: "secret-token",
-      purpose: "Create the application entry point.",
-      conversationId: "C-000001",
-      conversationHash: "not-a-hash",
-      at: "2026-07-12T10:04:00+05:30",
-    })).toBe(false);
   });
 
   it("validates run start requests", () => {
@@ -310,23 +282,6 @@ describe("Git Context Engine contracts", () => {
     })).toBe(false);
   });
 
-  it("validates task-run evidence snapshot ownership", () => {
-    expect(isSnapshotTaskRunEvidenceRequest({
-      requestId: "REQ-evidence",
-      sessionId: "S-20260712-local",
-      runId: "R-20260712-0001",
-      taskId: "W-20260712-0001",
-      at: "2026-07-12T10:05:00+05:30",
-    })).toBe(true);
-    expect(isSnapshotTaskRunEvidenceRequest({
-      requestId: "REQ-evidence",
-      sessionId: "S-20260712-local",
-      runId: "R-20260712-0001",
-      taskId: "escape",
-      at: "2026-07-12T10:05:00+05:30",
-    })).toBe(false);
-  });
-
   it("validates bounded task-run finalization outcomes", () => {
     const completeAssistantResponse = "complete assistant response\n".repeat(1_000)
       + "END-OF-ASSISTANT-RESPONSE";
@@ -334,7 +289,7 @@ describe("Git Context Engine contracts", () => {
       requestId: "REQ-finalize",
       sessionId: "S-20260712-local",
       runId: "R-20260712-0001",
-      taskId: "W-20260712-0001",
+      taskId: "X-20260712-0001",
       outcome: "incomplete",
       conversationSummary: "The user requested a task update and reviewed the partial result.",
       summary: "Created the verified files but validation still needs work.",
@@ -349,7 +304,7 @@ describe("Git Context Engine contracts", () => {
       },
       assistantResponse: completeAssistantResponse,
       at: "2026-07-12T10:06:00+05:30",
-    })).toBe(true);
+    })).toBe(false);
     expect(isFinalizeTaskRunRequest({
       requestId: "REQ-finalize-v1",
       sessionId: "S-20260717-local",
@@ -373,7 +328,7 @@ describe("Git Context Engine contracts", () => {
       requestId: "REQ-finalize",
       sessionId: "S-20260712-local",
       runId: "R-20260712-0001",
-      taskId: "W-20260712-0001",
+      taskId: "X-20260712-0001",
       outcome: "almost_done",
       conversationSummary: "Invalid outcome conversation.",
       summary: "Invalid outcome.",

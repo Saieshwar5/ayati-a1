@@ -4,7 +4,6 @@ import type {
   AcquireMutationAuthorityResponse,
   MutationAuthority,
   MutationProvenance,
-  SessionRef,
   TaskCatalogEntry,
   VerifyMutationRequest,
   VerifyMutationResponse,
@@ -25,12 +24,9 @@ import {
 } from "../git/mutation-provenance.js";
 import { runGit } from "../git/git-process.js";
 import { readSimpleTaskMutationState } from "../git/simple-task-repository-transaction.js";
-import { ensureTaskSubmodule } from "../git/task-submodule.js";
-import { verifyCanonicalTaskRepository } from "../git/task-repository.js";
 import { resolveMutationTargets } from "../mutations/path-authority.js";
 import {
   assertTaskMutationUnlocked,
-  hasMutationAuthorityForRun,
   insertMutationAuthority,
   readMutationAuthority,
   updateMutationAuthorityVerification,
@@ -41,11 +37,7 @@ import {
   readTaskRequestRoutePlan,
   updateTaskRequestRoutePlan,
 } from "../repositories/task-request-route-plan-records.js";
-import { readTaskMount } from "../repositories/task-mount-records.js";
-import {
-  readTaskCatalogEntry,
-  readTaskInitialization,
-} from "../repositories/task-records.js";
+import { readTaskCatalogEntry } from "../repositories/task-records.js";
 import { validateTaskRepository } from "../tasks/task-repository-validator.js";
 import { resolvePlannedTaskRequestState } from "../tasks/planned-task-request.js";
 
@@ -54,13 +46,19 @@ const AUTHORITY_LIFETIME_MS = 15 * 60 * 1_000;
 export class MutationBoundaryService {
   constructor(
     private readonly database: ContextDatabase,
-    private readonly taskRoot?: string,
+    private readonly taskRoot: string,
   ) {}
 
   async acquire(
     input: AcquireMutationAuthorityRequest,
-    session: SessionRef,
   ): Promise<AcquireMutationAuthorityResponse> {
+    if (!/^T-\d{8}-\d{4}$/.test(input.taskId)) {
+      throw new GitContextServiceError({
+        code: "INVALID_REQUEST",
+        message: "Mutation authority supports only V1 T-* task repositories.",
+        details: { taskId: input.taskId },
+      });
+    }
     const completed = readCompletedIdempotent<AcquireMutationAuthorityResponse>({
       database: this.database,
       requestId: input.requestId,
@@ -74,103 +72,13 @@ export class MutationBoundaryService {
     if (!task || task.status !== "active") {
       throw mutationRequiresTask(input, "Mutation requires an active task.");
     }
-    if (task.layoutVersion === "simple_repository_v1") {
-      return await this.acquireSimpleTask(input, task);
-    }
-    const taskRecord = readTaskInitialization(this.database, input.taskId);
-    const mount = readTaskMount(this.database, input.sessionId, input.taskId);
-    if (!taskRecord) {
-      throw mutationRequiresTask(input, "Mutation requires an initialized task.");
-    }
-    if (task.layoutVersion !== "legacy_independent_v0") {
-      throw new GitContextServiceError({
-        code: "SERVICE_NOT_READY",
-        message: "Task repository layout does not have a mutation adapter.",
-        details: { taskId: task.taskId, layoutVersion: task.layoutVersion },
-      });
-    }
-    assertTaskMutationUnlocked(this.database, input.taskId, input.at);
-    if (!mount || mount.status !== "ready" || !mount.mountedHead) {
-      throw mutationRequiresTask(input, "Mutation requires a ready task checkout mount.");
-    }
-    if (input.expectedTaskHead && input.expectedTaskHead !== task.head) {
-      throw new GitContextServiceError({
-        code: "TASK_HEAD_MISMATCH",
-        message: "Task HEAD does not match the mutation request expectation.",
-        retryable: true,
-        details: {
-          taskId: task.taskId,
-          expectedHead: input.expectedTaskHead,
-          actualHead: task.head,
-        },
-      });
-    }
-    if (mount.mountedHead !== task.head) {
-      throw new GitContextServiceError({
-        code: "TASK_HEAD_MISMATCH",
-        message: "Mounted checkout HEAD does not match the task catalog.",
-        retryable: true,
-        details: {
-          taskId: task.taskId,
-          mountedHead: mount.mountedHead,
-          taskHead: task.head,
-        },
-      });
-    }
-    await verifyCanonicalTaskRepository(taskRecord);
-    if (!hasMutationAuthorityForRun(this.database, input.runId)) {
-      await ensureTaskSubmodule({ session, task, mount });
-    } else {
-      await verifyActiveRunCheckout(mount.workingPath, task.head, task.branch, task.taskId);
-    }
-    const targets = await resolveMutationTargets(mount.workingPath, input.targets);
-    const token = randomBytes(32).toString("base64url");
-    const expiresAt = expirationTime(input.at);
-
-    return executeIdempotent({
-      database: this.database,
-      requestId: input.requestId,
-      operation: "acquire_mutation_authority",
-      payload: input,
-      now: input.at,
-      execute: () => {
-        bindActiveRunToTask(
-          this.database,
-          input.sessionId,
-          input.runId,
-          input.taskId,
-        );
-        const record = insertMutationAuthority(this.database, {
-          sessionId: input.sessionId,
-          runId: input.runId,
-          taskId: input.taskId,
-          repositoryLayout: task.layoutVersion,
-          repositoryPath: mount.workingPath,
-          checkoutPath: mount.workingPath,
-          canonicalRepository: task.repositoryPath,
-          branch: task.branch,
-          beforeHead: task.head,
-          lockTokenHash: tokenHash(token),
-          targets,
-          acquiredAt: input.at,
-          expiresAt,
-        });
-        return { authority: mutationAuthority(record, token) };
-      },
-    });
+    return await this.acquireSimpleTask(input, task);
   }
 
   private async acquireSimpleTask(
     input: AcquireMutationAuthorityRequest,
     task: TaskCatalogEntry,
   ): Promise<AcquireMutationAuthorityResponse> {
-    if (!this.taskRoot) {
-      throw new GitContextServiceError({
-        code: "SERVICE_NOT_READY",
-        message: "V1 mutation authority requires the configured task root.",
-        details: { taskId: task.taskId },
-      });
-    }
     if (!input.expectedTaskHead) {
       throw new GitContextServiceError({
         code: "INVALID_REQUEST",
@@ -222,13 +130,8 @@ export class MutationBoundaryService {
           sessionId: input.sessionId,
           runId: input.runId,
           taskId: input.taskId,
-          repositoryLayout: "simple_repository_v1",
           repositoryPath: before.repositoryPath,
           taskRequestId: input.taskRequestId,
-          // Compatibility storage for pre-V1 columns. V1 behavior uses only
-          // repositoryPath and never treats this as a mount/bare pair.
-          checkoutPath: before.repositoryPath,
-          canonicalRepository: before.repositoryPath,
           branch: before.branch,
           beforeHead: before.head,
           lockTokenHash: tokenHash(token),
@@ -323,7 +226,7 @@ export class MutationBoundaryService {
       throw taskHeadMismatch(input.taskId, input.expectedTaskHead, task.head);
     }
     const validation = await validateTaskRepository({
-      taskRoot: this.taskRoot!,
+      taskRoot: this.taskRoot,
       repositoryPath: task.repositoryPath,
       expectedTaskId: task.taskId,
       requestReadMode: "all",
@@ -361,15 +264,6 @@ export class MutationBoundaryService {
   }
 
   async verify(input: VerifyMutationRequest): Promise<VerifyMutationResponse> {
-    const completed = readCompletedIdempotent<VerifyMutationResponse>({
-      database: this.database,
-      requestId: input.requestId,
-      operation: "verify_mutation",
-      payload: input,
-    });
-    if (completed) {
-      return completed;
-    }
     const authority = readMutationAuthority(this.database, input.authorityId);
     if (!authority) {
       throw new GitContextServiceError({
@@ -378,6 +272,21 @@ export class MutationBoundaryService {
         details: { authorityId: input.authorityId },
       });
     }
+    if (!/^T-\d{8}-\d{4}$/.test(authority.taskId)
+      || !authority.taskRequestId) {
+      throw new GitContextServiceError({
+        code: "INVALID_REQUEST",
+        message: "Mutation verification supports only V1 task authorities.",
+        details: { authorityId: authority.authorityId, taskId: authority.taskId },
+      });
+    }
+    const completed = readCompletedIdempotent<VerifyMutationResponse>({
+      database: this.database,
+      requestId: input.requestId,
+      operation: "verify_mutation",
+      payload: input,
+    });
+    if (completed) return completed;
     verifyMutationLockToken(authority, input.lockToken);
     if (authority.status !== "active") {
       throw new GitContextServiceError({
@@ -390,20 +299,16 @@ export class MutationBoundaryService {
     const provenance = await readMutationProvenance(
       authority.repositoryPath,
       authority.targets,
-      authority.repositoryLayout === "simple_repository_v1" ? "head" : "index",
-      authority.repositoryLayout === "simple_repository_v1"
-        ? {
-            excludedPathPrefixes: [".ayati/inbox/"],
-            includedPaths: [".ayati/inbox/.gitkeep"],
-          }
-        : {},
+      "head",
+      {
+        excludedPathPrefixes: [".ayati/inbox/"],
+        includedPaths: [".ayati/inbox/.gitkeep"],
+      },
     );
-    const stateFingerprint = authority.repositoryLayout === "simple_repository_v1"
-      ? await readSimpleTaskMutationState(
-          authority.repositoryPath,
-          mutationPaths(provenance),
-        )
-      : undefined;
+    const stateFingerprint = await readSimpleTaskMutationState(
+      authority.repositoryPath,
+      mutationPaths(provenance),
+    );
     return executeIdempotent({
       database: this.database,
       requestId: input.requestId,
@@ -478,8 +383,7 @@ export class MutationBoundaryService {
     let result: Omit<VerifyMutationResponse, "authorityId" | "provenance">;
     if (!hasChanges) {
       result = {
-        status: authority.repositoryLayout === "simple_repository_v1"
-          && input.toolStatus === "completed"
+        status: input.toolStatus === "completed"
           ? "verified"
           : "released",
         verified: input.toolStatus === "completed",
@@ -522,23 +426,6 @@ export class MutationBoundaryService {
   }
 }
 
-async function verifyActiveRunCheckout(
-  checkoutPath: string,
-  expectedHead: string,
-  expectedBranch: string,
-  taskId: string,
-): Promise<void> {
-  const head = await runGit(["rev-parse", "HEAD"], { cwd: checkoutPath });
-  const branch = await runGit(["symbolic-ref", "--short", "HEAD"], { cwd: checkoutPath });
-  if (head !== expectedHead || branch !== expectedBranch) {
-    throw new GitContextServiceError({
-      code: "TASK_HEAD_MISMATCH",
-      message: "Active task-run checkout identity changed between verified steps.",
-      details: { taskId, expectedHead, actualHead: head, expectedBranch, actualBranch: branch },
-    });
-  }
-}
-
 function mutationAuthority(
   record: MutationAuthorityRecord,
   token: string,
@@ -549,13 +436,8 @@ function mutationAuthority(
     sessionId: record.sessionId,
     runId: record.runId,
     taskId: record.taskId,
-    repositoryLayout: record.repositoryLayout,
     repositoryPath: record.repositoryPath,
     ...(record.taskRequestId ? { taskRequestId: record.taskRequestId } : {}),
-    ...(record.repositoryLayout === "legacy_independent_v0" ? {
-      checkoutPath: record.checkoutPath,
-      canonicalRepository: record.canonicalRepository,
-    } : {}),
     branch: record.branch,
     beforeHead: record.beforeHead,
     targets: record.targets,

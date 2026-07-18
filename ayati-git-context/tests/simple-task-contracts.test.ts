@@ -1,4 +1,8 @@
 import { describe, expect, it } from "vitest";
+import {
+  isAcquireMutationAuthorityRequest,
+  isActivateTaskRunRequest,
+} from "../src/contracts.js";
 import { GitContextServiceError } from "../src/errors.js";
 import { parseTaskCard, renderTaskCard, type TaskCard } from "../src/tasks/task-card.js";
 import {
@@ -26,6 +30,63 @@ import {
 } from "../src/tasks/task-request.js";
 
 describe("simple task repository contracts", () => {
+  it("requires explicit V1 request identity while allowing zero-file authority", () => {
+    const activation = {
+      requestId: "REQ-activate",
+      sessionId: "S-20260717-local",
+      conversationId: "C-000001",
+      runId: "RUN-000001",
+      trigger: "user",
+      workState: emptyRunWorkState(),
+      taskId: "T-20260717-0001",
+      expectedTaskHead: "a".repeat(40),
+      at: "2026-07-17T10:00:00+05:30",
+    };
+    expect(isActivateTaskRunRequest(activation)).toBe(false);
+    expect(isActivateTaskRunRequest({
+      ...activation,
+      route: {
+        kind: "continue_active_request",
+        requestId: "R-0001",
+        reason: "Continue the exact unfinished request.",
+      },
+    })).toBe(true);
+    expect(isActivateTaskRunRequest({
+      ...activation,
+      taskId: "X-20260717-0001",
+      route: {
+        kind: "continue_active_request",
+        requestId: "R-0001",
+        reason: "Unsupported task identities must not enter the runtime.",
+      },
+    })).toBe(false);
+
+    const authority = {
+      requestId: "REQ-authority",
+      sessionId: "S-20260717-local",
+      runId: "RUN-000001",
+      taskId: "T-20260717-0001",
+      taskRequestId: "R-0001",
+      expectedTaskHead: "a".repeat(40),
+      targets: [],
+      at: "2026-07-17T10:01:00+05:30",
+    };
+    expect(isAcquireMutationAuthorityRequest(authority)).toBe(true);
+    expect(isAcquireMutationAuthorityRequest({
+      ...authority,
+      taskRequestId: undefined,
+    })).toBe(false);
+    expect(isAcquireMutationAuthorityRequest({
+      ...authority,
+      expectedTaskHead: undefined,
+    })).toBe(false);
+    expect(isAcquireMutationAuthorityRequest({
+      ...authority,
+      taskId: "X-20260717-0001",
+      targets: [{ path: "README.md", kind: "file" }],
+    })).toBe(false);
+  });
+
   it("round-trips the bounded living task card deterministically", () => {
     const card = taskCard();
     const rendered = renderTaskCard(card);
@@ -156,8 +217,6 @@ describe("simple task repository contracts", () => {
   it("provides deterministic directory, filename, path, and scoped ID helpers", () => {
     expect(taskDirectoryName("T-20260717-0001", "Learn Machine Learning"))
       .toBe("T-20260717-0001-learn-machine-learning");
-    expect(taskDirectoryName("W-20260712-0001", "Legacy task"))
-      .toBe("W-20260712-0001-legacy-task");
     expect(requestFileName("R-0002", "Practice Logistic Regression"))
       .toBe("R-0002-practice-logistic-regression.md");
     expect(nextRequestId(["R-0001", "R-0003"])).toBe("R-0004");
@@ -232,4 +291,18 @@ function expectServiceError(run: () => unknown, code: GitContextServiceError["co
     expect(error).toBeInstanceOf(GitContextServiceError);
     expect((error as GitContextServiceError).code).toBe(code);
   }
+}
+
+function emptyRunWorkState() {
+  return {
+    status: "not_done",
+    summary: "",
+    openWork: [],
+    blockers: [],
+    facts: [],
+    evidence: [],
+    artifacts: [],
+    nextStep: null,
+    userInputNeeded: [],
+  };
 }

@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RunWorkStateInput } from "../src/contracts.js";
 import { ContextDatabase } from "../src/database/database.js";
+import { GitContextObserver, type GitContextObservabilityEvent } from "../src/observability.js";
 import { SqliteGitContextService } from "../src/services/sqlite-git-context-service.js";
 import { validateTaskRepository } from "../src/tasks/task-repository-validator.js";
 
@@ -21,6 +22,73 @@ afterEach(async () => {
 });
 
 describe("V1 task end-to-end continuations", () => {
+  it("binds one existing session run without creating session-owned task state", async () => {
+    const fixture = await createFixture();
+    const sessionBefore = await fixture.service.getActiveContext({ sessionId: fixture.sessionId });
+    const session = sessionBefore.session?.session;
+    if (!session) throw new Error("Expected an active session.");
+    const conversation = await fixture.service.appendConversation({
+      requestId: "REQ-v1-binding-conversation",
+      sessionId: fixture.sessionId,
+      role: "user",
+      content: "Create one durable V1 task after this session run starts.",
+      at,
+    });
+    const sessionRun = await fixture.service.startRun({
+      requestId: "REQ-v1-binding-session-run",
+      sessionId: fixture.sessionId,
+      conversationId: conversation.conversation.conversationId,
+      trigger: "user",
+      workState: initialWorkState(),
+      at: "2026-07-17T19:00:01+05:30",
+    });
+
+    const selected = await fixture.service.createTaskRun({
+      requestId: "REQ-v1-binding-create",
+      sessionId: fixture.sessionId,
+      conversationId: conversation.conversation.conversationId,
+      runId: sessionRun.run.runId,
+      trigger: "user",
+      workState: initialWorkState(),
+      title: "Bound V1 Task",
+      objective: "Prove that task selection binds the existing run without a mount.",
+      placement: { mode: "managed" },
+      at: "2026-07-17T19:00:02+05:30",
+    });
+
+    expect(selected).toMatchObject({
+      sessionRunBound: true,
+      taskRequestDecision: "initial",
+      taskRequestCreated: true,
+      run: {
+        runId: sessionRun.run.runId,
+        runClass: "task",
+        taskRequestId: "R-0001",
+      },
+    });
+    expect(selected.task.taskId).toMatch(/^T-\d{8}-\d{4}$/);
+    expect(selected.task.repositoryPath).toBe(selected.task.workingPath);
+    expect(selected.context.workingDirectory).toBe(selected.task.repositoryPath);
+    expect(await lstat(join(session.repositoryPath, "tasks", selected.task.taskId))
+      .catch(() => undefined)).toBeUndefined();
+    expect(await readFile(join(session.repositoryPath, ".gitmodules"), "utf8")
+      .catch(() => undefined)).toBeUndefined();
+    expect((await fixture.service.getActiveContext({ sessionId: fixture.sessionId }))
+      .session?.session.head).toBe(session.head);
+
+    await expect(fixture.service.activateTaskRun({
+      requestId: "REQ-v1-binding-missing-route",
+      sessionId: fixture.sessionId,
+      conversationId: conversation.conversation.conversationId,
+      runId: sessionRun.run.runId,
+      trigger: "user",
+      workState: initialWorkState(),
+      taskId: selected.task.taskId,
+      expectedTaskHead: selected.task.head,
+      at: "2026-07-17T19:00:03+05:30",
+    })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+  });
+
   it.each([
     {
       name: "learning",
@@ -90,13 +158,20 @@ describe("V1 task end-to-end continuations", () => {
     }
 
     expect(selected).toMatchObject({
-      repositoryLayout: "simple_repository_v1",
-      mountCreated: false,
       run: { taskRequestId: "R-0001" },
     });
-    expect(selected.mount).toBeUndefined();
-    expect(fixture.database.prepare("SELECT COUNT(*) AS count FROM session_task_mounts").get())
-      .toEqual({ count: 0 });
+    expect(fixture.events.find((event) =>
+      event.event === "task_run_started" && event.taskId === selected.task.taskId
+    )).toMatchObject({
+      data: {
+        mode: "created",
+        workingDirectory: selected.task.workingPath,
+        taskCreated: true,
+        taskRequestDecision: "initial",
+        taskRequestId: "R-0001",
+        taskRequestCreated: true,
+      },
+    });
     const first = await finishRun(fixture, {
       runId: selected.run.runId,
       taskId: selected.task.taskId,
@@ -107,6 +182,18 @@ describe("V1 task end-to-end continuations", () => {
         ? "Approved external action confirmed as APP-1042."
         : "Completed the first " + scenario.name + " outcome.",
       requestPrefix: scenario.name + "-first",
+    });
+    expect(fixture.events.find((event) =>
+      event.event === "task_finalization_completed" && event.runId === selected.run.runId
+    )).toMatchObject({
+      data: {
+        workingDirectory: selected.task.workingPath,
+        taskRequestId: "R-0001",
+        taskHeadBefore: selected.task.head,
+        taskHeadAfter: first.taskHeadAfter,
+        taskCommit: first.taskFinalizationCommit,
+        taskCommitCreated: true,
+      },
     });
 
     const laterConversation = await fixture.service.appendConversation({
@@ -137,11 +224,21 @@ describe("V1 task end-to-end continuations", () => {
 
     expect(later).toMatchObject({
       task: { taskId: selected.task.taskId },
-      repositoryLayout: "simple_repository_v1",
-      mountCreated: false,
       taskCreated: false,
       run: { taskRequestId: "R-0002" },
       context: { currentRequest: { id: "R-0002", title: scenario.secondTitle } },
+      taskRequestDecision: "create",
+      taskRequestCreated: true,
+    });
+    expect([...fixture.events].reverse().find((event) =>
+      event.event === "task_run_started" && event.taskId === selected.task.taskId
+    )).toMatchObject({
+      data: {
+        mode: "activated",
+        taskRequestDecision: "create",
+        taskRequestId: "R-0002",
+        taskRequestCreated: true,
+      },
     });
     await finishRun(fixture, {
       runId: later.run.runId,
@@ -258,6 +355,7 @@ interface Fixture {
   database: ContextDatabase;
   service: SqliteGitContextService;
   sessionId: string;
+  events: GitContextObservabilityEvent[];
 }
 
 async function createFixture(): Promise<Fixture> {
@@ -265,7 +363,15 @@ async function createFixture(): Promise<Fixture> {
   roots.push(root);
   const workspaceRoot = join(root, "workspace");
   const database = await ContextDatabase.open({ path: join(root, "context.db") });
-  const service = new SqliteGitContextService({ database, dataRoot: root, workspaceRoot, now: () => at });
+  const events: GitContextObservabilityEvent[] = [];
+  const observer = new GitContextObserver("git-context-engine", (event) => events.push(event));
+  const service = new SqliteGitContextService({
+    database,
+    dataRoot: root,
+    workspaceRoot,
+    now: () => at,
+    observer,
+  });
   services.push(service);
   const session = await service.ensureActiveSession({
     requestId: "REQ-session",
@@ -274,7 +380,14 @@ async function createFixture(): Promise<Fixture> {
     agentId: "local",
     at,
   });
-  return { root, taskRoot: join(workspaceRoot, "tasks"), database, service, sessionId: session.session.sessionId };
+  return {
+    root,
+    taskRoot: join(workspaceRoot, "tasks"),
+    database,
+    service,
+    sessionId: session.session.sessionId,
+    events,
+  };
 }
 
 async function registerDataset(fixture: Fixture, conversationId: string): Promise<void> {

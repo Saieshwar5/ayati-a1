@@ -12,6 +12,18 @@ High-risk runtime capabilities:
 - SQLite database tools.
 - Plugin webhooks.
 - Upload handling.
+- Git Context task and repository mutation.
+
+Task repositories are a security boundary as well as a context mechanism:
+
+- authorize mutation against the canonical selected task working directory;
+- resolve symlinks before enforcing the root;
+- never let model input choose arbitrary Git metadata paths;
+- keep `.ayati/inbox/` ignored and review attachments before adoption;
+- do not commit secrets, large generated files, raw tool transcripts, or
+  private attachments by default;
+- keep runtime-owned task/request updates and commits behind the typed Git
+  Context service.
 
 Agents should not weaken validation or policy files casually. Review these files before changing tool or event permissions:
 

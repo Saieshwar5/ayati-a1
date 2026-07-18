@@ -8,7 +8,7 @@ export interface AttachmentSkillDeps {
 const ATTACHMENT_PROMPT_BLOCK = [
   "Unified attachment restoration is built in.",
   "Use attachment_restore when the user refers to a file, document, dataset, or directory listed in the current git task assets.",
-  "For follow-up work, use the asset name, path, file id, directory id, document id, prepared input id, or asset id from context.gitContext.task.assets.",
+  "For follow-up work, use the asset name, path, file id, directory id, document id, prepared input id, or asset id from context.git.current.task.assets.",
   "If the current run already has attached files, do not restore an older attachment unless the user explicitly asks for the earlier one.",
   "Inputs accept assetId or a reference such as preparedInputId, fileId, directoryId, display name, or path.",
 ].join("\n");

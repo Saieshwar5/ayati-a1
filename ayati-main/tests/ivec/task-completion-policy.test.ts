@@ -38,8 +38,8 @@ describe("task completion policy", () => {
     const result = await evaluateTaskCompletion(state, {
       summary: "Created the Chenko restaurant homepage.",
       assets: [
-        { path: join(workspace, "site"), kind: "directory", description: "Root website directory" },
-        { path: join(workspace, "site/index.html"), kind: "file", description: "Main restaurant homepage" },
+        { path: "site", kind: "directory", description: "Root website directory" },
+        { path: "site/index.html", kind: "file", description: "Main restaurant homepage" },
       ],
     });
 
@@ -53,6 +53,7 @@ describe("task completion policy", () => {
     if (!result.accepted) throw new Error("Expected completion acceptance.");
     expect(result.assets).toEqual(expect.arrayContaining([
       expect.objectContaining({
+        path: "site/index.html",
         resolvedPath: join(workspace, "site/index.html"),
         description: "Main restaurant homepage",
       }),
@@ -63,13 +64,13 @@ describe("task completion policy", () => {
     const state = taskState();
     const result = await evaluateTaskCompletion(state, {
       summary: "Created the requested website files.",
-      assets: [{ path: join(workspace, "site/index.html"), kind: "file", description: "Main page" }],
+      assets: [{ path: "site/index.html", kind: "file", description: "Main page" }],
     });
 
     expect(result.accepted).toBe(false);
     if (result.accepted) throw new Error("Expected completion rejection.");
     expect(result.failures).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "REQUIRED_ASSET_MISSING", path: join(workspace, "site/index.html") }),
+      expect.objectContaining({ code: "REQUIRED_ASSET_MISSING", path: "site/index.html" }),
     ]));
     expect(result.nextWorkState).toMatchObject({
       status: "not_done",
@@ -77,16 +78,29 @@ describe("task completion policy", () => {
     });
   });
 
-  it("rejects relative completion asset paths", async () => {
+  it("rejects absolute completion asset paths", async () => {
     const result = await evaluateTaskCompletion(taskState(), {
       summary: "Created the requested website files.",
-      assets: [{ path: "site/index.html", kind: "file", description: "Main page" }],
+      assets: [{ path: join(workspace, "site/index.html"), kind: "file", description: "Main page" }],
     });
 
     expect(result.accepted).toBe(false);
     if (result.accepted) throw new Error("Expected completion rejection.");
     expect(result.failures).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "INVALID_ASSET_PATH", path: "site/index.html" }),
+      expect.objectContaining({ code: "INVALID_ASSET_PATH", path: join(workspace, "site/index.html") }),
+    ]));
+  });
+
+  it("rejects completion asset paths that escape the task root", async () => {
+    const result = await evaluateTaskCompletion(taskState(), {
+      summary: "Created the requested website files.",
+      assets: [{ path: "../outside.html", kind: "file", description: "Outside page" }],
+    });
+
+    expect(result.accepted).toBe(false);
+    if (result.accepted) throw new Error("Expected completion rejection.");
+    expect(result.failures).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "INVALID_ASSET_PATH", path: "../outside.html" }),
     ]));
   });
 
@@ -102,7 +116,7 @@ describe("task completion policy", () => {
     });
     const result = await evaluateTaskCompletion(state, {
       summary: "Updated the existing homepage.",
-      assets: [{ path: join(workspace, "existing.html"), kind: "file", description: "Updated homepage" }],
+      assets: [{ path: "existing.html", kind: "file", description: "Updated homepage" }],
     });
 
     expect(result.accepted).toBe(false);
@@ -113,29 +127,29 @@ describe("task completion policy", () => {
   });
 
   it("resolves completion assets against the active task checkout", async () => {
-    const checkoutPath = await mkdtemp(join(tmpdir(), "ayati-active-task-"));
+    const repositoryPath = await mkdtemp(join(tmpdir(), "ayati-active-task-"));
     try {
-      await mkdir(join(checkoutPath, "aurora-coffee-site"), { recursive: true });
+      await mkdir(join(repositoryPath, "aurora-coffee-site"), { recursive: true });
       await writeFile(
-        join(checkoutPath, "aurora-coffee-site/app.js"),
+        join(repositoryPath, "aurora-coffee-site/app.js"),
         "const ready = true;\n",
         "utf-8",
       );
       const state = taskState({
-        harnessContext: taskHarnessContext(checkoutPath),
+        harnessContext: taskHarnessContext(repositoryPath),
         workState: {
           status: "not_done",
           summary: "The task checkout contains validated website assets.",
           verifiedFacts: ["node --check passed for aurora-coffee-site/app.js"],
           evidence: [],
-          artifacts: [join(checkoutPath, "aurora-coffee-site/app.js")],
+          artifacts: [join(repositoryPath, "aurora-coffee-site/app.js")],
         },
       });
 
       const result = await evaluateTaskCompletion(state, {
         summary: "Created and validated the Aurora Coffee website.",
         assets: [{
-          path: join(checkoutPath, "aurora-coffee-site/app.js"),
+          path: "aurora-coffee-site/app.js",
           kind: "file",
           description: "Validated website behavior",
         }],
@@ -143,9 +157,10 @@ describe("task completion policy", () => {
 
       expect(result.accepted).toBe(true);
       if (!result.accepted) throw new Error("Expected task-root completion acceptance.");
-      expect(result.assets[0]?.resolvedPath).toBe(join(checkoutPath, "aurora-coffee-site/app.js"));
+      expect(result.assets[0]?.path).toBe("aurora-coffee-site/app.js");
+      expect(result.assets[0]?.resolvedPath).toBe(join(repositoryPath, "aurora-coffee-site/app.js"));
     } finally {
-      await rm(checkoutPath, { recursive: true, force: true });
+      await rm(repositoryPath, { recursive: true, force: true });
     }
   });
 
@@ -156,7 +171,7 @@ describe("task completion policy", () => {
   });
 });
 
-function taskHarnessContext(checkoutPath: string) {
+function taskHarnessContext(repositoryPath: string) {
   return createInitialHarnessContext({
     contextEngine: {
       session: {
@@ -170,8 +185,7 @@ function taskHarnessContext(checkoutPath: string) {
         workId: "W-1",
       },
       task: {
-        checkoutPath,
-        workingDirectory: checkoutPath,
+        workingDirectory: repositoryPath,
         ref: "refs/heads/main",
         workId: "W-1",
         title: "Aurora Coffee website",

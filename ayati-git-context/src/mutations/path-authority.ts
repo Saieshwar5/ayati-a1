@@ -7,16 +7,16 @@ import type {
 import { GitContextServiceError } from "../errors.js";
 
 export async function resolveMutationTargets(
-  checkoutPath: string,
+  workingDirectory: string,
   targets: MutationTarget[],
 ): Promise<ResolvedMutationTarget[]> {
-  const checkoutRoot = await realpath(checkoutPath);
+  const workingRoot = await realpath(workingDirectory);
   const seen = new Set<string>();
   const resolved: ResolvedMutationTarget[] = [];
   for (const target of targets) {
     const normalizedPath = normalizeMutationPath(target.path);
-    const destination = await resolveTarget(checkoutRoot, normalizedPath, target.kind);
-    const canonicalPath = portableRelativePath(relative(checkoutRoot, destination));
+    const destination = await resolveTarget(workingRoot, normalizedPath, target.kind);
+    const canonicalPath = portableRelativePath(relative(workingRoot, destination));
     validateOwnedPath(canonicalPath, target.path);
     if (seen.has(canonicalPath)) {
       throw invalidTarget(target.path, "Mutation targets resolve to a duplicate path.");
@@ -66,12 +66,12 @@ function portableRelativePath(path: string): string {
 }
 
 async function resolveTarget(
-  checkoutRoot: string,
+  workingRoot: string,
   normalizedPath: string,
   kind: MutationTarget["kind"],
 ): Promise<string> {
   const segments = normalizedPath === "." ? [] : normalizedPath.split("/");
-  let current = checkoutRoot;
+  let current = workingRoot;
   for (let index = 0; index < segments.length; index += 1) {
     const segment = segments[index];
     if (!segment) {
@@ -83,7 +83,7 @@ async function resolveTarget(
       await lstat(candidate);
       existed = true;
       const resolvedCandidate = await realpath(candidate);
-      requireContained(checkoutRoot, resolvedCandidate, normalizedPath);
+      requireContained(workingRoot, resolvedCandidate, normalizedPath);
       current = resolvedCandidate;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -101,7 +101,7 @@ async function resolveTarget(
       }
       const remaining = segments.slice(index);
       const unresolved = resolve(current, ...remaining);
-      requireContained(checkoutRoot, unresolved, normalizedPath);
+      requireContained(workingRoot, unresolved, normalizedPath);
       return unresolved;
     }
   }

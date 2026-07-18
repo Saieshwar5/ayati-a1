@@ -46,7 +46,17 @@ export interface ClientHelloMessage {
   };
 }
 
-export type ClientMessage = ChatRequestMessage | WorkspaceEventMessage | ClientHelloMessage;
+export interface ReplyRenderedMessage {
+  type: "reply_rendered";
+  turnId: string;
+  renderedAt: string;
+}
+
+export type ClientMessage =
+  | ChatRequestMessage
+  | WorkspaceEventMessage
+  | ClientHelloMessage
+  | ReplyRenderedMessage;
 
 export interface AgentUiContext {
   source: "agent-cli";

@@ -793,6 +793,15 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           taskId: binding.taskId,
           runId: binding.runId,
           conversationRefs: binding.conversationRefs,
+          taskLifecycle: {
+            repository: { taskId: binding.taskId },
+            run: { runId: binding.runId, selectedAs: "task" },
+            finalization: {
+              status: "started",
+              outcome: finalizationOutcome(finalizationResult),
+              validation: finalizationValidation(finalizationResult),
+            },
+          },
         }),
       },
     });
@@ -819,14 +828,19 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         data: {
           taskId: binding.taskId,
           reason: "complete_task_run_returned_null",
-          contextEngine: buildContextEngineFeedbackSummary({
+            contextEngine: buildContextEngineFeedbackSummary({
             context: finalizationResult.harnessContext?.contextEngine,
             finalizationStatus: "failed",
             committed: false,
             taskId: binding.taskId,
             runId: binding.runId,
-            conversationRefs: binding.conversationRefs,
-          }),
+              conversationRefs: binding.conversationRefs,
+              taskLifecycle: {
+                repository: { taskId: binding.taskId },
+                run: { runId: binding.runId, selectedAs: "task" },
+                finalization: { status: "failed" },
+              },
+            }),
         },
       });
       return "failed";
@@ -843,6 +857,26 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         taskId: completed.taskId,
         taskCommit: completed.taskCommit,
         ref: completed.ref,
+        taskLifecycle: {
+          repository: {
+            taskId: completed.taskId,
+            workingDirectory: completed.workingDirectory,
+            branch: "main",
+            headBefore: completed.taskHeadBefore,
+            headAfter: completed.taskHeadAfter,
+          },
+          request: { requestId: completed.taskRequestId },
+          run: { runId: completed.runId, selectedAs: "task" },
+          finalization: {
+            status: "committed",
+            outcome: completed.outcome,
+            validation: completed.validation,
+            commit: completed.taskCommit,
+            commitCreated: completed.taskCommitCreated,
+            headBefore: completed.taskHeadBefore,
+            headAfter: completed.taskHeadAfter,
+          },
+        },
         contextEngine: buildContextEngineFeedbackSummary({
           context: finalizationResult.harnessContext?.contextEngine,
           finalizationStatus: "committed",
@@ -852,6 +886,26 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           ref: completed.ref,
           commit: completed.taskCommit,
           conversationRefs: binding.conversationRefs,
+          taskLifecycle: {
+            repository: {
+              taskId: completed.taskId,
+              workingDirectory: completed.workingDirectory,
+              branch: "main",
+              headBefore: completed.taskHeadBefore,
+              headAfter: completed.taskHeadAfter,
+            },
+            request: { requestId: completed.taskRequestId },
+            run: { runId: completed.runId, selectedAs: "task" },
+            finalization: {
+              status: "committed",
+              outcome: completed.outcome,
+              validation: completed.validation,
+              commit: completed.taskCommit,
+              commitCreated: completed.taskCommitCreated,
+              headBefore: completed.taskHeadBefore,
+              headAfter: completed.taskHeadAfter,
+            },
+          },
         }),
       },
     });
@@ -1137,15 +1191,51 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     if (!turn) {
       return;
     }
-    await this.chatContextRuntime.recordAssistantMessage({
+    const startedAt = Date.now();
+    this.feedbackLedger?.record({
       clientId,
-      turn,
-      message,
-      kind: ids.kind,
-      at: this.nowProvider().toISOString(),
-      taskId: ids.taskId,
-      runId: ids.runId,
+      sessionId: turn.sessionId,
+      seq: turn.messageSeq,
+      stage: "context_engine",
+      event: "assistant_persistence_started",
+      data: { conversationId: turn.conversationId },
     });
+    try {
+      await this.chatContextRuntime.recordAssistantMessage({
+        clientId,
+        turn,
+        message,
+        kind: ids.kind,
+        at: this.nowProvider().toISOString(),
+        taskId: ids.taskId,
+        runId: ids.runId,
+      });
+      this.feedbackLedger?.record({
+        clientId,
+        sessionId: turn.sessionId,
+        seq: turn.messageSeq,
+        stage: "context_engine",
+        event: "assistant_persistence_completed",
+        data: {
+          conversationId: turn.conversationId,
+          durationMs: Date.now() - startedAt,
+        },
+      });
+    } catch (error) {
+      this.feedbackLedger?.record({
+        clientId,
+        sessionId: turn.sessionId,
+        seq: turn.messageSeq,
+        stage: "context_engine",
+        event: "assistant_persistence_failed",
+        data: {
+          conversationId: turn.conversationId,
+          durationMs: Date.now() - startedAt,
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+      throw error;
+    }
   }
 
   private async recordChatContextSessionAttachments(
@@ -2000,6 +2090,21 @@ function sessionRunStatusFromResult(result: AgentLoopResult): "completed" | "fai
     return "blocked";
   }
   return result.status === "completed" ? "completed" : "failed";
+}
+
+function finalizationOutcome(
+  result: AgentLoopResult,
+): "done" | "incomplete" | "failed" | "blocked" | "needs_user_input" {
+  if (result.workState?.status === "done") return "done";
+  if (result.status === "failed") return "failed";
+  if (result.workState?.status === "needs_user_input") return "needs_user_input";
+  if (result.workState?.status === "blocked") return "blocked";
+  return "incomplete";
+}
+
+function finalizationValidation(result: AgentLoopResult): "passed" | "failed" | "not_run" {
+  if (result.workState?.status === "done") return "passed";
+  return result.status === "failed" ? "failed" : "not_run";
 }
 
 const TASK_ROUTING_TOOL_NAMES = new Set([

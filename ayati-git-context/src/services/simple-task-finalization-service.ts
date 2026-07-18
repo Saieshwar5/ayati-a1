@@ -14,7 +14,10 @@ import {
   markRecoverableIdempotencyFailed,
 } from "../database/idempotency.js";
 import { GitContextServiceError } from "../errors.js";
-import { checkpointPaths, assertCheckpointablePaths } from "../git/task-checkpoint.js";
+import {
+  assertCommittableMutationPaths,
+  verifiedMutationPaths,
+} from "../mutations/verified-mutation-paths.js";
 import { readMutationProvenance } from "../git/mutation-provenance.js";
 import {
   commitSimpleTaskPlan,
@@ -181,7 +184,7 @@ export class SimpleTaskFinalizationService {
   async recoverCommittedFinalizations(at: string): Promise<void> {
     for (const record of readRecoverableSimpleTaskFinalizations(this.options.database)) {
       const task = readTaskInitialization(this.options.database, record.taskId);
-      if (!task?.head || task.layoutVersion !== "simple_repository_v1") continue;
+      if (!task?.head) continue;
       try {
         const head = await recognizeCommittedSimpleTaskPlan({
           repositoryPath: task.repositoryPath,
@@ -227,12 +230,11 @@ export class SimpleTaskFinalizationService {
       throw invalid("V1 finalization requires the matching active task run.");
     }
     const task = readTaskInitialization(this.options.database, input.taskId);
-    if (!task?.head || task.layoutVersion !== "simple_repository_v1") {
+    if (!task?.head) {
       throw invalid("V1 finalization requires an active simple task repository.");
     }
     const authority = readMutationAuthorityForRun(this.options.database, input.runId);
-    if (!authority || authority.repositoryLayout !== "simple_repository_v1"
-      || authority.sessionId !== input.sessionId || authority.taskId !== input.taskId
+    if (!authority || authority.sessionId !== input.sessionId || authority.taskId !== input.taskId
       || !authority.taskRequestId || run.taskRequestId !== authority.taskRequestId) {
       throw recovery("V1 finalization is missing matching task/request mutation authority.");
     }
@@ -286,8 +288,8 @@ export class SimpleTaskFinalizationService {
     const verifiedState = await requireExpectedProvenance(authority, provenance);
     const workState = readRunWorkState(this.options.database, input.runId);
     if (!workState) throw recovery("V1 finalization requires persisted WorkState.");
-    const verifiedPaths = checkpointPaths(provenance);
-    assertCheckpointablePaths(verifiedPaths);
+    const verifiedPaths = verifiedMutationPaths(provenance);
+    assertCommittableMutationPaths(verifiedPaths);
     await verifyCompletionAssets(authority.repositoryPath, input.completion);
     const context = reduceSimpleTaskContext({
       taskCard: planned.taskCard,
@@ -376,7 +378,7 @@ export class SimpleTaskFinalizationService {
     input: FinalizeTaskRunRequest,
   ): Promise<FinalizeTaskRunResponse> {
     const task = readTaskInitialization(this.options.database, record.taskId);
-    if (!task?.head || task.layoutVersion !== "simple_repository_v1") {
+    if (!task?.head) {
       throw recovery("Journaled V1 task repository is unavailable.");
     }
     try {
@@ -538,7 +540,7 @@ async function requireExpectedProvenance(
   } | undefined;
   const expected = verification?.provenance;
   if (authority.status === "released") {
-    if (checkpointPaths(actual).length === 0) {
+    if (verifiedMutationPaths(actual).length === 0) {
       return await readSimpleTaskMutationState(authority.repositoryPath, []);
     }
     throw recovery("Released V1 authority unexpectedly has repository changes.");
@@ -551,7 +553,7 @@ async function requireExpectedProvenance(
   }
   const actualState = await readSimpleTaskMutationState(
     authority.repositoryPath,
-    checkpointPaths(actual),
+    verifiedMutationPaths(actual),
   );
   if (!verification?.stateFingerprint || verification.stateFingerprint !== actualState) {
     throw recovery("Verified V1 task content changed after mutation verification.", {

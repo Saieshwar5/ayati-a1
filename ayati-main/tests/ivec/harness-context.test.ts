@@ -65,12 +65,12 @@ function contextEngineFixture() {
     },
     focus: {
       status: "active" as const,
-      ref: "refs/heads/work/W-20260627-0001-analyze-invoice",
-      workId: "W-20260627-0001",
+      ref: "refs/heads/task/T-20260627-0001-analyze-invoice",
+      workId: "T-20260627-0001",
     },
     task: {
-      ref: "refs/heads/work/W-20260627-0001-analyze-invoice",
-      workId: "W-20260627-0001",
+      ref: "refs/heads/task/T-20260627-0001-analyze-invoice",
+      workId: "T-20260627-0001",
       title: "Analyze invoice",
       objective: "Analyze invoice",
       status: "active",

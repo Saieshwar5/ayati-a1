@@ -1,52 +1,95 @@
 # Testing Strategy
 
-Framework:
+Tests use Vitest. Prefer deterministic local tests and mock provider, plugin,
+transport, and external-computer boundaries unless a test is explicitly a live
+acceptance scenario.
 
-- Vitest.
+## Package Responsibilities
 
-General rules:
+- `ayati-git-context/tests`: protocol contracts, SQLite services, session/task
+  repositories, request lifecycle, mutation boundaries, attachments,
+  finalization, and V1 end-to-end service flows.
+- `ayati-main/tests`: model-facing routing tools, daemon integration, harness
+  behavior, context projection, action execution, verification, transports,
+  memory, and process lifecycle.
+- `ayati-cli/src/app/**/*.test.ts*`: terminal rendering, input, commands,
+  attachment queue behavior, and client message handling.
 
-- Add or update tests in the matching package and domain.
-- Prefer deterministic unit tests over networked tests.
-- Avoid real provider calls in tests unless explicitly isolated.
-- Mock filesystem, provider, plugin, and transport boundaries when practical.
-- Test safety checks and validation behavior for tools.
+## V1 Task Repository Coverage
 
-Daemon-specific priorities:
+Changes to task continuity should cover the smallest relevant layer and the
+cross-package boundary when applicable:
 
-- Test daemon-owned behavior in `ayati-main`, even if the current trigger is from CLI.
-- Cover memory continuity when changes affect personalization or session lifecycle.
-- Cover git-memory task routing when changes affect pending turns, active-task
-  binding, turn-aware activate/create/clarify tools, task assets, context
-  refresh, or finalization.
-- Cover harness repair behavior by stable repair code. Tests should assert the
-  code in repair prompts, failure history or working feedback when model-facing,
-  feedback event data when operator-facing, and feedback-ledger triage when the
-  repair should appear in summaries.
-- For run/task lifecycle changes, include lower-level git-memory runtime tests,
-  agent-loop tests, and app/engine-level tests proving the live flow writes
-  exactly one final run record. Cover both unpromoted read-only session runs and
-  read-then-mutate promotion into task runs when relevant. For clarification
-  flows, cover both the session-only clarification run and the fresh answer run
-  that may later activate or promote a task.
-- Cover system-event behavior when changes affect background or proactive workflows.
-- Cover transport contracts when adding or changing client channels.
-- Cover tool safety when changing computer-access capabilities.
+1. New task creation produces a normal `T-*` repository with the required
+   `.ayati/` contract and ignored inbox.
+2. Selection returns the stable working directory.
+3. V1 activation rejects missing or ambiguous request decisions and accepts
+   `requestDecision.kind="continue"` and `requestDecision.kind="create"`
+   correctly.
+4. Task-scoped paths cannot escape the canonical repository root, including
+   through symlinks.
+5. Attachment staging and reference adoption obey tracking and safety rules.
+6. Finalization updates the request/task card, retains raw evidence outside
+   task Git, and creates exactly one task commit on retry.
+7. Restart can reopen the same task/request and working directory.
+Existing focused suites include `simple-task-*`,
+`live-task-request-routing.test.ts`, `v1-task-end-to-end-flows.test.ts`, and
+the SQLite service suites in `ayati-git-context/tests`.
 
-Backend:
+## Harness and Live-Flow Coverage
 
-- Tests live in `ayati-main/tests`.
-- Domain folders mirror runtime areas such as `ivec`, `skills`, `memory`, `documents`, `server`, `providers`, `plugins`, and `core`.
+In `ayati-main`, prove that the model-facing tools submit and preserve the V1
+decision contract. Test repair behavior through stable repair codes and verify
+that routing refreshes the active context before normal work tools run.
 
-CLI:
+App-level tests should distinguish:
 
-- Tests live near CLI code under `ayati-cli/src/app`.
-- CLI tests should focus on terminal UI, input, local command parsing, and client message rendering.
+- read-only session runs from selected task runs;
+- direct clarification from task selection;
+- new task from new request in an existing task;
+- verified repository mutation from external side effects; and
+- final response success from Git finalization success.
 
-Useful commands:
+Feedback coverage should assert the same lifecycle at two levels. The compact
+latest summary must retain repository, request, run-binding, and finalization
+identity across successive events. The live report must reject V1 mounts,
+missing working directories, missing or contradictory request decisions, and
+commit/HEAD mismatches while accepting clarification backed only by a session
+run.
+
+For completed, failed, blocked, needs-user-input, run-limit, context-limit, and
+tool-failure outcomes, assert both user-visible behavior and durable storage.
+
+## Real Acceptance Scenarios
+
+After deterministic tests pass, exercise representative multi-turn work:
+
+- learning: resume a subject across days and add a new lesson request;
+- website: create, reopen, improve, and inspect the same project repository;
+- analysis: retain sources/results without committing large raw datasets;
+- automation/computer use: distinguish repository changes from verified
+  external outcomes.
+
+For each scenario, inspect the final text, feedback trace, task repository,
+`.ayati/task.md`, request files, Git history, ignored inbox state, and restart
+behavior. Run `pnpm feedback:git-context` after each completed turn for the
+operator-facing lifecycle view. See
+[Headless Chat Scenarios](headless-chat-scenarios.md).
+
+## Commands
+
+Run the narrow suite first, then broaden according to impact:
 
 ```bash
+pnpm --filter ayati-git-context test
 pnpm --filter ayati-main test
 pnpm --filter ayati-cli test
 pnpm test
+```
+
+Build both sides after protocol or shared-type changes:
+
+```bash
+pnpm --filter ayati-git-context build
+pnpm --filter ayati-main build
 ```

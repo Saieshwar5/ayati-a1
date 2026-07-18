@@ -1219,13 +1219,40 @@ export async function runAgentLoop(
           reason: "git_context_turn_routed",
           taskId: routingUpdate.taskId,
           branch: routingUpdate.branch,
+          workingDirectory: routingUpdate.workingDirectory,
+          taskRequestId: routingUpdate.taskRequestId,
+          taskRequestDecision: routingUpdate.requestDecision,
         });
+        const taskLifecycle = {
+          repository: {
+            taskId: routingUpdate.taskId,
+            workingDirectory: routingUpdate.workingDirectory,
+            branch: routingUpdate.branch,
+            selectionMode: routingUpdate.mode,
+            taskCreated: routingUpdate.taskCreated,
+            headBefore: routingUpdate.taskHead,
+          },
+          request: {
+            decision: routingUpdate.requestDecision,
+            requestId: routingUpdate.taskRequestId,
+            status: routingUpdate.taskRequestStatus,
+            created: routingUpdate.taskRequestCreated,
+          },
+          run: {
+            runId: routingUpdate.runId,
+            startedAs: routingUpdate.sessionRunBound ? "session" : "none",
+            selectedAs: "task",
+            sessionRunBound: routingUpdate.sessionRunBound,
+          },
+          finalization: { status: "not_started" },
+        } as const;
         recordFeedback(deps, inputHandle, routedRunHandle.runId, "context_engine", "agent_routed", {
           status: routingUpdate.status,
           mode: routingUpdate.mode,
           taskId: routingUpdate.taskId,
           branch: routingUpdate.branch,
           runId: routingUpdate.runId,
+          taskLifecycle,
           contextEngine: buildContextEngineFeedbackSummary({
             context: routingUpdate.harnessContext.contextEngine,
             routeStatus: routingUpdate.status,
@@ -1235,6 +1262,7 @@ export async function runAgentLoop(
             taskId: routingUpdate.taskId,
             branch: routingUpdate.branch,
             runId: routingUpdate.runId,
+            taskLifecycle,
           }),
         });
       } else if (routingUpdate?.status === "ambiguous") {

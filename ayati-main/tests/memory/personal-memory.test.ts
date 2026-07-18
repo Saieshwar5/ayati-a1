@@ -233,30 +233,6 @@ describe("Personal memory policy", () => {
     expect(loadMemoryPolicy(root)).toEqual(DEFAULT_MEMORY_POLICY);
   });
 
-  it("ignores legacy slot-pack, staging, budget, and promotion fields", () => {
-    const root = mkdtempSync(join(tmpdir(), "ayati-memory-policy-"));
-    roots.push(root);
-    mkdirSync(resolve(root, "context"), { recursive: true });
-    writeFileSync(resolve(root, "context", "memory-policy.json"), JSON.stringify({
-      enabledSlotPacks: ["core_identity"],
-      disabledSlotPacks: ["finance"],
-      staging: {
-        allowUnknownSlots: true,
-        autoPromoteAfterSessions: 1,
-      },
-      memoryBudget: {
-        maxUserFacts: 2,
-        maxTimeBased: 3,
-        maxActiveMemories: 5,
-      },
-      slotPromotion: {
-        enabled: true,
-        minSessions: 1,
-      },
-    }));
-
-    expect(loadMemoryPolicy(root)).toEqual(DEFAULT_MEMORY_POLICY);
-  });
 });
 
 describe("User Facts personal memory section", () => {

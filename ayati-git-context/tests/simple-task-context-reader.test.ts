@@ -5,7 +5,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { TaskCatalogEntry } from "../src/contracts.js";
 import { ContextDatabase } from "../src/database/database.js";
 import { insertSession } from "../src/repositories/session-records.js";
-import { readTaskCatalogEntry } from "../src/repositories/task-records.js";
+import {
+  readInitializingTasks,
+  readTaskCatalogEntries,
+  readTaskCatalogEntry,
+  readTaskInitialization,
+} from "../src/repositories/task-records.js";
 import { TaskLifecycleService } from "../src/services/task-lifecycle-service.js";
 import { parseTaskCard, renderTaskCard } from "../src/tasks/task-card.js";
 import { renderTaskRunCommit } from "../src/tasks/task-commit-metadata.js";
@@ -24,38 +29,6 @@ afterEach(async () => {
 });
 
 describe("simple task context reader", () => {
-  it("migrates existing-style task rows to the explicit legacy layout", async () => {
-    const database = await ContextDatabase.open({ path: ":memory:" });
-    databases.push(database);
-    insertSession(database, {
-      sessionId: "S-20260717-local",
-      date: "2026-07-17",
-      timezone: "Asia/Kolkata",
-      agentId: "local",
-      repositoryPath: "/tmp/session.git",
-      createdAt: "2026-07-17T10:00:00+05:30",
-    });
-    database.prepare([
-      "INSERT INTO tasks(",
-      "task_id, repository_path, working_path, durable_branch, head_sha, title_cache,",
-      "objective_cache, status, created_session_id, created_at, updated_at",
-      ") VALUES (?, ?, ?, 'main', ?, ?, ?, 'active', ?, ?, ?)",
-    ].join(" ")).run(
-      "W-20260717-0001",
-      "/tmp/task.git",
-      "/tmp/task",
-      "a".repeat(40),
-      "Legacy task",
-      "Preserve the established reader.",
-      "S-20260717-local",
-      "2026-07-17T10:00:00+05:30",
-      "2026-07-17T10:00:00+05:30",
-    );
-
-    expect(readTaskCatalogEntry(database, "W-20260717-0001")?.layoutVersion)
-      .toBe("legacy_independent_v0");
-  });
-
   it("projects compact committed context and reports external dirt separately", async () => {
     const taskRoot = await createTaskRoot();
     const fixture = await createSimpleTaskFixture({
@@ -107,7 +80,6 @@ describe("simple task context reader", () => {
     expect(context).toMatchObject({
       task: {
         taskId: fixture.taskId,
-        layoutVersion: "simple_repository_v1",
         head: committedHead,
       },
       title: "Build coffee website",
@@ -210,7 +182,7 @@ describe("simple task context reader", () => {
     }]);
   });
 
-  it("uses explicit catalog layout, reads Git truth, and rejects V1 mounts without side effects", async () => {
+  it("uses explicit catalog layout and reads Git truth without side effects", async () => {
     const taskRoot = await createTaskRoot();
     const fixture = await createSimpleTaskFixture({
       taskRoot,
@@ -231,12 +203,11 @@ describe("simple task context reader", () => {
     });
     database.prepare([
       "INSERT INTO tasks(",
-      "task_id, layout_version, repository_path, working_path, durable_branch, head_sha,",
+      "task_id, repository_path, branch, head_sha,",
       "title_cache, objective_cache, status, created_session_id, created_at, updated_at",
-      ") VALUES (?, 'simple_repository_v1', ?, ?, 'main', ?, ?, ?, 'active', ?, ?, ?)",
+      ") VALUES (?, ?, 'main', ?, ?, ?, 'active', ?, ?, ?)",
     ].join(" ")).run(
       fixture.taskId,
-      fixture.repositoryPath,
       fixture.repositoryPath,
       head,
       "Stale catalog title",
@@ -252,14 +223,13 @@ describe("simple task context reader", () => {
       now: () => "2026-07-17T10:00:00+05:30",
     });
     const catalogBefore = database.prepare([
-      "SELECT layout_version, repository_path, working_path, head_sha, title_cache,",
+      "SELECT repository_path, branch, head_sha, title_cache,",
       "objective_cache, status, updated_at FROM tasks WHERE task_id = ?",
     ].join(" ")).get(fixture.taskId);
 
     const read = await lifecycle.getTask({ taskId: fixture.taskId });
 
     expect(read.task).toMatchObject({
-      layoutVersion: "simple_repository_v1",
       title: "Learning task",
       objective: "Learn machine learning through explanations, exercises, and projects.",
       head,
@@ -270,31 +240,15 @@ describe("simple task context reader", () => {
       currentRequest: { id: "R-0001" },
     });
     expect(database.prepare([
-      "SELECT layout_version, repository_path, working_path, head_sha, title_cache,",
+      "SELECT repository_path, branch, head_sha, title_cache,",
       "objective_cache, status, updated_at FROM tasks WHERE task_id = ?",
     ].join(" ")).get(fixture.taskId)).toEqual(catalogBefore);
-    await expect(lifecycle.mountTask({
-      requestId: "REQ-v1-mount",
-      sessionId: "S-20260717-local",
-      taskId: fixture.taskId,
-      expectedTaskHead: head,
-      at: "2026-07-17T10:01:00+05:30",
-    }, {
-      sessionId: "S-20260717-local",
-      repositoryPath: join(dirname(taskRoot), "sessions", "S-20260717-local"),
-      head: null,
-      date: "2026-07-17",
-      timezone: "Asia/Kolkata",
-      status: "open",
-    })).rejects.toMatchObject({ code: "SERVICE_NOT_READY" });
-    expect(database.prepare("SELECT COUNT(*) AS count FROM session_task_mounts").get())
-      .toMatchObject({ count: 0 });
     expect(database.prepare("SELECT COUNT(*) AS count FROM idempotency_requests").get())
       .toMatchObject({ count: 0 });
     expect(database.prepare("SELECT COUNT(*) AS count FROM task_mutation_authorities").get())
       .toMatchObject({ count: 0 });
-    expect(readTaskCatalogEntry(database, fixture.taskId)?.layoutVersion)
-      .toBe("simple_repository_v1");
+    expect(readTaskCatalogEntry(database, fixture.taskId)?.taskId)
+      .toBe(fixture.taskId);
   });
 });
 
@@ -305,7 +259,6 @@ function catalog(
 ): TaskCatalogEntry {
   return {
     taskId,
-    layoutVersion: "simple_repository_v1",
     repositoryPath,
     workingPath: repositoryPath,
     branch: "main",

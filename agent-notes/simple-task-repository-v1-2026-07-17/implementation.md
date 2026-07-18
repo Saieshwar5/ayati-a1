@@ -457,6 +457,485 @@ Exit criteria:
 
 Each slice should be independently reviewable and tested.
 
+The original slices established the V1 happy path. Before declaring the plan
+complete, execute the reliability-closure slices and gates below. They
+supersede any earlier progress checkbox that described a mocked, pure-policy,
+or typed-service test as a complete live capability.
+
+## Reliability Closure
+
+Status: accepted next implementation design.
+
+The task system is complete only when it is safe to replay, restart, rebuild,
+migrate, and continue through every normal lifecycle. This section owns that
+remaining work. It does not change the V1 repository contract or reintroduce
+session submodules.
+
+### Completion Invariants
+
+1. A repeated model tool call cannot create a second task, request, migration,
+   external action, or final commit.
+2. Every valid request state has a live runtime transition: create, queue,
+   activate, block, resume, complete, drop, and explicit same-intention reopen.
+3. Every valid task state has a live runtime transition: active, paused,
+   archived, and explicit reopen.
+4. Losing rebuildable catalog rows does not make valid managed task
+   repositories undiscoverable.
+5. A migration interruption never exposes both writers and never silently
+   leaves a partially migrated task writable.
+6. External actions are represented by typed, verified, non-secret outcomes;
+   Git records the outcome but does not claim to own or undo it.
+7. Acceptance includes actual service restart and real agent routing, not only
+   pure planners, mocked tools, or direct service calls.
+
+### Closure Slice 1: Replay-Safe Model Routing
+
+Use one stable operation identity derived from the durable model tool-call
+record. Pass that identity through `ToolExecutionContext` and derive namespaced
+Git Context request IDs for task creation, request planning, attachment binding,
+and related routing writes.
+
+Rules:
+
+- Never generate a new idempotency identity merely because the same tool call
+  is being recovered.
+- The same operation identity plus the same payload returns the original
+  result.
+- The same operation identity plus a different payload fails closed.
+- Recovery after task creation but before route acknowledgement returns the
+  original task; it does not allocate another repository.
+- External tools need their own provider/action idempotency key when supported.
+
+Required tests:
+
+- replay create-task before and after response persistence
+- replay create-request activation
+- crash after task identity commit but before route-plan acknowledgement
+- payload mismatch for a reused operation identity
+- no orphan repository or duplicate request after retry
+
+### Closure Slice 2: Live Lifecycle Management
+
+Keep pure transition validation in the existing lifecycle modules, but expose a
+single runtime-owned lifecycle service. It validates committed state, plans the
+transition, acquires exclusive authority, renders reserved files, creates one
+context commit, and acknowledges the new HEAD.
+
+Required request operations:
+
+```text
+create queued or active
+activate queued
+block active
+resume blocked
+complete active
+drop queued, active, or blocked
+reopen done only with explicit same-intention confirmation
+```
+
+Required task operations:
+
+```text
+pause active task only when no request is active
+archive active or paused task explicitly
+reopen paused or archived task explicitly
+```
+
+Model-facing routing should remain small. Normal activation may continue the
+active request, create a separate request, activate a queued request, resume a
+blocked request, or request the required task reopen. The service, not the
+model, owns all `.ayati/` writes.
+
+Required tests include the concrete broken path:
+
+```text
+active request -> blocked run -> current_request cleared -> service restart
+-> resume the same request -> continue work -> one final commit
+```
+
+### Closure Slice 3: Catalog Rebuild
+
+Add a bounded rebuild operation that scans only direct children of the managed
+task root. For every candidate it must:
+
+1. reject symlinks, nesting, path escapes, and non-repositories
+2. validate Git top level, branch, HEAD, task card, requests, and task identity
+3. classify duplicates and conflicts without choosing silently
+4. reconstruct the catalog projection from committed Git truth
+5. preserve live journals and locks rather than guessing their ownership
+6. produce a dry-run report before applying database changes
+
+Task ID allocation must consider both catalog rows and validated repository
+identities on disk so a rebuilt or partially lost catalog cannot reuse an
+existing ID.
+
+### Closure Slice 4: Migration Recovery
+
+Extend migration into a phase-journaled recoverable transaction:
+
+```text
+inventoried -> locked -> context_written -> commit_created
+-> catalog_switched -> completed
+```
+
+Startup recovery inspects every non-terminal migration. It recognizes the
+migration commit by parent and trailers, completes a safe catalog switch when
+proof is sufficient, and otherwise leaves the task read-only with an exact
+recovery report.
+
+Additional requirements:
+
+- `blocked` partial migrations remain writer-locked until explicitly
+  reconciled or safely rolled back before a migration commit exists.
+- Cohort E restores a missing checkout from the validated bare repository under
+  the managed root.
+- External-path tasks require explicit user direction.
+- Inventory includes working/bare/catalog heads, dirty paths, schema errors,
+  active authorities/finalizations, historical mount/gitlink heads, proposed
+  path, cohort, and blockers.
+- Historical session gitlinks must be resolved in tests after migration.
+- Migrations run one task at a time or in a bounded batch with independent
+  locks and reports.
+
+### Closure Slice 5: Typed External Outcomes
+
+Do not use filesystem download as the representative external mutation. Add a
+shared contract for real external tools such as browser submission, email,
+calendar, application updates, and automation services.
+
+Minimum outcome shape:
+
+```text
+task ID, request ID, run ID, tool-call/action idempotency key
+provider and action kind
+non-secret target identity
+started/completed timestamps
+operation status and verification status
+stable provider confirmation ID when available
+safe receipt reference when appropriate
+bounded verified summary
+reversibility and follow-up guidance
+```
+
+Raw page dumps, screenshots, tokens, credentials, and secret-bearing URLs stay
+in the protected run journal unless deliberately sanitized and adopted. An
+external action can mark a request done only when its tool contract supplies
+the required verification facts or the user explicitly accepts the outcome.
+
+Approval happens before execution. If execution may have succeeded but
+acknowledgement failed, recovery checks the provider using the action
+idempotency key or confirmation identity before any retry.
+
+### Closure Slice 6: Acceptance And Documentation
+
+Run the scenarios in `testing.md` through the real agent routing surface:
+
+- multi-day learning continuation
+- website improvement in the same task
+- attached-data analysis with restart availability
+- blocked automation resumed later
+- approved computer-use action with verified external confirmation
+
+Every continuation scenario must close the original service/database handles,
+start a new service instance, rediscover the task, and continue from committed
+Git context. Inspect task files, Git status/log/trailers, SQLite before/after
+identities, and absence of V1 mounts.
+
+Only after these gates pass should `progress.md` mark the plan complete and
+stable project documentation describe all of these capabilities without a
+qualification.
+
+### Still Deferred
+
+The following remain outside reliability closure:
+
+- embedding or semantic discovery
+- smart folders, starring, and rich task views
+- remote Git synchronization
+- attachment-byte backup beyond explicit adoption
+- multi-agent concurrent mutation and merge
+- automatic capture of unrelated external dirty changes
+
+They must not delay completing the basic create, close, reopen, continue, and
+recover experience.
+
+## Project Docs Update Plan
+
+Status: proposed documentation work to execute in controlled slices. This plan
+does not update `project-docs/` by itself.
+
+### Documentation Principle
+
+`project-docs/` is the stable description of what Ayati currently is and how it
+currently works. It must not advertise a target capability as implemented only
+because that capability is designed here.
+
+Use this truth order while editing:
+
+1. current source and executable contracts
+2. deterministic tests and verified live behavior
+3. current stable documentation
+4. `agent-notes/` for accepted but unfinished direction
+
+When the current implementation and the accepted target differ, stable docs
+must state the current boundary and known limitation. The future design stays
+in `agent-notes/` until its implementation and acceptance gate pass.
+
+### Problems To Correct
+
+The current stable docs mix at least three task models:
+
+- old work branches inside daily Git context
+- turn-aware `*_for_turn` task-routing tools
+- the current independent mount-free `T-*` repository model
+
+Specific contradictions to remove include:
+
+- product docs calling task branches the default continuation store
+- architecture docs naming `GitMemoryRuntime` and `src/context-engine` as the
+  current task-repository owner instead of the independent Git Context service
+- context, harness, and data-flow docs naming obsolete
+  `git_context_activate_task_for_turn`, `git_context_create_task_for_turn`, and
+  clarification tools as the current surface
+- current-state documentation both describing model-facing V1 create/activate
+  and forbidding those same tool names
+- broad claims that migration, external computer-use outcomes, restart
+  continuation, or catalog rebuild are complete when only a narrower path is
+  verified
+
+Historical decision and per-commit records remain historical evidence. Do not
+rewrite them merely because the current architecture changed.
+
+### Docs Slice 1: Establish One Canonical Task Architecture Page
+
+Add `project-docs/engineering/architecture/task-repositories.md` as the stable
+owner of the current task design. Keep it compact and link to source modules
+rather than duplicating implementation details everywhere.
+
+It should explain:
+
+```text
+task = durable workstream
+request = bounded user intention inside the task
+run = one attempt to advance a request
+commit = verified durable outcome of a mutating run
+session = temporary conversation/runtime container
+```
+
+Document the current repository layout:
+
+```text
+<managed-task-root>/T-YYYYMMDD-NNNN-<slug>/
+  .git/
+  .ayati/task.md
+  .ayati/requests/
+  .ayati/references.md
+  .ayati/inbox/       ignored local input bytes
+  task-owned content
+```
+
+Also document:
+
+- one normal repository is both canonical history and stable working directory
+- read-any-time access without a mount or task mutation
+- explicit request selection before V1 mutation
+- expected HEAD, exclusive authority, deterministic verification, and one
+  final task commit
+- task-relative Git paths versus absolute model-facing host paths
+- ignored inbox versus tracked provenance and explicit adoption
+- SQLite as live journal/catalog/lock state, with catalog rebuild still an open
+  reliability-closure item until implemented
+- legacy `W-*` layout dispatch and retained bare/session-gitlink compatibility
+- current limitations for blocked/queued/task lifecycle transitions, migration
+  recovery, and real external actions
+
+Update reading-order links in:
+
+- `project-docs/README.md`
+- `project-docs/engineering/README.md`
+- `project-docs/engineering/context-priority.md`
+
+### Docs Slice 2: Reconcile Product Language
+
+Update:
+
+- `project-docs/product/overview.md`
+- `project-docs/product/features.md`
+- `project-docs/product/non-goals.md`
+
+Replace task-branch language with long-lived independent task repositories and
+bounded requests. Explain the user experience: create durable work once,
+return later, read or continue it, and add new features/lessons as requests in
+the same task.
+
+Keep implemented and intended capabilities separate:
+
+- current: `T-*` creation, mount-free selection, read, verified mutation,
+  finalization, attachment provenance, and continue-or-create request routing
+- incomplete: full lifecycle management, replay-safe model routing, catalog
+  rebuild, hardened migration recovery, real external outcome tracking, and
+  restart/live acceptance
+- deferred: semantic discovery, remote synchronization, attachment-byte backup,
+  and concurrent multi-agent mutation
+
+### Docs Slice 3: Reconcile Runtime Architecture And Data Flow
+
+Update the following as one architecture slice because they currently repeat
+the old ownership model:
+
+- `project-docs/engineering/architecture/overview.md`
+- `project-docs/engineering/architecture/modules.md`
+- `project-docs/engineering/architecture/backend-services.md`
+- `project-docs/engineering/architecture/data-flow.md`
+- `project-docs/engineering/architecture/context-and-memory.md`
+- `project-docs/engineering/architecture/agent-harness.md`
+
+Required changes:
+
+- name `ayati-git-context` as the independent owner of task catalog, Git writes,
+  locks, request plans, migration journal, and task finalization
+- describe `ayati-main/src/app/git-context-runtime.ts` and the typed client as
+  the daemon integration boundary
+- remove obsolete work-branch creation, switching, and task-file descriptions
+  from the current path
+- preserve session-store documentation only for conversation/session
+  persistence; do not imply it owns V1 task continuity
+- describe the actual model-facing V1 create/activate surface and explicit
+  continue-or-create request decision
+- keep runtime ownership of `.ayati/` lifecycle writes, authority, staging,
+  commits, and recovery
+- separate legacy `W-*` adapters into an explicitly labeled compatibility
+  subsection
+- link to the canonical task-repository page instead of copying the full
+  repository contract into the large context-and-memory and harness docs
+
+`context-and-memory.md` and `agent-harness.md` are already large. Prefer
+deleting obsolete duplicated task sections and linking to the canonical page
+instead of adding another full description.
+
+### Docs Slice 4: Contracts, Persistence, Security, And Operations
+
+Update:
+
+- `project-docs/engineering/architecture/api-contracts.md`
+- `project-docs/engineering/architecture/database.md`
+- `project-docs/engineering/architecture/runtime-data.md`
+- `project-docs/engineering/architecture/tool-contracts.md`
+- `project-docs/engineering/architecture/auth-and-trust.md`
+- `project-docs/engineering/security.md`
+
+Document the current boundary precisely:
+
+- Git Context protocol/client/server ownership and mount-free V1 selection
+- layout-dispatched legacy compatibility APIs
+- operation idempotency and the current model-tool replay limitation
+- SQLite canonical live journals versus Git canonical completed task context
+- managed task root, normal repositories, ignored inboxes, retained legacy
+  storage, and runtime databases
+- task-scoped absolute-path authorization and private task-relative Git staging
+- zero-file external authority as current infrastructure, while typed real
+  external outcomes remain unfinished
+- secrets, screenshots, page dumps, tokens, and unsafe receipts must not enter
+  task Git
+- Git revert never represents reversal of external state
+
+After replay-safe routing, catalog rebuild, migration recovery, or typed
+external outcomes are implemented, update these pages in the same code slice;
+do not pre-document the target as current behavior.
+
+### Docs Slice 5: Agent Guidance And Engineering Workflow
+
+Update:
+
+- `project-docs/engineering/ai-agent-instructions.md`
+- `project-docs/engineering/common-mistakes.md`
+- `project-docs/engineering/add-feature-workflow.md`
+- `project-docs/engineering/code-review.md`
+
+Future coding agents should be told to:
+
+- start with the canonical task-repository page for task changes
+- preserve task/request/run separation
+- avoid task branches, task submodules, bare mirrors, and session gitlinks in
+  normal V1 work
+- keep request/task lifecycle changes runtime-owned
+- preserve stable operation identity across retries
+- treat the task catalog as rebuildable projection, not completed task truth
+- never claim external state is reverted by Git
+- update stable docs only for behavior proven by code and tests
+
+Remove instructions that direct new work toward obsolete turn tools or task
+branches.
+
+### Docs Slice 6: Testing, Known Gaps, And Current State
+
+Update:
+
+- `project-docs/engineering/testing.md`
+- `project-docs/engineering/test-gaps.md`
+- `project-docs/engineering/headless-chat-scenarios.md`
+- `project-docs/engineering/history/progress/current-state.md`
+
+The testing docs should require:
+
+- core Git Context contract/service tests
+- daemon model-tool and agent-loop tests
+- stable operation replay and payload-mismatch tests
+- blocked request resume and paused/archived reopen tests
+- service restart between continuation runs
+- catalog rebuild dry-run/apply/conflict tests
+- failure injection at every migration boundary
+- historical session gitlink resolution after migration
+- real external action verification, approval, receipt-safety, and uncertain
+  acknowledgement recovery
+- manual inspection of the five V1 example domains
+
+Rewrite `current-state.md` as an honest implemented/remaining boundary. Remove
+obsolete tool names and priorities, preserve genuinely current harness work,
+and make the Reliability Closure items the leading task-context priorities.
+
+### Docs Slice 7: Contradiction And Link Audit
+
+After the content updates:
+
+1. Search all non-history stable docs for old task-branch and `*_for_turn` tool
+   language.
+2. Classify every remaining occurrence as current, legacy compatibility, or
+   historical context.
+3. Verify every named source path, command, tool, API, and environment variable
+   against the repository.
+4. Verify the core reading order reaches the canonical task-repository page.
+5. Run Markdown formatting/link checks if available and `git diff --check`.
+6. Review the final diff for duplicated or contradictory architecture claims.
+
+Suggested searches:
+
+```bash
+rg -n "task branch|work branch|task submodule|bare canonical|GitMemoryRuntime" project-docs --glob '*.md'
+rg -n "git_context_.*_for_turn|git_context_create_task|git_context_activate_task" project-docs --glob '*.md'
+rg -n "external outcome|catalog rebuild|migration recovery|idempot" project-docs --glob '*.md'
+```
+
+Occurrences inside `project-docs/engineering/history/decisions/` and
+`project-docs/engineering/history/progress/commits/` may remain when they
+accurately describe their historical point in time. Current-facing docs must
+not link to those historical descriptions as the active architecture.
+
+### Documentation Exit Gate
+
+The project-docs update is complete when:
+
+- one canonical stable page explains the current V1 task architecture
+- product, architecture, data-flow, agent-guidance, testing, and current-state
+  pages agree with it
+- current behavior and accepted-but-unimplemented reliability work are clearly
+  separated
+- no current-facing page directs agents toward obsolete task branches,
+  submodules, bare mirrors, or old routing tools
+- historical records remain intact
+- all source paths and tool/API names are verified
+- `git diff --check` and available documentation checks pass
+
 ## Performance Expectations
 
 V1 should comfortably support hundreds or low thousands of local tasks without

@@ -1,28 +1,45 @@
 # Test Gaps To Watch
 
-Areas that deserve careful test coverage when changed:
+The V1 repository and request services have focused deterministic coverage.
+The remaining risk is mostly at retry, restart, live model, and external-action
+boundaries.
 
-- IVec decision-action-reducer runner behavior.
-- Context pack, git context task resolution, pending-turn routing, task asset
-  persistence, and attachment restore behavior.
-- Broader engine/app live-flow coverage around unusual create/activate/clarify
-  routing failures beyond the covered session-run read-only, read-then-mutate,
-  target promotion, and clarification-answer promotion paths.
-- Attachment preservation while a turn is still unbound or clarifying.
-- App-level task-run finalization for completed, failed, blocked,
-  needs-user-input, stuck/max-iteration, and tool-failure outcomes.
-- System-event parity with chat pending-turn routing edge cases and failure
-  handling.
-- Daemon lifecycle and long-running service assumptions.
-- Tool call validation and execution.
-- Session rotation and memory persistence.
-- Personal memory consolidation.
-- Episodic indexing and retrieval.
-- Document preparation and retrieval.
-- File upload and artifact serving.
-- WebSocket and CLI message contracts.
-- Future multi-client/channel behavior.
-- Plugin event normalization and system-event policy.
-- Provider adapter response formatting.
+## Highest Priority
 
-When a change touches cross-module behavior, run more than the single local test file.
+- Stable replay identity for model-facing `git_context_create_task` and
+  activation calls. Fresh repeated calls currently generate new internal
+  operation ids.
+- Real daemon/provider acceptance across learning, website, analysis, and
+  automation tasks, including reopen after process and day boundaries. Capture
+  the V1 feedback lifecycle report for every turn so operator usability is
+  evaluated alongside repository correctness.
+- Catalog reconstruction or recovery tests when SQLite is missing or damaged.
+- Standardized durable outcome/evidence behavior for browser, desktop, remote
+  API, and other external computer-use work.
+
+## Cross-Layer Outcomes
+
+- App-level finalization for completed, failed, blocked, needs-user-input,
+  run-limit, context-limit, and tool-failure outcomes.
+- Crash windows between filesystem mutation, SQLite lifecycle updates,
+  `.ayati/` reduction, Git commit, and response delivery.
+- Duplicate/reordered client messages and daemon restart during routing or
+  finalization.
+- Attachment preservation while a turn is unbound, clarification is pending,
+  or task selection fails.
+- Symlink/path escape tests across every task-scoped mutation tool.
+- Session rotation while an independent task remains active across later days.
+- Protocol-version mismatch and managed-process restart behavior.
+
+## Broader Runtime Areas
+
+- IVec decision-action-reducer behavior and repair loops.
+- Context-pressure compaction without losing task/request ownership.
+- System-event parity with chat routing and permission failures.
+- Personal memory consolidation and episodic indexing/retrieval.
+- File upload/artifact access, WebSocket/CLI contracts, future multi-client
+  behavior, plugin normalization, and provider response formatting.
+
+When a change crosses packages, run more than one local test file and inspect
+the resulting repository rather than judging success only from mocked return
+values.

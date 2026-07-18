@@ -8,12 +8,10 @@ import {
   type AcquireMutationAuthorityResponse,
   type BindTaskAttachmentsRequest,
   type BindTaskAttachmentsResponse,
-  type CheckpointMutationRequest,
-  type CheckpointMutationResponse,
+  type CompleteContextTurnRequest,
+  type CompleteContextTurnResponse,
   type AppendConversationRequest,
   type AppendConversationResponse,
-  type CreateTaskRequest,
-  type CreateTaskResponse,
   type CreateTaskRunRequest,
   type EnsureActiveSessionRequest,
   type EnsureActiveSessionResponse,
@@ -27,20 +25,14 @@ import {
   type HealthResponse,
   type ListTasksRequest,
   type ListTasksResponse,
-  type InventoryTaskMigrationsRequest,
-  type InventoryTaskMigrationsResponse,
-  type MigrateTaskRepositoryRequest,
-  type MigrateTaskRepositoryResponse,
-  type MountTaskRequest,
-  type MountTaskResponse,
   type PlanTaskRequestRouteRequest,
   type PlanTaskRequestRouteResponse,
+  type PrepareContextTurnRequest,
+  type PrepareContextTurnResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
   type RecordSessionAttachmentsRequest,
   type RecordSessionAttachmentsResponse,
-  type SnapshotTaskRunEvidenceRequest,
-  type SnapshotTaskRunEvidenceResponse,
   type StartRunRequest,
   type StartRunResponse,
   type SelectedTaskRunResponse,
@@ -65,6 +57,18 @@ export class ContractOnlyGitContextService implements GitContextService {
     throw notReady();
   }
 
+  async prepareContextTurn(
+    _input: PrepareContextTurnRequest,
+  ): Promise<PrepareContextTurnResponse> {
+    throw notReady();
+  }
+
+  async completeContextTurn(
+    _input: CompleteContextTurnRequest,
+  ): Promise<CompleteContextTurnResponse> {
+    throw notReady();
+  }
+
   async ensureActiveSession(
     _input: EnsureActiveSessionRequest,
   ): Promise<EnsureActiveSessionResponse> {
@@ -74,10 +78,6 @@ export class ContractOnlyGitContextService implements GitContextService {
   async appendConversation(
     _input: AppendConversationRequest,
   ): Promise<AppendConversationResponse> {
-    throw notReady();
-  }
-
-  async createTask(_input: CreateTaskRequest): Promise<CreateTaskResponse> {
     throw notReady();
   }
 
@@ -99,23 +99,7 @@ export class ContractOnlyGitContextService implements GitContextService {
     throw notReady();
   }
 
-  async inventoryTaskMigrations(
-    _input: InventoryTaskMigrationsRequest,
-  ): Promise<InventoryTaskMigrationsResponse> {
-    throw notReady();
-  }
-
-  async migrateTaskRepository(
-    _input: MigrateTaskRepositoryRequest,
-  ): Promise<MigrateTaskRepositoryResponse> {
-    throw notReady();
-  }
-
   async getTask(_input: GetTaskRequest): Promise<GetTaskResponse> {
-    throw notReady();
-  }
-
-  async mountTask(_input: MountTaskRequest): Promise<MountTaskResponse> {
     throw notReady();
   }
 
@@ -144,18 +128,6 @@ export class ContractOnlyGitContextService implements GitContextService {
   }
 
   async verifyMutation(_input: VerifyMutationRequest): Promise<VerifyMutationResponse> {
-    throw notReady();
-  }
-
-  async checkpointMutation(
-    _input: CheckpointMutationRequest,
-  ): Promise<CheckpointMutationResponse> {
-    throw notReady();
-  }
-
-  async snapshotTaskRunEvidence(
-    _input: SnapshotTaskRunEvidenceRequest,
-  ): Promise<SnapshotTaskRunEvidenceResponse> {
     throw notReady();
   }
 

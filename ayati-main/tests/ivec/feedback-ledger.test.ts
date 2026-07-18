@@ -83,7 +83,7 @@ describe("AsyncAgentFeedbackLedger", () => {
     expect(JSON.parse(lines[0]!)["seq"]).toBe(1);
     expect(JSON.parse(lines[1]!)["seq"]).toBe(2);
 
-    const latest = JSON.parse(await readFile(join(tempDir, "feedback", "latest.json"), "utf-8")) as {
+    const latest = JSON.parse(await readFile(join(tempDir, "feedback", "latest-session.json"), "utf-8")) as {
       updatedAt?: string;
       seq?: number;
       runId?: string;
@@ -93,15 +93,10 @@ describe("AsyncAgentFeedbackLedger", () => {
     expect(latest.seq).toBe(2);
     expect(latest.runId).toBe("run-2");
     expect(latest.path).toBe("feedback/2026-06-23/session-session-1.jsonl");
-    const latestSession = JSON.parse(await readFile(
-      join(tempDir, "feedback", "latest-session.json"),
-      "utf-8",
-    )) as { path?: string };
     const latestRun = JSON.parse(await readFile(
       join(tempDir, "feedback", "latest-run.json"),
       "utf-8",
     )) as { runId?: string };
-    expect(latestSession.path).toBe(latest.path);
     expect(latestRun.runId).toBe("run-2");
   });
 
@@ -130,7 +125,7 @@ describe("AsyncAgentFeedbackLedger", () => {
     await ledger.flush();
 
     const latest = JSON.parse(await readFile(
-      join(tempDir, "feedback", "latest.json"),
+      join(tempDir, "feedback", "latest-session.json"),
       "utf-8",
     )) as { sessionId?: string; path?: string };
     const process = JSON.parse(await readFile(
@@ -184,6 +179,11 @@ describe("AsyncAgentFeedbackLedger", () => {
       actionSteps?: number;
       verificationPassed?: boolean;
       basedOnVerifiedFacts?: boolean;
+      execution?: {
+        verification?: string;
+        finalization?: string;
+        commit?: string;
+      };
       warnings?: string[];
       rawPath?: string;
     };
@@ -194,8 +194,13 @@ describe("AsyncAgentFeedbackLedger", () => {
     expect(summary.toolCalls).toBe(2);
     expect(summary.toolLoadDecisions).toBe(1);
     expect(summary.actionSteps).toBe(1);
-    expect(summary.verificationPassed).toBe(true);
+    expect(summary.verificationPassed).toBeUndefined();
     expect(summary.basedOnVerifiedFacts).toBe(true);
+    expect(summary.execution).toEqual({
+      verification: "passed",
+      finalization: "not_required",
+      commit: "not_required",
+    });
     expect(summary.warnings).toEqual([]);
     expect(summary.rawPath).toBe("feedback/2026-06-23/session-session-1.jsonl");
 
@@ -278,7 +283,7 @@ describe("AsyncAgentFeedbackLedger", () => {
               },
             },
             routeStatus: "ready",
-            routeMode: "continue_active_task",
+            routeMode: "activated",
             routeSource: "auto",
             finalizationStatus: "not_started",
             committed: false,
@@ -304,7 +309,7 @@ describe("AsyncAgentFeedbackLedger", () => {
 
     expect(summary.contextEngine).toMatchObject({
       pendingTurnStatus: "bound",
-      routeMode: "continue_active_task",
+      routeMode: "activated",
       routeSource: "auto",
       taskId: "W-1",
       branch: "task/W-1-upload-ui",
@@ -340,6 +345,8 @@ describe("AsyncAgentFeedbackLedger", () => {
           responseKind: "reply",
           iterations: 1,
           toolCalls: 1,
+          actionSteps: 1,
+          verificationPassed: true,
           warnings: [],
           contextEngine: {
             taskId: "W-4",
@@ -374,12 +381,22 @@ describe("AsyncAgentFeedbackLedger", () => {
         commit?: string;
         ref?: string;
       };
+      execution?: {
+        verification?: string;
+        finalization?: string;
+        commit?: string;
+      };
     };
     expect(summary.contextEngine).toMatchObject({
       finalizationStatus: "committed",
       committed: true,
       commit: "abc1234",
       ref: "refs/heads/task/W-4-example",
+    });
+    expect(summary.execution).toEqual({
+      verification: "passed",
+      finalization: "completed",
+      commit: "committed",
     });
 
     const triage = JSON.parse(await readFile(join(tempDir, "feedback", "triage-summary.json"), "utf-8")) as {
@@ -388,6 +405,81 @@ describe("AsyncAgentFeedbackLedger", () => {
     };
     expect(triage.outcome).toBe("healthy");
     expect(triage.findings?.map((finding) => finding.code)).toEqual(["healthy_run"]);
+  });
+
+  it("updates the latest summary when conversation persistence arrives after final reply", async () => {
+    const times = [
+      new Date("2026-07-18T10:00:00.000Z"),
+      new Date("2026-07-18T10:00:01.000Z"),
+    ];
+    let index = 0;
+    const ledger = new AsyncAgentFeedbackLedger({
+      dataDir: tempDir,
+      enabled: true,
+      now: () => times[index++] ?? times.at(-1)!,
+    });
+    ledger.record({
+      sessionId: "S-1",
+      seq: 4,
+      stage: "final",
+      event: "reply",
+      data: {
+        feedbackSummary: {
+          status: "completed",
+          responseKind: "reply",
+          iterations: 1,
+          toolCalls: 0,
+          actionSteps: 0,
+          verificationPassed: false,
+          contextEngine: {
+            finalizationStatus: "skipped",
+            committed: false,
+          },
+          warnings: [],
+        },
+      },
+    });
+    await ledger.flush();
+
+    ledger.record({
+      sessionId: "S-1",
+      seq: 4,
+      stage: "git_context_service",
+      event: "conversation_persisted",
+      data: {
+        conversationPersistence: {
+          database: "saved",
+          materialization: "not_requested",
+          git: "not_committed",
+          plannedPath: "conversations/000004.pending.md",
+        },
+      },
+    });
+    await ledger.flush();
+
+    const summary = JSON.parse(await readFile(
+      join(tempDir, "feedback", "latest-summary.json"),
+      "utf-8",
+    ));
+    expect(summary.conversationPersistence).toEqual({
+      database: "saved",
+      materialization: "not_requested",
+      git: "not_committed",
+      plannedPath: "conversations/000004.pending.md",
+    });
+    expect(summary.execution).toEqual({
+      verification: "not_applicable",
+      finalization: "skipped",
+      commit: "not_required",
+    });
+    const triage = JSON.parse(await readFile(
+      join(tempDir, "feedback", "triage-summary.json"),
+      "utf-8",
+    ));
+    expect(triage).toMatchObject({
+      outcome: "healthy",
+      findings: [{ code: "healthy_conversation", severity: "info" }],
+    });
   });
 
   it("merges decision repair signals into the latest summary warnings", async () => {
@@ -724,6 +816,295 @@ describe("AsyncAgentFeedbackLedger", () => {
       "many_iterations",
     ]);
     expect(triage.topRecommendation).toContain("raw feedback log");
+  });
+
+  it("keeps a complete V1 task lifecycle in the latest summary", async () => {
+    const ledger = new AsyncAgentFeedbackLedger({
+      dataDir: tempDir,
+      enabled: true,
+      now: () => new Date("2026-07-18T10:00:00.000Z"),
+    });
+    const lifecycle = {
+      repository: {
+        taskId: "T-20260718-0001",
+        workingDirectory: "/workspace/tasks/T-20260718-0001-site",
+        branch: "main",
+        selectionMode: "activated",
+        taskCreated: false,
+        headBefore: "a".repeat(40),
+      },
+      request: {
+        decision: "create",
+        requestId: "R-0002",
+        status: "active",
+        created: true,
+      },
+      run: {
+        runId: "RUN-2",
+        startedAs: "session",
+        selectedAs: "task",
+        sessionRunBound: true,
+      },
+      finalization: { status: "not_started" },
+    } as const;
+    ledger.record({
+      sessionId: "S-1",
+      seq: 2,
+      runId: "RUN-2",
+      stage: "context_engine",
+      event: "agent_routed",
+      data: {
+        taskId: "T-20260718-0001",
+        runId: "RUN-2",
+        taskLifecycle: lifecycle,
+        contextEngine: { taskId: "T-20260718-0001", runId: "RUN-2", taskLifecycle: lifecycle },
+      },
+    });
+    ledger.record({
+      sessionId: "S-1",
+      seq: 2,
+      runId: "RUN-2",
+      stage: "final",
+      event: "reply",
+      data: {
+        feedbackSummary: {
+          status: "completed",
+          responseKind: "reply",
+          iterations: 3,
+          toolCalls: 2,
+          actionSteps: 1,
+          verificationPassed: true,
+          basedOnVerifiedFacts: true,
+          warnings: [],
+        },
+      },
+    });
+    ledger.record({
+      sessionId: "S-1",
+      seq: 2,
+      runId: "RUN-2",
+      stage: "context_engine",
+      event: "committed",
+      data: {
+        taskLifecycle: {
+          repository: { headAfter: "b".repeat(40) },
+          finalization: {
+            status: "committed",
+            outcome: "done",
+            validation: "passed",
+            commit: "b".repeat(40),
+            commitCreated: true,
+            headBefore: "a".repeat(40),
+            headAfter: "b".repeat(40),
+          },
+        },
+      },
+    });
+    await ledger.flush();
+
+    const summary = JSON.parse(
+      await readFile(join(tempDir, "feedback", "latest-summary.json"), "utf-8"),
+    );
+    expect(summary.contextEngine.taskLifecycle).toMatchObject({
+      repository: {
+        taskId: "T-20260718-0001",
+        workingDirectory: "/workspace/tasks/T-20260718-0001-site",
+        selectionMode: "activated",
+        headAfter: "b".repeat(40),
+      },
+      request: { decision: "create", requestId: "R-0002", created: true },
+      run: { runId: "RUN-2", selectedAs: "task", sessionRunBound: true },
+      finalization: {
+        status: "committed",
+        outcome: "done",
+        commit: "b".repeat(40),
+        headAfter: "b".repeat(40),
+      },
+    });
+    const triage = JSON.parse(
+      await readFile(join(tempDir, "feedback", "triage-summary.json"), "utf-8"),
+    );
+    expect(triage.outcome).toBe("healthy");
+    expect(triage.findings).toEqual([expect.objectContaining({ code: "healthy_run" })]);
+  });
+
+  it("reduces flat Git Context events into the V1 lifecycle summary", async () => {
+    const ledger = new AsyncAgentFeedbackLedger({
+      dataDir: tempDir,
+      enabled: true,
+      now: () => new Date("2026-07-18T10:00:00.000Z"),
+    });
+    ledger.record({
+      sessionId: "S-1",
+      seq: 2,
+      runId: "RUN-1",
+      stage: "context_engine",
+      event: "task_run_selected",
+      data: {
+        taskId: "T-20260718-0001",
+        selectionMode: "created",
+        workingDirectory: "/tasks/T-20260718-0001-site",
+        branch: "main",
+        taskHead: "a".repeat(40),
+        taskCreated: true,
+        taskRequestDecision: "initial",
+        taskRequestId: "R-0001",
+        taskRequestStatus: "active",
+        taskRequestCreated: true,
+        sessionRunBound: true,
+      },
+    });
+    ledger.record({
+      sessionId: "S-1",
+      seq: 2,
+      runId: "RUN-1",
+      stage: "git_context_service",
+      event: "task_finalization_completed",
+      data: {
+        taskId: "T-20260718-0001",
+        workingDirectory: "/tasks/T-20260718-0001-site",
+        taskRequestId: "R-0001",
+        outcome: "done",
+        taskHeadBefore: "a".repeat(40),
+        taskHeadAfter: "b".repeat(40),
+        taskCommit: "b".repeat(40),
+        taskCommitCreated: true,
+      },
+    });
+    ledger.record({
+      sessionId: "S-1",
+      seq: 2,
+      runId: "RUN-1",
+      stage: "final",
+      event: "reply",
+      data: {
+        feedbackSummary: {
+          status: "completed",
+          responseKind: "reply",
+          warnings: [],
+        },
+      },
+    });
+    await ledger.flush();
+
+    const summary = JSON.parse(
+      await readFile(join(tempDir, "feedback", "latest-summary.json"), "utf8"),
+    );
+    expect(summary.contextEngine.taskLifecycle).toMatchObject({
+      repository: {
+        taskId: "T-20260718-0001",
+        workingDirectory: "/tasks/T-20260718-0001-site",
+        headAfter: "b".repeat(40),
+      },
+      request: {
+        decision: "initial",
+        requestId: "R-0001",
+        created: true,
+      },
+      run: { runId: "RUN-1", selectedAs: "task", sessionRunBound: true },
+      finalization: {
+        status: "committed",
+        outcome: "done",
+        commit: "b".repeat(40),
+        commitCreated: true,
+      },
+    });
+  });
+
+  it("triages missing request decisions", () => {
+    const triage = buildFeedbackTriageSummary({
+      updatedAt: "2026-07-18T10:00:00.000Z",
+      tsMs: 1,
+      status: "completed",
+      responseKind: "reply",
+      contextEngine: {
+        runClass: "task",
+        taskLifecycle: {
+          repository: {
+            taskId: "T-20260718-0001",
+            workingDirectory: "/workspace/tasks/T-20260718-0001-site",
+            selectionMode: "activated",
+          },
+          run: { runId: "RUN-1", selectedAs: "task" },
+        },
+      },
+      warnings: [],
+      rawPath: "feedback/test.jsonl",
+    });
+
+    expect(triage.outcome).toBe("failed");
+    expect(triage.findings.map((finding) => finding.code)).toEqual([
+      "v1_request_decision_missing",
+      "v1_task_request_missing",
+    ]);
+  });
+
+  it("allows clarification to retain a session run", () => {
+    const triage = buildFeedbackTriageSummary({
+      updatedAt: "2026-07-18T10:00:00.000Z",
+      tsMs: 1,
+      status: "completed",
+      responseKind: "reply",
+      contextEngine: {
+        pendingTurnStatus: "clarifying",
+        runClass: "session",
+        runId: "RUN-session",
+        taskLifecycle: {
+          run: {
+            runId: "RUN-session",
+            startedAs: "session",
+            selectedAs: "session",
+            sessionRunBound: false,
+          },
+        },
+      },
+      warnings: [],
+      rawPath: "feedback/test.jsonl",
+    });
+
+    expect(triage.outcome).toBe("healthy");
+    expect(triage.findings.map((finding) => finding.code)).toEqual(["healthy_run"]);
+  });
+
+  it("accepts a completed V1 no-change finalization without a commit", () => {
+    const triage = buildFeedbackTriageSummary({
+      updatedAt: "2026-07-18T10:00:00.000Z",
+      tsMs: 1,
+      status: "completed",
+      responseKind: "reply",
+      contextEngine: {
+        runClass: "task",
+        taskLifecycle: {
+          repository: {
+            taskId: "T-20260718-0001",
+            workingDirectory: "/tasks/T-20260718-0001-site",
+            selectionMode: "activated",
+            headAfter: "a".repeat(40),
+          },
+          request: {
+            decision: "continue",
+            requestId: "R-0001",
+            created: false,
+          },
+          run: { runId: "RUN-1", selectedAs: "task" },
+          finalization: {
+            status: "committed",
+            outcome: "failed",
+            validation: "failed",
+            commitCreated: false,
+            headAfter: "a".repeat(40),
+          },
+        },
+      },
+      warnings: [],
+      rawPath: "feedback/test.jsonl",
+    });
+
+    expect(triage.outcome).toBe("needs_review");
+    expect(triage.findings.map((finding) => finding.code)).toEqual([
+      "v1_finalization_validation_failed",
+      "v1_task_outcome_failed",
+    ]);
   });
 
   it("drops oldest events when the queue is full", async () => {

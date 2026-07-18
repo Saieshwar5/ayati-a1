@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
-import { applyMigrations, latestSchemaVersion } from "./migrations.js";
+import { initializeSchema, latestSchemaVersion } from "./schema.js";
 
 export interface ContextDatabaseOptions {
   path: string;
@@ -23,13 +23,19 @@ export class ContextDatabase {
       await mkdir(dirname(options.path), { recursive: true });
     }
     const database = new DatabaseSync(options.path);
-    database.exec("PRAGMA foreign_keys = ON");
-    database.exec("PRAGMA busy_timeout = 5000");
-    if (options.path !== ":memory:") {
-      database.exec("PRAGMA journal_mode = WAL");
-      database.exec("PRAGMA synchronous = FULL");
+    try {
+      initializeSchema(database, options.now ?? (() => new Date().toISOString()));
+      database.exec("PRAGMA foreign_keys = ON");
+      database.exec("PRAGMA busy_timeout = 5000");
+      if (options.path !== ":memory:") {
+        database.exec("PRAGMA journal_mode = WAL");
+        database.exec("PRAGMA synchronous = FULL");
+      }
+    } catch (error) {
+      database.close();
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`${message} Database: ${options.path}`);
     }
-    applyMigrations(database, options.now ?? (() => new Date().toISOString()));
     return new ContextDatabase(options.path, database);
   }
 
@@ -58,7 +64,7 @@ export class ContextDatabase {
 
   schemaVersion(): number {
     const row = this.prepare(
-      "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations",
+      "SELECT version FROM schema_metadata WHERE singleton = 1",
     ).get() as { version: number };
     return Number(row.version);
   }

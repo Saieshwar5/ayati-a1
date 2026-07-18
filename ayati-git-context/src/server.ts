@@ -9,18 +9,15 @@ import {
   isAdoptTaskReferenceRequest,
   isAppendConversationRequest,
   isBindTaskAttachmentsRequest,
-  isCheckpointMutationRequest,
-  isCreateTaskRequest,
+  isCompleteContextTurnRequest,
   isCreateTaskRunRequest,
-  isMigrateTaskRepositoryRequest,
   isEnsureActiveSessionRequest,
   isFinalizeSessionRunRequest,
   isFinalizeTaskRunRequest,
-  isMountTaskRequest,
   isPlanTaskRequestRouteRequest,
+  isPrepareContextTurnRequest,
   isRecordRunStepRequest,
   isRecordSessionAttachmentsRequest,
-  isSnapshotTaskRunEvidenceRequest,
   isStartRunRequest,
   isVerifyMutationRequest,
 } from "./contracts.js";
@@ -162,6 +159,24 @@ export class GitContextHttpServer {
         return;
       }
 
+      if (method === "POST" && url.pathname === "/context/turns/prepare") {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isPrepareContextTurnRequest(body)) {
+          throw invalidRequest("Invalid prepare-context-turn request.");
+        }
+        sendJson(response, 200, await this.service.prepareContextTurn(body));
+        return;
+      }
+
+      if (method === "POST" && url.pathname === "/context/turns/complete") {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isCompleteContextTurnRequest(body)) {
+          throw invalidRequest("Invalid complete-context-turn request.");
+        }
+        sendJson(response, 200, await this.service.completeContextTurn(body));
+        return;
+      }
+
       if (method === "POST" && url.pathname === "/sessions/ensure-active") {
         const body = await readJsonBody(request, this.maxBodyBytes);
         if (!isEnsureActiveSessionRequest(body)) {
@@ -194,15 +209,6 @@ export class GitContextHttpServer {
         return;
       }
 
-      if (method === "POST" && url.pathname === "/tasks") {
-        const body = await readJsonBody(request, this.maxBodyBytes);
-        if (!isCreateTaskRequest(body)) {
-          throw invalidRequest("Invalid create-task request.");
-        }
-        sendJson(response, 200, await this.service.createTask(body));
-        return;
-      }
-
       if (method === "GET" && url.pathname === "/tasks") {
         const query = url.searchParams.get("query")?.trim();
         const limitText = url.searchParams.get("limit")?.trim();
@@ -214,23 +220,6 @@ export class GitContextHttpServer {
           ...(query ? { query } : {}),
           ...(limit ? { limit } : {}),
         }));
-        return;
-      }
-
-      if (method === "GET" && url.pathname === "/task-migrations") {
-        const taskId = url.searchParams.get("taskId")?.trim();
-        sendJson(response, 200, await this.service.inventoryTaskMigrations({
-          ...(taskId ? { taskId } : {}),
-        }));
-        return;
-      }
-
-      if (method === "POST" && url.pathname === "/task-migrations") {
-        const body = await readJsonBody(request, this.maxBodyBytes);
-        if (!isMigrateTaskRepositoryRequest(body)) {
-          throw invalidRequest("Invalid migrate-task-repository request.");
-        }
-        sendJson(response, 200, await this.service.migrateTaskRepository(body));
         return;
       }
 
@@ -270,23 +259,6 @@ export class GitContextHttpServer {
       if (method === "GET" && taskMatch) {
         const taskId = decodePathComponent(taskMatch[1] ?? "");
         sendJson(response, 200, await this.service.getTask({ taskId }));
-        return;
-      }
-
-      const mountMatch = url.pathname.match(
-        /^\/sessions\/([^/]+)\/tasks\/([^/]+)\/mount$/,
-      );
-      if (method === "POST" && mountMatch) {
-        const body = await readJsonBody(request, this.maxBodyBytes);
-        if (!isMountTaskRequest(body)) {
-          throw invalidRequest("Invalid mount-task request.");
-        }
-        const sessionId = decodePathComponent(mountMatch[1] ?? "");
-        const taskId = decodePathComponent(mountMatch[2] ?? "");
-        if (body.sessionId !== sessionId || body.taskId !== taskId) {
-          throw invalidRequest("Session and task IDs in request path and body must match.");
-        }
-        sendJson(response, 200, await this.service.mountTask(body));
         return;
       }
 
@@ -339,22 +311,6 @@ export class GitContextHttpServer {
         return;
       }
 
-      const checkpointMutationMatch = url.pathname.match(
-        /^\/mutation-authorities\/([^/]+)\/checkpoint$/,
-      );
-      if (method === "POST" && checkpointMutationMatch) {
-        const body = await readJsonBody(request, this.maxBodyBytes);
-        if (!isCheckpointMutationRequest(body)) {
-          throw invalidRequest("Invalid checkpoint-mutation request.");
-        }
-        const authorityId = decodePathComponent(checkpointMutationMatch[1] ?? "");
-        if (body.authorityId !== authorityId) {
-          throw invalidRequest("Authority ID in request path and body must match.");
-        }
-        sendJson(response, 200, await this.service.checkpointMutation(body));
-        return;
-      }
-
       if (method === "POST" && url.pathname === "/runs/start") {
         const body = await readJsonBody(request, this.maxBodyBytes);
         if (!isStartRunRequest(body)) {
@@ -392,20 +348,6 @@ export class GitContextHttpServer {
         return;
       }
 
-      const runEvidenceMatch = url.pathname.match(/^\/runs\/([^/]+)\/evidence\/snapshot$/);
-      if (method === "POST" && runEvidenceMatch) {
-        const body = await readJsonBody(request, this.maxBodyBytes);
-        if (!isSnapshotTaskRunEvidenceRequest(body)) {
-          throw invalidRequest("Invalid task-run evidence snapshot request.");
-        }
-        const runId = decodePathComponent(runEvidenceMatch[1] ?? "");
-        if (body.runId !== runId) {
-          throw invalidRequest("Run ID in request path and body must match.");
-        }
-        sendJson(response, 200, await this.service.snapshotTaskRunEvidence(body));
-        return;
-      }
-
       const finalizeTaskRunMatch = url.pathname.match(/^\/runs\/([^/]+)\/finalize-task$/);
       if (method === "POST" && finalizeTaskRunMatch) {
         const body = await readJsonBody(request, this.maxBodyBytes);
@@ -439,14 +381,11 @@ export class GitContextHttpServer {
       const knownPath = isKnownPath(url.pathname)
         || Boolean(runStepMatch)
         || Boolean(taskMatch)
-        || Boolean(mountMatch)
         || Boolean(mutationAuthorityMatch)
         || Boolean(verifyMutationMatch)
-        || Boolean(checkpointMutationMatch)
         || Boolean(sessionAttachmentsMatch)
         || Boolean(taskAttachmentsMatch)
         || Boolean(adoptReferenceMatch)
-        || Boolean(runEvidenceMatch)
         || Boolean(finalizeTaskRunMatch)
         || Boolean(finalizeSessionRunMatch);
       throw new GitContextServiceError({
@@ -520,6 +459,8 @@ function headerValue<K extends string>(
 function requestOperation(method: string, pathname: string): string {
   if (method === "GET" && pathname === "/health") return "health";
   if (method === "GET" && pathname === "/context/active") return "get_active_context";
+  if (pathname === "/context/turns/prepare") return "prepare_context_turn";
+  if (pathname === "/context/turns/complete") return "complete_context_turn";
   if (pathname === "/sessions/ensure-active") return "ensure_active_session";
   if (pathname === "/conversations/append") return "append_conversation";
   if (/\/sessions\/[^/]+\/attachments$/.test(pathname)) return "record_session_attachments";
@@ -531,12 +472,9 @@ function requestOperation(method: string, pathname: string): string {
   if (/\/steps$/.test(pathname)) return "record_run_step";
   if (/\/finalize-task$/.test(pathname)) return "finalize_task_run";
   if (/\/finalize-session$/.test(pathname)) return "finalize_session_run";
-  if (/\/checkpoint$/.test(pathname)) return "checkpoint_mutation";
   if (/\/verify$/.test(pathname)) return "verify_mutation";
   if (/mutation-authority$/.test(pathname)) return "acquire_mutation_authority";
-  if (/evidence\/snapshot$/.test(pathname)) return "snapshot_run_evidence";
-  if (/\/mount$/.test(pathname)) return "mount_task";
-  if (pathname === "/tasks") return method === "GET" ? "list_tasks" : "create_task";
+  if (method === "GET" && pathname === "/tasks") return "list_tasks";
   if (pathname.startsWith("/tasks/")) return "get_task";
   return "unknown";
 }
@@ -544,6 +482,8 @@ function requestOperation(method: string, pathname: string): string {
 function isKnownPath(pathname: string): boolean {
   return pathname === "/health"
     || pathname === "/context/active"
+    || pathname === "/context/turns/prepare"
+    || pathname === "/context/turns/complete"
     || pathname === "/sessions/ensure-active"
     || pathname === "/conversations/append"
     || pathname === "/tasks"

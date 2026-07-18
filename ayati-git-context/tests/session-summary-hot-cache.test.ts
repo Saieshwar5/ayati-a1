@@ -50,7 +50,7 @@ describe("session summary hot cache", () => {
       workSummary: "Complete task work 6.",
       outcome: "done",
       validation: "passed",
-      taskId: "W-20260712-0006",
+      taskId: "T-20260712-0006",
       runId: "R-20260712-0006",
       assets: [{ path: "file-6.txt", description: "Asset 6" }],
     });
@@ -77,7 +77,7 @@ function commitMessage(index: number): string {
     "",
     "Session-Id: S-20260712-local",
     "Conversation-Id: S-20260712-local-C-" + suffix,
-    "Task-Id: W-20260712-" + suffix,
+    "Task-Id: T-20260712-" + suffix,
     "Task-Before: " + "a".repeat(40),
     "Task-After: " + "b".repeat(40),
     "Run: R-20260712-" + suffix,

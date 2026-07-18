@@ -10,14 +10,12 @@ import {
   type AdoptTaskReferenceResponse,
   type BindTaskAttachmentsRequest,
   type BindTaskAttachmentsResponse,
-  type CheckpointMutationRequest,
-  type CheckpointMutationResponse,
+  type CompleteContextTurnRequest,
+  type CompleteContextTurnResponse,
   GIT_CONTEXT_PROTOCOL_VERSION,
   type ActiveContext,
   type AppendConversationRequest,
   type AppendConversationResponse,
-  type CreateTaskRequest,
-  type CreateTaskResponse,
   type EnsureActiveSessionRequest,
   type EnsureActiveSessionResponse,
   type FinalizeSessionRunRequest,
@@ -28,18 +26,17 @@ import {
   type GetTaskRequest,
   type GetTaskResponse,
   type HealthResponse,
-  type MountTaskRequest,
-  type MountTaskResponse,
   type PlanTaskRequestRouteRequest,
   type PlanTaskRequestRouteResponse,
+  type PrepareContextTurnRequest,
+  type PrepareContextTurnResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
   type RecordSessionAttachmentsRequest,
   type RecordSessionAttachmentsResponse,
   type StartRunRequest,
   type StartRunResponse,
-  type SnapshotTaskRunEvidenceRequest,
-  type SnapshotTaskRunEvidenceResponse,
+  type TaskCatalogEntry,
   type VerifyMutationRequest,
   type VerifyMutationResponse,
 } from "../src/contracts.js";
@@ -130,6 +127,44 @@ describe("Git Context Engine HTTP transport", () => {
     });
     expect(appended.conversation.conversationId).toBe("C-000001");
 
+    const prepared = await client.prepareContextTurn({
+      requestId: "REQ-prepare",
+      date: "2026-07-12",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      role: "system_event",
+      content: "scheduled check",
+      at: "2026-07-12T10:00:01+05:30",
+    });
+    expect(prepared).toMatchObject({
+      session: { sessionId: ensured.session.sessionId },
+      sessionCreated: true,
+      message: { role: "system_event", content: "scheduled check" },
+      persistence: {
+        database: "saved",
+        materialization: "not_requested",
+        git: "not_committed",
+      },
+      context: { contextRevision: "sha256:test-context" },
+    });
+
+    await expect(client.completeContextTurn({
+      requestId: "REQ-complete",
+      sessionId: prepared.session.sessionId,
+      conversationId: prepared.conversation.conversationId,
+      userMessageId: prepared.message.messageId,
+      assistantContent: "scheduled check complete",
+      at: "2026-07-12T10:00:02+05:30",
+    })).resolves.toMatchObject({
+      conversation: { conversationId: prepared.conversation.conversationId },
+      message: { role: "assistant", content: "scheduled check complete" },
+      persistence: {
+        database: "saved",
+        materialization: "not_requested",
+        git: "not_committed",
+      },
+    });
+
     await expect(client.recordSessionAttachments({
       requestId: "REQ-attachments",
       sessionId: ensured.session.sessionId,
@@ -201,34 +236,6 @@ describe("Git Context Engine HTTP transport", () => {
       sha256: "a".repeat(64),
     });
 
-    const createdTask = await client.createTask({
-      requestId: "REQ-task",
-      sessionId: ensured.session.sessionId,
-      title: "Coffee Shop Website",
-      objective: "Build a responsive coffee-shop website.",
-      placement: { mode: "managed" },
-      at: "2026-07-12T10:00:00+05:30",
-    });
-    expect(createdTask.task.taskId).toBe("W-20260712-0001");
-    await expect(client.getTask({
-      taskId: createdTask.task.taskId,
-    })).resolves.toEqual({ task: createdTask.task });
-    await expect(client.mountTask({
-      requestId: "REQ-mount",
-      sessionId: ensured.session.sessionId,
-      taskId: createdTask.task.taskId,
-      expectedTaskHead: createdTask.task.head,
-      at: "2026-07-12T10:00:01+05:30",
-    })).resolves.toMatchObject({
-      created: true,
-      mount: {
-        sessionId: ensured.session.sessionId,
-        taskId: createdTask.task.taskId,
-        mountedHead: createdTask.task.head,
-        status: "ready",
-      },
-    });
-
     const started = await client.startRun({
       requestId: "REQ-3",
       sessionId: ensured.session.sessionId,
@@ -239,76 +246,6 @@ describe("Git Context Engine HTTP transport", () => {
     expect(started.run).toMatchObject({
       runId: "R-20260712-0001",
       runClass: "session",
-    });
-    const authority = await client.acquireMutationAuthority({
-      requestId: "REQ-authority",
-      sessionId: ensured.session.sessionId,
-      runId: started.run.runId,
-      taskId: createdTask.task.taskId,
-      targets: [{ path: "index.html", kind: "file" }],
-      at: "2026-07-12T10:00:02+05:30",
-    });
-    expect(authority.authority).toMatchObject({
-      runId: started.run.runId,
-      taskId: createdTask.task.taskId,
-      status: "active",
-    });
-    await expect(client.verifyMutation({
-      requestId: "REQ-verify",
-      authorityId: authority.authority.authorityId,
-      lockToken: authority.authority.lockToken,
-      toolStatus: "failed",
-      at: "2026-07-12T10:00:03+05:30",
-    })).resolves.toMatchObject({
-      status: "released",
-      outcome: "no_changes",
-    });
-    await expect(client.checkpointMutation({
-      requestId: "REQ-checkpoint",
-      authorityId: authority.authority.authorityId,
-      lockToken: authority.authority.lockToken,
-      purpose: "Create the application entry point.",
-      conversationId: appended.conversation.conversationId,
-      conversationHash: "sha256:" + "a".repeat(64),
-      at: "2026-07-12T10:00:04+05:30",
-    })).resolves.toMatchObject({
-      authorityId: authority.authority.authorityId,
-      checkpointHead: "b".repeat(40),
-      sessionGitlinkUpdated: true,
-    });
-    await expect(client.snapshotTaskRunEvidence({
-      requestId: "REQ-evidence",
-      sessionId: ensured.session.sessionId,
-      runId: started.run.runId,
-      taskId: createdTask.task.taskId,
-      at: "2026-07-12T10:00:05+05:30",
-    })).resolves.toMatchObject({
-      runId: started.run.runId,
-      taskId: createdTask.task.taskId,
-      staged: true,
-    });
-    await expect(client.finalizeTaskRun({
-      requestId: "REQ-finalize",
-      sessionId: ensured.session.sessionId,
-      runId: started.run.runId,
-      taskId: createdTask.task.taskId,
-      outcome: "done",
-      conversationSummary: "The user asked for the application and received the completed result.",
-      summary: "Created the application.",
-      validation: "passed",
-      completion: {
-        accepted: true,
-        assets: [],
-        missing: [],
-        failures: [],
-        criteria: [],
-      },
-      assistantResponse: "The application is ready.",
-      at: "2026-07-12T10:00:06+05:30",
-    })).resolves.toMatchObject({
-      runId: started.run.runId,
-      outcome: "done",
-      sessionCommit: "c".repeat(40),
     });
     await expect(client.recordRunStep({
       requestId: "REQ-4",
@@ -381,6 +318,29 @@ describe("Git Context Engine HTTP transport", () => {
     });
   });
 
+  it("accepts zero-target V1 mutation authority through the HTTP boundary", async () => {
+    const { client } = await startTcpServer(new V1ZeroTargetAuthorityService());
+
+    await expect(client.acquireMutationAuthority({
+      requestId: "REQ-v1-zero-target-authority",
+      sessionId: "S-20260712-local",
+      runId: "RUN-20260712-0001",
+      taskId: "T-20260712-0001",
+      taskRequestId: "R-0001",
+      expectedTaskHead: "a".repeat(40),
+      targets: [],
+      at: "2026-07-12T10:00:02+05:30",
+    })).resolves.toMatchObject({
+      authority: {
+        runId: "RUN-20260712-0001",
+        taskId: "T-20260712-0001",
+        taskRequestId: "R-0001",
+        repositoryPath: "/tmp/tasks/T-20260712-0001",
+        targets: [],
+      },
+    });
+  });
+
   it("rejects invalid request bodies at the transport boundary", async () => {
     const { address } = await startTcpServer(new TestGitContextService());
     if (address.kind !== "tcp") {
@@ -428,7 +388,7 @@ describe("Git Context Engine HTTP transport", () => {
 class TestGitContextService implements GitContextService {
   readonly activeContextRequests: GetActiveContextRequest[] = [];
   private session: EnsureActiveSessionResponse["session"] | null = null;
-  private task: CreateTaskResponse["task"] | null = null;
+  private task: TaskCatalogEntry | null = null;
   private authority: AcquireMutationAuthorityResponse["authority"] | null = null;
 
   async getHealth(): Promise<HealthResponse> {
@@ -443,6 +403,10 @@ class TestGitContextService implements GitContextService {
 
   async getActiveContext(input: GetActiveContextRequest): Promise<ActiveContext> {
     this.activeContextRequests.push(input);
+    return this.activeContext();
+  }
+
+  private activeContext(): ActiveContext {
     return {
       contextRevision: "sha256:test-context",
       session: this.session
@@ -456,6 +420,53 @@ class TestGitContextService implements GitContextService {
           }
         : null,
       warnings: [],
+    };
+  }
+
+  async prepareContextTurn(
+    input: PrepareContextTurnRequest,
+  ): Promise<PrepareContextTurnResponse> {
+    const ensured = await this.ensureActiveSession(input);
+    const appended = await this.appendConversation({
+      requestId: input.requestId,
+      sessionId: ensured.session.sessionId,
+      role: input.role,
+      content: input.content,
+      at: input.at,
+    });
+    return {
+      session: ensured.session,
+      sessionCreated: ensured.created,
+      conversation: appended.conversation,
+      message: appended.message,
+      persistence: {
+        database: "saved",
+        materialization: "not_requested",
+        git: "not_committed",
+        plannedPath: appended.conversation.filePath,
+      },
+      context: this.activeContext(),
+    };
+  }
+
+  async completeContextTurn(
+    input: CompleteContextTurnRequest,
+  ): Promise<CompleteContextTurnResponse> {
+    const appended = await this.appendConversation({
+      requestId: input.requestId,
+      sessionId: input.sessionId,
+      role: "assistant",
+      content: input.assistantContent,
+      at: input.at,
+    });
+    return {
+      ...appended,
+      persistence: {
+        database: "saved",
+        materialization: "not_requested",
+        git: "not_committed",
+        plannedPath: appended.conversation.filePath,
+      },
     };
   }
 
@@ -503,45 +514,11 @@ class TestGitContextService implements GitContextService {
     };
   }
 
-  async createTask(input: CreateTaskRequest): Promise<CreateTaskResponse> {
-    this.task = {
-      taskId: "W-20260712-0001",
-      repositoryPath: "/tmp/tasks/W-20260712-0001.git",
-      branch: "main",
-      head: "a".repeat(40),
-      title: input.title,
-      objective: input.objective,
-      status: "active",
-      createdSessionId: input.sessionId,
-      createdAt: input.at,
-      updatedAt: input.at,
-    };
-    return { task: this.task, created: true };
-  }
-
   async getTask(input: GetTaskRequest): Promise<GetTaskResponse> {
     if (!this.task || this.task.taskId !== input.taskId) {
       throw new Error("Task not found.");
     }
     return { task: this.task };
-  }
-
-  async mountTask(input: MountTaskRequest): Promise<MountTaskResponse> {
-    if (!this.task || this.task.taskId !== input.taskId) {
-      throw new Error("Task not found.");
-    }
-    return {
-      mount: {
-        sessionId: input.sessionId,
-        taskId: input.taskId,
-        checkoutPath: "/tmp/session/tasks/" + input.taskId,
-        canonicalRepository: this.task.repositoryPath,
-        branch: this.task.branch,
-        mountedHead: this.task.head,
-        status: "ready",
-      },
-      created: true,
-    };
   }
 
   async planTaskRequestRoute(
@@ -611,8 +588,7 @@ class TestGitContextService implements GitContextService {
       sessionId: input.sessionId,
       runId: input.runId,
       taskId: input.taskId,
-      checkoutPath: "/tmp/session/tasks/" + input.taskId,
-      canonicalRepository: this.task.repositoryPath,
+      repositoryPath: this.task.repositoryPath,
       branch: this.task.branch,
       beforeHead: this.task.head,
       targets: input.targets.map((target) => ({
@@ -641,39 +617,6 @@ class TestGitContextService implements GitContextService {
         renamed: [],
         unexpectedPaths: [],
       },
-    };
-  }
-
-  async checkpointMutation(
-    input: CheckpointMutationRequest,
-  ): Promise<CheckpointMutationResponse> {
-    if (!this.authority || this.authority.authorityId !== input.authorityId) {
-      throw new Error("Authority not found.");
-    }
-    return {
-      authorityId: input.authorityId,
-      taskId: this.authority.taskId,
-      runId: this.authority.runId,
-      beforeHead: this.authority.beforeHead,
-      checkpointHead: "b".repeat(40),
-      stagedPaths: ["index.html"],
-      sessionGitlinkUpdated: true,
-    };
-  }
-
-  async snapshotTaskRunEvidence(
-    input: SnapshotTaskRunEvidenceRequest,
-  ): Promise<SnapshotTaskRunEvidenceResponse> {
-    return {
-      runId: input.runId,
-      taskId: input.taskId,
-      runFile: "runs/" + input.runId + "/run.json",
-      stepsFile: "runs/" + input.runId + "/steps.jsonl",
-      stepCount: 1,
-      taskHeadBefore: "a".repeat(40),
-      taskHeadAfter: "b".repeat(40),
-      sessionHeadUnchanged: true,
-      staged: true,
     };
   }
 
@@ -731,6 +674,29 @@ class TestGitContextService implements GitContextService {
         afterStep: input.step,
         ...input.workState,
         updatedAt: input.at,
+      },
+    };
+  }
+}
+
+class V1ZeroTargetAuthorityService extends ContractOnlyGitContextService {
+  override async acquireMutationAuthority(
+    input: AcquireMutationAuthorityRequest,
+  ): Promise<AcquireMutationAuthorityResponse> {
+    return {
+      authority: {
+        authorityId: input.runId + "-M-0001",
+        lockToken: "test-token",
+        sessionId: input.sessionId,
+        runId: input.runId,
+        taskId: input.taskId,
+        repositoryPath: "/tmp/tasks/" + input.taskId,
+        taskRequestId: input.taskRequestId,
+        branch: "main",
+        beforeHead: input.expectedTaskHead ?? "a".repeat(40),
+        targets: [],
+        status: "active",
+        expiresAt: "2026-07-12T10:15:02+05:30",
       },
     };
   }

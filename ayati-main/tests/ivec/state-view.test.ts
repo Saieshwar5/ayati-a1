@@ -28,12 +28,12 @@ function createGitContext(overrides: Partial<ContextEngineMachineContext> = {}):
     },
     focus: {
       status: "active",
-      ref: "refs/heads/work/W-20260627-0001-analyze-invoice",
-      workId: "W-20260627-0001",
+      ref: "refs/heads/task/T-20260627-0001-analyze-invoice",
+      workId: "T-20260627-0001",
     },
     task: {
-      ref: "refs/heads/work/W-20260627-0001-analyze-invoice",
-      workId: "W-20260627-0001",
+      ref: "refs/heads/task/T-20260627-0001-analyze-invoice",
+      workId: "T-20260627-0001",
       title: "Analyze invoice",
       objective: "Analyze invoice",
       status: "active",
@@ -52,7 +52,7 @@ function createGitContext(overrides: Partial<ContextEngineMachineContext> = {}):
       recentRuns: [{
         schemaVersion: 1,
         runId: "R-20260627-0001",
-        workId: "W-20260627-0001",
+        workId: "T-20260627-0001",
         status: "completed",
         summary: "Read invoice.",
         completed: ["Read invoice"],
@@ -64,11 +64,11 @@ function createGitContext(overrides: Partial<ContextEngineMachineContext> = {}):
         commit: "def456",
         subject: "ayati: commit run",
         event: "run_committed",
-        workId: "W-20260627-0001",
+        workId: "T-20260627-0001",
       }],
       recentEvidence: [{
         runId: "R-20260627-0001",
-        workId: "W-20260627-0001",
+        workId: "T-20260627-0001",
         step: 1,
         tool: "read_files",
         status: "completed",
@@ -177,13 +177,13 @@ describe("buildAgentStateView", () => {
 
     const context = buildAgentStateView(state).context;
     expect(context.gitContext?.task).toMatchObject({
-      workId: "W-20260627-0001",
+      workId: "T-20260627-0001",
       open: ["Summarize invoice"],
       facts: [{ text: "Invoice has three line items.", source: "ev-001" }],
     });
     expect(context.git?.current.task).toMatchObject({
       identity: {
-        workId: "W-20260627-0001",
+        workId: "T-20260627-0001",
         title: "Analyze invoice",
       },
       state: {
@@ -271,7 +271,7 @@ describe("buildAgentStateView", () => {
             recentTaskRuns: [{
               checkpointId: `task-run-checkpoint-${"a".repeat(64)}`,
               commit: "checkpoint-commit",
-              workId: "W-20260627-0001",
+              workId: "T-20260627-0001",
               runId: "R-20260627-0001",
               status: "completed",
               fromSeq: 1,
@@ -635,8 +635,8 @@ describe("buildAgentStateView", () => {
         "git_context_create_task",
       ],
       blocked: [
-        "workspace_mutation_until_task_promotion",
-        "external_mutation_until_task_promotion",
+        "workspace_mutation_until_task_binding",
+        "external_mutation_until_task_binding",
         "task_activation",
       ],
       repairCode: "R_FRESH_SESSION_NEEDS_TASK",

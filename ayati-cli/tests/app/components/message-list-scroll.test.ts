@@ -24,17 +24,25 @@ describe("message-list-scroll", () => {
     expect(scrollByPages(6, 2, 4, 12)).toBe(12);
   });
 
-  it("stays pinned to the bottom only when already at the bottom", () => {
+  it("follows output independently of a stale scroll position", () => {
     expect(resolveScrollTopAfterContentChange({
-      scrollTop: 7,
-      previousMaxScrollTop: 7,
+      scrollTop: 3,
       nextMaxScrollTop: 11,
+      followOutput: true,
     })).toBe(11);
 
     expect(resolveScrollTopAfterContentChange({
       scrollTop: 3,
-      previousMaxScrollTop: 7,
       nextMaxScrollTop: 11,
+      followOutput: false,
     })).toBe(3);
+  });
+
+  it("clamps a manually anchored viewport when content shrinks", () => {
+    expect(resolveScrollTopAfterContentChange({
+      scrollTop: 9,
+      nextMaxScrollTop: 4,
+      followOutput: false,
+    })).toBe(4);
   });
 });

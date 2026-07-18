@@ -1,5 +1,5 @@
 import { lstat } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, posix, resolve } from "node:path";
 import { canonicalizeAbsolutePath, getWorkspaceRoot, isWithinWorkspace } from "../../skills/workspace-paths.js";
 import type { LoopState, WorkState } from "../types.js";
 import type { AgentTaskCompletionRequest, TaskCompletionAssetInput } from "./decision.js";
@@ -126,14 +126,19 @@ async function verifyAssets(
   const verified: VerifiedCompletionAsset[] = [];
   const seen = new Set<string>();
   const root = completionResourceRoot(state);
+  const canonicalRoot = await canonicalizeAbsolutePath(root);
 
   for (const asset of assets) {
-    if (!isAbsolute(asset.path)) {
-      failures.push({ code: "INVALID_ASSET_PATH", path: asset.path, message: `Completion asset must use an absolute path: ${asset.path}` });
+    const portablePath = normalizePortableCompletionPath(asset.path);
+    if (!portablePath) {
+      failures.push({
+        code: "INVALID_ASSET_PATH",
+        path: asset.path,
+        message: `Completion asset must use a portable task-relative path: ${asset.path}`,
+      });
       continue;
     }
-    const resolvedPath = await canonicalizeAbsolutePath(asset.path);
-    const canonicalRoot = await canonicalizeAbsolutePath(root);
+    const resolvedPath = await canonicalizeAbsolutePath(resolve(canonicalRoot, portablePath));
     if (!isWithinWorkspace(resolvedPath, canonicalRoot)) {
       failures.push({ code: "INVALID_ASSET_PATH", path: asset.path, message: `Completion asset is outside the task workingDirectory ${canonicalRoot}: ${asset.path}` });
       continue;
@@ -164,15 +169,36 @@ async function verifyAssets(
       });
       continue;
     }
-    verified.push({ ...asset, resolvedPath });
+    verified.push({ ...asset, path: portablePath, resolvedPath });
   }
 
   return verified;
 }
 
+function normalizePortableCompletionPath(value: string): string | null {
+  const trimmed = value.trim().replaceAll("\\", "/");
+  const normalized = posix.normalize(trimmed);
+  const rawSegments = trimmed.split("/");
+  const segments = normalized.split("/");
+  if (!trimmed
+    || isAbsolute(trimmed)
+    || trimmed.startsWith("/")
+    || /^[A-Za-z]:\//.test(trimmed)
+    || /[\u0000-\u001f\u007f]/.test(trimmed)
+    || normalized === "."
+    || normalized === ".."
+    || normalized.startsWith("../")
+    || rawSegments.includes("..")
+    || segments.includes("..")
+    || segments.includes(".git")
+    || segments[0] === ".ayati") {
+    return null;
+  }
+  return normalized.replace(/^\.\//, "");
+}
+
 function completionResourceRoot(state: LoopState): string {
-  const taskRoot = state.harnessContext.contextEngine?.task?.workingDirectory?.trim()
-    || state.harnessContext.contextEngine?.task?.checkoutPath?.trim();
+  const taskRoot = state.harnessContext.contextEngine?.task?.workingDirectory?.trim();
   return taskRoot ? resolve(taskRoot) : getWorkspaceRoot();
 }
 

@@ -42,7 +42,9 @@ describe("Git Context runtime cache", () => {
 
     expect(first).toBe(turn.context);
     expect(second).toBe(first);
-    expect(fixture.getActiveContext).toHaveBeenCalledTimes(1);
+    expect(fixture.getActiveContext).not.toHaveBeenCalled();
+    fixture.appendConversation.mockClear();
+    fixture.completeContextTurn.mockClear();
 
     await runtime.recordAssistantMessage({
       turn,
@@ -53,7 +55,14 @@ describe("Git Context runtime cache", () => {
 
     expect(refreshed).not.toBe(first);
     expect(refreshed.session.conversationTail).toHaveLength(2);
-    expect(fixture.getActiveContext).toHaveBeenCalledTimes(1);
+    expect(fixture.getActiveContext).not.toHaveBeenCalled();
+    expect(fixture.appendConversation).not.toHaveBeenCalled();
+    expect(fixture.completeContextTurn).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: turn.sessionId,
+      conversationId: turn.conversationId,
+      userMessageId: turn.currentMessageId,
+      assistantContent: "The cache mirrors authoritative context.",
+    }));
   });
 
   it("rejects bypassing finalization for a run-bound assistant response", async () => {
@@ -142,7 +151,7 @@ describe("Git Context runtime cache", () => {
     await runtime.buildActiveContext(turn.sessionId);
 
     expect(fixture.events.slice(-2)).toEqual(["record-step", "get-context"]);
-    expect(fixture.getActiveContext).toHaveBeenCalledTimes(3);
+    expect(fixture.getActiveContext).toHaveBeenCalledTimes(2);
     expect(telemetry.map((event) => event.event)).toEqual(expect.arrayContaining([
       "run_step_persistence_queued",
       "run_step_persistence_acknowledged",
@@ -157,10 +166,10 @@ describe("Git Context runtime cache", () => {
   });
 
   it("finalizes only the assets explicitly accepted by task completion", async () => {
-    const checkoutPath = "/workspace/aurora-coffee-site";
+    const repositoryPath = "/workspace/aurora-coffee-site";
     const finalizeTaskRun = vi.fn(async () => ({
       runId: "R-20260713-0002",
-      taskId: "W-20260713-0001",
+      taskId: "T-20260713-0001",
       outcome: "done" as const,
       taskHeadBefore: "a".repeat(40),
       taskHeadAfter: "b".repeat(40),
@@ -175,14 +184,13 @@ describe("Git Context runtime cache", () => {
         contextRevision: "revision-task",
         activeTask: {
           task: {
-            taskId: "W-20260713-0001",
-            repositoryPath: "/tasks/W-20260713-0001.git",
-            workingPath: checkoutPath,
+            taskId: "T-20260713-0001",
+            repositoryPath: "/tasks/T-20260713-0001.git",
+            workingPath: repositoryPath,
             branch: "main",
             head: "a".repeat(40),
           },
-          checkoutPath,
-          workingDirectory: checkoutPath,
+          workingDirectory: repositoryPath,
           title: "Aurora Coffee website",
           objective: "Build the website.",
           summary: "Website built.",
@@ -207,7 +215,7 @@ describe("Git Context runtime cache", () => {
         inputRole: "user",
         context: {} as never,
       },
-      taskId: "W-20260713-0001",
+      taskId: "T-20260713-0001",
       runId: "R-20260713-0002",
       result: {
         type: "reply",
@@ -230,7 +238,7 @@ describe("Git Context runtime cache", () => {
           role: "generated",
           kind: "file",
           name: "index.html",
-          path: checkoutPath + "/aurora-coffee-site/index.html",
+          path: repositoryPath + "/aurora-coffee-site/index.html",
         }],
         verifiedCompletionAssets: [{
           assetId: "verified-index",
@@ -238,7 +246,7 @@ describe("Git Context runtime cache", () => {
           kind: "file",
           name: "index.html",
           description: "Main website page.",
-          path: checkoutPath + "/index.html",
+          path: repositoryPath + "/index.html",
         }],
       },
       at: "2026-07-13T10:05:00.000Z",
@@ -267,7 +275,7 @@ function contextServiceFixture() {
     sessionSequence: number;
     segmentSequence: number;
     sequence: number;
-    role: "user" | "assistant";
+    role: "user" | "assistant" | "system_event";
     content: string;
     at: string;
   }> = [];
@@ -285,76 +293,106 @@ function contextServiceFixture() {
     createdAt: "2026-07-13T00:00:00.000Z",
     updatedAt: "2026-07-13T00:00:00.000Z",
   };
-  const getActiveContext = vi.fn(async (): Promise<ActiveContext> => {
-    events.push("get-context");
-    return {
-      contextRevision: "revision-" + revision,
-      session: {
-        session,
-        summary: "",
-        pendingConversation: [{
-          conversationId,
-          sessionId,
-          sequence: 1,
-          filePath: "conversations/000001-session.md",
-          status: "active",
-        }],
-        pendingConversationContext: [{
-          conversation: {
-            conversationId,
-            sessionId,
-            sequence: 1,
-            filePath: "conversations/000001-session.md",
-            status: "active",
-          },
-          messages: [...messages],
-          contentHash: "hash-" + revision,
-        }],
-        pendingDigest: "digest-" + revision,
-        recentCommits: [],
-      },
-      ...(readContextEntry ? {
-        readContext: {
-          revision: "read-revision-" + revision,
-          entries: [readContextEntry],
-        },
-      } : {}),
-      taskCandidates: [],
-      warnings: [],
-    };
-  });
-  const service = {
-    ensureActiveSession: vi.fn(async () => ({
+  const activeContext = async (): Promise<ActiveContext> => ({
+    contextRevision: "revision-" + revision,
+    session: {
       session,
-      created: false,
-    })),
-    appendConversation: vi.fn(async (input: { role: "user" | "assistant"; content: string; at: string }) => {
-      const sessionSequence = messages.length + 1;
-      const messageId = sessionId + "-M-" + String(sessionSequence).padStart(6, "0");
-      messages.push({
-        messageId,
+      summary: "",
+      pendingConversation: [{
         conversationId,
-        sessionSequence,
-        segmentSequence: messages.length + 1,
-        sequence: messages.length + 1,
-        role: input.role,
-        content: input.content,
-        at: input.at,
-      });
-      revision += 1;
-      return {
+        sessionId,
+        sequence: 1,
+        filePath: "conversations/000001-session.md",
+        status: "active",
+      }],
+      pendingConversationContext: [{
         conversation: {
           conversationId,
           sessionId,
           sequence: 1,
           filePath: "conversations/000001-session.md",
-          status: "active" as const,
+          status: "active",
         },
-        message: messages.at(-1)!,
-        contextRevision: "revision-" + revision,
-        pendingDigest: "digest-" + revision,
+        messages: [...messages],
+        contentHash: "hash-" + revision,
+      }],
+      pendingDigest: "digest-" + revision,
+      recentCommits: [],
+    },
+    ...(readContextEntry ? {
+      readContext: {
+        revision: "read-revision-" + revision,
+        entries: [readContextEntry],
+      },
+    } : {}),
+    taskCandidates: [],
+    warnings: [],
+  });
+  const getActiveContext = vi.fn(async (): Promise<ActiveContext> => {
+    events.push("get-context");
+    return await activeContext();
+  });
+  const appendMessage = async (input: {
+    role: "user" | "assistant" | "system_event";
+    content: string;
+    at: string;
+  }) => {
+    const sessionSequence = messages.length + 1;
+    const messageId = sessionId + "-M-" + String(sessionSequence).padStart(6, "0");
+    messages.push({
+      messageId,
+      conversationId,
+      sessionSequence,
+      segmentSequence: messages.length + 1,
+      sequence: messages.length + 1,
+      role: input.role,
+      content: input.content,
+      at: input.at,
+    });
+    revision += 1;
+    return {
+      conversation: {
+        conversationId,
+        sessionId,
+        sequence: 1,
+        filePath: "conversations/000001-session.md",
+        status: "active" as const,
+      },
+      message: messages.at(-1)!,
+      contextRevision: "revision-" + revision,
+      pendingDigest: "digest-" + revision,
+    };
+  };
+  const appendConversation = vi.fn(appendMessage);
+  const completeContextTurn = vi.fn(async (input: {
+    assistantContent: string;
+    at: string;
+  }) => await appendMessage({
+    role: "assistant",
+    content: input.assistantContent,
+    at: input.at,
+  }));
+  const service = {
+    prepareContextTurn: vi.fn(async (input: {
+      role: "user" | "system_event";
+      content: string;
+      at: string;
+    }) => {
+      const appended = await appendConversation(input);
+      return {
+        session,
+        sessionCreated: false,
+        conversation: appended.conversation,
+        message: appended.message,
+        context: await activeContext(),
       };
     }),
+    ensureActiveSession: vi.fn(async () => ({
+      session,
+      created: false,
+    })),
+    appendConversation,
+    completeContextTurn,
     getActiveContext,
     startRun: vi.fn(async () => {
       revision += 1;
@@ -414,7 +452,7 @@ function contextServiceFixture() {
   } as unknown as GitContextService;
   getActiveContext.mockClear();
   events.length = 0;
-  return { service, getActiveContext, events };
+  return { service, getActiveContext, appendConversation, completeContextTurn, events };
 }
 
 function workState(summary: string): RunWorkStateInput {

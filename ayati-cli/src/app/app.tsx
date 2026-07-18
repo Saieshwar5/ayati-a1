@@ -67,6 +67,7 @@ export function App(): React.JSX.Element {
   const messageListRef = useRef<MessageListHandle>(null);
   const workspaceSessionId = useMemo(() => randomUUID(), []);
   const streamedMessageIdsRef = useRef(new Map<string, string>());
+  const pendingRenderedRepliesRef = useRef(new Map<string, string>());
 
   useEffect(() => {
     const handleResize = (): void => {
@@ -120,6 +121,7 @@ export function App(): React.JSX.Element {
       const messageId = streamedMessageIdsRef.current.get(msg.turnId);
       streamedMessageIdsRef.current.delete(msg.turnId);
       if (messageId) {
+        pendingRenderedRepliesRef.current.set(messageId, msg.turnId);
         setMessages((prev) => prev.map((message) => (
           message.id === messageId
             ? {
@@ -138,6 +140,7 @@ export function App(): React.JSX.Element {
           runId: msg.runId,
           commitStatus: msg.commitStatus,
         };
+        pendingRenderedRepliesRef.current.set(reply.id, msg.turnId);
         setMessages((prev) => [...prev, reply]);
       }
       setProgressLines([]);
@@ -195,6 +198,19 @@ export function App(): React.JSX.Element {
   }, []);
 
   const { send, connected } = useWebSocket({ onMessage });
+
+  const handleLatestMessageVisible = useCallback((messageId: string) => {
+    const turnId = pendingRenderedRepliesRef.current.get(messageId);
+    if (!turnId) {
+      return;
+    }
+    pendingRenderedRepliesRef.current.delete(messageId);
+    send({
+      type: "reply_rendered",
+      turnId,
+      renderedAt: new Date().toISOString(),
+    });
+  }, [send]);
 
   const emitWorkspaceEvent = useCallback((event: WorkspaceEventName) => {
     void (async () => {
@@ -302,6 +318,7 @@ export function App(): React.JSX.Element {
     const trimmedDisplayContent = displayContent.trim();
     if (!trimmedServerContent || !trimmedDisplayContent) return;
 
+    messageListRef.current?.scrollToBottom();
     const userMessage = createMessage("user", trimmedDisplayContent, "user", displayAttachments);
     setMessages((prev) => [...prev, userMessage]);
 
@@ -414,6 +431,7 @@ export function App(): React.JSX.Element {
         height={messageViewportHeight}
         width={terminalColumns - 2}
         keyboardScrollEnabled={!suggestionsVisible}
+        onLatestMessageVisible={handleLatestMessageVisible}
       />
       <ProgressPanel
         lines={progressLines}

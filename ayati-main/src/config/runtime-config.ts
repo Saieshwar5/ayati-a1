@@ -94,11 +94,9 @@ export function parsePositiveInt(rawValue: string | undefined, fallback: number)
 
 function loadHttpRuntimeConfig(env: NodeJS.ProcessEnv): HttpRuntimeConfig {
   return {
-    host: env["AYATI_HTTP_HOST"]?.trim() || env["AYATI_UPLOAD_HOST"]?.trim() || DEFAULT_HTTP_HOST,
-    port: parsePositiveInt(env["AYATI_HTTP_PORT"] ?? env["AYATI_UPLOAD_PORT"], DEFAULT_HTTP_PORT),
-    allowOrigin: env["AYATI_HTTP_ALLOW_ORIGIN"]?.trim()
-      || env["AYATI_UPLOAD_ALLOW_ORIGIN"]?.trim()
-      || DEFAULT_HTTP_ALLOW_ORIGIN,
+    host: env["AYATI_HTTP_HOST"]?.trim() || DEFAULT_HTTP_HOST,
+    port: parsePositiveInt(env["AYATI_HTTP_PORT"], DEFAULT_HTTP_PORT),
+    allowOrigin: env["AYATI_HTTP_ALLOW_ORIGIN"]?.trim() || DEFAULT_HTTP_ALLOW_ORIGIN,
     maxUploadBytes: parsePositiveInt(env["AYATI_UPLOAD_MAX_BYTES"], DEFAULT_UPLOAD_MAX_BYTES),
     ...(trimOptional(env["AYATI_HTTP_API_TOKEN"]) ? { apiToken: trimOptional(env["AYATI_HTTP_API_TOKEN"]) } : {}),
   };

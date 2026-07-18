@@ -105,12 +105,12 @@ describe("SkillActivationManager", () => {
           },
           focus: {
             status: "active",
-            ref: "refs/heads/work/W-20260617-0001-policy-review",
-            workId: "W-20260617-0001",
+            ref: "refs/heads/task/T-20260617-0001-policy-review",
+            workId: "T-20260617-0001",
           },
           task: {
-            ref: "refs/heads/work/W-20260617-0001-policy-review",
-            workId: "W-20260617-0001",
+            ref: "refs/heads/task/T-20260617-0001-policy-review",
+            workId: "T-20260617-0001",
             title: "Policy review",
             objective: "Review policy document",
             status: "active",

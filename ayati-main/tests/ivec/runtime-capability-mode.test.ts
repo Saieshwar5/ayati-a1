@@ -145,19 +145,13 @@ describe("runtime capability modes", () => {
         "git_context_create_task",
       ],
       blocked: [
-        "workspace_mutation_until_task_promotion",
-        "external_mutation_until_task_promotion",
+        "workspace_mutation_until_task_binding",
+        "external_mutation_until_task_binding",
         "task_activation",
-      ],
-      rules: [
-        "Create a task only when the current user request has a concrete deliverable and enough detail to begin work now.",
-        "Do not create a task for early conversation, brainstorming, vague intent, preferences, or discovery. Reply directly with one short clarifying question.",
-        "A concrete deliverable means the user has specified what to make, change, analyze, or produce, and the expected output is clear enough to start without another user answer.",
-        "For clear durable work, inspect the task candidates already present in context. Activate the exact matching task with an explicit continue-or-create request decision, or create one managed V1 task with title, objective, and reason when the durable workstream is distinct.",
-        "Never print task metadata JSON as the assistant response. Put task metadata in the native tool call arguments.",
       ],
       repairCode: "R_FRESH_SESSION_NEEDS_TASK",
     });
+    expect(buildRuntimeCapabilityPromptContext(mode)).not.toHaveProperty("rules");
   });
 
   it("allows safe read and first-task routing tools in a fresh session", () => {
@@ -189,7 +183,7 @@ describe("runtime capability modes", () => {
     expect(mode.allowToolLoading).toBe(true);
     expect(buildRuntimeCapabilityPromptContext(mode)).toMatchObject({
       allowed: expect.arrayContaining(["decision_load_tools", "read_only_tools"]),
-      blocked: expect.arrayContaining(["workspace_mutation_until_task_promotion"]),
+      blocked: expect.arrayContaining(["workspace_mutation_until_task_binding"]),
     });
     expect(filterToolsForRuntimeMode(mode, [
       tool("read_files"),

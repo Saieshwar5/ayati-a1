@@ -5,7 +5,7 @@ import type {
 import { runGit, runGitRaw } from "./git-process.js";
 
 export async function readMutationProvenance(
-  checkoutPath: string,
+  repositoryPath: string,
   targets: ResolvedMutationTarget[],
   baseline: "head" | "index" = "head",
   options: { excludedPathPrefixes?: string[]; includedPaths?: string[] } = {},
@@ -17,20 +17,20 @@ export async function readMutationProvenance(
     "--find-renames",
     ...(baseline === "head" ? ["HEAD"] : []),
     "--",
-  ], { cwd: checkoutPath });
+  ], { cwd: repositoryPath });
   const created = new Set<string>();
   const modified = new Set<string>();
   const deleted = new Set<string>();
   const renamed: Array<{ from: string; to: string }> = [];
   parseDifference(difference, { created, modified, deleted, renamed });
 
-  for (const path of await readOtherPaths(checkoutPath, false)) {
+  for (const path of await readOtherPaths(repositoryPath, false)) {
     created.add(path);
   }
-  for (const path of await readOtherPaths(checkoutPath, true)) {
+  for (const path of await readOtherPaths(repositoryPath, true)) {
     created.add(path);
   }
-  await detectExactRenames(checkoutPath, created, deleted, renamed, baseline);
+  await detectExactRenames(repositoryPath, created, deleted, renamed, baseline);
 
   const excluded = options.excludedPathPrefixes ?? [];
   for (const collection of [created, modified, deleted]) {
@@ -71,7 +71,7 @@ function isExcluded(path: string, prefixes: string[], includedPaths: string[]): 
 }
 
 async function detectExactRenames(
-  checkoutPath: string,
+  repositoryPath: string,
   created: Set<string>,
   deleted: Set<string>,
   renamed: Array<{ from: string; to: string }>,
@@ -79,7 +79,7 @@ async function detectExactRenames(
 ): Promise<void> {
   const createdByObject = new Map<string, string[]>();
   for (const path of created) {
-    const object = await runGit(["hash-object", "--", path], { cwd: checkoutPath });
+    const object = await runGit(["hash-object", "--", path], { cwd: repositoryPath });
     const paths = createdByObject.get(object) ?? [];
     paths.push(path);
     createdByObject.set(object, paths);
@@ -88,7 +88,7 @@ async function detectExactRenames(
     const object = await runGit([
       "rev-parse",
       (baseline === "head" ? "HEAD:" : ":") + path,
-    ], { cwd: checkoutPath });
+    ], { cwd: repositoryPath });
     const destinations = createdByObject.get(object);
     const destination = destinations?.shift();
     if (!destination) {
@@ -146,13 +146,13 @@ function parseDifference(
   }
 }
 
-async function readOtherPaths(checkoutPath: string, ignored: boolean): Promise<string[]> {
+async function readOtherPaths(repositoryPath: string, ignored: boolean): Promise<string[]> {
   const output = await runGitRaw([
     "ls-files",
     "--others",
     "-z",
     ...(ignored ? ["--ignored", "--exclude-standard"] : ["--exclude-standard"]),
-  ], { cwd: checkoutPath });
+  ], { cwd: repositoryPath });
   return output.split("\0").filter((path) => path.length > 0);
 }
 

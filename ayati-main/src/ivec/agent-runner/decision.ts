@@ -22,6 +22,7 @@ import type { RunMetrics } from "../metrics.js";
 import { recordOptimizationEvent, recordPromptMetric, recordProviderUsageMetric, recordRunMetric } from "../metrics.js";
 import type { ToolContextProjectionPolicy } from "../types.js";
 import { compileDecisionContext } from "./decision-context-compiler.js";
+import { buildDecisionSystemSections } from "./decision-system-prompt.js";
 import { createTimelineCheckpointCache } from "./timeline-checkpoint-cache.js";
 import type { TimelineCheckpointCacheState } from "./timeline-checkpoint-cache.js";
 import { recordTimelineCheckpointObservability } from "./timeline-checkpoint-observability.js";
@@ -313,9 +314,10 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         });
         return directReply;
       }
-      const decision = nativeDecision && typeof nativeDecision !== "string"
-        ? nativeDecision
-        : parseAgentDecision(rawText);
+      if (!nativeDecision || typeof nativeDecision === "string") {
+        throw new SyntaxError(nativeDecision ?? "Expected a native decision tool call.");
+      }
+      const decision = nativeDecision;
       agentTrace("agent_decision", `attempt=${attempt + 1} parsed_decision kind=${decision.kind}`);
       recordDecisionFeedback(input, "parsed", {
         attempt: attempt + 1,
@@ -430,7 +432,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
     }
   }
 
-  return parseAgentDecision(rawText);
+  throw new SyntaxError("The provider did not return a valid native decision.");
 }
 
 async function generateTurnWithEmptyResponseRetry(
@@ -748,7 +750,7 @@ function toolProtocolRepairCode(violation: ToolProtocolViolation): RepairCode {
   if (violation.loadToolsUsedAsAction) {
     return "R_LOAD_TOOLS_USED_AS_ACTION";
   }
-  if (violation.reason.includes("load_tools request must include")) {
+  if (violation.reason.includes("decision_load_tools request must include")) {
     return "R_EMPTY_TOOL_LOAD_SELECTOR";
   }
   if (violation.invalidTools.length > 0) {
@@ -837,7 +839,7 @@ function validateToolProtocol(
     }
     return {
       kind: "tool_protocol_violation",
-      reason: "load_tools request must include at least one non-empty selector: groups, toolNames, or query",
+      reason: "decision_load_tools request must include at least one non-empty selector: groups, toolNames, or query",
       invalidTools: [],
       selectedTools,
       loadToolsUsedAsAction: false,
@@ -900,7 +902,7 @@ function validateToolProtocol(
   return {
     kind: "tool_protocol_violation",
     reason: loadToolsUsedAsAction
-      ? "load_tools was used as an action tool"
+      ? "A tool-loading control was used as an action tool"
       : "act decision referenced tools not listed in Selected tools",
     invalidTools,
     selectedTools,
@@ -1138,169 +1140,6 @@ function readToolLikeInput(record: Record<string, unknown>): Record<string, unkn
   return undefined;
 }
 
-export function parseAgentDecision(text: string): AgentDecision {
-  const parsed = extractJsonObject(text);
-  const kind = parsed["kind"];
-
-  if (kind === "reply") {
-    return {
-      kind: "reply",
-      message: String(parsed["message"] ?? ""),
-      status: parsed["status"] === "failed" ? "failed" : "completed",
-      workingNotes: normalizeWorkingNotes(parsed["workingNotes"]),
-    };
-  }
-
-  if (kind === "ask_user") {
-    return {
-      kind: "ask_user",
-      question: String(parsed["question"] ?? ""),
-      reason: String(parsed["reason"] ?? ""),
-      workingNotes: normalizeWorkingNotes(parsed["workingNotes"]),
-    };
-  }
-
-  if (kind === "act") {
-    return {
-      kind: "act",
-      action: normalizeAgentAction(parsed["action"]),
-      workingNotes: normalizeWorkingNotes(parsed["workingNotes"]),
-    };
-  }
-
-  if (kind === "load_tools") {
-    return {
-      kind: "load_tools",
-      request: normalizeToolLoadRequest(parsed["request"] ?? parsed),
-      workingNotes: normalizeWorkingNotes(parsed["workingNotes"]),
-    };
-  }
-
-
-  if (kind === "task_completion") {
-    return {
-      kind: "task_completion",
-      request: normalizeTaskCompletionRequest(parsed),
-      workingNotes: normalizeWorkingNotes(parsed["workingNotes"]),
-    };
-  }
-
-  throw new SyntaxError(`Unsupported agent decision kind: ${String(kind)}`);
-}
-
-const STABLE_DECISION_SYSTEM_CONTEXT = `You are the decision component of an AI agent harness.
-Choose the next agent decision only. Use native tool calls; the harness executes tools locally.
-Prefer deterministic actions with concrete tool inputs.
-Use the structured context pack and optional work state in the state view.
-Use direct assistant text for normal terminal replies. Use native tool calls only for tool loading, executable work, task completion, or task-run feedback requests.
-
-Decision rules:
-- Return direct assistant text for normal user-facing replies, including greetings, explanations, summaries, poems, stories, and final answers after completed work.
-- Call exactly one native tool only when work needs tool loading, executable action, or task-run feedback.
-- Available control tools are decision_load_tools and, only during an active task run, task_completion and ask_user_feedback.
-- Treat State view.context as the bounded context pack for this decision.
-- Use context.timeline as chronological conversation context. The item with current=true is the current input.
-- A context.timeline item with kind="checkpoint" is a structured summary of its covered older sequence range. Exact timeline events after it remain authoritative and override conflicting checkpoint content.
-- Use the immediately preceding assistant item in context.timeline to interpret short replies like yes, no, do it, go ahead, continue, or stop.
-- Prefer the grouped context paths: context.git for session/task memory, context.run for current-run status and tool-call memory, context.harness for repair feedback, context.tools for active tool state, and context.personal for long-lived user memory.
-- Use context.git.current.task as the durable task/work state when present. Continue from task.identity, task.state, task.assets, and task.activity.
-- Use context.git.current.focus to understand whether the runtime selected an existing work branch or created/kept current work.
-- Use context.git.session.meta for session identity, context.git.session.attachments for persisted user-provided session inputs, State view.attachments for current uploaded/attached inputs, and context.git.session.activity for recent session activity.
-- Use context.git.session.summary as compressed session history. Use context.timeline for exact recent messages and current input. If summary and exact conversation conflict, trust context.timeline.
-- Use context.git.session.recentCommits for the newest committed session work that precedes context.timeline. They are newest-first and contain deterministic conversation, work, asset, outcome, and validation data. Use them before repeating a tool or claiming that recent work is unknown.
-- Treat context.git.session.summary as an aid, not a complete source of truth; do not infer omitted details from it.
-- Treat a task as a long-lived workstream, a request as one bounded outcome inside that task, and a run as only the current attempt.
-- Continue the current request only for the same unfinished outcome. A separate feature, lesson, analysis, or independently completable improvement belongs to a new request in the same task; it does not by itself require a new task.
-- Request completion does not archive its task. An active task with no current request is valid and may receive a later request.
-- Before task work, decide whether the current request belongs to one task candidate, needs a distinct new task, or needs no task.
-- There is no session-global active task. Never continue task mutation merely because a task was used recently.
-- Task candidates and their owned paths are already present in context. Exact resource ownership is stronger evidence than title similarity.
-- Before mutation, call git_context_activate_task for an exact existing owner or git_context_create_task with title, objective, and reason for a distinct durable workstream. New tasks always use the managed V1 task root.
-- When activating a T-* task, explicitly continue its exact unfinished request or create one new request for a materially separate outcome in the same task. Ask one short clarifying question when ownership is ambiguous.
-- If ownership is ambiguous, reply directly with one short clarifying question.
-- Visible routing tools are optional routing aids, not an instruction to create, switch, or ask clarification.
-- Normal work tools require an explicitly selected task run. The runtime never silently binds them to a recent task.
-- If context.git.current.pendingTurn.routingStatus is "unbound", call git_context_activate_task or git_context_create_task before normal task work. Do not call shell, filesystem, document, database, Python, UI, or other task tools while ownership is unbound.
-- If context.git.current.pendingTurn.routingStatus is "clarifying", do not call executable tools or load more tools. Ask the user directly what task or target they mean.
-- If context.git.current.pendingTurn.routingStatus is "bound", normal task tools may be used according to the selected task context.
-- Do not mention git branches, commits, refs, or context-engine mechanics to the user unless they explicitly ask about the implementation.
-- If git context is ambiguous, the app runtime should ask the user before this decision runs; do not guess between multiple possible tasks.
-- Use context.run.status as the current run/work status.
-- Use context.run.workState as the reducer-built live work state for this run: summary, open work, blockers, verified facts, evidence, verified artifacts, next step, and user input needed.
-- Use context.run.toolCalls as the ordered tool-call memory for this run. Records with mode="full" include exact live input and output. Records with mode="preview", mode="summary", or mode="reference" were compacted for context budget; use their summary, input, outputPreview, errors, artifacts, stepRef, and evidenceRef without assuming omitted output. Prefer this memory before repeating an equivalent tool call.
-- If an older compacted tool-call record omits exact output, use a narrow normal domain read rather than repeating a broad command.
-- When context.run.contextPressure is present, work in small verifiable steps, use narrow tool inputs, preserve durable conclusions in work state, and prefer recovery refs over repeating broad reads or commands.
-- context.run.contextPressure.recommendedMode is a runtime escalation signal. Do not summarize or rewrite timeline, task, session, work-state, or source tool records yourself; continue useful work while the runtime applies available context stages.
-- Use context.harness.feedback as the latest harness feedback. Correct the specific failed tool call or protocol issue before trying a different path.
-- Use context.tools.active and context.tools.lastLoad as compact tool availability state. Full executable schemas are provided as native tools, not inside context.
-- Use context.personal.memorySnapshot for long-lived user preferences or facts when present.
-- Use absolute paths for every host filesystem path in tool calls. The active task workingDirectory is the authorized root. Relative paths remain valid inside generated content such as imports and HTML links, but not for tool resource addressing.
-- Legacy fields such as context.gitContext, State view.progress, State view.workingFeedback, State view.observations, and State view.trace may still exist for compatibility; prefer the grouped context paths above.
-- Do not use workingNotes as factual memory; the harness owns tool-output context.
-- If output is truncated or incomplete, use normal domain tools with narrower input instead of repeating broad reads or commands.
-- Autonomous execution policy: for actionable user requests, prefer progress over discussion.
-- Treat preference gaps as assumptions, not blockers, when reasonable safe defaults exist.
-- Treat short confirmations or delegation like "yes", "go ahead", "continue", "do it", "whatever feels right", and "surprise me" as permission to proceed with reasonable defaults.
-- Use direct assistant text only as a terminal response: pure conversation, final answer after completed work, failed task, or impossible task.
-- Evidence-before-done rule: for durable work requests, a final direct reply is allowed only after observed tool output or verified task state shows the work is complete. Durable work includes creating, editing, deleting, saving, building, running, testing, fixing, or changing files, code, docs, apps, websites, or workspace state. If durable work remains, call the appropriate selected tool or routing tool instead of replying.
-- During an active task run, do not send a successful final reply while WorkState is not_done. Call task_completion after verified evidence shows the whole task is ready. The harness independently accepts or rejects completion and updates WorkState deterministically.
-- Do not use direct assistant text to say you will do future work. If work remains, call a selected executable tool or decision_load_tools.
-- Final replies must answer the user's request in natural, human-readable language.
-- Do not mention internal execution details in final replies: tool calls, deterministic verification, evidence contracts, assertions, reducers, work state, or harness steps.
-- Use user-visible results from observations and current progress, such as created paths, changed files, command results, document findings, or next steps.
-- Use ask_user_feedback only during an active task run, and only for hard blockers: missing target with no safe default, destructive or irreversible action, credentials or approval required, external cost/account action, or true ambiguity where the wrong choice would likely waste substantial work.
-- Do not use ask_user_feedback for final responses, casual chat, pre-task planning, style, wording, organization, or preference choices when reasonable defaults can satisfy the request.
-- Before a task run exists, ask planning or context questions directly in assistant text.
-- For tool work, call the selected executable tool directly. Never wrap executable calls inside another tool.
-- Use decision_load_tools when the visible selected tools are not enough for the next action. Do not tell the user tools are missing.
-- decision_load_tools must include a non-empty selector: exact toolNames when known, 1-3 small groups when groups fit, or query when uncertain.
-- Prefer purpose-built groups such as file:read, file:write, shell:command, task:read, attachment:basic, document:qa, data:inspect, and data:execute. Broad workflow groups are fallbacks.
-- Tool protocol has two separate phases: decision_load_tools only changes the visible tool set for a later decision; selected executable tools perform work.
-- decision_load_tools is a meta decision tool, not an executable tool.
-- If Selected tools is "(none)" and work remains, call decision_load_tools instead of replying that you will do work later.
-- Executable tool calls may use only tool names listed under Selected tools.
-- Give every executable tool call one short, task-specific purpose sentence explaining why the call is needed now. Describe intent, not a claimed successful result.
-- Keep each model decision to one executable tool call. The harness will continue the loop for follow-up calls after observing the result.
-- Use only tools listed in Selected tools.
-- Use read_files for known file content; a single-file read is files=[{path,...}], and related files should be batched.
-- Prefer write_files for generated websites, apps, and multi-file file creation.
-- Prefer patch_files for normal edits to existing files. Use small stable find strings, anchor inserts, or line-range replacements instead of full-file rewrites.
-- Hidden tools are loaded by decision_load_tools, not by calling skill_search or skill_activate unless those are explicitly selected executable tools.
-- Do not include assertions. Tool-owned contracts provide deterministic verification.
-- Executable tool calls perform only their concrete operation and do not declare whole-task completion.
-- During an active task run, call task_completion only after verified tool output, WorkState, and tool-call history indicate the whole task is ready.
-- For read-only analysis tasks, gather evidence with tools and finish with direct assistant text when the answer is ready.
-- For UI/layout fixes, continue with screenshot, build, or test verification before task_completion.
-- For external actions, preserve approval requirements, keep raw screenshots/page dumps/tokens out of task files, and record only verified non-secret identifiers or safe receipt paths. Git can record an external outcome; never claim that Git revert undoes external state.
-
-Control tool shapes:
-- decision_load_tools({ "query": "...", "toolNames": ["read_files"], "groups": ["file:read", "file:write"] })
-- task_completion({ "summary": "Created the requested website files.", "assets": [{ "path": "/absolute/task/path/index.html", "kind": "file", "description": "Main website page" }] }) only during an active task run
-- ask_user_feedback({ "question": "...", "reason": "..." }) only when exposed during an active task run
-
-Tool protocol examples:
-- Bad when shell is not selected: calling shell or trying to use load_tools as executable work.
-- Good instead: decision_load_tools({ "groups": ["shell:command"] }).
-- Good after shell appears in Selected tools: call shell directly with its required input schema.
-- Good when write_files is selected: call write_files directly with files and createDirs; after verification, call task_completion in a later decision when the whole task is ready.`;
-
-function buildDecisionSystemSections(systemContext: string | undefined): Record<string, string> {
-  const trimmed = systemContext?.trim();
-  if (!trimmed) {
-    return {
-      stableDecisionRules: STABLE_DECISION_SYSTEM_CONTEXT,
-      runtimeContext: "",
-    };
-  }
-  const compact = trimmed.length > 6_000
-    ? `${trimmed.slice(0, 6_000).trimEnd()}\n[system context truncated for decision budget]`
-    : trimmed;
-  return {
-    stableDecisionRules: STABLE_DECISION_SYSTEM_CONTEXT,
-    runtimeContext: `System context:\n${compact}`,
-  };
-}
-
 function buildDecisionPromptSections(
   stateView: ReturnType<typeof projectAgentStateViewForPrompt>,
   toolDefinitions: ToolDefinition[],
@@ -1346,25 +1185,6 @@ function formatSelectedToolNames(toolDefinitions: ToolDefinition[]): string {
   return toolDefinitions.map((tool) => `- ${tool.name}`).join("\n");
 }
 
-function normalizeAgentAction(value: unknown): AgentAction {
-  const record = isPlainObject(value) ? value : {};
-  const mode = normalizeActionMode(record["mode"]);
-  const calls = Array.isArray(record["calls"])
-    ? record["calls"].map(normalizeToolCallSpec).filter((call): call is AgentToolCallSpec => call !== null)
-    : [];
-  const allowedTools = Array.isArray(record["allowedTools"])
-    ? record["allowedTools"].map(String).filter((tool) => tool.trim().length > 0)
-    : [];
-  const assertions: ToolContractAssertion[] = [];
-
-  return {
-    mode,
-    calls,
-    allowedTools,
-    assertions,
-  };
-}
-
 function normalizeToolLoadRequest(value: unknown): AgentToolLoadRequest {
   const record = isPlainObject(value) ? value : {};
   return {
@@ -1395,95 +1215,6 @@ function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))];
 }
 
-function normalizeActionMode(value: unknown): AgentActionMode {
-  return value === "single" || value === "sequential" || value === "parallel"
-    ? value
-    : "single";
-}
-
-function normalizeToolCallSpec(value: unknown): AgentToolCallSpec | null {
-  if (!isPlainObject(value)) {
-    return null;
-  }
-  const tool = String(value["tool"] ?? "").trim();
-  if (!tool) {
-    return null;
-  }
-  const rawInput = value["input"];
-  const input = isPlainObject(rawInput) ? { ...rawInput } : {};
-  const rawDependsOn = value["dependsOn"];
-  return {
-    id: String(value["id"] ?? tool).trim() || tool,
-    tool,
-    input,
-    dependsOn: Array.isArray(rawDependsOn)
-      ? rawDependsOn.map(String).filter((dep) => dep.trim().length > 0)
-      : [],
-    purpose: typeof value["purpose"] === "string"
-      ? value["purpose"].replace(/\s+/g, " ").trim()
-      : "",
-  };
-}
-
-function extractJsonObject(text: string): Record<string, unknown> {
-  const trimmed = unwrapJsonFence(text.trim());
-  const direct = parseJsonRecord(trimmed);
-  if (direct) {
-    return direct;
-  }
-
-  const start = trimmed.indexOf("{");
-  if (start < 0) {
-    throw new SyntaxError(`Expected JSON object but received: ${text.slice(0, 120)}`);
-  }
-
-  let depth = 0;
-  let inString = false;
-  let escaping = false;
-  for (let index = start; index < trimmed.length; index++) {
-    const char = trimmed[index];
-    if (!char) continue;
-
-    if (escaping) {
-      escaping = false;
-      continue;
-    }
-    if (char === "\\") {
-      escaping = true;
-      continue;
-    }
-    if (char === "\"") {
-      inString = !inString;
-      continue;
-    }
-    if (inString) {
-      continue;
-    }
-    if (char === "{") {
-      depth++;
-    } else if (char === "}") {
-      depth--;
-      if (depth === 0) {
-        const candidate = trimmed.slice(start, index + 1);
-        const parsed = parseJsonRecord(candidate);
-        if (parsed) {
-          return parsed;
-        }
-      }
-    }
-  }
-
-  throw new SyntaxError(`Expected JSON object but received: ${text.slice(0, 120)}`);
-}
-
-function unwrapJsonFence(text: string): string {
-  const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-  if (fenceMatch?.[1]) {
-    return fenceMatch[1].trim();
-  }
-  return text;
-}
-
 function parseJsonRecord(text: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(text);
@@ -1498,8 +1229,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 const CONTROL_DECISION_TOOL_NAMES = new Set([
-  "decision_reply",
-  "decision_ask_user",
   "decision_load_tools",
   TASK_FEEDBACK_TOOL_NAME,
   TASK_COMPLETION_TOOL_NAME,
@@ -1582,7 +1311,11 @@ function buildNativeDecisionTools(
           type: "array",
           maxItems: 20,
           items: objectSchema({
-            path: { type: "string", minLength: 1, description: "Canonical absolute path of the completed file or directory." },
+            path: {
+              type: "string",
+              minLength: 1,
+              description: "Portable path relative to the active task repository root.",
+            },
             kind: { type: "string", enum: ["file", "directory"] },
             description: { type: "string", minLength: 1, maxLength: 300 },
           }, ["path", "kind", "description"]),
@@ -1678,7 +1411,7 @@ function nativeDecisionFromToolCalls(calls: LlmToolCall[], selectedTools: ToolDe
 
   const selected = selectedTools.find((tool) => tool.name === call.name);
   if (!selected) {
-    return `native_decision_error: unknown or unselected native tool '${call.name}'. Request tools with decision_load_tools before executable work.`;
+    return nativeExecutableToolCallToDecision(call, input);
   }
 
   return nativeExecutableToolCallToDecision(call, input);
@@ -1686,14 +1419,6 @@ function nativeDecisionFromToolCalls(calls: LlmToolCall[], selectedTools: ToolDe
 
 function nativeDecisionToolCallToPayload(toolName: string, input: Record<string, unknown>): Record<string, unknown> {
   switch (toolName) {
-    case "decision_reply":
-      return {
-        kind: "reply",
-        status: input["status"],
-        message: input["message"],
-        ...(input["workingNotes"] ? { workingNotes: input["workingNotes"] } : {}),
-      };
-    case "decision_ask_user":
     case TASK_FEEDBACK_TOOL_NAME:
       return {
         kind: "ask_user",
@@ -1728,14 +1453,6 @@ function nativeDecisionToolCallToPayload(toolName: string, input: Record<string,
 
 function nativeDecisionToolCallToDecision(toolName: string, input: Record<string, unknown>): AgentDecision {
   switch (toolName) {
-    case "decision_reply":
-      return {
-        kind: "reply",
-        status: input["status"] === "failed" ? "failed" : "completed",
-        message: String(input["message"] ?? ""),
-        workingNotes: normalizeWorkingNotes(input["workingNotes"]),
-      };
-    case "decision_ask_user":
     case TASK_FEEDBACK_TOOL_NAME:
       return {
         kind: "ask_user",

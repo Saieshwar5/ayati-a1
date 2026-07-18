@@ -92,6 +92,14 @@ function sentChatMessages(): unknown[] {
   ));
 }
 
+function sentReplyRenderedMessages(): unknown[] {
+  return sentMessages().filter((message) => (
+    typeof message === "object"
+    && message !== null
+    && (message as { type?: unknown }).type === "reply_rendered"
+  ));
+}
+
 function workspaceEvent(event: string): unknown {
   return expect.objectContaining({
     type: "workspace_event",
@@ -276,6 +284,60 @@ describe("App", () => {
 
     await act(async () => {
       unmount();
+    });
+  });
+
+  it("follows streamed output and acknowledges only after the final reply is visible", async () => {
+    const app = await renderApp();
+    const turnId = "turn-stream-visible";
+    const chunks = Array.from(
+      { length: 30 },
+      (_, index) => `stream line ${String(index + 1).padStart(2, "0")}\n`,
+    );
+
+    await act(async () => {
+      deliver({
+        type: "reply_started",
+        turnId,
+        kind: "reply",
+      });
+    });
+
+    for (const [index, delta] of chunks.entries()) {
+      await act(async () => {
+        deliver({
+          type: "reply_delta",
+          turnId,
+          seq: index + 1,
+          delta,
+        });
+      });
+    }
+
+    expect(sentReplyRenderedMessages()).toHaveLength(0);
+
+    const finalContent = `${chunks.join("")}FINAL RESPONSE VISIBLE`;
+    await act(async () => {
+      deliver({
+        type: "reply_done",
+        turnId,
+        content: finalContent,
+        commitStatus: "skipped",
+        kind: "reply",
+      });
+    });
+
+    await vi.waitFor(() => {
+      expect(app.lastFrame() ?? "").toContain("FINAL RESPONSE VISIBLE");
+      expect(sentReplyRenderedMessages()).toEqual([{
+        type: "reply_rendered",
+        turnId,
+        renderedAt: expect.any(String),
+      }]);
+    });
+
+    await act(async () => {
+      app.unmount();
     });
   });
 

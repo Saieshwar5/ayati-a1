@@ -2,7 +2,6 @@ import type {
   MutationAuthorityStatus,
   MutationProvenance,
   ResolvedMutationTarget,
-  TaskRepositoryLayout,
 } from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
 import { GitContextServiceError } from "../errors.js";
@@ -12,11 +11,8 @@ interface MutationAuthorityRow {
   session_id: string;
   run_id: string;
   task_id: string;
-  repository_layout: TaskRepositoryLayout;
   repository_path: string;
   task_request_id: string | null;
-  checkout_path: string;
-  canonical_repository: string;
   branch: string;
   before_head: string;
   lock_token_hash: string;
@@ -35,11 +31,8 @@ export interface MutationAuthorityRecord {
   sessionId: string;
   runId: string;
   taskId: string;
-  repositoryLayout: TaskRepositoryLayout;
   repositoryPath: string;
   taskRequestId?: string;
-  checkoutPath: string;
-  canonicalRepository: string;
   branch: string;
   beforeHead: string;
   lockTokenHash: string;
@@ -57,11 +50,8 @@ export function insertMutationAuthority(database: ContextDatabase, input: {
   sessionId: string;
   runId: string;
   taskId: string;
-  repositoryLayout: TaskRepositoryLayout;
   repositoryPath: string;
   taskRequestId?: string;
-  checkoutPath: string;
-  canonicalRepository: string;
   branch: string;
   beforeHead: string;
   lockTokenHash: string;
@@ -76,21 +66,18 @@ export function insertMutationAuthority(database: ContextDatabase, input: {
   const authorityId = input.runId + "-M-" + String(Number(row.next)).padStart(4, "0");
   database.prepare([
     "INSERT INTO task_mutation_authorities(",
-    "authority_id, session_id, run_id, task_id, repository_layout, repository_path,",
-    "task_request_id, checkout_path, canonical_repository, branch, before_head,",
+    "authority_id, session_id, run_id, task_id, repository_path,",
+    "task_request_id, branch, before_head,",
     "lock_token_hash, authorized_targets_json, status, acquired_at,",
     "expires_at, verified_at, released_at, verification_json, last_error",
-    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL, NULL, NULL, NULL)",
+    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL, NULL, NULL, NULL)",
   ].join(" ")).run(
     authorityId,
     input.sessionId,
     input.runId,
     input.taskId,
-    input.repositoryLayout,
     input.repositoryPath,
     input.taskRequestId ?? null,
-    input.checkoutPath,
-    input.canonicalRepository,
     input.branch,
     input.beforeHead,
     input.lockTokenHash,
@@ -110,17 +97,6 @@ export function assertTaskMutationUnlocked(
   taskId: string,
   at?: string,
 ): void {
-  const migration = database.prepare([
-    "SELECT phase FROM task_repository_migrations WHERE task_id = ? AND phase IN ('in_progress', 'committed')",
-  ].join(" ")).get(taskId) as { phase: string } | undefined;
-  if (migration) {
-    throw new GitContextServiceError({
-      code: "TASK_LOCKED",
-      message: "Task repository migration owns the task writer.",
-      retryable: true,
-      details: { taskId, migrationPhase: migration.phase },
-    });
-  }
   const blocking = readBlockingAuthority(database, taskId);
   if (blocking) {
     if (blocking.status === "active" && at && isExpired(blocking.expiresAt, at)) {
@@ -173,7 +149,8 @@ export function readMutationAuthorityForRun(
 ): MutationAuthorityRecord | undefined {
   const row = database.prepare([
     authoritySelect(),
-    "WHERE run_id = ? ORDER BY acquired_at DESC LIMIT 1",
+    "WHERE run_id = ?",
+    "ORDER BY acquired_at DESC LIMIT 1",
   ].join(" ")).get(runId) as MutationAuthorityRow | undefined;
   return row ? mutationAuthorityRecord(row) : undefined;
 }
@@ -183,7 +160,8 @@ export function hasMutationAuthorityForRun(
   runId: string,
 ): boolean {
   const row = database.prepare([
-    "SELECT 1 AS found FROM task_mutation_authorities WHERE run_id = ? LIMIT 1",
+    "SELECT 1 AS found FROM task_mutation_authorities",
+    "WHERE run_id = ? LIMIT 1",
   ].join(" ")).get(runId) as { found: number } | undefined;
   return row?.found === 1;
 }
@@ -248,8 +226,7 @@ function readBlockingAuthority(
 
 function authoritySelect(): string {
   return [
-    "SELECT authority_id, session_id, run_id, task_id, repository_layout,",
-    "repository_path, task_request_id, checkout_path, canonical_repository,",
+    "SELECT authority_id, session_id, run_id, task_id, repository_path, task_request_id,",
     "branch, before_head, lock_token_hash,",
     "authorized_targets_json, status, acquired_at, expires_at, verified_at,",
     "released_at, verification_json, last_error FROM task_mutation_authorities",
@@ -262,11 +239,8 @@ function mutationAuthorityRecord(row: MutationAuthorityRow): MutationAuthorityRe
     sessionId: row.session_id,
     runId: row.run_id,
     taskId: row.task_id,
-    repositoryLayout: row.repository_layout,
     repositoryPath: row.repository_path,
     ...(row.task_request_id ? { taskRequestId: row.task_request_id } : {}),
-    checkoutPath: row.checkout_path,
-    canonicalRepository: row.canonical_repository,
     branch: row.branch,
     beforeHead: row.before_head,
     lockTokenHash: row.lock_token_hash,

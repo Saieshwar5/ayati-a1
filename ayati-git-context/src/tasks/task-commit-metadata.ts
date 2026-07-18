@@ -11,8 +11,6 @@ export interface TaskIdentityCommitInput {
   requestId: string;
 }
 
-export interface TaskMigrationCommitInput extends TaskIdentityCommitInput {}
-
 export interface TaskRunCommitInput extends TaskIdentityCommitInput {
   runId: string;
   sessionId: string;
@@ -33,14 +31,6 @@ export type SimpleTaskCommitMetadata =
       schema: "task/v1";
     }
   | {
-      event: "task_repository_migrated";
-      subject: string;
-      taskId: string;
-      requestId: string;
-      outcome: "migrated";
-      schema: "task/v1";
-    }
-  | {
       event: "task_run_finalized";
       subject: string;
       taskId: string;
@@ -56,11 +46,15 @@ export type SimpleTaskCommitMetadata =
     };
 
 export function renderTaskIdentityCommit(input: TaskIdentityCommitInput): string {
-  return renderIdentity(input, "created", "task_created");
-}
-
-export function renderTaskMigrationCommit(input: TaskMigrationCommitInput): string {
-  return renderIdentity(input, "migrated", "task_repository_migrated");
+  return [
+    subject(input.subject),
+    "",
+    "Task: " + requireTaskId(input.taskId),
+    "Request: " + requireRequestId(input.requestId),
+    "Outcome: created",
+    "Ayati-Schema: task/v1",
+    "Ayati-Event: task_created",
+  ].join("\n");
 }
 
 export function renderTaskRunCommit(input: TaskRunCommitInput): string {
@@ -114,20 +108,6 @@ export function parseSimpleTaskCommit(message: string): SimpleTaskCommitMetadata
       schema: "task/v1",
     };
   }
-  if (event === "task_repository_migrated") {
-    rejectUnsupportedFields(fields, IDENTITY_FIELDS);
-    if (fields["Outcome"] !== "migrated") {
-      invalid("Task identity commit outcome does not match its event.", { event });
-    }
-    return {
-      event,
-      subject: commitSubject,
-      taskId,
-      requestId,
-      outcome: "migrated",
-      schema: "task/v1",
-    };
-  }
   if (event !== "task_run_finalized") {
     invalid("Task commit contains an unsupported Ayati event.", { event });
   }
@@ -151,22 +131,6 @@ export function parseSimpleTaskCommit(message: string): SimpleTaskCommitMetadata
     schema: "task/v1",
   };
   return parsed;
-}
-
-function renderIdentity(
-  input: TaskIdentityCommitInput,
-  commitOutcome: "created" | "migrated",
-  event: "task_created" | "task_repository_migrated",
-): string {
-  return [
-    subject(input.subject),
-    "",
-    "Task: " + requireTaskId(input.taskId),
-    "Request: " + requireRequestId(input.requestId),
-    "Outcome: " + commitOutcome,
-    "Ayati-Schema: task/v1",
-    "Ayati-Event: " + event,
-  ].join("\n");
 }
 
 function parseFields(lines: string[]): Record<string, string> {

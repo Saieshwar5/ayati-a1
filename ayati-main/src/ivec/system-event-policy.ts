@@ -53,7 +53,7 @@ export interface SystemEventPolicyDefaults {
 }
 
 export interface SystemEventPolicyConfig {
-  schemaVersion: 1 | 2;
+  schemaVersion: 2;
   defaults: SystemEventPolicyDefaults;
   rules: SystemEventPolicyRule[];
 }
@@ -86,10 +86,7 @@ export function loadSystemEventPolicy(projectRoot: string): SystemEventPolicyCon
 
   try {
     const parsed = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
-    if ("defaults" in parsed || "schemaVersion" in parsed) {
-      return parseModernPolicy(parsed);
-    }
-    return parseLegacyPolicy(parsed);
+    return parsePolicy(parsed);
   } catch {
     return DEFAULT_SYSTEM_EVENT_POLICY;
   }
@@ -155,57 +152,14 @@ function coercePolicyConfig(policy: SystemEventPolicyConfig | undefined): System
     return DEFAULT_SYSTEM_EVENT_POLICY;
   }
 
-  const parsed = policy as unknown as Record<string, unknown>;
-  if ("defaults" in parsed || "schemaVersion" in parsed) {
-    return parseModernPolicy(parsed);
-  }
-
-  return parseLegacyPolicy(parsed);
+  return parsePolicy(policy as unknown as Record<string, unknown>);
 }
 
-function parseModernPolicy(parsed: Record<string, unknown>): SystemEventPolicyConfig {
-  const schemaVersion = parsed["schemaVersion"] === 1 ? 1 : 2;
+function parsePolicy(parsed: Record<string, unknown>): SystemEventPolicyConfig {
   const defaults = parseDefaults(parsed["defaults"]);
   const rules = parseRules(parsed["rules"]);
   return {
-    schemaVersion,
-    defaults,
-    rules,
-  };
-}
-
-function parseLegacyPolicy(parsed: Record<string, unknown>): SystemEventPolicyConfig {
-  const defaultResponseKind = isResponseKind(parsed["defaultResponseKind"])
-    ? parsed["defaultResponseKind"]
-    : DEFAULT_SYSTEM_EVENT_POLICY.defaults.delivery;
-
-  const defaults = normalizeDefaults({
-    ...DEFAULT_SYSTEM_EVENT_POLICY.defaults,
-    delivery: defaultResponseKind,
-    mode: deliveryToDefaultMode(defaultResponseKind),
-    approvalRequired: deliveryRequiresApproval(defaultResponseKind),
-  });
-
-  const rules = Array.isArray(parsed["rules"])
-    ? parsed["rules"].flatMap((rule) => {
-      if (!rule || typeof rule !== "object") return [];
-      const value = rule as Record<string, unknown>;
-      const delivery = isResponseKind(value["defaultResponseKind"])
-        ? value["defaultResponseKind"]
-        : undefined;
-      const mode = delivery ? deliveryToDefaultMode(delivery) : undefined;
-      return [{
-        source: normalizeOptionalRuleString(value["source"]),
-        eventName: normalizeOptionalRuleString(value["eventName"]),
-        mode,
-        ...(delivery ? { delivery } : {}),
-        ...(delivery ? { approvalRequired: deliveryRequiresApproval(delivery) } : {}),
-      } satisfies SystemEventPolicyRule];
-    })
-    : [];
-
-  return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     defaults,
     rules,
   };
@@ -634,19 +588,6 @@ function modeToDefaultDelivery(mode: SystemEventHandlingMode): AgentResponseKind
   }
 }
 
-function deliveryToDefaultMode(delivery: AgentResponseKind): SystemEventHandlingMode {
-  switch (delivery) {
-    case "feedback":
-      return "draft_then_approve";
-    case "notification":
-      return "analyze_notify";
-    case "none":
-      return "log_only";
-    case "reply":
-      return "auto_execute_notify";
-  }
-}
-
 function modeRequiresApproval(mode: SystemEventHandlingMode): boolean {
   return mode === "draft_then_approve" || mode === "approve_then_execute";
 }
@@ -663,10 +604,6 @@ function modeToContextVisibility(mode: SystemEventHandlingMode): SystemEventCont
     case "approve_then_execute":
       return "summary";
   }
-}
-
-function deliveryRequiresApproval(delivery: AgentResponseKind): boolean {
-  return delivery === "feedback";
 }
 
 function matchesText(ruleValue: string | undefined, actual: string | undefined): boolean {

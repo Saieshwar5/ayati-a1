@@ -12,16 +12,18 @@ The current agent harness is designed around a simple loop:
 context pack -> decision -> action executor -> deterministic verification -> progress reducer
 ```
 
-The product intent is that Ayati should feel continuous and alive without
-requiring the user to manage sessions manually. Daily git context is default
-and keeps recent work vivid through task branches, pending-turn ownership,
-task files, assets, evidence, and run commits, while personal facts and
-preferences remain in personal memory.
+The product intent is that Ayati should feel continuous without requiring the
+user to manage sessions or context windows. Daily session Git preserves
+conversation/runtime continuity. Durable work lives in one independent normal
+Git repository per task, while personal facts and preferences remain in
+personal memory.
 
 Current packages:
 
 - `ayati-main`: long-running agent daemon, backend runtime, WebSocket server, HTTP upload/artifact API, memory, tools, plugins, providers, and event processing.
 - `ayati-cli`: Ink/React terminal client that connects to the daemon over WebSocket.
+- `ayati-git-context`: independent local Git-and-SQLite context service that
+  owns sessions, task repositories, run journals, locks, and finalization.
 
 Primary value:
 
@@ -36,6 +38,8 @@ Primary value:
 - Turn-aware task routing: the agent can search/read tasks and route work by
   creating one V1 task or selecting an existing task with an explicit
   continue-current-request or create-new-request decision.
+- Long-lived task semantics: later features, lessons, analyses, and
+  improvements normally become requests in the existing task.
 - Personal and episodic memory for personalization and recall.
 - Structured context packs that keep recent conversation, selected git
   task context, task assets, hot evidence, and personal memory available to the

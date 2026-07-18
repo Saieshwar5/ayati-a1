@@ -31,9 +31,7 @@ process.stdout.write(report);
 
 async function latestFeedbackPath() {
   const sessionPointer = resolve(dataRoot, "feedback", "latest-session.json");
-  const fallbackPointer = resolve(dataRoot, "feedback", "latest.json");
-  const latest = JSON.parse(await readFile(sessionPointer, "utf8").catch(() =>
-    readFile(fallbackPointer, "utf8")));
+  const latest = JSON.parse(await readFile(sessionPointer, "utf8"));
   if (typeof latest.path !== "string") throw new Error("latest session feedback pointer has no path");
   return isAbsolute(latest.path) ? latest.path : resolve(dataRoot, latest.path);
 }
@@ -56,7 +54,8 @@ function renderReport(path, input) {
   const contextEvents = input.filter((event) =>
     event.stage === "context_engine" || event.stage === "git_context_service");
   const counts = countBy(contextEvents, (event) => event.event);
-  const findings = validate(contextEvents);
+  const lifecycles = buildTaskLifecycles(contextEvents);
+  const findings = validate(contextEvents, lifecycles);
   const rows = contextEvents.map((event) => {
     const data = event.data ?? {};
     return [
@@ -79,7 +78,9 @@ function renderReport(path, input) {
     "",
     "## Health",
     "",
-    findings.length === 0 ? "PASS — no deterministic lifecycle violations found." : `FAIL — ${findings.length} lifecycle violation(s) found.`,
+    findings.length === 0
+      ? "PASS — no deterministic lifecycle or outcome findings."
+      : `FAIL — ${findings.length} lifecycle/outcome finding(s).`,
     "",
     ...findings.map((finding) => `- ${finding}`),
     ...(findings.length === 0 ? [] : [""]),
@@ -92,10 +93,31 @@ function renderReport(path, input) {
     `- Incremental context updates: ${counts.get("harness_context_incrementally_updated") ?? 0}`,
     `- Persisted steps: ${sum(counts, ["run_step_persisted", "run_step_persistence_acknowledged"])}`,
     `- HTTP request failures: ${counts.get("http_request_failed") ?? 0}`,
-    `- Task promotions: ${counts.get("run_promoted") ?? 0}`,
+    `- Task selections: ${lifecycles.length}`,
+    `- New-task selections: ${lifecycles.filter((item) => item.taskCreated === true).length}`,
+    `- Continued requests: ${lifecycles.filter((item) => item.requestDecision === "continue").length}`,
+    `- New requests: ${lifecycles.filter((item) => item.requestDecision === "create").length}`,
+    `- Session runs bound to tasks: ${counts.get("session_run_bound") ?? 0}`,
     `- Verified task mutations staged: ${counts.get("task_mutation_staged") ?? 0}`,
     `- Task finalizations: ${counts.get("task_finalization_completed") ?? 0}`,
     `- Child restarts: ${counts.get("child_restart_completed") ?? 0}`,
+    "",
+    "## Task lifecycle",
+    "",
+    "Task | Run | Selection | Request decision | Request | Working directory | Finalization | Commit",
+    "--- | --- | --- | --- | --- | --- | --- | ---",
+    ...(lifecycles.length === 0
+      ? ["- | - | - | - | - | - | - | -"]
+      : lifecycles.map((item) => [
+        item.taskId ?? "-",
+        item.runId ?? "-",
+        item.selectionMode ?? "-",
+        item.requestDecision ?? "-",
+        formatRequest(item),
+        item.workingDirectory ?? "-",
+        formatFinalization(item),
+        formatCommit(item),
+      ].map(cell).join(" | "))),
     "",
     "## Timeline",
     "",
@@ -106,7 +128,7 @@ function renderReport(path, input) {
   ].join("\n");
 }
 
-function validate(events) {
+function validate(events, lifecycles) {
   const findings = [];
   for (const event of events) {
     if (["harness_context_refresh_failed", "run_step_persistence_failed", "child_restart_failed", "startup_recovery_failed"].includes(event.event)) {
@@ -118,7 +140,6 @@ function validate(events) {
   }
   pair(events, "run_step_persistence_queued", "run_step_persistence_acknowledged", (event) => `${event.runId}:${event.data?.step}`, findings);
   pair(events, "task_finalization_started", "task_finalization_completed", (event) => event.runId, findings, new Set(["task_finalization_failed"]));
-  pair(events, "run_promotion_started", "run_promoted", (event) => event.runId, findings);
   pair(events, "mutation_authority_acquired", "mutation_verified", (event) => event.data?.authorityId, findings);
   const verifiedMutations = events.filter((event) =>
     event.event === "mutation_verified" && event.data?.verified === true);
@@ -132,7 +153,125 @@ function validate(events) {
       findings.push(`verified mutation was not staged for task-run finalization: ${authorityId}`);
     }
   }
+  for (const lifecycle of lifecycles) {
+    const identity = lifecycle.taskId ?? lifecycle.runId ?? "unknown task";
+    if (!lifecycle.workingDirectory) {
+      findings.push(`task selection has no stable working directory: ${identity}`);
+    }
+    if (!lifecycle.requestDecision) {
+      findings.push(`task selection has no explicit request decision: ${identity}`);
+    }
+    if (!lifecycle.requestId) {
+      findings.push(`task selection has no request identity: ${identity}`);
+    }
+    if (["initial", "create"].includes(lifecycle.requestDecision)
+      && lifecycle.requestCreated !== true) {
+      findings.push(`${lifecycle.requestDecision} selection did not create its request: ${identity}`);
+    }
+    if (lifecycle.requestDecision === "continue" && lifecycle.requestCreated !== false) {
+      findings.push(`continue selection does not prove request reuse: ${identity}`);
+    }
+    if (lifecycle.finalizationStatus === "committed" && lifecycle.commitCreated === undefined) {
+      findings.push(`task finalization has no commit-created result: ${identity}`);
+    }
+    if (lifecycle.finalizationStatus === "committed" && !lifecycle.headAfter) {
+      findings.push(`task finalization has no final task HEAD: ${identity}`);
+    }
+    if (lifecycle.commitCreated === true && !lifecycle.commit) {
+      findings.push(`task finalization created a commit without its identity: ${identity}`);
+    }
+    if (lifecycle.commit && lifecycle.headAfter && lifecycle.commit !== lifecycle.headAfter) {
+      findings.push(`task finalization commit does not match task HEAD: ${identity}`);
+    }
+    if (lifecycle.validation === "failed") {
+      findings.push(`task finalization validation failed: ${identity}`);
+    }
+    if (lifecycle.outcome && lifecycle.outcome !== "done") {
+      findings.push(`task outcome is ${lifecycle.outcome}: ${identity}`);
+    }
+  }
   return [...new Set(findings)];
+}
+
+function buildTaskLifecycles(events) {
+  const records = new Map();
+  for (const event of events) {
+    const data = event.data ?? {};
+    const nested = data.taskLifecycle ?? data.contextEngine?.taskLifecycle ?? {};
+    const repository = nested.repository ?? {};
+    const request = nested.request ?? {};
+    const run = nested.run ?? {};
+    const finalization = nested.finalization ?? {};
+    const taskId = event.taskId ?? data.taskId ?? repository.taskId;
+    const runId = event.runId ?? data.runId ?? run.runId;
+    if (!taskId && !runId) continue;
+    if (!isTaskLifecycleEvent(event.event, data, nested)) continue;
+    const key = taskId ? `task:${taskId}:run:${runId ?? "-"}` : `run:${runId}`;
+    const current = records.get(key) ?? {};
+    records.set(key, mergeDefined(current, {
+      taskId,
+      runId,
+      workingDirectory: data.workingDirectory ?? repository.workingDirectory,
+      selectionMode: data.mode ?? repository.selectionMode,
+      taskCreated: data.taskCreated ?? repository.taskCreated,
+      requestDecision: data.taskRequestDecision ?? request.decision,
+      requestId: data.taskRequestId ?? request.requestId,
+      requestStatus: data.taskRequestStatus ?? request.status,
+      requestCreated: data.taskRequestCreated ?? request.created,
+      finalizationStatus: finalization.status
+        ?? (event.event === "task_finalization_started" ? "started" : undefined)
+        ?? (event.event === "task_finalization_completed" ? "committed" : undefined)
+        ?? (event.event === "task_finalization_failed" ? "failed" : undefined),
+      outcome: data.outcome ?? data.requestedOutcome ?? finalization.outcome,
+      validation: data.validation ?? finalization.validation,
+      commit: data.taskCommit ?? finalization.commit,
+      commitCreated: data.taskCommitCreated ?? finalization.commitCreated,
+      headAfter: data.taskHeadAfter ?? repository.headAfter ?? finalization.headAfter,
+    }));
+  }
+  return [...records.values()]
+    .filter((item) => item.taskId)
+    .sort((left, right) => String(left.taskId ?? left.runId).localeCompare(String(right.taskId ?? right.runId)));
+}
+
+function isTaskLifecycleEvent(name, data, nested) {
+  return [
+    "task_run_started",
+    "session_run_bound",
+    "agent_routed",
+    "task_finalization_started",
+    "task_finalization_completed",
+    "task_finalization_failed",
+    "committed",
+  ].includes(name) || Boolean(nested.repository);
+}
+
+function mergeDefined(current, update) {
+  const result = { ...current };
+  for (const [key, value] of Object.entries(update)) {
+    if (value !== undefined && value !== null && value !== "") result[key] = value;
+  }
+  return result;
+}
+
+function formatRequest(item) {
+  if (!item.requestId) return "-";
+  return item.requestStatus ? `${item.requestId} (${item.requestStatus})` : item.requestId;
+}
+
+function formatFinalization(item) {
+  const status = item.finalizationStatus ?? "not observed";
+  const details = [item.outcome, item.validation].filter(Boolean);
+  return details.length > 0 ? `${status} (${details.join(", ")})` : status;
+}
+
+function shortCommit(value) {
+  return typeof value === "string" && value ? value.slice(0, 12) : "-";
+}
+
+function formatCommit(item) {
+  if (item.commitCreated === false) return `none (HEAD ${shortCommit(item.headAfter ?? item.commit)})`;
+  return shortCommit(item.commit ?? item.headAfter);
 }
 
 function pair(events, startedName, completedName, keyOf, findings, alternativeNames = new Set()) {

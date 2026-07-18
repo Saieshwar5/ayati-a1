@@ -93,58 +93,37 @@ task feedback outside an active task run, and invalid tool inputs are rejected
 deterministically and repaired when possible.
 
 Every provider-handled chat turn and provider-handled system event starts as a
-session run. A session run is an immutable/read-first run record owned by the
-session-store until mutation becomes necessary. Read-only tools may execute in
-this state without creating or binding a task. Mutation tools cannot execute
-from an unbound session run; the runner must first promote the active session
-run into a task run.
+session run. Read-only tools may execute without selecting a task. Mutation
+tools cannot execute from an unbound session run; the model must first select a
+task explicitly.
 
-When git-memory has an `unbound` or `clarifying` pending turn, mutation tools
-are blocked. The model may use read-only tools, git-context read/search tools,
-and the turn-aware routing tools:
+The model-facing routing surface is intentionally small:
 
-- `git_context_activate_task_for_turn`
-- `git_context_create_task_for_turn`
-- `git_context_ask_clarification_for_turn`
+- `git_context_create_task` creates and selects a new V1 `T-*` repository with
+  its initial request.
+- `git_context_activate_task` selects an existing repository. V1 calls must
+  explicitly pass `requestDecision.kind="continue"` or
+  `requestDecision.kind="create"`.
 
-When a fresh session has no active task, read-only tools remain available on the
-session run. Mutating work still requires a promotion target or clarification
-first: the initial routing surface exposes
-`git_context_set_promotion_target_for_turn`,
-`git_context_create_task_for_turn`, and
-`git_context_ask_clarification_for_turn`. The target tool is preferred for new
-durable work because it records intent without creating a durable task; the task
-is created only if a later mutation tool promotes the active session run. If the
-model tries to call a mutation tool before a task or target exists, the runner
-records repair feedback instead of throwing a missing-run error to the user.
+Task candidates and recent task context help the model decide, but do not grant
+mutation authority. If ownership is ambiguous, the assistant asks the user a
+direct clarification question. The answer is a fresh turn and makes its own
+selection decision.
 
-Routing mutation tools are treated as routing controls, not ordinary work
-tools. During routing modes they are pinned outside the normal selected-tool and
-visible-tool budgets, so repair can always ask the model to create, activate,
-or clarify a task with a callable native tool. Once ownership is resolved or a
-real work run exists, those mutation tools are removed from the run surface.
+Routing tools are controls, not ordinary domain work. After selection succeeds,
+the runner refreshes context using the returned task id, run id, stable working
+directory, and harness context containing the selected request, then prepares
+normal work tools for the original request. V1 selection does not mount a
+repository or update session Git.
 
-When an active task exists, the turn still starts as a session run. The model
-may inspect with read-only tools first. If the request belongs to the same
-active task and a mutation tool is selected, the runner asks the app runtime to
-promote the active session run into that task run immediately before the first
-mutation executes. If the request is new, different, or ambiguous, the model may
-use routing tools during the window. Unused routing tools expire after the
-routing window, and any promoted mutation removes routing tools from the
-surface.
-
-After a routing tool succeeds, the runner refreshes the harness context into
-the returned real task run id, removes routing/search/create/switch tools for
-the rest of that run, and prepares normal work tools for the original user
-message. This allows flows such as:
+Representative flows are:
 
 ```text
-fresh request -> git_context_set_promotion_target_for_turn -> write_files -> final reply
-read-only question -> read_files -> final reply stored as session run
-same active task -> read_files -> write_files -> final reply stored as task run
-different existing task -> git_context_activate_task_for_turn -> normal work tool -> final reply
-ambiguous task -> git_context_ask_clarification_for_turn -> clarification reply stored as session run
-clarification answer -> git_context_activate_task_for_turn -> write_files -> final reply stored as task run
+new durable work -> git_context_create_task -> normal work tool -> final reply
+read-only question -> read_files -> final reply as a session run
+continue current request -> git_context_activate_task(requestDecision.kind=continue) -> work -> final reply
+new request in known task -> git_context_activate_task(requestDecision.kind=create) -> work -> final reply
+ambiguous ownership -> direct clarification reply -> fresh answer turn -> explicit selection
 ```
 
 There is no model-facing `update_work_state` control. Verified executable
@@ -170,21 +149,18 @@ the durable task remains `in_progress` with its verified progress, assets,
 open work, and next step. Only a genuine permanent blocker maps both the run
 and task to `blocked`.
 
-Clarification is not a deferred promotion. Once the assistant asks the
-clarifying question and the session run finalizes, that run is sealed. The
-user's answer starts a fresh session run and can be promoted only if that answer
-turn activates, targets, or creates a task before mutation.
+Clarification is not a deferred task selection. Once the assistant asks the
+question and the session run finalizes, that run is sealed. The user's answer
+starts a fresh session run and must select a task before mutation.
 
-Promotion can happen only while the session run is active. After a session run
-is finalized in the session-store, it is sealed and must not be converted into a
-task run later. Final storage is exclusive: an unpromoted run is finalized under
-`session-store`; a promoted run is finalized under the task directory using the
-same run id. The runtime must never write a finalized run to both locations.
+Task selection can happen only while the session run is active. Session-run
+lifecycle and raw evidence remain in Git Context SQLite/session journals; V1
+task finalization writes compact request/task outcomes and one commit to the
+independent task repository. The runtime must not copy the raw run transcript
+into task Git.
 
-The model should not call a tool just to continue the already-active task;
-obvious same-task continuation is automatic. The model must not directly commit
-runs, update task state, or use low-level branch switch/create tools during
-normal live turns.
+The model must not directly commit runs, edit `.ayati/` lifecycle state, mount
+repositories, or use low-level branch/create operations during normal turns.
 
 ## Internal Decision Shape
 
@@ -453,15 +429,14 @@ Tool-mode feedback is operator-facing and compact. The runner records
 `tools.routing_tools_deactivated` so live logs explain why routing tools or
 normal tools were visible.
 
-The working set is cleared at task finalization. Legacy JSON decision parsing is
-kept for tests and migration resilience, but the app runtime should use native
-control tools plus selected native executable tools.
+The working set is cleared at task finalization. Decisions use native control
+tools plus selected native executable tools; assistant text is reserved for a
+terminal reply.
 
 ## State View And Working Feedback
 
-The decision model receives a compact `State view` each iteration. Runtime code
-may keep compatibility aliases internally, but the model prompt is projected to
-a deduplicated grouped payload:
+The decision model receives a compact `State view` each iteration. The model
+prompt is projected to a deduplicated grouped payload:
 
 - `context.timeline`: every exact conversation record after the latest valid
   task-run checkpoint, ending with the exact current input. Before the first
@@ -526,7 +501,7 @@ The decision model does not receive the internal run path, generated goal
 contract, empty progress scaffolding, or old activity/task-thread shelves. Open
 task continuation stays inside the existing decision stage through
 `context.git.current.task`: it gives the model enough structured state to
-continue the focused work branch, use task assets, start new work, or ask the
+continue the selected task repository, use task assets, start new work, or ask the
 user when runtime task resolution is ambiguous.
 
 If tool output is truncated, chunked, or evidence-only, the model should use
@@ -663,7 +638,7 @@ model-facing control. They record compact lifecycle facts such as
 `context_engine.agent_routed`, `context_engine.clarification_requested`,
 `context_engine.finalization_skipped`, `context_engine.finalization_failed`,
 and `context_engine.committed`. Developer agents should use those events to
-follow the owning task branch, run id, commit, and evidence pointers when
+follow the owning task repository, request/run ids, commit, and evidence pointers when
 debugging Ayati behavior.
 
 ## Completion
