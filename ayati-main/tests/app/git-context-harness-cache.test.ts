@@ -60,8 +60,10 @@ describe("Git Context harness cache", () => {
       },
       readContext: {
         revision: "read-revision",
-        entries: [{
-          key: "read_files:requirements.md",
+        inventory: [],
+        discovery: [],
+        evidence: [{
+          key: "evidence:read_files:requirements.md",
           runId: "R-1",
           step: 1,
           runClass: "session",
@@ -73,6 +75,7 @@ describe("Git Context harness cache", () => {
           verification: { passed: true },
           createdAt: "2026-07-14T10:00:00.000Z",
         }],
+        actions: [],
       },
       warnings: [],
     };

@@ -56,6 +56,12 @@ export function compactInputFields(input: unknown, options: {
 
 export function readCommand(input: unknown): string {
   if (!isRecord(input)) return "";
+  if (typeof input["executable"] === "string" && input["executable"].trim()) {
+    const args = Array.isArray(input["args"])
+      ? input["args"].filter((arg): arg is string => typeof arg === "string")
+      : [];
+    return [input["executable"].trim(), ...args].join(" ");
+  }
   for (const key of ["cmd", "command", "script", "input"]) {
     const value = input[key];
     if (typeof value === "string" && value.trim()) return value.trim();

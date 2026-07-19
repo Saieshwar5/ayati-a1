@@ -9,7 +9,7 @@ import type {
 } from "../types.js";
 import { measureJson } from "../state-compaction.js";
 import { buildContextEngineFeedbackSummary } from "../feedback-ledger.js";
-import { isReadOnlyTool } from "../../skills/tool-taxonomy.js";
+import { isObservationalTool } from "../../skills/tool-taxonomy.js";
 import { isGitContextAllowedDuringPendingRouting } from "../../skills/builtins/git-context/tool-policy.js";
 import type { ToolDefinition } from "../../skills/types.js";
 import type { AgentAction, AgentDecision } from "./decision.js";
@@ -212,7 +212,7 @@ export function buildToolExposureWarningCodes(
   const mode = detectRuntimeCapabilityMode({ state, workRunHandle, sessionRunHandle });
   const pendingTurnStatus = state.harnessContext.contextEngine?.pendingTurn?.routingStatus;
   const normalTools = normalTaskToolNames(selectedTools);
-  const unsafeNormalTools = normalTools.filter((tool) => !isReadOnlyTool(tool));
+  const unsafeNormalTools = normalTools.filter((tool) => !isObservationalTool(tool));
   if ((pendingTurnStatus === "unbound" || pendingTurnStatus === "clarifying") && unsafeNormalTools.length > 0) {
     warningCodes.push("normal_tool_visible_during_pending_routing", "routing_state_mismatch");
   }

@@ -46,7 +46,7 @@ selected executable tools:
   write_files({ files, createDirs? })
   patch_files({ files: [{ path, patches: [{ kind: "replace_lines", startLine, endLine: "EOF" }] }] })
   read_files({ files: [{ path, ... }] })
-  shell({ cmd, ... })
+  process_run({ executable, args, ... })
   ...
 ```
 
@@ -93,9 +93,10 @@ task feedback outside an active task run, and invalid tool inputs are rejected
 deterministically and repaired when possible.
 
 Every provider-handled chat turn and provider-handled system event starts as a
-session run. Read-only tools may execute without selecting a task. Mutation
-tools cannot execute from an unbound session run; the model must first select a
-task explicitly.
+session run. Observational read/search tools may execute without selecting a
+task. Tools with mutation effects cannot execute from an unbound session run;
+the model must first select a task explicitly. Unknown taxonomy also fails
+closed before a task boundary.
 
 The model-facing routing surface is intentionally small:
 
@@ -120,7 +121,7 @@ Representative flows are:
 
 ```text
 new durable work -> git_context_create_task -> normal work tool -> final reply
-read-only question -> read_files -> final reply as a session run
+observational question -> read_files -> final reply as a session run
 continue current request -> git_context_activate_task(requestDecision.kind=continue) -> work -> final reply
 new request in known task -> git_context_activate_task(requestDecision.kind=create) -> work -> final reply
 ambiguous ownership -> direct clarification reply -> fresh answer turn -> explicit selection
@@ -182,7 +183,7 @@ while removing the model-facing nested action wrapper.
 `decision_load_tools` must include at least one non-empty selector:
 
 - `groups`: exact group names from the compact loading map, such as
-  `file:read`, `file:write`, or `shell:command`
+  `file:read`, `file:write`, or `process:command`
 - `toolNames`: exact tool names when already known
 - `query`: search text when the model is unsure which hidden tool should load
 
@@ -328,7 +329,7 @@ new prompt projection; the source tool-call records, durable task context, and
 run work state remain unchanged.
 
 Shadow planning uses registered deterministic projectors for filesystem reads,
-filesystem search/listing, filesystem mutations, shell calls, test/build
+filesystem search/listing, filesystem mutations, process calls, test/build
 commands, and Git-context operations, with a conservative generic fallback.
 Projector metadata is captured
 while the structured tool result is available, bounded to exclude duplicate
@@ -354,9 +355,10 @@ total instead of being appended outside it. Native harness controls such as
 separate surface and do not consume executable-tool slots.
 
 Native provider tools are the only callable schema authority. The textual user
-prompt contains only selected executable names; it does not duplicate input or
-output schemas, annotations, or selection hints. Authoritative executable input
-schemas are sent unchanged through native tool calling. Output contracts,
+prompt groups selected executable names under `read`, `search`, `control`, or
+`mutation`; it does not duplicate input or output schemas, effects, annotations,
+or selection hints. Authoritative executable input schemas are sent unchanged
+through native tool calling. Output contracts,
 annotations, taxonomy, and selection hints remain runtime-owned.
 
 After a run encounters enforced context pressure, later decisions cap the
@@ -378,7 +380,7 @@ Tool groups should stay small and purpose-built. Examples include:
 - `file:find`: directory and content discovery.
 - `file:read`: file reads, batched reads, and content search.
 - `file:write`: file creation and edits.
-- `shell:command`: explicit command execution only.
+- `process:command`: focused project executable execution only.
 - `git-context:*`: task/session context retrieval and routing.
 
 Before each decision, the runner deterministically prepares likely tools from
@@ -391,8 +393,8 @@ automatically after success or after one step.
 
 Tool loading is deterministic at the boundary. A request to create or build a
 website, app, file, or project should prepare file create/write/read tools, not
-shell by default. Shell tools should load for explicit run/test/install/start or
-command-execution intent. This keeps the model from using a shell transcript as
+process tools by default. Process tools should load for explicit run/test/install/start or
+command-execution intent. This keeps the model from using a process transcript as
 the primary way to create simple files.
 
 Tool lifecycle is also part of the taxonomy. Read and write tools should remain
@@ -514,6 +516,17 @@ channel. Raw read output remains in run evidence and tool records; task state
 should retain only useful facts, summaries, files, evidence refs, and run
 metadata.
 
+Reusable verified tool context is projected separately at
+`context.git.current.readContext`. It retains the current contract boundary
+(`revision` and optional `afterTaskRunId`) and organizes full reusable entries
+as `inventory`, `discovery`, `evidence`, and `actions`. The first supported
+mapping is list tools to inventory, search tools to discovery, inspect/read
+tools to evidence, and focused filesystem mutations to actions. Raw
+`run_steps` remain authoritative. Successful verified mutations invalidate
+overlapping observational entries, and a successful task commit starts a fresh
+projection; a failed or skipped commit does not. Current-run tool-call history
+uses entry keys as references instead of duplicating the projected full output.
+
 The model should prefer `inspect_paths` before large or unfamiliar reads. A
 direct `read_files` or `read_files` call is still allowed, but filesystem read
 tools can return advisory feedback when metadata would have been safer first,
@@ -625,12 +638,12 @@ The action stage records starts, completions, individual tool results,
 artifacts, and failures. Final feedback records the summary used by
 `latest-summary.json`.
 
-The runner also records read-progress signals for active task runs. These
-signals help detect loops where the model keeps selecting read-only tools after
-enough context is available for a requested write or edit. The guard should
-prefer a useful next action: write/edit when the requested work is concrete, ask
-a specific clarification question when required information is missing, or stop
-with a blocked state when progress cannot be made.
+The runner also records read/search progress signals for active task runs.
+These signals help detect loops where the model keeps selecting observational
+tools after enough context is available for a requested write or edit. The
+guard should prefer a useful next action: write/edit when the requested work is concrete,
+ask a specific clarification question when required information is missing, or
+stop with a blocked state when progress cannot be made.
 
 Context-engine feedback events are operator-facing observability, not
 model-facing control. They record compact lifecycle facts such as

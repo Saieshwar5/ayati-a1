@@ -46,9 +46,7 @@ export function buildContextEngineProjection(
           workId: activeTask.task.taskId,
         }
       : { status: "none" },
-    ...(active.readContext && active.readContext.entries.length > 0
-      ? { readContext: active.readContext }
-      : {}),
+    ...(active.readContext ? { readContext: active.readContext } : {}),
     taskCandidates: (active.taskCandidates ?? []).map((task) => ({
       taskId: task.taskId,
       title: task.title,

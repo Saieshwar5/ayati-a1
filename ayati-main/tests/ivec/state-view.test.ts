@@ -117,8 +117,10 @@ describe("buildAgentStateView", () => {
         contextEngine: createGitContext({
           readContext: {
             revision: "read-revision",
-            entries: [{
-              key: "read_files:requirements.md",
+            inventory: [],
+            discovery: [],
+            evidence: [{
+              key: "evidence:read_files:requirements.md",
               runId: "R-1",
               step: 1,
               runClass: "task",
@@ -130,6 +132,7 @@ describe("buildAgentStateView", () => {
               verification: { passed: true },
               createdAt: "2026-07-14T10:00:00.000Z",
             }],
+            actions: [],
           },
         }),
       }),
@@ -144,7 +147,7 @@ describe("buildAgentStateView", () => {
           output: "requirements",
         }, {
           step: 2,
-          tool: "shell",
+          tool: "process_run",
           purpose: "Validate the application.",
           input: { cmd: "node --check app.js" },
           status: "success",
@@ -155,15 +158,15 @@ describe("buildAgentStateView", () => {
 
     const view = buildAgentStateView(state);
 
-    expect(view.context.git?.current.readContext?.entries).toHaveLength(1);
+    expect(view.context.git?.current.readContext?.evidence).toHaveLength(1);
     expect(view.context.run?.toolCalls).toEqual([
       expect.objectContaining({
         step: 1,
         tool: "read_files",
         mode: "reference",
-        readContextKeys: ["read_files:requirements.md"],
+        readContextKeys: ["evidence:read_files:requirements.md"],
       }),
-      expect.objectContaining({ step: 2, tool: "shell", mode: "full" }),
+      expect.objectContaining({ step: 2, tool: "process_run", mode: "full" }),
     ]);
     expect(view.context.run?.toolCalls?.[0]).not.toHaveProperty("output");
   });
@@ -630,7 +633,7 @@ describe("buildAgentStateView", () => {
       allowed: [
         "direct_reply",
         "decision_load_tools",
-        "read_only_tools",
+        "observational_tools",
         "git_context_activate_task",
         "git_context_create_task",
       ],
@@ -691,7 +694,7 @@ describe("buildAgentStateView", () => {
             id: "obs-2",
             step: 1,
             callId: "call-2",
-            tool: "shell_run_script",
+            tool: "process_run",
             status: "success",
             mode: "summary",
             retention: "next_step",

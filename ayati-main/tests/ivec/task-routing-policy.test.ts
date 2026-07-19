@@ -118,7 +118,7 @@ describe("task routing policy", () => {
     });
   });
 
-  it("allows exactly one routing mutation tool per routing decision", () => {
+  it("allows exactly one routing control per routing decision", () => {
     const multi: AgentAction = {
       mode: "sequential",
       allowedTools: ["git_context_create_task", "git_context_activate_task"],

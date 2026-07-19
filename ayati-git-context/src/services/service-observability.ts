@@ -71,7 +71,28 @@ export class GitContextServiceObservability {
         conversationCount: context.session?.pendingConversationContext.length ?? 0,
         runStepCount: context.run?.steps.length ?? 0,
         readContextRevision: context.readContext?.revision,
-        readContextEntryCount: context.readContext?.entries.length ?? 0,
+        readContextEntryCount: context.readContext
+          ? context.readContext.inventory.length
+            + context.readContext.discovery.length
+            + context.readContext.evidence.length
+            + context.readContext.actions.length
+          : 0,
+        readContextInventoryCount: context.readContext?.inventory.length ?? 0,
+        readContextDiscoveryCount: context.readContext?.discovery.length ?? 0,
+        readContextEvidenceCount: context.readContext?.evidence.length ?? 0,
+        readContextActionCount: context.readContext?.actions.length ?? 0,
+        readContextCounts: {
+          inventory: context.readContext?.inventory.length ?? 0,
+          discovery: context.readContext?.discovery.length ?? 0,
+          evidence: context.readContext?.evidence.length ?? 0,
+          actions: context.readContext?.actions.length ?? 0,
+          total: context.readContext
+            ? context.readContext.inventory.length
+              + context.readContext.discovery.length
+              + context.readContext.evidence.length
+              + context.readContext.actions.length
+            : 0,
+        },
         readContextAfterTaskRunId: context.readContext?.afterTaskRunId,
         taskCandidateCount: context.taskCandidates?.length ?? 0,
         ...counters,

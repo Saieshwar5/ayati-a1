@@ -15,7 +15,7 @@ import {
   deterministicToolsForRuntimeMode,
   isFreshSessionRoutingMode,
   isRuntimeToolAllowed,
-  requiredRoutingMutationToolsForRuntimeMode,
+  requiredRoutingControlToolsForRuntimeMode,
 } from "./runtime-capability-mode.js";
 
 export interface ToolLoadRequest {
@@ -112,7 +112,7 @@ export class ToolWorkingSetManager {
     const suppressTaskRoutingTools = shouldSuppressTaskRoutingTools(state);
     const requiredRoutingTools = suppressTaskRoutingTools
       ? []
-      : requiredRoutingMutationToolsForRuntimeMode(mode);
+      : requiredRoutingControlToolsForRuntimeMode(mode);
     const result = this.load(this.addTaskRoutingWindowTools(request, state, context, input), context);
     let prepared = mergeToolLoadResult(result, this.ensureToolsLoadedOutsideLimit(requiredRoutingTools, context));
     if (suppressTaskRoutingTools) {
@@ -480,7 +480,7 @@ export class ToolWorkingSetManager {
       parts.push(this.availableGroupHint());
     }
     if (request.groups.length > 1) {
-      parts.push("Multiple groups are supported; prefer 1-3 small groups such as file:read + file:write + shell:command.");
+      parts.push("Multiple groups are supported; prefer 1-3 small groups such as file:read + file:write + process:command.");
     }
     return parts.filter((part) => part.length > 0).join(" ");
   }
@@ -600,8 +600,8 @@ function buildDeterministicLoadRequest(
   } else if (/\b(create|write|generate|save)\b/.test(text)) {
     groups.add("file:write");
   }
-  if (hasShellCommandIntent(text)) {
-    groups.add("shell:command");
+  if (hasProcessCommandIntent(text)) {
+    groups.add("process:command");
     groups.add("file:verify");
   }
   if (/\b(pdf|docx|document|summari[sz]e|section|citation)\b/.test(text) || hasPreparedDocument(state)) {
@@ -645,7 +645,7 @@ function hasFileCreationIntent(text: string): boolean {
   return /\b(website|web site|site|app|application|project|page|dashboard|component|script|file|files|folder|directory|html|css|js|javascript|typescript|react|vue|svelte|vanilla)\b/.test(text);
 }
 
-function hasShellCommandIntent(text: string): boolean {
+function hasProcessCommandIntent(text: string): boolean {
   if (/\b(run|execute|test|install|start|serve|launch|compile|terminal|command|server)\b/.test(text)) {
     return true;
   }

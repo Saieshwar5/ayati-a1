@@ -98,9 +98,9 @@ function createStaticContext(): StaticContext {
       boundaries: ["invent facts"],
     },
     skillBlocks: [
-      { id: "shell", content: "Use the shell tool when concrete inspection is needed." },
+      { id: "process", content: "Use process_run for focused project execution." },
     ],
-    toolDirectory: "shell: Run a shell command.",
+    toolDirectory: "process_run: Run one project executable.",
   };
 }
 

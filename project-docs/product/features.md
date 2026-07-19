@@ -23,7 +23,7 @@ Current product features:
 - Deterministic tool verification through tool contracts, assertions, verified facts, and progress reduction.
 - Deterministic executable-tool input validation, action execution, and
   deny-by-default parallel execution for explicitly safe read-only local flows.
-- Built-in skills for shell, filesystem, calculator, SQLite database work, Python execution, documents, datasets, files, memory, recall, UI workspace control, and Pulse.
+- Built-in skills for focused process execution, filesystem work, calculator, SQLite database work, Python execution, documents, datasets, files, memory, recall, UI workspace control, and Pulse.
 - One independent normal `T-*` Git repository for each durable task, with a
   compact task card, bounded requests, tracked reference provenance, verified
   outcomes, and semantic commit trailers.
@@ -31,8 +31,9 @@ Current product features:
   documents, datasets, files, and directories into later follow-up runs.
 - Hot tool-output context with retention metadata, compact previews, and raw
   output audit refs without flooding every model decision.
-- Prompt-facing read context for recent file/search/inspect results, backed by
-  run evidence instead of durable task-state bloat.
+- Prompt-facing reusable context organized as inventory, discovery, evidence,
+  and actions, backed by run evidence instead of durable task-state bloat and
+  reset at successful task-commit boundaries.
 - Filesystem metadata and batched-read tools, including `inspect_paths`,
   `read_files`, read advisories, and search/list tools for efficient code and
   document context gathering.
@@ -57,7 +58,7 @@ Core product capabilities:
   task continuation handled by independent task repositories and
   runtime-owned task-run finalization.
 - General visual workbench control for coding, browsing, references, previews, scratch explanations, and other workspace-heavy tasks.
-- Computer-access layer for useful work across files, shell, Python, SQLite, documents, datasets, and generated artifacts.
+- Computer-access layer for useful work across files, focused project processes, Python, SQLite, documents, datasets, and generated artifacts.
 - Event-driven and proactive behavior through system events, plugins, and Pulse scheduling.
 - Provider abstraction so model choice can change without rewriting the agent loop.
 

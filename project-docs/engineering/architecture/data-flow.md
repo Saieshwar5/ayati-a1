@@ -88,7 +88,7 @@ prevents large or sensitive user inputs from being committed accidentally.
 
 ## External Action Flow
 
-Shell, filesystem, browser, desktop, database, and external HTTP tools are
+Process execution, filesystem, browser, desktop, database, and external HTTP tools are
 high-privilege capabilities. The action executor enforces tool contracts and
 verification before their results affect progress.
 

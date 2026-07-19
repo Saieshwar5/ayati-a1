@@ -13,8 +13,10 @@ import type { SkillDefinition } from "../../src/skills/types.js";
 import {
   canRunBeforeTask,
   getToolTaxonomy,
-  isMutationTool,
-  isReadOnlyTool,
+  getToolPurpose,
+  hasMutationEffect,
+  isObservationalTool,
+  isNativeControlToolName,
   isRoutingTool,
   isToolAllowedInPhase,
   getToolLoadGroups,
@@ -34,9 +36,13 @@ describe("tool taxonomy", () => {
     expect(missingToolTaxonomy(tools)).toEqual([]);
   });
 
-  it("classifies read-only, routing, mutation, and long-running tools", () => {
+  it("classifies list, read, search, control, mutation, and long-running tools", () => {
     expect(getToolTaxonomy("read_file")).toBeUndefined();
-    expect(isReadOnlyTool("read_files")).toBe(true);
+    expect(isObservationalTool("read_files")).toBe(true);
+    expect(getToolPurpose("read_files")).toBe("read");
+    expect(getToolPurpose("search_in_files")).toBe("search");
+    expect(getToolPurpose("list_directory")).toBe("list");
+    expect(isObservationalTool("list_directory")).toBe(true);
     expect(canRunBeforeTask("read_files")).toBe(true);
     expect(requiresTaskRun("read_files")).toBe(false);
     expect(getToolTaxonomy("read_files")).toMatchObject({ lifetime: "run" });
@@ -44,22 +50,30 @@ describe("tool taxonomy", () => {
     expect(getToolLoadGroups("write_files")).toEqual(expect.arrayContaining(["file:write", "file:create"]));
 
     expect(isRoutingTool("git_context_create_task")).toBe(true);
-    expect(isMutationTool("git_context_create_task")).toBe(true);
+    expect(getToolPurpose("git_context_create_task")).toBe("control");
+    expect(hasMutationEffect("git_context_create_task")).toBe(true);
     expect(canRunBeforeTask("git_context_create_task")).toBe(true);
     expect(isToolAllowedInPhase("git_context_create_task", "routing")).toBe(true);
     expect(isToolAllowedInPhase("git_context_create_task", "task_run")).toBe(false);
 
     expect(getToolTaxonomy("write_file")).toBeUndefined();
-    expect(isMutationTool("write_files")).toBe(true);
+    expect(hasMutationEffect("write_files")).toBe(true);
+    expect(getToolPurpose("write_files")).toBe("mutation");
     expect(requiresTaskRun("write_files")).toBe(true);
     expect(canRunBeforeTask("write_files")).toBe(false);
     expect(isToolAllowedInPhase("write_files", "task_run")).toBe(true);
     expect(isToolAllowedInPhase("write_files", "enquiry")).toBe(false);
 
-    expect(getToolTaxonomy("shell_session_start")).toMatchObject({
+    expect(getToolTaxonomy("process_start")).toMatchObject({
       lifetime: "background",
       roles: expect.arrayContaining(["long_running_process"]),
     });
+    expect(getToolPurpose("process_poll")).toBe("control");
+    expect(isObservationalTool("process_poll")).toBe(false);
+    expect(getToolPurpose("process_stop")).toBe("control");
+    expect(getToolPurpose("attachment_restore")).toBe("control");
+    expect(isNativeControlToolName("decision_load_tools")).toBe(true);
+    expect(getToolPurpose("task_completion")).toBe("control");
   });
 
   it("summarizes selected tool classes for feedback", () => {
@@ -67,7 +81,7 @@ describe("tool taxonomy", () => {
       "read_files",
       "write_files",
       "git_context_activate_task",
-      "shell_session_start",
+      "process_start",
       "unknown_tool",
     ]);
 
@@ -75,7 +89,7 @@ describe("tool taxonomy", () => {
       "read_files",
       "write_files",
       "git_context_activate_task",
-      "shell_session_start",
+      "process_start",
     ]);
     expect(summary.unknown).toEqual(["unknown_tool"]);
     expect(summary.effects).toMatchObject({
@@ -83,14 +97,21 @@ describe("tool taxonomy", () => {
       workspace_mutation: 2,
       context_mutation: 1,
     });
+    expect(summary.purposes).toMatchObject({
+      list: 0,
+      read: 1,
+      search: 0,
+      control: 1,
+      mutation: 2,
+    });
     expect(summary.roles).toMatchObject({
       task_routing: 1,
       task_mutation: 1,
       long_running_process: 1,
     });
-    expect(summary.requiresTaskRun).toEqual(["write_files", "shell_session_start"]);
+    expect(summary.requiresTaskRun).toEqual(["write_files", "process_start"]);
     expect(summary.canRunBeforeTask).toEqual(["read_files", "git_context_activate_task"]);
-    expect(summary.longRunning).toEqual(["shell_session_start"]);
+    expect(summary.longRunning).toEqual(["process_start"]);
     expect(summary.lifetimes).toMatchObject({
       run: 2,
       single_use: 1,

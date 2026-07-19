@@ -6,6 +6,7 @@ import {
   detectRuntimeCapabilityMode,
   filterToolsForRuntimeMode,
   isDecisionAllowedInRuntimeMode,
+  summarizeRuntimeCapabilityTools,
 } from "../../src/ivec/agent-runner/runtime-capability-mode.js";
 import type { AgentDecision } from "../../src/ivec/agent-runner/decision.js";
 import type { LoopState } from "../../src/ivec/types.js";
@@ -75,7 +76,7 @@ function tool(name: string): ToolDefinition {
 }
 
 describe("runtime capability modes", () => {
-  it("hides task-routing mutation tools for a clearly informational turn", () => {
+  it("hides task-routing controls for a clearly informational turn", () => {
     const current = state(gitContext({ status: "none" }));
     current.inputKind = "user_message";
     current.userMessage = "Briefly tell me what I asked about in this conversation.";
@@ -89,7 +90,7 @@ describe("runtime capability modes", () => {
     expect(mode.allowedActions).toEqual([
       "direct_reply",
       "decision_load_tools",
-      "read_only_tools",
+      "observational_tools",
     ]);
     expect(filterToolsForRuntimeMode(mode, [
       tool("read_files"),
@@ -140,7 +141,7 @@ describe("runtime capability modes", () => {
       allowed: [
         "direct_reply",
         "decision_load_tools",
-        "read_only_tools",
+        "observational_tools",
         "git_context_activate_task",
         "git_context_create_task",
       ],
@@ -172,7 +173,7 @@ describe("runtime capability modes", () => {
     expect(allowed).not.toContain("write_files");
   });
 
-  it("allows taxonomy read-only tools during an active session run before task binding", () => {
+  it("allows only observational tools and routing controls during a session run before task binding", () => {
     const mode = detectRuntimeCapabilityMode({
       state: state(gitContext({ status: "none" })),
       sessionRunHandle: { sessionId: "s1", runId: "R-session" },
@@ -182,7 +183,7 @@ describe("runtime capability modes", () => {
     expect(mode.hasSessionRun).toBe(true);
     expect(mode.allowToolLoading).toBe(true);
     expect(buildRuntimeCapabilityPromptContext(mode)).toMatchObject({
-      allowed: expect.arrayContaining(["decision_load_tools", "read_only_tools"]),
+      allowed: expect.arrayContaining(["decision_load_tools", "observational_tools"]),
       blocked: expect.arrayContaining(["workspace_mutation_until_task_binding"]),
     });
     expect(filterToolsForRuntimeMode(mode, [
@@ -194,13 +195,12 @@ describe("runtime capability modes", () => {
     ]).map((entry) => entry.name)).toEqual([
       "read_files",
       "document_query",
-      "write_files",
       "git_context_activate_task",
       "git_context_create_task",
     ]);
   });
 
-  it("allows direct replies, read-only tools, and fresh-session routing before the first task", () => {
+  it("allows direct replies, observational tools, and fresh-session routing before the first task", () => {
     const mode = detectRuntimeCapabilityMode({
       state: state(gitContext({ status: "none" })),
     });
@@ -255,7 +255,7 @@ describe("runtime capability modes", () => {
     expect(isDecisionAllowedInRuntimeMode(mode, loadTools)).toBe(true);
   });
 
-  it("allows read-only decisions during an active session run before first-task routing", () => {
+  it("allows observational decisions during an active session run before first-task routing", () => {
     const mode = detectRuntimeCapabilityMode({
       state: state(gitContext({ status: "none" })),
       sessionRunHandle: { sessionId: "s1", runId: "R-session" },
@@ -291,10 +291,10 @@ describe("runtime capability modes", () => {
 
     expect(isDecisionAllowedInRuntimeMode(mode, read)).toBe(true);
     expect(isDecisionAllowedInRuntimeMode(mode, { kind: "load_tools", request: { toolNames: ["read_files"], groups: [] } })).toBe(true);
-    expect(isDecisionAllowedInRuntimeMode(mode, mutate)).toBe(true);
+    expect(isDecisionAllowedInRuntimeMode(mode, mutate)).toBe(false);
   });
 
-  it("allows normal read-only actions in fresh-session read mode", () => {
+  it("allows normal observational actions in fresh-session read mode", () => {
     const mode = detectRuntimeCapabilityMode({
       state: state(gitContext({ status: "none" })),
     });
@@ -478,7 +478,7 @@ describe("runtime capability modes", () => {
     expect(buildRuntimeCapabilityPromptContext(mode).routingWindow).toBeUndefined();
   });
 
-  it("hides task-routing mutation tools once a work run exists", () => {
+  it("hides task-routing controls once a work run exists", () => {
     const mode = detectRuntimeCapabilityMode({
       state: state(gitContext({
         status: "active",
@@ -496,5 +496,35 @@ describe("runtime capability modes", () => {
       "git_context_search_tasks",
       "write_files",
     ]);
+  });
+
+  it("summarizes visible and selected tools by purpose", () => {
+    const mode = detectRuntimeCapabilityMode({
+      state: state(gitContext({ status: "none" })),
+    });
+    const summary = summarizeRuntimeCapabilityTools({
+      mode,
+      visibleTools: [
+        tool("read_files"),
+        tool("search_in_files"),
+        tool("git_context_create_task"),
+        tool("write_files"),
+      ],
+      selectedTools: [
+        tool("search_in_files"),
+        tool("git_context_create_task"),
+      ],
+    });
+
+    expect(summary).toMatchObject({
+      visibleReadTools: ["read_files"],
+      visibleSearchTools: ["search_in_files"],
+      visibleControlTools: ["git_context_create_task"],
+      visibleMutationTools: ["write_files"],
+      selectedReadTools: [],
+      selectedSearchTools: ["search_in_files"],
+      selectedControlTools: ["git_context_create_task"],
+      selectedMutationTools: [],
+    });
   });
 });

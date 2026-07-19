@@ -6,7 +6,7 @@ Important env vars include provider keys and optional HTTP API token.
 
 High-risk runtime capabilities:
 
-- Shell tools.
+- Process execution tools.
 - Filesystem tools.
 - Python tool.
 - SQLite database tools.

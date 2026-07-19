@@ -53,7 +53,7 @@ import {
   recordTaskStep,
 } from "./step-lifecycle.js";
 import { buildContextEngineFeedbackSummary } from "../feedback-ledger.js";
-import { isReadOnlyTool } from "../../skills/tool-taxonomy.js";
+import { isObservationalTool } from "../../skills/tool-taxonomy.js";
 import {
   isGitContextAllowedDuringPendingRouting,
   isGitContextReadOnlyToolName,
@@ -971,16 +971,16 @@ export async function runAgentLoop(
     const preRunGitContextAction = preRunGitContextReadAction
       || preRunGitContextRoutingAction
       || isPreRunGitContextAction(decision, workRunHandle);
-    const sessionReadOnlyAction = isSessionReadOnlyAction(decision, workRunHandle);
-    const sessionRunReadOnlyAction = sessionReadOnlyAction && !preRunGitContextAction;
+    const sessionObservationalAction = isSessionObservationalAction(decision, workRunHandle);
+    const sessionRunObservationalAction = sessionObservationalAction && !preRunGitContextAction;
 
     const routingControlAction = freshSessionRouting
       || preRunGitContextRoutingAction
       || decision.action.calls.some((call) => isGitContextTurnRoutingToolName(call.tool));
-    if (sessionRunReadOnlyAction) {
+    if (sessionRunObservationalAction) {
       const ensuredSessionRun = sessionRunHandle?.runId
         ? sessionRunHandle
-        : await ensureSessionRun("read_only_tool_action");
+        : await ensureSessionRun("observational_tool_action");
       syncHarnessContext(state, deps, inputHandle);
       if (deps.toolWorkingSetManager) {
         deps.toolWorkingSetManager.prepareForDecision(state, {
@@ -1005,7 +1005,7 @@ export async function runAgentLoop(
           purpose: call.purpose,
         })),
         allowedTools: decision.action.allowedTools,
-        sessionReadOnlyAction: true,
+        sessionObservationalAction: true,
       });
       const stepStartedAt = new Date().toISOString();
       const stepResult = await executeActionStep({
@@ -1160,7 +1160,7 @@ export async function runAgentLoop(
         decision,
         stepNumber: state.iteration,
         toolContext: routingToolContext,
-        readOnlySessionAction: sessionReadOnlyAction,
+        observationalSessionAction: sessionObservationalAction,
         applyToolStateUpdates,
       });
       lastVerificationPassed = stepResult.execution.verifyOutput.passed;
@@ -1799,14 +1799,14 @@ function isPreRunGitContextRoutingAction(
     && decision.action.calls.every((call) => isGitContextTurnRoutingToolName(call.tool));
 }
 
-function isSessionReadOnlyAction(
+function isSessionObservationalAction(
   decision: AgentDecision,
   workRunHandle: MemoryRunHandle | undefined,
 ): boolean {
   return decision.kind === "act"
     && !workRunHandle
     && decision.action.calls.length > 0
-    && decision.action.calls.every((call) => isReadOnlyTool(call.tool));
+    && decision.action.calls.every((call) => isObservationalTool(call.tool));
 }
 
 function buildCreateWorkRunRequest(state: LoopState, reason: string) {

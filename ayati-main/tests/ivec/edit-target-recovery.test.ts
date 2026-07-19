@@ -89,7 +89,7 @@ describe("edit target recovery policy", () => {
     expect(second.repair?.allowedNextActions.join("\n")).toContain("files=[{path:");
     expect(second.repair?.allowedNextActions.join("\n")).toContain("mode:\"full\"");
     expect(second.repair?.allowedNextActions.join("\n")).toContain("baseSha256");
-    expect(second.repair?.allowedNextActions.join("\n")).toContain("Do not use shell mutation.");
+    expect(second.repair?.allowedNextActions.join("\n")).toContain("Do not use process execution for file mutation.");
   });
 });
 

@@ -56,7 +56,7 @@ describe("ToolWorkingSetManager", () => {
   it("uses a compact hidden-tool loading map after context pressure", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [tool("read_files", "Read files")]),
-      skill("shell", [tool("shell", "Run shell commands")]),
+      skill("process", [tool("process_run", "Run one project executable")]),
     ]);
     const manager = new ToolWorkingSetManager({
       catalog,
@@ -156,7 +156,7 @@ describe("ToolWorkingSetManager", () => {
     ]));
   });
 
-  it("preloads file tools instead of shell or UI tools for project creation", () => {
+  it("preloads file tools instead of process or UI tools for project creation", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
         tool("find_files", "Find files"),
@@ -168,9 +168,8 @@ describe("ToolWorkingSetManager", () => {
         tool("patch_files", "Patch files"),
         tool("create_directory", "Create directory"),
       ]),
-      skill("shell", [
-        tool("shell", "Run shell command"),
-        tool("shell_run_script", "Run shell script"),
+      skill("process", [
+        tool("process_run", "Run one project executable"),
       ]),
       skill("ui", [
         tool("workspace_get_state", "Get workspace state"),
@@ -193,21 +192,19 @@ describe("ToolWorkingSetManager", () => {
       "write_files",
       "create_directory",
     ]));
-    expect(active).not.toContain("shell");
-    expect(active).not.toContain("shell_run_script");
+    expect(active).not.toContain("process_run");
     expect(active).not.toContain("workspace_get_state");
     expect(active).not.toContain("workspace_set_layout");
   });
 
-  it("preloads shell tools for explicit command execution", () => {
+  it("preloads process tools for explicit command execution", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
         tool("search_in_files", "Search in files"),
         tool("read_files", "Read file"),
       ]),
-      skill("shell", [
-        tool("shell", "Run shell command"),
-        tool("shell_run_script", "Run shell script"),
+      skill("process", [
+        tool("process_run", "Run one project executable"),
       ]),
     ]);
     const executor = createToolExecutor([]);
@@ -219,8 +216,7 @@ describe("ToolWorkingSetManager", () => {
     manager.prepareForDecision(runState, context);
 
     expect(manager.listActive(context)).toEqual(expect.arrayContaining([
-      "shell",
-      "shell_run_script",
+      "process_run",
       "search_in_files",
       "read_files",
     ]));
@@ -296,13 +292,13 @@ describe("ToolWorkingSetManager", () => {
     ]);
   });
 
-  it("keeps fresh-session routing mutation tools visible under the tool cap", () => {
+  it("keeps fresh-session routing controls visible under the tool cap", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
         tool("write_files"),
         tool("create_directory"),
-        tool("shell_run_script"),
-        tool("shell"),
+        tool("process_run"),
+        tool("process_run"),
         tool("search_in_files"),
         tool("find_files"),
         tool("read_files"),
@@ -384,9 +380,9 @@ describe("ToolWorkingSetManager", () => {
         tool("write_files"),
         tool("create_directory"),
       ]),
-      skill("shell", [
-        tool("shell"),
-        tool("shell_run_script"),
+      skill("process", [
+        tool("process_run"),
+        tool("process_run"),
       ]),
       skill("git-context", [
         tool("git_context_active"),
@@ -426,7 +422,7 @@ describe("ToolWorkingSetManager", () => {
     expect(executor.list(context)).toEqual(active);
   });
 
-  it("removes routing mutation tools immediately after successful create or switch routing", () => {
+  it("removes routing controls immediately after successful create or switch routing", () => {
     const catalog = new ToolCatalog([
       skill("git-context", [
         tool("git_context_search_tasks"),
@@ -471,7 +467,7 @@ describe("ToolWorkingSetManager", () => {
     ]);
   });
 
-  it("removes task-routing mutation tools when a work run is active", () => {
+  it("removes task-routing controls when a work run is active", () => {
     const catalog = new ToolCatalog([
       skill("git-context", [
         tool("git_context_search_tasks"),

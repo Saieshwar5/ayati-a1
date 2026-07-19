@@ -59,7 +59,7 @@ export interface SkillRuntime {
 
 export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<SkillRuntime> {
   const builtInSkills = await builtInSkillsProvider.getAllSkills();
-  const kernelSkillIds = new Set(["shell", "filesystem"]);
+  const kernelSkillIds = new Set(["process", "filesystem"]);
   const dynamicBuiltInSkills = builtInSkills.filter((skill) => !kernelSkillIds.has(skill.id));
 
   const runtimeSkills: SkillDefinition[] = [

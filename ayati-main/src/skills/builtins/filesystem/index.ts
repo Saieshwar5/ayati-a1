@@ -26,7 +26,7 @@ const FS_PROMPT_BLOCK = [
   "read_files entries default to mode=auto and return compact profile/focused context cards instead of dumping broad file text.",
   "Use read_files mode=search with query for relevant blocks, mode=slice with startLine/lineCount for exact ranges, mode=profile for metadata/outline, and mode=full only when explicitly needed.",
   "write_files serializes a validated file batch with temp-file writes and renames; use it for new files, single-file writes, multi-file writes, and full-file rewrites.",
-  "When write_files overwrites an existing file, pass files[].baseSha256 from a recent read_files full-read result; if the hash is missing or stale, re-read the file instead of using shell mutation.",
+  "When write_files overwrites an existing file, pass files[].baseSha256 from a recent read_files full-read result; if the hash is missing or stale, re-read the file instead of using process execution for mutation.",
   "patch_files patches existing files with small stable targets, tolerant line matching, anchor inserts, and line-range replacements; use endLine=\"EOF\" for replace_lines through the current end of file instead of guessing the final line number.",
   "delete requires recursive=true to remove directories and may require confirmation.",
   "list_directory returns grouped counts plus bounded entries; use find_files/search_in_files to narrow large trees.",

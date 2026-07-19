@@ -1,4 +1,5 @@
 import type { ActOutput, VerifyOutput, VerificationExecutionStatus } from "./types.js";
+import { isObservationalTool } from "../skills/tool-taxonomy.js";
 
 function formatToolErrors(calls: Array<{ tool: string; error?: string }>): string {
   return calls
@@ -85,7 +86,6 @@ const DETERMINISTIC_SUCCESS_TOOLS = new Set([
   "attachment_query",
   "attachment_query_table",
   "directory_search",
-  "restore_attachment_context",
   "dataset_profile",
   "dataset_query",
   "dataset_promote_table",
@@ -127,24 +127,6 @@ export function checkDeterministicSuccessGate(
   };
 }
 
-const READ_ONLY_SUCCESS_TOOLS = new Set([
-  "read_files",
-  "list_directory",
-  "find_files",
-  "search_in_files",
-  "attachment_list",
-  "attachment_inspect",
-  "attachment_read",
-  "attachment_query",
-  "attachment_query_table",
-  "directory_search",
-  "dataset_profile",
-  "dataset_query",
-  "document_list_sections",
-  "document_read_section",
-  "document_query",
-]);
-
 export function isDeterministicSuccessTool(tool: string): boolean {
   return DETERMINISTIC_SUCCESS_TOOLS.has(tool);
 }
@@ -157,7 +139,6 @@ function isDeterministicSuccessCall(call: ActOutput["toolCalls"][number]): boole
   const payload = parseJsonObject(call.output);
   switch (call.tool) {
     case "attachment_restore":
-    case "restore_attachment_context":
       return typeof payload?.["attachmentKind"] === "string"
         && typeof payload["attachmentId"] === "string"
         && payload["attachmentId"].trim().length > 0;
@@ -225,8 +206,8 @@ function isGroundedDocumentQueryPayload(payload: Record<string, unknown> | null)
 
 function isDeterministicCriteriaCompatible(actOutput: ActOutput, successCriteria: string): boolean {
   const tools = new Set(actOutput.toolCalls.map((call) => call.tool));
-  const readOnly = [...tools].every((tool) => READ_ONLY_SUCCESS_TOOLS.has(tool));
-  if (!readOnly) {
+  const observational = [...tools].every(isObservationalTool);
+  if (!observational) {
     return true;
   }
 

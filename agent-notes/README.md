@@ -58,6 +58,9 @@ Current plans:
 - `plans/git-context-reader-tool-plan.md`: git-context read/search tool plan.
 - `plans/harness-tool-output-context-emission-plan.md`: tool output, raw
   evidence, and durable evidence manifest plan.
+- `plans/search-read-context-first-slice.md`: small active plan to distinguish
+  `search_in_files` discovery from `read_files` inspected evidence without a
+  new context system or persistence changes.
 - `future-plans/artifact-match-precision.md`: deferred plan for making
   git-context task search return precise `matchedArtifacts` instead of every
   artifact that shares broad task-subject terms.

@@ -4,7 +4,7 @@ import type { LoopState } from "../types.js";
 import {
   detectRuntimeCapabilityMode,
   filterToolsForRuntimeMode,
-  requiredRoutingMutationToolsForRuntimeMode,
+  requiredRoutingControlToolsForRuntimeMode,
 } from "./runtime-capability-mode.js";
 
 export const PRESSURE_MAX_SELECTED_TOOLS = 10;
@@ -24,7 +24,7 @@ export function selectToolsForDecision(
     sessionRunHandle: input.sessionRunHandle,
   });
   const candidateTools = filterToolsForRuntimeMode(mode, toolDefinitions);
-  const requiredToolNames = new Set(requiredRoutingMutationToolsForRuntimeMode(mode));
+  const requiredToolNames = new Set(requiredRoutingControlToolsForRuntimeMode(mode));
   const requiredTools = candidateTools.filter((tool) => requiredToolNames.has(tool.name));
   const budgetedTools = candidateTools.filter((tool) => !requiredToolNames.has(tool.name));
   const selectedToolLimit = resolveSelectedToolLimit(state, limit);
@@ -218,7 +218,7 @@ function scoreDomainNeed(tool: ToolDefinition, tokens: Set<string>): number {
   if (domain === "filesystem" && intersects(tokens, ["file", "files", "folder", "directory", "write", "edit", "read", "create", "delete", "move", "save"])) {
     return 8;
   }
-  if (domain === "shell" && intersects(tokens, ["run", "command", "terminal", "build", "test", "install", "server"])) {
+  if (domain === "process" && intersects(tokens, ["run", "command", "build", "test", "install", "server", "process"])) {
     return 6;
   }
   if (domain === "documents" && intersects(tokens, ["document", "pdf", "doc", "extract", "summarize"])) {

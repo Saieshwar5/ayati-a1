@@ -274,7 +274,7 @@ describe("AsyncAgentFeedbackLedger", () => {
                 recentEvidence: [{
                   runId: "run-2",
                   workId: "W-1",
-                  tool: "shell",
+                  tool: "process_run",
                   summary: "tests passed",
                   artifacts: [],
                   facts: [],
@@ -561,6 +561,15 @@ describe("AsyncAgentFeedbackLedger", () => {
       data: {
         contextRevision: "revision-5",
         previousRevision: "revision-4",
+        readContextRevision: "read-revision-5",
+        readContextAfterTaskRunId: "run-4",
+        readContextCounts: {
+          inventory: 1,
+          discovery: 2,
+          evidence: 3,
+          actions: 1,
+          total: 7,
+        },
         hits: 3,
         misses: 1,
         refreshes: 2,
@@ -584,6 +593,15 @@ describe("AsyncAgentFeedbackLedger", () => {
       cacheHits: 3,
       cacheMisses: 1,
       cacheRefreshes: 2,
+      readContextRevision: "read-revision-5",
+      readContextAfterTaskRunId: "run-4",
+      readContextCounts: {
+        inventory: 1,
+        discovery: 2,
+        evidence: 3,
+        actions: 1,
+        total: 7,
+      },
     });
     expect(summary.warnings).toContain("run_step_persistence_failed");
 

@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTaskScopedToolExecutor } from "../../src/app/task-scoped-tool-executor.js";
 import { createToolExecutor, type ToolExecutor } from "../../src/skills/tool-executor.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
-import { shellExecTool } from "../../src/skills/builtins/shell/index.js";
+import { processRunTool } from "../../src/skills/builtins/process/index.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -232,27 +232,32 @@ describe("task-scoped tool executor", () => {
     }));
   });
 
-  it("runs node syntax validation in the task checkout without mutation authority", async () => {
+  it("runs node syntax validation with context-only mutation authority", async () => {
     const repositoryPath = mkdtempSync(join(tmpdir(), "ayati-task-repository-"));
     temporaryDirectories.push(repositoryPath);
     writeFileSync(join(repositoryPath, "app.js"), "const ready = true;\n", "utf-8");
-    const acquireMutationAuthority = vi.fn();
+    const acquireMutationAuthority = vi.fn(async () => ({
+      authority: { authorityId: "A-process-check", lockToken: "lock-process-check" },
+    }));
     const service = {
       getActiveContext: vi.fn(async () => v1ActiveContext(repositoryPath)),
       acquireMutationAuthority,
+      verifyMutation: vi.fn(async () => ({
+        authorityId: "A-process-check",
+        status: "verified",
+        verified: true,
+        outcome: "verified_no_changes",
+        provenance: {},
+      })),
     } as unknown as GitContextService;
     const executor = createTaskScopedToolExecutor({
-      base: createToolExecutor([shellExecTool]),
+      base: createToolExecutor([processRunTool]),
       gitContext: service,
     });
 
-    const result = await executor.execute("shell", {
-      cmd: [
-        "set -e",
-        `ls -la ${repositoryPath}`,
-        `node --check ${join(repositoryPath, "app.js")}`,
-      ].join("\n"),
-      targets: [{ path: repositoryPath, kind: "directory" }],
+    const result = await executor.execute("process_run", {
+      executable: "node",
+      args: ["--check", join(repositoryPath, "app.js")],
     }, {
       clientId: "client-1",
       sessionId: "S-1",
@@ -262,10 +267,10 @@ describe("task-scoped tool executor", () => {
 
     expect(result.ok).toBe(true);
     expect(result.meta).toMatchObject({ exitCode: 0 });
-    expect(acquireMutationAuthority).not.toHaveBeenCalled();
+    expect(acquireMutationAuthority).toHaveBeenCalledWith(expect.objectContaining({ targets: [] }));
   });
 
-  it("authorizes shell work only through declared absolute mutation targets", async () => {
+  it("authorizes process work only through declared absolute mutation targets", async () => {
     const repositoryPath = mkdtempSync(join(tmpdir(), "ayati-task-repository-"));
     temporaryDirectories.push(repositoryPath);
     const execute = vi.fn(async () => ({ ok: true, output: "build complete" }));
@@ -285,8 +290,9 @@ describe("task-scoped tool executor", () => {
     } as unknown as GitContextService;
     const executor = createTaskScopedToolExecutor({ base: baseExecutor(execute), gitContext: service });
 
-    const result = await executor.execute("shell", {
-      cmd: "pnpm build",
+    const result = await executor.execute("process_run", {
+      executable: "pnpm",
+      args: ["build"],
       targets: [{ path: join(repositoryPath, "dist"), kind: "directory" }],
     }, {
       clientId: "client-1",
@@ -299,34 +305,90 @@ describe("task-scoped tool executor", () => {
     expect(acquireMutationAuthority).toHaveBeenCalledWith(expect.objectContaining({
       targets: [{ path: "dist", kind: "directory" }],
     }));
-    expect(execute).toHaveBeenCalledWith("shell", expect.objectContaining({
+    expect(execute).toHaveBeenCalledWith("process_run", expect.objectContaining({
       cwd: repositoryPath,
       targets: [{ path: join(repositoryPath, "dist"), kind: "directory" }],
     }), expect.objectContaining({ resourceScope: expect.objectContaining({ rootPath: repositoryPath }) }));
   });
 
-  it("rejects mutation-capable shell work without declared targets", async () => {
+  it("authorizes target-free process work as context-only and verifies no changes", async () => {
     const repositoryPath = mkdtempSync(join(tmpdir(), "ayati-task-repository-"));
     temporaryDirectories.push(repositoryPath);
     const execute = vi.fn(async () => ({ ok: true, output: "should not run" }));
-    const acquireMutationAuthority = vi.fn();
+    const acquireMutationAuthority = vi.fn(async () => ({
+      authority: { authorityId: "A-process", lockToken: "lock-process" },
+    }));
     const service = {
       getActiveContext: vi.fn(async () => v1ActiveContext(repositoryPath)),
       acquireMutationAuthority,
+      verifyMutation: vi.fn(async () => ({
+        authorityId: "A-process",
+        status: "verified",
+        verified: true,
+        outcome: "verified_no_changes",
+        provenance: {},
+      })),
     } as unknown as GitContextService;
     const executor = createTaskScopedToolExecutor({ base: baseExecutor(execute), gitContext: service });
 
-    const result = await executor.execute("shell", { cmd: "pnpm build" }, {
+    const result = await executor.execute("process_run", { executable: "pnpm", args: ["test"] }, {
       clientId: "client-1",
       sessionId: "S-1",
       runId: "R-1",
       stepNumber: 3,
     });
 
-    expect(result.ok).toBe(false);
-    expect(result.v2?.code).toBe("TASK_RESOURCE_SCOPE_VIOLATION");
+    expect(result.ok).toBe(true);
+    expect(execute).toHaveBeenCalled();
+    expect(acquireMutationAuthority).toHaveBeenCalledWith(expect.objectContaining({ targets: [] }));
+  });
+
+  it("requires bounded authority when process input can trigger later workspace changes", async () => {
+    const repositoryPath = mkdtempSync(join(tmpdir(), "ayati-task-repository-"));
+    temporaryDirectories.push(repositoryPath);
+    const execute = vi.fn(async () => ({ ok: true, output: "input sent" }));
+    const acquireMutationAuthority = vi.fn(async () => ({
+      authority: { authorityId: "A-process-input", lockToken: "lock-process-input" },
+    }));
+    const service = {
+      getActiveContext: vi.fn(async () => v1ActiveContext(repositoryPath)),
+      acquireMutationAuthority,
+      verifyMutation: vi.fn(async () => ({
+        authorityId: "A-process-input",
+        status: "verified",
+        verified: true,
+        outcome: "verified_changes",
+        provenance: {},
+      })),
+    } as unknown as GitContextService;
+    const executor = createTaskScopedToolExecutor({ base: baseExecutor(execute), gitContext: service });
+    const context = {
+      clientId: "client-1",
+      sessionId: "S-1",
+      runId: "R-1",
+      stepNumber: 4,
+    };
+
+    const unbounded = await executor.execute("process_send_input", {
+      sessionId: "process-1",
+      input: "build\n",
+    }, context);
+
+    expect(unbounded.ok).toBe(false);
+    expect(unbounded.v2?.code).toBe("TASK_RESOURCE_SCOPE_VIOLATION");
     expect(execute).not.toHaveBeenCalled();
     expect(acquireMutationAuthority).not.toHaveBeenCalled();
+
+    const bounded = await executor.execute("process_send_input", {
+      sessionId: "process-1",
+      input: "build\n",
+      targets: [{ path: join(repositoryPath, "dist"), kind: "directory" }],
+    }, context);
+
+    expect(bounded.ok).toBe(true);
+    expect(acquireMutationAuthority).toHaveBeenCalledWith(expect.objectContaining({
+      targets: [{ path: "dist", kind: "directory" }],
+    }));
   });
 
   it("rejects an external task mutation before requesting authority", async () => {

@@ -26,7 +26,7 @@ Main runtime flow:
 6. The decision model returns direct assistant text for normal terminal
    replies, or chooses exactly one native tool call for tool loading,
    task-run feedback, or selected executable work. Tool loading uses the
-   taxonomy and working-set policy so file creation, shell commands, reads,
+   taxonomy and working-set policy so file creation, process commands, reads,
    routing, and repair capabilities are prepared deterministically.
 7. Executable tool calls run through the shared action executor and are verified
    through tool contracts, assertions, and local failure policy.

@@ -7,7 +7,7 @@ import type {
   StepSummary,
 } from "../types.js";
 import type { AgentAction, AgentDecision } from "./decision.js";
-import { isReadOnlyTool } from "../../skills/tool-taxonomy.js";
+import { isObservationalTool } from "../../skills/tool-taxonomy.js";
 import {
   isGitContextAllowedDuringPendingRouting,
   isGitContextTurnRoutingToolName,
@@ -42,7 +42,7 @@ export function validateRoutingAttemptLimits(
   action: AgentAction,
   hasWorkRun: boolean,
 ): RoutingAttemptBlock | undefined {
-  const tools = routingMutationToolsForAction(action);
+  const tools = routingControlToolsForAction(action);
   if (tools.length === 0) {
     return undefined;
   }
@@ -77,7 +77,7 @@ export function validateRoutingAttemptLimits(
   return undefined;
 }
 
-export function routingMutationToolsForAction(action: AgentAction): string[] {
+export function routingControlToolsForAction(action: AgentAction): string[] {
   return uniqueStrings(action.calls
     .map((call) => call.tool)
     .filter(isGitContextTurnRoutingToolName));
@@ -144,7 +144,7 @@ export function shouldDeferPreTaskMutation(
 }
 
 export function isPreTaskMutationTool(tool: string): boolean {
-  return !isReadOnlyTool(tool) && !isGitContextAllowedDuringPendingRouting(tool);
+  return !isObservationalTool(tool) && !isGitContextAllowedDuringPendingRouting(tool);
 }
 
 export function deferredMutationToolNames(action: AgentAction): string[] {

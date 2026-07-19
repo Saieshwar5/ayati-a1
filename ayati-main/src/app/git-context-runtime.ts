@@ -18,7 +18,7 @@ import {
   type TaskAssetRecord,
 } from "../context-engine/index.js";
 import type { HarnessContextInput } from "../ivec/harness-context.js";
-import { getToolTaxonomy } from "../skills/tool-taxonomy.js";
+import { isObservationalTool } from "../skills/tool-taxonomy.js";
 import { GitContextHarnessCache } from "./git-context-harness-cache.js";
 
 export interface GitContextPreparedTurn {
@@ -434,7 +434,7 @@ class AppGitContextRuntime implements GitContextRuntime {
     record: ContextRunStepRecord;
   }): Promise<ContextEngineMachineContext | null> {
     const mutating = input.record.toolCalls.some((call) =>
-      getToolTaxonomy(call.tool)?.effect !== "read_only"
+      !isObservationalTool(call.tool)
     );
     return await this.enqueueStep(input.turn, input.record, mutating ? "mutating" : "read_only");
   }
@@ -712,6 +712,20 @@ class AppGitContextRuntime implements GitContextRuntime {
         data: {
           previousRevision,
           contextRevision: active.contextRevision,
+          readContextRevision: active.readContext?.revision,
+          readContextAfterTaskRunId: active.readContext?.afterTaskRunId,
+          readContextCounts: {
+            inventory: active.readContext?.inventory.length ?? 0,
+            discovery: active.readContext?.discovery.length ?? 0,
+            evidence: active.readContext?.evidence.length ?? 0,
+            actions: active.readContext?.actions.length ?? 0,
+            total: active.readContext
+              ? active.readContext.inventory.length
+                + active.readContext.discovery.length
+                + active.readContext.evidence.length
+                + active.readContext.actions.length
+              : 0,
+          },
           ...this.contextCache.getStats(sessionId),
         },
       });

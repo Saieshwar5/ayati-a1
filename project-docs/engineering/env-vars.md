@@ -78,7 +78,7 @@ AYATI_WORKSPACE_DIR=
 ```
 
 `AYATI_WORKSPACE_DIR` sets the default directory for generated files, scratch
-work, filesystem tools, shell cwd, and other ad-hoc agent work when the user
+work, filesystem tools, process cwd, and other ad-hoc agent work when the user
 does not specify a directory. When unset, Ayati uses `ayati-main/work_space`.
 Ayati resolves this configuration value at startup. Model tool calls use the
 resulting canonical absolute root and must pass absolute host filesystem paths,

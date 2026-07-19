@@ -13,6 +13,6 @@ Do not assume Ayati is trying to be:
   follow-up inside one durable workstream.
 - A task system that requires users to understand internal repository or
   context-window implementation details.
-- A system that should expose shell, filesystem, Python, or database tools to untrusted users without careful policy and deployment review.
+- A system that should expose process, filesystem, Python, or database tools to untrusted users without careful policy and deployment review.
 
 Current development should preserve the daemon/client separation and modular runtime shape instead of tightly coupling providers, tools, memory, plugins, and clients together.

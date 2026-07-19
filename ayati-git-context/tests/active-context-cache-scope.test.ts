@@ -30,7 +30,13 @@ describe("active context cache scope", () => {
       database,
       loadReadContext: () => {
         readLoads += 1;
-        return { revision: "read-" + readLoads, entries: [] };
+        return {
+          revision: "read-" + readLoads,
+          inventory: [],
+          discovery: [],
+          evidence: [],
+          actions: [],
+        };
       },
       loadAttachments: () => {
         attachmentLoads += 1;
@@ -208,7 +214,7 @@ describe("active context cache scope", () => {
       at: "2026-07-12T09:01:01+05:30",
     });
     expect((await fixture.service.getActiveContext({ sessionId: session.session.sessionId }))
-      .readContext?.entries).toEqual([]);
+      .readContext?.evidence).toEqual([]);
 
     await fixture.service.recordRunStep({
       requestId: "REQ-step",
@@ -230,7 +236,7 @@ describe("active context cache scope", () => {
     });
 
     expect((await fixture.service.getActiveContext({ sessionId: session.session.sessionId }))
-      .readContext?.entries).toEqual([
+      .readContext?.evidence).toEqual([
         expect.objectContaining({
           runId: run.run.runId,
           tool: "read_files",

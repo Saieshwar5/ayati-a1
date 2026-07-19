@@ -6,7 +6,7 @@ import type {
 } from "../../src/ivec/agent-runner/runtime-capability-mode.js";
 
 describe("tool policy audit", () => {
-  it("allows read-only tools during session enquiry", () => {
+  it("allows observational tools during session enquiry", () => {
     const audit = auditToolPolicy({
       mode: mode("session_only"),
       selectedTools: ["read_files"],
@@ -20,7 +20,7 @@ describe("tool policy audit", () => {
   it("flags task-run-only mutation tools before a work run exists", () => {
     const audit = auditToolPolicy({
       mode: mode("session_only"),
-      selectedTools: ["write_files", "shell_session_start"],
+      selectedTools: ["write_files", "process_start"],
     });
 
     expect(audit.warningCodes).toEqual([
@@ -32,22 +32,22 @@ describe("tool policy audit", () => {
       expect.objectContaining({
         code: "mutation_tool_without_task_run",
         severity: "error",
-        tools: ["write_files", "shell_session_start"],
+        tools: ["write_files", "process_start"],
       }),
       expect.objectContaining({
         code: "long_running_tool_without_task_run",
         severity: "error",
-        tools: ["shell_session_start"],
+        tools: ["process_start"],
       }),
       expect.objectContaining({
         code: "tool_not_allowed_in_phase",
         severity: "warning",
-        tools: ["write_files", "shell_session_start"],
+        tools: ["write_files", "process_start"],
       }),
     ]));
   });
 
-  it("allows routing mutations during routing mode", () => {
+  it("allows routing controls during routing mode", () => {
     const audit = auditToolPolicy({
       mode: mode("fresh_session_routing"),
       selectedTools: ["git_context_create_task"],
@@ -57,7 +57,7 @@ describe("tool policy audit", () => {
     expect(audit.violations).toEqual([]);
   });
 
-  it("allows routing mutations during the active-task routing window", () => {
+  it("allows routing controls during the active-task routing window", () => {
     const audit = auditToolPolicy({
       mode: {
         ...mode("active_task_ready"),
@@ -80,7 +80,7 @@ describe("tool policy audit", () => {
     expect(audit.violations).toEqual([]);
   });
 
-  it("flags routing mutations after task work is bound", () => {
+  it("flags routing controls after task work is bound", () => {
     const audit = auditToolPolicy({
       mode: mode("task_run", true, "bound"),
       selectedTools: ["git_context_create_task"],
@@ -88,12 +88,12 @@ describe("tool policy audit", () => {
 
     expect(audit.phase).toBe("task_run");
     expect(audit.warningCodes).toEqual([
-      "routing_mutation_after_task_bound",
+      "routing_control_after_task_bound",
       "tool_not_allowed_in_phase",
     ]);
     expect(audit.violations).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        code: "routing_mutation_after_task_bound",
+        code: "routing_control_after_task_bound",
         severity: "error",
         tools: ["git_context_create_task"],
       }),

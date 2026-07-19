@@ -305,8 +305,8 @@ describe("executeAgentAction verification gates", () => {
   it("rejects non-allowlisted tools in parallel", async () => {
     const runPath = makeTmpDir();
     try {
-      const shellTool = createTool("shell", {
-        domain: "shell",
+      const shellTool = createTool("process_run", {
+        domain: "process",
         readOnly: false,
         mutatesWorkspace: true,
         mutatesExternalWorld: true,
@@ -315,15 +315,15 @@ describe("executeAgentAction verification gates", () => {
       });
       const action: AgentAction = {
         mode: "parallel",
-        calls: [callSpec("call_1", "shell", { cmd: "pwd" })],
-        allowedTools: ["shell"],
+        calls: [callSpec("call_1", "process_run", { cmd: "pwd" })],
+        allowedTools: ["process_run"],
         assertions: [],
       };
 
       const result = await runAction([shellTool], action, runPath);
 
       expect(result.verifyOutput.passed).toBe(false);
-      expect(result.verifyOutput.summary).toContain("tool 'shell' is not parallel-safe");
+      expect(result.verifyOutput.summary).toContain("tool 'process_run' is not parallel-safe");
       expect(result.actOutput.toolCalls[0]?.tool).toBe("execution_plan");
     } finally {
       cleanup(runPath);

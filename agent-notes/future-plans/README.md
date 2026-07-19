@@ -13,3 +13,6 @@ are not yet ready to become active implementation plans.
   artifact sharing the task subject.
 - `task-state-memory-cleanup.md`: keep `state.json` as clean task working
   memory while preserving detailed tool evidence in run/step files.
+- `search-read-context-improvements.md`: deferred improvements for search
+  coverage, read freshness, evidence promotion, context budgets and feedback
+  metrics after the first search/read context slice is proven.

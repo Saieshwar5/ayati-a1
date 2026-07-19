@@ -39,8 +39,8 @@ const pulseTool: ToolDefinition = {
 };
 
 const shellTool: ToolDefinition = {
-  name: "shell",
-  description: "Run shell commands",
+  name: "process_run",
+  description: "Run one project executable",
   inputSchema: { type: "object" },
   execute: vi.fn().mockResolvedValue({ ok: true, output: "done" }),
 };

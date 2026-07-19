@@ -139,7 +139,7 @@ describe("Git Context runtime cache", () => {
       },
     });
 
-    expect(refreshedByStep?.readContext?.entries).toEqual([
+    expect(refreshedByStep?.readContext?.evidence).toEqual([
       expect.objectContaining({
         runId: run!.runId,
         step: 1,
@@ -281,7 +281,7 @@ function contextServiceFixture() {
   }> = [];
   const events: string[] = [];
   let revision = 0;
-  let readContextEntry: NonNullable<ActiveContext["readContext"]>["entries"][number] | undefined;
+  let readContextEntry: NonNullable<ActiveContext["readContext"]>["evidence"][number] | undefined;
   const session = {
     sessionId,
     date: "2026-07-13",
@@ -322,7 +322,10 @@ function contextServiceFixture() {
     ...(readContextEntry ? {
       readContext: {
         revision: "read-revision-" + revision,
-        entries: [readContextEntry],
+        inventory: [],
+        discovery: [],
+        evidence: [readContextEntry],
+        actions: [],
       },
     } : {}),
     taskCandidates: [],
@@ -419,7 +422,7 @@ function contextServiceFixture() {
       events.push("record-step");
       revision += 1;
       readContextEntry = {
-        key: "read_files:src/index.ts",
+        key: "evidence:read_files:src/index.ts",
         runId: "R-20260713-0001",
         step: input.step,
         runClass: "session",

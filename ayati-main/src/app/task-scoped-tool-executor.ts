@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { lstat, readFile } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { GitContextService, MutationTarget } from "ayati-git-context";
 import type {
@@ -9,10 +9,9 @@ import type {
   ToolRegistryContext,
   ValidationResult,
 } from "../skills/tool-executor.js";
-import { getToolTaxonomy } from "../skills/tool-taxonomy.js";
+import { getToolTaxonomy, isObservationalTool } from "../skills/tool-taxonomy.js";
 import type { ToolDefinition, ToolExecutionContext, ToolResult } from "../skills/types.js";
 import { canonicalizeAbsolutePath, requireAbsolutePath } from "../skills/workspace-paths.js";
-import { isClearlyReadOnlyShellCommand } from "../skills/builtins/shell/read-only-policy.js";
 
 export function createTaskScopedToolExecutor(input: {
   base: ToolExecutor;
@@ -89,7 +88,7 @@ class TaskScopedToolExecutor implements ToolExecutor {
     if (scopeError) {
       return taskScopeFailure(scopeError.code, scopeError.message);
     }
-    if (taxonomy.effect === "read_only") {
+    if (isObservationalTool(toolName)) {
       return await this.base.execute(toolName, scopedInput, scopedContext);
     }
     if (taxonomy.effect === "external_mutation") {
@@ -125,10 +124,7 @@ class TaskScopedToolExecutor implements ToolExecutor {
       }
       return result;
     }
-    if (await isReadOnlyShellValidation(toolName, scopedInput)) {
-      return await this.base.execute(toolName, scopedInput, scopedContext);
-    }
-    if (toolName === "shell_session_close") {
+    if (toolName === "process_poll" || toolName === "process_stop") {
       return await this.base.execute(toolName, scopedInput, scopedContext);
     }
     if (!active.run.run.taskRequestId) {
@@ -202,7 +198,7 @@ function scopeToolInput(
       return record;
     });
   }
-  if ((toolName === "shell" || toolName.startsWith("shell_")) && !("cwd" in input)) {
+  if ((toolName === "process_run" || toolName === "process_start") && !("cwd" in input)) {
     input["cwd"] = resourceRoot;
   }
   return input;
@@ -218,7 +214,10 @@ async function mutationTargets(
     .map((target) => ({ ...target, path: relative(workingDirectory, target.path) }))
     .filter((target) => target.path === "." || (!target.path.startsWith("..") && !isAbsolute(target.path)));
   const deduplicated = new Map<string, { path: string; kind?: MutationTarget["kind"] }>();
-  for (const target of converted.length > 0 ? converted : [{ path: "." }]) {
+  const fallbackTargets = toolName === "process_run"
+    ? []
+    : [{ path: "." }];
+  for (const target of converted.length > 0 ? converted : fallbackTargets) {
     deduplicated.set(target.path, target);
   }
   if (deduplicated.size > 1) deduplicated.delete(".");
@@ -232,7 +231,12 @@ function collectMutationTargetInputs(
   toolName: string,
   value: unknown,
 ): Array<{ path: string; kind?: MutationTarget["kind"] }> {
-  if (!toolName.startsWith("shell") && toolName !== "python_execute") {
+  if (
+    toolName !== "process_run"
+    && toolName !== "process_start"
+    && toolName !== "process_send_input"
+    && toolName !== "python_execute"
+  ) {
     return collectPaths(value).map((path) => ({ path }));
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) return [];
@@ -259,7 +263,7 @@ async function mutationTargetKind(
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  if (path === "." || toolName === "create_directory" || toolName.startsWith("shell")) {
+  if (path === "." || toolName === "create_directory" || toolName === "process_run" || toolName === "process_start") {
     return "directory";
   }
   return "file";
@@ -283,22 +287,6 @@ function collectPaths(value: unknown): string[] {
     });
   });
   return [...direct, ...arrays];
-}
-
-async function isReadOnlyShellValidation(toolName: string, value: unknown): Promise<boolean> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return false;
-  }
-  const record = value as Record<string, unknown>;
-  if (toolName === "shell") {
-    const command = record["cmd"];
-    return typeof command === "string" && isClearlyReadOnlyShellCommand(command);
-  }
-  if (toolName === "shell_run_script" && typeof record["scriptPath"] === "string") {
-    const script = await readFile(record["scriptPath"], "utf8").catch(() => undefined);
-    return script !== undefined && isClearlyReadOnlyShellCommand(script);
-  }
-  return false;
 }
 
 async function validateResourceScope(

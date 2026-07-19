@@ -2,21 +2,21 @@ import { compactInputFields, omitFields, projectStructuredCall, readCommand, rea
 import type { ToolContextProjector } from "./types.js";
 
 const TOOLS = new Set([
-  "shell",
-  "shell_run_script",
-  "shell_session_start",
-  "shell_session_write",
-  "shell_session_close",
+  "process_run",
+  "process_start",
+  "process_poll",
+  "process_send_input",
+  "process_stop",
 ]);
 
-export const shellProjector: ToolContextProjector = {
-  id: "shell_v1",
+export const processProjector: ToolContextProjector = {
+  id: "process_v1",
   supports(call) {
     return TOOLS.has(call.tool);
   },
   project(call, mode) {
     const compactInput = compactInputFields(call.input, {
-      keep: ["cmd", "command", "script", "workdir", "cwd", "timeoutMs", "sessionId", "chars"],
+      keep: ["executable", "args", "workdir", "cwd", "timeoutMs", "sessionId", "input"],
     });
     return projectStructuredCall({
       projectorId: this.id,
@@ -31,12 +31,12 @@ export const shellProjector: ToolContextProjector = {
         ...(call.code ? { code: call.code } : {}),
         ...(call.error ? { error: call.error } : {}),
       },
-      previewSource: shellPreview(call),
+      previewSource: processPreview(call),
     });
   },
 };
 
-function shellPreview(call: Parameters<ToolContextProjector["project"]>[0]): string {
+function processPreview(call: Parameters<ToolContextProjector["project"]>[0]): string {
   const metadata = readMetadata(call);
   const stdout = typeof metadata["stdoutPreview"] === "string" ? metadata["stdoutPreview"] : "";
   const stderr = typeof metadata["stderrPreview"] === "string" ? metadata["stderrPreview"] : "";

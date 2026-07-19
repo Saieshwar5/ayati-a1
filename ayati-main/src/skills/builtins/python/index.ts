@@ -484,11 +484,11 @@ const PYTHON_PROMPT_BLOCK = [
   "Managed Python data tools are built in.",
   `Always use the managed interpreter at ${DEFAULT_MANAGED_PYTHON_INTERPRETER} (or AYATI_PYTHON_INTERPRETER when explicitly configured).`,
   "Prefer python_inspect_dataset before python_execute for CSV, JSON, Parquet, SQLite analysis, or ML tasks.",
-  "Prefer these Python tools over the generic shell tool whenever the job is primarily dataframe work, statistics, visualization, or machine learning.",
+  "Prefer these Python tools over process execution whenever the job is primarily dataframe work, statistics, visualization, or machine learning.",
   "python_execute exposes AYATI_PYTHON_RUN_DIR, AYATI_PYTHON_ARTIFACT_DIR, AYATI_PYTHON_INPUT_FILES, and AYATI_PYTHON_SQLITE_DB_PATHS to the Python process.",
   "Write generated charts, reports, and derived files into AYATI_PYTHON_ARTIFACT_DIR so they are captured as Python artifacts.",
   "If Python code may create or modify task files outside AYATI_PYTHON_ARTIFACT_DIR, declare every bounded canonical absolute path in targets.",
-  "Do not use bare python, python3, or pip through shell when these managed Python tools can do the job.",
+  "Do not use bare python, python3, or pip through process execution when these managed Python tools can do the job.",
 ].join("\n");
 
 export function createPythonSkill(deps: PythonSkillDeps): SkillDefinition {

@@ -35,7 +35,7 @@ export type JsonSchema = Record<string, unknown>;
 export type ToolDomain =
   | "general"
   | "filesystem"
-  | "shell"
+  | "process"
   | "calculator"
   | "ui"
   | "memory"

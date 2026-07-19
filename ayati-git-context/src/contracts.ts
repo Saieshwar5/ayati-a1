@@ -1,4 +1,4 @@
-export const GIT_CONTEXT_PROTOCOL_VERSION = 32;
+export const GIT_CONTEXT_PROTOCOL_VERSION = 33;
 
 export type SessionId = string;
 export type TaskId = string;
@@ -311,6 +311,7 @@ export interface ReadContextEntry {
   key: string;
   runId: RunId;
   step: number;
+  callId?: string;
   runClass: RunClass;
   tool: string;
   purpose: string;
@@ -325,7 +326,10 @@ export interface ReadContextEntry {
 export interface ReadContextProjection {
   revision: string;
   afterTaskRunId?: RunId;
-  entries: ReadContextEntry[];
+  inventory: ReadContextEntry[];
+  discovery: ReadContextEntry[];
+  evidence: ReadContextEntry[];
+  actions: ReadContextEntry[];
 }
 
 export interface ActiveContext {

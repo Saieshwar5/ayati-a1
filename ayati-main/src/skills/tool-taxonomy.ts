@@ -1,5 +1,7 @@
 import type { ToolDefinition } from "./types.js";
 
+export type ToolPurpose = "list" | "read" | "search" | "control" | "mutation";
+
 export type ToolEffect =
   | "read_only"
   | "workspace_mutation"
@@ -40,6 +42,7 @@ export type ToolPhase =
 
 export interface ToolTaxonomyEntry {
   name: string;
+  purpose: ToolPurpose;
   effect: ToolEffect;
   roles: ToolRole[];
   lifetime: ToolLifetime;
@@ -57,6 +60,7 @@ export interface ToolTaxonomyEntry {
 export interface ToolTaxonomySummary {
   known: string[];
   unknown: string[];
+  purposes: Record<ToolPurpose, number>;
   effects: Record<ToolEffect, number>;
   roles: Record<ToolRole, number>;
   requiresTaskRun: string[];
@@ -76,12 +80,20 @@ const READ_ONLY_PHASES: ToolPhase[] = ["conversation", "enquiry", "routing", "ta
 const TASK_RUN_ONLY: ToolPhase[] = ["task_run"];
 const ROUTING_ONLY: ToolPhase[] = ["routing"];
 
+export const NATIVE_CONTROL_TOOL_NAMES = [
+  "decision_load_tools",
+  "ask_user_feedback",
+  "task_completion",
+] as const;
+
+const NATIVE_CONTROL_TOOLS = new Set<string>(NATIVE_CONTROL_TOOL_NAMES);
+
 export const TOOL_TAXONOMY: Readonly<Record<string, ToolTaxonomyEntry>> = buildToolTaxonomy({
   calculator: readOnly(["conversation_read", "enquiry_read"], "one_step", READ_ONLY_PHASES, {
     loadGroups: ["utility:calculator"],
   }),
 
-  find_files: readOnly(["enquiry_read", "task_discovery"], "one_step", ["enquiry", "routing", "task_run"], {
+  find_files: search(["enquiry_read", "task_discovery"], "one_step", ["enquiry", "routing", "task_run"], {
     loadGroups: ["file:read", "file:search", "file:refactor"],
     nextOnSuccess: ["inspect_paths", "read_files", "patch_files", "write_files"],
     nextOnFailure: ["list_directory", "search_in_files"],
@@ -91,12 +103,12 @@ export const TOOL_TAXONOMY: Readonly<Record<string, ToolTaxonomyEntry>> = buildT
     nextOnSuccess: ["read_files", "search_in_files", "list_directory"],
     nextOnFailure: ["find_files", "list_directory"],
   }),
-  search_in_files: readOnly(["enquiry_read", "task_discovery"], "run", ["enquiry", "routing", "task_run"], {
+  search_in_files: search(["enquiry_read", "task_discovery"], "run", ["enquiry", "routing", "task_run"], {
     loadGroups: ["file:read", "file:search", "file:refactor", "file:verify"],
     nextOnSuccess: ["inspect_paths", "read_files", "patch_files"],
     nextOnFailure: ["find_files", "list_directory"],
   }),
-  list_directory: readOnly(["enquiry_read", "task_discovery"], "run", ["enquiry", "routing", "task_run"], {
+  list_directory: list(["enquiry_read", "task_discovery"], "run", ["enquiry", "routing", "task_run"], {
     loadGroups: ["file:read", "file:create"],
   }),
   read_files: readOnly(["enquiry_read", "task_discovery", "evidence_access"], "run", ["enquiry", "routing", "task_run"], {
@@ -106,12 +118,12 @@ export const TOOL_TAXONOMY: Readonly<Record<string, ToolTaxonomyEntry>> = buildT
   }),
   write_files: workspaceMutation(["task_mutation"], "run", TASK_RUN_ONLY, {
     loadGroups: ["file:write", "file:create", "file:refactor"],
-    nextOnSuccess: ["read_files", "shell_run_script"],
+    nextOnSuccess: ["read_files", "process_run"],
     nextOnFailure: ["create_directory", "write_files"],
   }),
   patch_files: workspaceMutation(["task_mutation"], "run", TASK_RUN_ONLY, {
     loadGroups: ["file:write", "file:refactor"],
-    nextOnSuccess: ["read_files", "shell_run_script"],
+    nextOnSuccess: ["read_files", "process_run"],
     nextOnFailure: ["read_files", "search_in_files", "write_files"],
   }),
   create_directory: workspaceMutation(["task_mutation"], "one_step", TASK_RUN_ONLY, {
@@ -124,23 +136,25 @@ export const TOOL_TAXONOMY: Readonly<Record<string, ToolTaxonomyEntry>> = buildT
     loadGroups: ["file:move-delete"],
   }),
 
-  shell: workspaceMutation(["command_execution"], "run", TASK_RUN_ONLY, {
-    loadGroups: ["shell:command"],
+  process_run: workspaceMutation(["command_execution", "verification"], "run", TASK_RUN_ONLY, {
+    loadGroups: ["process:command", "file:verify"],
     nextOnSuccess: ["search_in_files", "read_files"],
     nextOnFailure: ["search_in_files", "read_files"],
   }),
-  shell_run_script: workspaceMutation(["command_execution", "verification"], "run", TASK_RUN_ONLY, {
-    loadGroups: ["shell:command", "file:verify"],
-    nextOnSuccess: ["search_in_files", "read_files"],
-    nextOnFailure: ["search_in_files", "read_files"],
+  process_start: workspaceMutation(["command_execution", "long_running_process"], "background", TASK_RUN_ONLY, {
+    loadGroups: ["process:session"],
   }),
-  shell_session_start: workspaceMutation(["command_execution", "long_running_process"], "background"),
-  shell_session_write: workspaceMutation(["command_execution", "long_running_process"], "background"),
-  shell_session_close: workspaceMutation(["command_execution", "long_running_process"], "single_use", TASK_RUN_ONLY, {
-    loadGroups: ["shell:session"],
+  process_poll: control(["evidence_access", "long_running_process"], "background", TASK_RUN_ONLY, {
+    loadGroups: ["process:session"],
+  }),
+  process_send_input: workspaceMutation(["command_execution", "long_running_process"], "background", TASK_RUN_ONLY, {
+    loadGroups: ["process:session"],
+  }),
+  process_stop: control(["command_execution", "long_running_process"], "single_use", TASK_RUN_ONLY, {
+    loadGroups: ["process:session"],
   }),
 
-  db_list_tables: readOnly(["enquiry_read", "data_analysis"], "phase", ["enquiry", "task_run"]),
+  db_list_tables: search(["enquiry_read", "data_analysis"], "phase", ["enquiry", "task_run"]),
   db_describe_table: readOnly(["enquiry_read", "data_analysis"], "phase", ["enquiry", "task_run"]),
   db_get_table_ddl: readOnly(["enquiry_read", "data_analysis"], "phase", ["enquiry", "task_run"]),
   db_query: readOnly(["enquiry_read", "data_analysis"], "phase", ["enquiry", "task_run"]),
@@ -155,26 +169,21 @@ export const TOOL_TAXONOMY: Readonly<Record<string, ToolTaxonomyEntry>> = buildT
 
   pulse: contextMutation(["task_mutation"], "run", ["task_run"]),
 
-  recall_memory: readOnly(["enquiry_read", "memory_control"], "phase", READ_ONLY_PHASES),
+  recall_memory: search(["enquiry_read", "memory_control"], "phase", READ_ONLY_PHASES),
   memory_status: readOnly(["enquiry_read", "memory_control"], "phase", READ_ONLY_PHASES),
-  memory_set_episodic_enabled: contextMutation(["memory_control"], "one_step", ["task_run"]),
-  memory_search: readOnly(["enquiry_read", "memory_control"], "phase", READ_ONLY_PHASES),
+  memory_set_episodic_enabled: control(["memory_control"], "one_step", ["task_run"]),
+  memory_search: search(["enquiry_read", "memory_control"], "phase", READ_ONLY_PHASES),
   memory_explain: readOnly(["enquiry_read", "memory_control"], "phase", READ_ONLY_PHASES),
   memory_remember: contextMutation(["memory_control"], "one_step", ["task_run"]),
   memory_forget: contextMutation(["memory_control"], "one_step", ["task_run"]),
   memory_feedback: contextMutation(["memory_control"], "one_step", ["task_run"]),
 
-  attachment_restore: readOnly(["attachment_access", "task_discovery"], "phase", ["routing", "task_run"], {
+  attachment_restore: control(["attachment_access", "task_discovery"], "phase", ["routing", "task_run"], {
     loadGroups: ["attachment:basic"],
     nextOnSuccess: ["attachment_list", "attachment_read", "document_query", "dataset_profile"],
     nextOnFailure: ["attachment_list"],
   }),
-  restore_attachment_context: readOnly(["attachment_access", "task_discovery"], "phase", ["routing", "task_run"], {
-    loadGroups: ["attachment:basic"],
-    nextOnSuccess: ["attachment_list", "attachment_read", "document_query", "dataset_profile"],
-    nextOnFailure: ["attachment_list"],
-  }),
-  document_list_sections: readOnly(["enquiry_read", "attachment_access"], "phase", ["enquiry", "task_run"], {
+  document_list_sections: search(["enquiry_read", "attachment_access"], "phase", ["enquiry", "task_run"], {
     loadGroups: ["document:qa"],
     nextOnSuccess: ["document_read_section", "document_query"],
     nextOnFailure: ["attachment_query"],
@@ -182,7 +191,7 @@ export const TOOL_TAXONOMY: Readonly<Record<string, ToolTaxonomyEntry>> = buildT
   document_read_section: readOnly(["enquiry_read", "attachment_access"], "phase", ["enquiry", "task_run"], {
     loadGroups: ["document:qa"],
   }),
-  document_query: readOnly(["enquiry_read", "attachment_access"], "phase", ["enquiry", "task_run"], {
+  document_query: search(["enquiry_read", "attachment_access"], "phase", ["enquiry", "task_run"], {
     loadGroups: ["document:qa"],
     nextOnSuccess: ["document_read_section"],
     nextOnFailure: ["document_list_sections", "attachment_query"],
@@ -192,7 +201,7 @@ export const TOOL_TAXONOMY: Readonly<Record<string, ToolTaxonomyEntry>> = buildT
     nextOnSuccess: ["dataset_query", "python_execute"],
     nextOnFailure: ["attachment_query_table", "file_profile_table"],
   }),
-  dataset_query: readOnly(["enquiry_read", "data_analysis", "attachment_access"], "phase", ["enquiry", "task_run"], {
+  dataset_query: search(["enquiry_read", "data_analysis", "attachment_access"], "phase", ["enquiry", "task_run"], {
     loadGroups: ["data:inspect"],
     nextOnSuccess: ["python_execute"],
     nextOnFailure: ["dataset_profile", "file_query_table"],
@@ -207,28 +216,28 @@ export const TOOL_TAXONOMY: Readonly<Record<string, ToolTaxonomyEntry>> = buildT
     loadGroups: ["data:execute"],
   }),
 
-  attachment_list: readOnly(["enquiry_read", "attachment_access"], "phase", ["enquiry", "routing", "task_run"], { loadGroups: ["attachment:basic"] }),
+  attachment_list: search(["enquiry_read", "attachment_access"], "phase", ["enquiry", "routing", "task_run"], { loadGroups: ["attachment:basic"] }),
   attachment_inspect: readOnly(["enquiry_read", "attachment_access"], "phase", ["enquiry", "routing", "task_run"], { loadGroups: ["attachment:basic"] }),
   attachment_read: readOnly(["enquiry_read", "attachment_access"], "phase", ["enquiry", "routing", "task_run"], { loadGroups: ["attachment:basic"] }),
-  attachment_query: readOnly(["enquiry_read", "attachment_access"], "phase", ["enquiry", "task_run"], { loadGroups: ["attachment:basic"] }),
-  attachment_query_table: readOnly(["enquiry_read", "data_analysis", "attachment_access"], "phase", ["enquiry", "task_run"], { loadGroups: ["attachment:basic", "data:inspect"] }),
-  directory_search: readOnly(["enquiry_read", "attachment_access"], "phase", ["enquiry", "task_run"], { loadGroups: ["attachment:basic"] }),
+  attachment_query: search(["enquiry_read", "attachment_access"], "phase", ["enquiry", "task_run"], { loadGroups: ["attachment:basic"] }),
+  attachment_query_table: search(["enquiry_read", "data_analysis", "attachment_access"], "phase", ["enquiry", "task_run"], { loadGroups: ["attachment:basic", "data:inspect"] }),
+  directory_search: search(["enquiry_read", "attachment_access"], "phase", ["enquiry", "task_run"], { loadGroups: ["attachment:basic"] }),
   file_describe: readOnly(["enquiry_read", "attachment_access"], "phase", ["enquiry", "task_run"], { loadGroups: ["attachment:basic"] }),
   file_profile_table: readOnly(["enquiry_read", "data_analysis", "attachment_access"], "phase", ["enquiry", "task_run"], { loadGroups: ["attachment:basic", "data:inspect"] }),
-  file_query_table: readOnly(["enquiry_read", "data_analysis", "attachment_access"], "phase", ["enquiry", "task_run"], { loadGroups: ["attachment:basic", "data:inspect"] }),
+  file_query_table: search(["enquiry_read", "data_analysis", "attachment_access"], "phase", ["enquiry", "task_run"], { loadGroups: ["attachment:basic", "data:inspect"] }),
   file_read_text: readOnly(["enquiry_read", "attachment_access"], "phase", ["enquiry", "task_run"], { loadGroups: ["attachment:basic"] }),
-  file_query: readOnly(["enquiry_read", "attachment_access"], "phase", ["enquiry", "task_run"], { loadGroups: ["attachment:basic"] }),
-  file_register_path: contextMutation(["attachment_access"], "one_step", ["task_run"]),
+  file_query: search(["enquiry_read", "attachment_access"], "phase", ["enquiry", "task_run"], { loadGroups: ["attachment:basic"] }),
+  file_register_path: control(["attachment_access"], "one_step", ["task_run"]),
   file_fetch_url: externalMutation(["attachment_access"], "one_step", ["task_run"]),
-  file_register_artifact: contextMutation(["attachment_access"], "one_step", ["task_run"]),
+  file_register_artifact: control(["attachment_access"], "one_step", ["task_run"]),
 
-  git_context_activate_task: contextMutation(["task_routing"], "single_use", ROUTING_ONLY, { loadGroups: ["task:routing"] }),
-  git_context_create_task: contextMutation(["task_routing"], "single_use", ROUTING_ONLY, { loadGroups: ["task:routing"] }),
+  git_context_activate_task: control(["task_routing"], "single_use", ROUTING_ONLY, { loadGroups: ["task:routing"] }),
+  git_context_create_task: control(["task_routing"], "single_use", ROUTING_ONLY, { loadGroups: ["task:routing"] }),
 
   workspace_get_state: readOnly(["enquiry_read", "ui_control"], "phase", ["enquiry", "task_run"], { loadGroups: ["ui:workspace"] }),
   workspace_set_layout: workspaceMutation(["ui_control"], "one_step", TASK_RUN_ONLY, { loadGroups: ["ui:workspace"] }),
   workspace_focus_window: workspaceMutation(["ui_control"], "one_step", TASK_RUN_ONLY, { loadGroups: ["ui:workspace"] }),
-  workspace_register_window: contextMutation(["ui_control"], "one_step", ["task_run"], { loadGroups: ["ui:workspace"] }),
+  workspace_register_window: control(["ui_control"], "one_step", ["task_run"], { loadGroups: ["ui:workspace"] }),
   workspace_reuse_or_open_window: workspaceMutation(["ui_control"], "one_step", TASK_RUN_ONLY, { loadGroups: ["ui:workspace"] }),
   workspace_close_window: destructive(["ui_control"], "one_step", TASK_RUN_ONLY, { loadGroups: ["ui:workspace"] }),
   workspace_cleanup_unused: destructive(["ui_control"], "one_step", TASK_RUN_ONLY, { loadGroups: ["ui:workspace"] }),
@@ -246,11 +255,24 @@ export function requireToolTaxonomy(toolName: string): ToolTaxonomyEntry {
   return entry;
 }
 
-export function isReadOnlyTool(toolName: string): boolean {
-  return getToolTaxonomy(toolName)?.effect === "read_only";
+export function getToolPurpose(toolName: string): ToolPurpose | undefined {
+  if (isNativeControlToolName(toolName)) {
+    return "control";
+  }
+  return getToolTaxonomy(toolName)?.purpose;
 }
 
-export function isMutationTool(toolName: string): boolean {
+export function isNativeControlToolName(toolName: string): boolean {
+  return NATIVE_CONTROL_TOOLS.has(toolName);
+}
+
+export function isObservationalTool(toolName: string): boolean {
+  const taxonomy = getToolTaxonomy(toolName);
+  return taxonomy?.effect === "read_only"
+    && (taxonomy.purpose === "list" || taxonomy.purpose === "read" || taxonomy.purpose === "search");
+}
+
+export function hasMutationEffect(toolName: string): boolean {
   const effect = getToolTaxonomy(toolName)?.effect;
   return effect === "workspace_mutation"
     || effect === "context_mutation"
@@ -300,6 +322,7 @@ export function missingToolTaxonomy(tools: ToolDefinition[]): string[] {
 export function summarizeToolTaxonomy(toolNames: string[]): ToolTaxonomySummary {
   const known: string[] = [];
   const unknown: string[] = [];
+  const purposes = zeroRecord(["list", "read", "search", "control", "mutation"] as const);
   const effects = zeroRecord(["read_only", "workspace_mutation", "context_mutation", "external_mutation", "destructive"] as const);
   const roles = zeroRecord([
     "conversation_read",
@@ -328,6 +351,7 @@ export function summarizeToolTaxonomy(toolNames: string[]): ToolTaxonomySummary 
       continue;
     }
     known.push(name);
+    purposes[entry.purpose]++;
     effects[entry.effect]++;
     for (const role of entry.roles) {
       roles[role]++;
@@ -347,6 +371,7 @@ export function summarizeToolTaxonomy(toolNames: string[]): ToolTaxonomySummary 
   return {
     known,
     unknown,
+    purposes,
     effects,
     roles,
     requiresTaskRun: requiresRun,
@@ -359,7 +384,7 @@ export function summarizeToolTaxonomy(toolNames: string[]): ToolTaxonomySummary 
 function buildToolTaxonomy(input: Record<string, ToolTaxonomyInput>): Record<string, ToolTaxonomyEntry> {
   const entries: Record<string, ToolTaxonomyEntry> = {};
   for (const [name, entry] of Object.entries(input)) {
-    entries[name] = {
+    const built: ToolTaxonomyEntry = {
       name,
       ...entry,
       loadGroups: normalizeStrings([
@@ -370,8 +395,28 @@ function buildToolTaxonomy(input: Record<string, ToolTaxonomyInput>): Record<str
       nextOnSuccess: normalizeStrings(entry.nextOnSuccess ?? []),
       nextOnFailure: normalizeStrings(entry.nextOnFailure ?? []),
     };
+    assertPurposeEffectConsistency(built);
+    entries[name] = built;
   }
   return entries;
+}
+
+function assertPurposeEffectConsistency(entry: ToolTaxonomyEntry): void {
+  const observationalPurpose = entry.purpose === "list"
+    || entry.purpose === "read"
+    || entry.purpose === "search";
+  if (observationalPurpose !== (entry.effect === "read_only")) {
+    throw new Error(`Tool '${entry.name}' has inconsistent purpose '${entry.purpose}' and effect '${entry.effect}'.`);
+  }
+  if (entry.purpose === "control" && entry.effect !== "context_mutation") {
+    throw new Error(`Control tool '${entry.name}' must declare a context_mutation effect.`);
+  }
+  if (entry.roles.includes("task_routing") && entry.purpose !== "control") {
+    throw new Error(`Task-routing tool '${entry.name}' must have control purpose.`);
+  }
+  if (entry.requiresTaskRun && entry.canRunBeforeTask) {
+    throw new Error(`Tool '${entry.name}' cannot require a task run and run before task binding.`);
+  }
 }
 
 function readOnly(
@@ -380,16 +425,42 @@ function readOnly(
   allowedPhases: ToolPhase[],
   options: Partial<Pick<ToolTaxonomyInput, "loadGroups" | "loadPriority" | "nextOnSuccess" | "nextOnFailure">> = {},
 ): ToolTaxonomyInput {
+  const canRunBeforeTask = allowedPhases.some((phase) => phase === "conversation" || phase === "enquiry" || phase === "routing");
   return {
+    purpose: "read",
     effect: "read_only",
     roles,
     lifetime,
     allowedPhases,
-    requiresTaskRun: false,
-    canRunBeforeTask: true,
+    requiresTaskRun: !canRunBeforeTask,
+    canRunBeforeTask,
     producesEvidence: roles.some((role) => role === "task_discovery" || role === "evidence_access" || role === "enquiry_read"),
     producesUserArtifact: false,
     ...options,
+  };
+}
+
+function search(
+  roles: ToolRole[],
+  lifetime: ToolLifetime,
+  allowedPhases: ToolPhase[],
+  options: Partial<Pick<ToolTaxonomyInput, "loadGroups" | "loadPriority" | "nextOnSuccess" | "nextOnFailure">> = {},
+): ToolTaxonomyInput {
+  return {
+    ...readOnly(roles, lifetime, allowedPhases, options),
+    purpose: "search",
+  };
+}
+
+function list(
+  roles: ToolRole[],
+  lifetime: ToolLifetime,
+  allowedPhases: ToolPhase[],
+  options: Partial<Pick<ToolTaxonomyInput, "loadGroups" | "loadPriority" | "nextOnSuccess" | "nextOnFailure">> = {},
+): ToolTaxonomyInput {
+  return {
+    ...readOnly(roles, lifetime, allowedPhases, options),
+    purpose: "list",
   };
 }
 
@@ -400,6 +471,7 @@ function workspaceMutation(
   options: Partial<Pick<ToolTaxonomyInput, "loadGroups" | "loadPriority" | "nextOnSuccess" | "nextOnFailure">> = {},
 ): ToolTaxonomyInput {
   return {
+    purpose: "mutation",
     effect: "workspace_mutation",
     roles,
     lifetime,
@@ -419,6 +491,7 @@ function contextMutation(
   options: Partial<Pick<ToolTaxonomyInput, "loadGroups" | "loadPriority" | "nextOnSuccess" | "nextOnFailure">> = {},
 ): ToolTaxonomyInput {
   return {
+    purpose: "mutation",
     effect: "context_mutation",
     roles,
     lifetime,
@@ -431,6 +504,18 @@ function contextMutation(
   };
 }
 
+function control(
+  roles: ToolRole[],
+  lifetime: ToolLifetime,
+  allowedPhases: ToolPhase[],
+  options: Partial<Pick<ToolTaxonomyInput, "loadGroups" | "loadPriority" | "nextOnSuccess" | "nextOnFailure">> = {},
+): ToolTaxonomyInput {
+  return {
+    ...contextMutation(roles, lifetime, allowedPhases, options),
+    purpose: "control",
+  };
+}
+
 function externalMutation(
   roles: ToolRole[],
   lifetime: ToolLifetime,
@@ -438,6 +523,7 @@ function externalMutation(
   options: Partial<Pick<ToolTaxonomyInput, "loadGroups" | "loadPriority" | "nextOnSuccess" | "nextOnFailure">> = {},
 ): ToolTaxonomyInput {
   return {
+    purpose: "mutation",
     effect: "external_mutation",
     roles,
     lifetime,
@@ -457,6 +543,7 @@ function destructive(
   options: Partial<Pick<ToolTaxonomyInput, "loadGroups" | "loadPriority" | "nextOnSuccess" | "nextOnFailure">> = {},
 ): ToolTaxonomyInput {
   return {
+    purpose: "mutation",
     effect: "destructive",
     roles,
     lifetime,
@@ -475,7 +562,7 @@ function defaultLoadGroups(name: string, entry: ToolTaxonomyInput): string[] {
   if (entry.roles.includes("data_analysis")) groups.push(entry.effect === "read_only" ? "data:inspect" : "data:execute");
   if (entry.effect === "destructive") groups.push("tool:risky");
   if (entry.effect === "external_mutation") groups.push("tool:external");
-  if (entry.roles.includes("long_running_process")) groups.push("shell:session");
+  if (entry.roles.includes("long_running_process")) groups.push("process:session");
   if (name.startsWith("db_")) groups.push(entry.effect === "read_only" ? "database:read" : "database:write");
   if (name === "pulse") groups.push("pulse:control");
   return groups;

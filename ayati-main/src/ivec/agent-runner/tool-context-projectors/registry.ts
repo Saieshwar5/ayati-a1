@@ -4,7 +4,7 @@ import { filesystemReadProjector } from "./filesystem-read.js";
 import { filesystemSearchProjector } from "./filesystem-search.js";
 import { filesystemWriteProjector } from "./filesystem-write.js";
 import { gitContextProjector } from "./git-context.js";
-import { shellProjector } from "./shell.js";
+import { processProjector } from "./process.js";
 import { testBuildProjector } from "./test-build.js";
 import type { PressureProjectionMode, ToolContextProjection, ToolContextProjector } from "./types.js";
 
@@ -14,7 +14,7 @@ const PROJECTORS: ToolContextProjector[] = [
   filesystemSearchProjector,
   filesystemWriteProjector,
   gitContextProjector,
-  shellProjector,
+  processProjector,
 ];
 
 export function projectToolCallForPressure(

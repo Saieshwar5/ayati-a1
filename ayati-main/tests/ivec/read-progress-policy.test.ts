@@ -21,7 +21,7 @@ describe("read progress policy", () => {
 
     const state = updateReadProgressAfterActOutput(undefined, outputFor("read_files", action.calls[0]?.input));
 
-    expect(state.readOnlyStepCount).toBe(1);
+    expect(state.observationalStepCount).toBe(1);
     expect(state.signatures).toHaveLength(1);
   });
 
@@ -37,7 +37,7 @@ describe("read progress policy", () => {
     });
   });
 
-  it("blocks additional read-only steps after enough context has been gathered", () => {
+  it("blocks additional observational steps after enough context has been gathered", () => {
     let state = createEmptyReadProgressState();
     state = updateReadProgressAfterActOutput(state, outputFor("read_files", { files: [{ path: "site/index.html" }] }));
     state = updateReadProgressAfterActOutput(state, outputFor("read_files", { files: [{ path: "site/styles.css" }] }));
@@ -58,7 +58,7 @@ describe("read progress policy", () => {
     }));
 
     expect(state.mutationStepCount).toBe(1);
-    expect(state.readOnlyStepCount).toBe(0);
+    expect(state.observationalStepCount).toBe(0);
     expect(state.signatures).toEqual([]);
     expect(evaluateReadProgressGuard(state, actionFor("read_files", { files: [{ path: "site/index.html" }] }))).toBeUndefined();
   });
@@ -67,7 +67,7 @@ describe("read progress policy", () => {
     const state = markReadProgressRejected(createEmptyReadProgressState());
 
     expect(state.rejectedReadCount).toBe(1);
-    expect(state.readOnlyStepCount).toBe(0);
+    expect(state.observationalStepCount).toBe(0);
   });
 });
 

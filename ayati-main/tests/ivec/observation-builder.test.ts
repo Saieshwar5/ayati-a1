@@ -7,13 +7,13 @@ describe("tool output observations", () => {
       stepNumber: 1,
       call: {
         id: "call_1",
-        tool: "shell",
+        tool: "process_run",
         input: {},
         dependsOn: [],
       },
       record: {
         callId: "call_1",
-        tool: "shell",
+        tool: "process_run",
         input: {},
         output: "Mem: 7.4Gi total, 3.5Gi used, 3.8Gi available\nDisk: 447G available",
       },
@@ -94,13 +94,13 @@ describe("tool output observations", () => {
       stepNumber: 4,
       call: {
         id: "call_1",
-        tool: "shell",
+        tool: "process_run",
         input: {},
         dependsOn: [],
       },
       record: {
         callId: "call_1",
-        tool: "shell",
+        tool: "process_run",
         input: {},
         output: hugeOutput,
       },

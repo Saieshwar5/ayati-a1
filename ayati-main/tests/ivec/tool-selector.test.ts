@@ -103,7 +103,7 @@ describe("selectToolsForDecision", () => {
       contextEngine: pendingGitContext("unbound"),
     };
     const selected = selectToolsForDecision(current, [
-      tool("shell", 100),
+      tool("process_run", 100),
       tool("write_files", 100),
       tool("git_context_activate_task", 1),
       tool("git_context_create_task", 1),
@@ -123,7 +123,7 @@ describe("selectToolsForDecision", () => {
       contextEngine: pendingGitContext("unbound", { status: "none" }),
     };
     const selected = selectToolsForDecision(current, [
-      tool("shell", 100),
+      tool("process_run", 100),
       tool("write_files", 100),
       tool("git_context_activate_task", 1),
       tool("git_context_create_task", 1),
@@ -134,11 +134,11 @@ describe("selectToolsForDecision", () => {
       "git_context_activate_task",
       "git_context_create_task",
     ]);
-    expect(selectedNames).not.toContain("shell");
+    expect(selectedNames).not.toContain("process_run");
     expect(selectedNames).not.toContain("write_files");
   });
 
-  it("selects read-only tools during a session run before task binding", () => {
+  it("selects observational tools during a session run before task binding", () => {
     const current = state("where is upload handling implemented?");
     current.runId = "";
     current.runClass = "interaction";
@@ -159,8 +159,8 @@ describe("selectToolsForDecision", () => {
 
     const selectedNames = selected.map((entry) => entry.name);
     expect(selectedNames).toEqual([
-      "write_files",
       "read_files",
+      "search_in_files",
       "git_context_create_task",
     ]);
   });
@@ -176,7 +176,7 @@ describe("selectToolsForDecision", () => {
     const selected = selectToolsForDecision(current, [
       tool("write_files", 100),
       tool("create_directory", 80),
-      tool("shell", 70),
+      tool("process_run", 70),
       tool("search_in_files", 60),
       tool("git_context_list_tasks", 1),
       tool("git_context_search_tasks", 1),
@@ -192,7 +192,7 @@ describe("selectToolsForDecision", () => {
     ]);
     expect(selectedNames).not.toContain("write_files");
     expect(selectedNames).not.toContain("create_directory");
-    expect(selectedNames).not.toContain("shell");
+    expect(selectedNames).not.toContain("process_run");
   });
 
   it("reserves the selected tool cap for required active-task routing tools", () => {
@@ -233,7 +233,7 @@ describe("selectToolsForDecision", () => {
     expect(selectToolsForDecision(current, [
       tool("git_context_list_tasks", 1),
       tool("git_context_create_task", 1),
-      tool("shell", 100),
+      tool("process_run", 100),
     ], 12)).toEqual([]);
   });
 

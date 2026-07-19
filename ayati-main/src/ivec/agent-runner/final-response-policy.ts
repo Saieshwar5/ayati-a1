@@ -1,7 +1,7 @@
 import { isAbsolute, resolve } from "node:path";
 import type { LoopState, StepSummary } from "../types.js";
 import type { AgentDecision } from "./decision.js";
-import { isReadOnlyTool } from "../../skills/tool-taxonomy.js";
+import { isObservationalTool } from "../../skills/tool-taxonomy.js";
 import { isGitContextReadOnlyToolName } from "../../skills/builtins/git-context/tool-policy.js";
 import { isGitContextRoutingToolName } from "./runtime-capability-mode.js";
 import { stepUsesFileMutationTool } from "./task-routing-policy.js";
@@ -127,7 +127,7 @@ export function stepHasGeneratedArtifactEvidence(step: StepSummary): boolean {
   if (toolsUsed.length === 0) {
     return true;
   }
-  return toolsUsed.some((tool) => !isReadOnlyTool(tool) && !isGitContextReadOnlyToolName(tool) && !isGitContextRoutingToolName(tool));
+  return toolsUsed.some((tool) => !isObservationalTool(tool) && !isGitContextReadOnlyToolName(tool) && !isGitContextRoutingToolName(tool));
 }
 
 function hasUnresolvedFileMutationFailure(state: LoopState): boolean {

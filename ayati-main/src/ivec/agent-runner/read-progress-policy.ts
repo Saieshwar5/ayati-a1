@@ -1,23 +1,16 @@
 import type { AgentAction, AgentToolCallSpec } from "./decision.js";
 import type { ActOutput, ReadProgressState } from "../types.js";
 import type { RepairCode } from "./repair-policy.js";
+import { hasMutationEffect } from "../../skills/tool-taxonomy.js";
 
-const MAX_READ_ONLY_STEPS_BEFORE_MUTATION = 3;
+const MAX_OBSERVATIONAL_STEPS_BEFORE_MUTATION = 3;
 const MAX_SIGNATURES_RETAINED = 40;
 
-const READ_ONLY_TOOLS = new Set([
+const TRACKED_OBSERVATIONAL_TOOLS = new Set([
   "read_files",
   "search_in_files",
   "find_files",
   "list_directory",
-]);
-
-const MUTATION_TOOLS = new Set([
-  "write_files",
-  "patch_files",
-  "delete",
-  "move",
-  "create_directory",
 ]);
 
 export interface ReadProgressViolation {
@@ -30,7 +23,7 @@ export interface ReadProgressViolation {
 
 export function createEmptyReadProgressState(): ReadProgressState {
   return {
-    readOnlyStepCount: 0,
+    observationalStepCount: 0,
     duplicateReadCount: 0,
     mutationStepCount: 0,
     rejectedReadCount: 0,
@@ -44,9 +37,9 @@ export function evaluateReadProgressGuard(
 ): ReadProgressViolation | undefined {
   const progress = state ?? createEmptyReadProgressState();
   const readCalls = action.calls
-    .filter((call) => READ_ONLY_TOOLS.has(call.tool))
+    .filter((call) => TRACKED_OBSERVATIONAL_TOOLS.has(call.tool))
     .map((call) => ({ call, signature: readSignature(call) }));
-  if (readCalls.length === 0 || action.calls.some((call) => MUTATION_TOOLS.has(call.tool))) {
+  if (readCalls.length === 0 || action.calls.some((call) => hasMutationEffect(call.tool))) {
     return undefined;
   }
   if (progress.mutationStepCount > 0) {
@@ -68,14 +61,14 @@ export function evaluateReadProgressGuard(
       operatorDetails: {
         tool: duplicate.call.tool,
         signature: duplicate.signature,
-        readOnlyStepCount: progress.readOnlyStepCount,
+        observationalStepCount: progress.observationalStepCount,
         duplicateReadCount: progress.duplicateReadCount + 1,
         mutationStepCount: progress.mutationStepCount,
       },
     };
   }
 
-  if (progress.readOnlyStepCount >= MAX_READ_ONLY_STEPS_BEFORE_MUTATION) {
+  if (progress.observationalStepCount >= MAX_OBSERVATIONAL_STEPS_BEFORE_MUTATION) {
     return {
       code: "R_MUTATION_EXPECTED_AFTER_CONTEXT",
       message: "This task run has already gathered enough read context before making a change.",
@@ -88,9 +81,9 @@ export function evaluateReadProgressGuard(
       operatorDetails: {
         attemptedTools: readCalls.map(({ call }) => call.tool),
         attemptedSignatures: readCalls.map(({ signature }) => signature),
-        readOnlyStepCount: progress.readOnlyStepCount,
+        observationalStepCount: progress.observationalStepCount,
         mutationStepCount: progress.mutationStepCount,
-        maxReadOnlyStepsBeforeMutation: MAX_READ_ONLY_STEPS_BEFORE_MUTATION,
+        maxObservationalStepsBeforeMutation: MAX_OBSERVATIONAL_STEPS_BEFORE_MUTATION,
       },
     };
   }
@@ -114,19 +107,19 @@ export function updateReadProgressAfterActOutput(
 ): ReadProgressState {
   const progress = state ?? createEmptyReadProgressState();
   const successfulCalls = output.toolCalls.filter((call) => !call.error && call.operationStatus !== "failed");
-  const mutationCalls = successfulCalls.filter((call) => MUTATION_TOOLS.has(call.tool));
+  const mutationCalls = successfulCalls.filter((call) => hasMutationEffect(call.tool));
   if (mutationCalls.length > 0) {
     return {
       ...progress,
       mutationStepCount: progress.mutationStepCount + mutationCalls.length,
-      readOnlyStepCount: 0,
+      observationalStepCount: 0,
       duplicateReadCount: 0,
       signatures: [],
     };
   }
 
   const readSignatures = successfulCalls
-    .filter((call) => READ_ONLY_TOOLS.has(call.tool))
+    .filter((call) => TRACKED_OBSERVATIONAL_TOOLS.has(call.tool))
     .map((call) => readSignature({ tool: call.tool, input: normalizeRecord(call.input) }))
     .filter((signature): signature is string => Boolean(signature));
   if (readSignatures.length === 0) {
@@ -140,7 +133,7 @@ export function updateReadProgressAfterActOutput(
 
   return {
     ...progress,
-    readOnlyStepCount: progress.readOnlyStepCount + readSignatures.length,
+    observationalStepCount: progress.observationalStepCount + readSignatures.length,
     duplicateReadCount: progress.duplicateReadCount + duplicateCount,
     signatures,
   };

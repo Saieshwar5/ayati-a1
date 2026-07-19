@@ -30,15 +30,15 @@ function skill(id: string, tools: ToolDefinition[]): SkillDefinition {
 
 describe("SkillActivationManager", () => {
   it("activates built-in skill tools into the executor for the current run", async () => {
-    const shell = tool("shell");
+    const processTool = tool("process_run");
     const documentQuery = tool("document_query", "Query documents");
     const catalog = new SkillCatalog([
       createSkillBundle(skill("documents", [documentQuery])),
     ]);
-    const executor = createToolExecutor([shell]);
+    const executor = createToolExecutor([processTool]);
     const manager = new SkillActivationManager({ catalog, toolExecutor: executor });
 
-    expect(executor.list({ runId: "r1", sessionId: "s1" })).toEqual(["shell"]);
+    expect(executor.list({ runId: "r1", sessionId: "s1" })).toEqual(["process_run"]);
 
     const activation = await manager.activate({ skillId: "documents", scope: "run" }, {
       clientId: "c1",
@@ -52,17 +52,17 @@ describe("SkillActivationManager", () => {
     expect(executor.list({ runId: "r2", sessionId: "s1", stepNumber: 2 })).not.toContain("document_query");
 
     manager.deactivateRun({ clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 2 });
-    expect(executor.list({ runId: "r1", sessionId: "s1", stepNumber: 3 })).toEqual(["shell"]);
+    expect(executor.list({ runId: "r1", sessionId: "s1", stepNumber: 3 })).toEqual(["process_run"]);
   });
 
   it("auto-activates attachment handling skills for runs with attachments", async () => {
     const catalog = new SkillCatalog([
-      createSkillBundle(skill("attachments", [tool("restore_attachment_context")])),
+      createSkillBundle(skill("attachments", [tool("attachment_restore")])),
       createSkillBundle(skill("files", [tool("attachment_list")])),
       createSkillBundle(skill("documents", [tool("document_query")])),
       createSkillBundle(skill("datasets", [tool("dataset_query")])),
     ]);
-    const executor = createToolExecutor([tool("shell")]);
+    const executor = createToolExecutor([tool("process_run")]);
     const manager = new SkillActivationManager({ catalog, toolExecutor: executor });
 
     const activated = await manager.prepareForDecision({
@@ -77,7 +77,7 @@ describe("SkillActivationManager", () => {
     expect(activated.map((record) => record.skillId).sort()).toEqual(["attachments", "datasets", "documents", "files"]);
     const visible = executor.list({ clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 });
     expect(visible).toEqual(expect.arrayContaining([
-      "restore_attachment_context",
+      "attachment_restore",
       "attachment_list",
       "document_query",
       "dataset_query",
@@ -91,7 +91,7 @@ describe("SkillActivationManager", () => {
       createSkillBundle(skill("documents", [tool("document_query")])),
       createSkillBundle(skill("datasets", [tool("dataset_query")])),
     ]);
-    const executor = createToolExecutor([tool("shell")]);
+    const executor = createToolExecutor([tool("process_run")]);
     const manager = new SkillActivationManager({ catalog, toolExecutor: executor });
 
     const activated = await manager.prepareForDecision({
@@ -152,13 +152,13 @@ describe("SkillActivationManager", () => {
     const catalog = new SkillCatalog([
       createSkillBundle(skill("documents", [tool("document_query")])),
     ]);
-    const executor = createToolExecutor([tool("shell")]);
+    const executor = createToolExecutor([tool("process_run")]);
     const manager = new SkillActivationManager({ catalog, toolExecutor: executor });
 
     const results = await manager.search({ query: "summarize pdf sections" });
 
     expect(results).toHaveLength(1);
     expect((results[0] as { skillId?: string }).skillId).toBe("documents");
-    expect(executor.list({ runId: "r1", sessionId: "s1" })).toEqual(["shell"]);
+    expect(executor.list({ runId: "r1", sessionId: "s1" })).toEqual(["process_run"]);
   });
 });

@@ -257,6 +257,7 @@ export interface ContextReadEntry {
   key: string;
   runId: string;
   step: number;
+  callId?: string;
   runClass: "session" | "task";
   tool: string;
   purpose: string;
@@ -271,7 +272,10 @@ export interface ContextReadEntry {
 export interface ContextReadContext {
   revision: string;
   afterTaskRunId?: string;
-  entries: ContextReadEntry[];
+  inventory: ContextReadEntry[];
+  discovery: ContextReadEntry[];
+  evidence: ContextReadEntry[];
+  actions: ContextReadEntry[];
 }
 
 export interface ContextEngineMachineContext {

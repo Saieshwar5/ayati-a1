@@ -16,6 +16,11 @@ import type { ContextCompilationReceipt } from "../../prompt/context-compilation
 import { resolveModelContextLimits } from "../../providers/shared/model-context-limits.js";
 import type { ResolvedModelContextLimits } from "../../providers/shared/model-context-limits.js";
 import { agentTrace, isAgentTracePromptEnabled, tracePreview } from "../../shared/index.js";
+import {
+  getToolPurpose,
+  isNativeControlToolName,
+  type ToolPurpose,
+} from "../../skills/tool-taxonomy.js";
 import type { ToolContractAssertion, ToolDefinition } from "../../skills/types.js";
 import type { AgentFeedbackLedger } from "../feedback-ledger.js";
 import type { RunMetrics } from "../metrics.js";
@@ -216,7 +221,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
       recordDecisionFeedback(input, "native_tool_surface", {
         attempt: attempt + 1,
         controlTools: decisionTools
-          .filter((tool) => CONTROL_DECISION_TOOL_NAMES.has(tool.name))
+          .filter((tool) => isNativeControlToolName(tool.name))
           .map((tool) => tool.name),
         selectedTools: summarizeToolDefinitions(input.toolDefinitions),
         executableTools: input.toolDefinitions.map((tool) => ({
@@ -1182,7 +1187,21 @@ function formatSelectedToolNames(toolDefinitions: ToolDefinition[]): string {
   if (toolDefinitions.length === 0) {
     return "(none)";
   }
-  return toolDefinitions.map((tool) => `- ${tool.name}`).join("\n");
+  const groups: Record<ToolPurpose | "unclassified", string[]> = {
+    list: [],
+    read: [],
+    search: [],
+    control: [],
+    mutation: [],
+    unclassified: [],
+  };
+  for (const tool of toolDefinitions) {
+    groups[getToolPurpose(tool.name) ?? "unclassified"].push(tool.name);
+  }
+  return (["list", "search", "read", "control", "mutation", "unclassified"] as const)
+    .filter((purpose) => groups[purpose].length > 0)
+    .map((purpose) => `- ${purpose}: ${groups[purpose].join(", ")}`)
+    .join("\n");
 }
 
 function normalizeToolLoadRequest(value: unknown): AgentToolLoadRequest {
@@ -1227,12 +1246,6 @@ function parseJsonRecord(text: string): Record<string, unknown> | null {
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-
-const CONTROL_DECISION_TOOL_NAMES = new Set([
-  "decision_load_tools",
-  TASK_FEEDBACK_TOOL_NAME,
-  TASK_COMPLETION_TOOL_NAME,
-]);
 
 function buildNativeDecisionTools(
   selectedTools: ToolDefinition[],
@@ -1325,7 +1338,7 @@ function buildNativeDecisionTools(
     });
   }
   const executableTools = selectedTools
-    .filter((tool) => !CONTROL_DECISION_TOOL_NAMES.has(tool.name))
+    .filter((tool) => !isNativeControlToolName(tool.name))
     .map(toNativeExecutableToolSchema);
   return [...controlTools, ...executableTools];
 }
@@ -1386,7 +1399,7 @@ function serializeNativeDecisionToolCalls(calls: LlmToolCall[], selectedTools: T
 
   const call = calls[0]!;
   const input = isPlainObject(call.input) ? call.input : {};
-  if (CONTROL_DECISION_TOOL_NAMES.has(call.name)) {
+  if (isNativeControlToolName(call.name)) {
     return JSON.stringify(nativeDecisionToolCallToPayload(call.name, input));
   }
 
@@ -1405,7 +1418,7 @@ function nativeDecisionFromToolCalls(calls: LlmToolCall[], selectedTools: ToolDe
 
   const call = calls[0]!;
   const input = isPlainObject(call.input) ? call.input : {};
-  if (CONTROL_DECISION_TOOL_NAMES.has(call.name)) {
+  if (isNativeControlToolName(call.name)) {
     return nativeDecisionToolCallToDecision(call.name, input);
   }
 
@@ -1565,7 +1578,7 @@ function summarizeNativeToolCalls(calls: LlmToolCall[], selectedTools: ToolDefin
   return calls.map((call) => ({
     id: call.id,
     name: call.name,
-    kind: CONTROL_DECISION_TOOL_NAMES.has(call.name)
+    kind: isNativeControlToolName(call.name)
       ? "control"
       : selectedToolNames.has(call.name)
         ? "executable"

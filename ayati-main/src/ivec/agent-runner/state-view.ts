@@ -476,13 +476,23 @@ function buildToolCallsView(
   activeRunId: string,
 ): PromptToolCalls | undefined {
   const covered = new Map<string, string[]>();
-  for (const entry of readContext?.entries ?? []) {
+  const entries = readContext
+    ? [
+        ...readContext.inventory,
+        ...readContext.discovery,
+        ...readContext.evidence,
+        ...readContext.actions,
+      ]
+    : [];
+  for (const entry of entries) {
     if (entry.runId !== activeRunId) continue;
-    const source = entry.step + ":" + entry.tool;
+    const source = entry.step + ":" + entry.tool + (entry.callId ? ":" + entry.callId : "");
     covered.set(source, [...(covered.get(source) ?? []), entry.key]);
   }
   return buildPromptToolCallsForRun(toolContext?.toolCalls)?.map((call) => {
-    const readContextKeys = covered.get(call.step + ":" + call.tool);
+    const source = call.step + ":" + call.tool + (call.callId ? ":" + call.callId : "");
+    const readContextKeys = covered.get(source)
+      ?? covered.get(call.step + ":" + call.tool);
     if (!readContextKeys) return call;
     return {
       step: call.step,
@@ -493,7 +503,7 @@ function buildToolCallsView(
       status: call.status,
       ...(call.retention ? { retention: call.retention } : {}),
       mode: "reference" as const,
-      summary: "Full verified read output is available in context.git.current.readContext.",
+      summary: "Full verified tool context is available in context.git.current.readContext.",
       readContextKeys,
       ...(call.operationStatus ? { operationStatus: call.operationStatus } : {}),
       ...(call.artifacts ? { artifacts: call.artifacts } : {}),

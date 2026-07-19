@@ -162,7 +162,7 @@ function isPromptGroup(group: string): boolean {
 function workflowGroupsFromTaxonomy(groups: string[]): string[] {
   const values = new Set(groups);
   const result: string[] = [];
-  if (values.has("file:read") || values.has("file:write") || values.has("file:refactor") || values.has("shell:command")) {
+  if (values.has("file:read") || values.has("file:write") || values.has("file:refactor") || values.has("process:command")) {
     result.push("workflow:code_edit", "workflow:static_site");
   }
   if (values.has("attachment:basic") || values.has("document:qa")) {
@@ -229,7 +229,7 @@ function operationGroups(tool: ToolDefinition): string[] {
     ["operation:search", ["search", "find", "query"]],
     ["operation:read", ["read", "list", "inspect", "describe", "profile", "status", "get"]],
     ["operation:write", ["write", "create", "edit", "update", "insert", "add", "register", "promote"]],
-    ["operation:execute", ["run", "execute", "shell", "python"]],
+    ["operation:execute", ["run", "execute", "process", "python"]],
     ["operation:delete", ["delete", "drop", "remove", "archive", "close"]],
     ["operation:restore", ["restore", "attachment"]],
     ["operation:ui", ["window", "workspace", "focus", "layout", "show", "open"]],
@@ -266,7 +266,7 @@ function artifactGroups(tool: ToolDefinition): string[] {
 function workflowGroups(skillId: string, domain?: ToolDomain | string): string[] {
   const values = new Set([skillId, domain].filter((value): value is string => Boolean(value)));
   const groups: string[] = [];
-  if (values.has("filesystem") || values.has("shell") || values.has("python")) {
+  if (values.has("filesystem") || values.has("process") || values.has("python")) {
     groups.push("workflow:code_edit", "workflow:test_debug");
   }
   if (values.has("documents") || values.has("attachments") || values.has("files")) {
@@ -303,12 +303,10 @@ function inferNextTools(toolName: string): { success: string[]; failure: string[
     find_files: { success: ["read_files", "patch_files", "write_files"], failure: ["list_directory", "search_in_files"] },
     search_in_files: { success: ["read_files", "patch_files"], failure: ["find_files", "list_directory"] },
     read_files: { success: ["patch_files", "write_files", "search_in_files"], failure: ["find_files", "list_directory"] },
-    patch_files: { success: ["read_files", "shell_run_script"], failure: ["read_files", "search_in_files", "write_files"] },
-    write_files: { success: ["read_files", "shell_run_script"], failure: ["create_directory", "write_files"] },
-    shell: { success: ["search_in_files", "read_files"], failure: ["search_in_files", "read_files"] },
-    shell_run_script: { success: ["search_in_files", "read_files"], failure: ["search_in_files", "read_files"] },
+    patch_files: { success: ["read_files", "process_run"], failure: ["read_files", "search_in_files", "write_files"] },
+    write_files: { success: ["read_files", "process_run"], failure: ["create_directory", "write_files"] },
+    process_run: { success: ["search_in_files", "read_files"], failure: ["search_in_files", "read_files"] },
     attachment_restore: { success: ["attachment_list", "attachment_read", "document_query", "dataset_profile"], failure: ["attachment_list"] },
-    restore_attachment_context: { success: ["attachment_list", "attachment_read", "document_query", "dataset_profile"], failure: ["attachment_list"] },
     document_query: { success: ["document_read_section"], failure: ["document_list_sections", "attachment_query"] },
     document_list_sections: { success: ["document_read_section", "document_query"], failure: ["attachment_query"] },
     dataset_profile: { success: ["dataset_query", "python_execute"], failure: ["attachment_query_table", "file_profile_table"] },
@@ -334,7 +332,7 @@ function inferDeactivationPolicy(tool: ToolDefinition): ToolDeactivationPolicy {
     }
   }
   const name = tool.name;
-  if (name === "find_files" || name === "attachment_restore" || name === "restore_attachment_context") {
+  if (name === "find_files" || name === "attachment_restore") {
     return "success";
   }
   if (tool.annotations?.destructive || /^db_drop_|^delete$/.test(name)) {

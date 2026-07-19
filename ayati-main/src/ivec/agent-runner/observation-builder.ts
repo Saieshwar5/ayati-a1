@@ -16,9 +16,9 @@ const MEDIUM_OUTPUT_CHARS = 120_000;
 const CHUNK_CHARS = 8_000;
 
 const DECISION_CONTEXT_TOOLS = new Set([
-  "shell",
-  "shell_run_script",
-  "shell_session_write",
+  "process_run",
+  "process_poll",
+  "process_stop",
   "inspect_paths",
   "read_files",
   "search_in_files",

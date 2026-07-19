@@ -1,13 +1,13 @@
 import { omitFields, projectStructuredCall, readCommand, readMetadata } from "./shared.js";
 import type { ToolContextProjector } from "./types.js";
 
-const SHELL_TOOLS = new Set(["shell", "shell_run_script"]);
+const PROCESS_TOOLS = new Set(["process_run"]);
 const TEST_BUILD_COMMAND = /(^|\s)(test|vitest|jest|pytest|cargo\s+test|go\s+test|build|tsc|typecheck|lint)(\s|$)/i;
 
 export const testBuildProjector: ToolContextProjector = {
   id: "test_build_v1",
   supports(call) {
-    return SHELL_TOOLS.has(call.tool) && TEST_BUILD_COMMAND.test(readCommand(call.input));
+    return PROCESS_TOOLS.has(call.tool) && TEST_BUILD_COMMAND.test(readCommand(call.input));
   },
   project(call, mode) {
     const command = readCommand(call.input);

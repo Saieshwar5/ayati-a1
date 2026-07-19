@@ -14,7 +14,7 @@ Avoid these:
 - Changing prompt context without considering token budget, the structured context pack, and deterministic git task resolution behavior.
 - Adding tool-loading behavior in prompt prose instead of the tool taxonomy,
   working-set policy, and focused tests.
-- Loading shell tools for generic create/build requests when file
+- Loading process tools for generic create/build requests when file
   create/write/read tools are the safer deterministic default.
 - Solving read loops by storing all raw file context in task state instead of
   using hot read context, observations, and run evidence.
@@ -38,4 +38,4 @@ Avoid these:
 - Breaking CLI/server message contracts.
 - Assuming a browser frontend exists in the current active product.
 - Running tests that require real provider credentials without isolating them.
-- Exposing shell/filesystem/Python/database capabilities to untrusted users.
+- Exposing process/filesystem/Python/database capabilities to untrusted users.

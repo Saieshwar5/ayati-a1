@@ -79,7 +79,6 @@ export function createAttachmentSkill(deps: AttachmentSkillDeps): SkillDefinitio
     promptBlock: ATTACHMENT_PROMPT_BLOCK,
     tools: [
       createRestoreAttachmentContextTool(deps),
-      createRestoreAttachmentContextTool(deps, "restore_attachment_context"),
     ],
   };
 }

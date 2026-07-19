@@ -28,10 +28,10 @@ describe("tool context projectors", () => {
     expect(JSON.stringify(projection.call)).not.toContain("x".repeat(1_000));
   });
 
-  it("uses the test/build projector before the generic shell projector", () => {
+  it("uses the test/build projector before the generic process projector", () => {
     const projection = projectToolCallForPressure(call({
-      tool: "shell",
-      input: { cmd: "pnpm --filter ayati-main test", workdir: "/workspace" },
+      tool: "process_run",
+      input: { executable: "pnpm", args: ["--filter", "ayati-main", "test"], cwd: "/workspace" },
       output: `test output\n${"middle\n".repeat(1_000)}failure: expected 60K received 70K`,
       projectionMetadata: {
         command: "pnpm --filter ayati-main test",
@@ -64,15 +64,15 @@ describe("tool context projectors", () => {
     expect(projection.call.summary).toContain("matchedFileCount");
   });
 
-  it("uses the shell projector for non-test commands", () => {
+  it("uses the process projector for non-test commands", () => {
     const projection = projectToolCallForPressure(call({
-      tool: "shell",
-      input: { cmd: "git status --short", workdir: "/workspace" },
+      tool: "process_run",
+      input: { executable: "pnpm", args: ["install"], cwd: "/workspace" },
       projectionMetadata: { exitCode: 0, durationMs: 12 },
     }), "summary");
 
-    expect(projection.projectorId).toBe("shell_v1");
-    expect(projection.call.summary).toContain("git status --short");
+    expect(projection.projectorId).toBe("process_v1");
+    expect(projection.call.summary).toContain("pnpm install");
   });
 
   it("keeps structured file metadata while dropping duplicate file content", () => {

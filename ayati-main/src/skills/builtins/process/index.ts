@@ -1,7 +1,5 @@
-import { exec, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { readFile, stat } from "node:fs/promises";
-import { resolve as resolvePath } from "node:path";
-import { promisify } from "node:util";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { basename } from "node:path";
 import type { SkillDefinition, ToolDefinition, ToolResult } from "../../types.js";
 import {
   headTailBlocks,
@@ -16,59 +14,53 @@ import {
 import { requireAbsolutePath, resolveWorkspaceCwd } from "../../workspace-paths.js";
 import { commonAnnotations, errorResult, failureV2, genericObjectOutputSchema, okResult, succeededContract, successV2 } from "../contract-helpers.js";
 
-const execAsync = promisify(exec);
-
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 100_000;
 const DEFAULT_MAX_SESSION_OUTPUT_CHARS = 100_000;
 const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 600_000; // 10 min
 
-interface ShellExecInput {
-  cmd: string;
-  cwd?: string;
-  targets?: ShellMutationTargetInput[];
-  timeoutMs?: number;
-  maxOutputChars?: number;
-}
-
-interface ShellRunScriptInput {
-  scriptPath: string;
+interface ProcessRunInput {
+  executable: string;
   args?: string[];
   cwd?: string;
-  targets?: ShellMutationTargetInput[];
+  targets?: ProcessMutationTargetInput[];
   timeoutMs?: number;
   maxOutputChars?: number;
 }
 
-interface ShellSessionStartInput {
-  cmd: string;
+interface ProcessStartInput {
+  executable: string;
+  args?: string[];
   cwd?: string;
-  targets?: ShellMutationTargetInput[];
+  targets?: ProcessMutationTargetInput[];
   waitMs?: number;
   maxOutputChars?: number;
 }
 
-interface ShellSessionWriteInput {
+interface ProcessPollInput {
   sessionId: string;
-  input?: string;
-  closeStdin?: boolean;
-  signal?: "SIGINT" | "SIGTERM" | "SIGKILL";
   waitMs?: number;
-  targets?: ShellMutationTargetInput[];
 }
 
-interface ShellMutationTargetInput {
+interface ProcessSendInputInput {
+  sessionId: string;
+  input: string;
+  closeStdin?: boolean;
+  targets?: ProcessMutationTargetInput[];
+}
+
+interface ProcessMutationTargetInput {
   path: string;
   kind?: "file" | "directory";
 }
 
-interface ShellSessionCloseInput {
+interface ProcessStopInput {
   sessionId: string;
   force?: boolean;
   waitMs?: number;
 }
 
-interface ShellSessionState {
+interface ProcessSessionState {
   id: string;
   process: ChildProcessWithoutNullStreams;
   pendingOutput: string;
@@ -82,18 +74,7 @@ interface ShellSessionState {
   closePromise: Promise<void>;
 }
 
-interface ErrnoExceptionLike {
-  code?: string;
-}
-
-interface ShellOutputSnapshot {
-  stdout: string;
-  stderr: string;
-  output: string;
-  truncated: boolean;
-}
-
-interface ShellCommandResultInput {
+interface ProcessCommandResultInput {
   ok: boolean;
   code: string;
   message: string;
@@ -109,16 +90,16 @@ interface ShellCommandResultInput {
   timedOut: boolean;
 }
 
-type ShellRiskLevel = "safe" | "workspace_mutation" | "destructive" | "external_system";
+type ProcessRiskLevel = "safe" | "workspace_mutation" | "destructive" | "external_system";
 
-interface ShellPolicyViolation {
-  level: Exclude<ShellRiskLevel, "safe">;
+interface ProcessPolicyViolation {
+  level: Exclude<ProcessRiskLevel, "safe">;
   code: string;
   reason: string;
   pattern: string;
 }
 
-const shellSessions = new Map<string, ShellSessionState>();
+const processSessions = new Map<string, ProcessSessionState>();
 let nextSessionCounter = 1;
 
 function sleep(ms: number): Promise<void> {
@@ -138,52 +119,11 @@ function toOutput(stdout: string, stderr: string): string {
   return [stdout, stderr].filter((v) => v.length > 0).join("\n").trim();
 }
 
-function buildOutputSnapshot(stdout: string, stderr: string, maxOutputChars: number): ShellOutputSnapshot {
-  const combined = toOutput(stdout, stderr);
-  const truncated = combined.length > maxOutputChars;
-  return {
-    stdout,
-    stderr,
-    output: truncated ? `${combined.slice(0, maxOutputChars)}\n...[truncated]` : combined,
-    truncated,
-  };
-}
-
-function getExecFailureOutput(err: unknown, maxOutputChars: number): ShellOutputSnapshot {
-  const execError = err as { stdout?: string | Buffer; stderr?: string | Buffer };
-  const stdout = typeof execError?.stdout === "string"
-    ? execError.stdout
-    : Buffer.isBuffer(execError?.stdout)
-      ? execError.stdout.toString()
-      : "";
-  const stderr = typeof execError?.stderr === "string"
-    ? execError.stderr
-    : Buffer.isBuffer(execError?.stderr)
-      ? execError.stderr.toString()
-      : "";
-  return buildOutputSnapshot(stdout, stderr, maxOutputChars);
-}
-
-function execErrorExitCode(err: unknown): number | null {
-  const code = (err as { code?: unknown }).code;
-  return typeof code === "number" ? code : null;
-}
-
-function execErrorSignal(err: unknown): string | null {
-  const signal = (err as { signal?: unknown }).signal;
-  return typeof signal === "string" ? signal : null;
-}
-
-function execErrorTimedOut(err: unknown, message: string): boolean {
-  const killed = (err as { killed?: unknown }).killed;
-  return killed === true || message.toLowerCase().includes("timed out") || message.toLowerCase().includes("timeout");
-}
-
-function shellCommandResult(input: ShellCommandResultInput): ToolResult {
+function processCommandResult(input: ProcessCommandResultInput): ToolResult {
   const rawOutput = input.output;
-  const observation = buildShellObservation(input);
+  const observation = buildProcessObservation(input);
   const compactOutput = renderContextObservation({
-    tool: "shell",
+    tool: "process_run",
     status: input.ok ? "success" : "failed",
     message: input.message,
     observation,
@@ -248,7 +188,7 @@ function shellCommandResult(input: ShellCommandResultInput): ToolResult {
   };
 }
 
-function buildShellObservation(input: ShellCommandResultInput): ToolContextObservation {
+function buildProcessObservation(input: ProcessCommandResultInput): ToolContextObservation {
   const rawOutput = input.output;
   const lines = splitLines(rawOutput);
   const commandKind = classifyCommand(input.command);
@@ -273,7 +213,7 @@ function buildShellObservation(input: ShellCommandResultInput): ToolContextObser
   ]).slice(0, 8);
   return {
     mode: rawOutput.length > 12_000 || input.truncated ? "large_ref" : "focused",
-    summary: buildShellSummary(input, commandKind, lines),
+    summary: buildProcessSummary(input, commandKind, lines),
     stats: {
       command: input.command,
       ...(input.cwd ? { cwd: input.cwd } : {}),
@@ -288,7 +228,7 @@ function buildShellObservation(input: ShellCommandResultInput): ToolContextObser
       stdoutChars: input.stdout.length,
       stderrChars: input.stderr.length,
     },
-    highlights: buildShellHighlights(input, commandKind, lines),
+    highlights: buildProcessHighlights(input, commandKind, lines),
     blocks,
     hasMore: input.truncated || rawOutput.length > 12_000,
     suggestedReads: [
@@ -353,7 +293,7 @@ function buildSpecializedShellBlocks(commandKind: string, lines: string[]): Tool
   return [];
 }
 
-function buildShellHighlights(input: ShellCommandResultInput, commandKind: string, lines: string[]): string[] {
+function buildProcessHighlights(input: ProcessCommandResultInput, commandKind: string, lines: string[]): string[] {
   const highlights: string[] = [];
   highlights.push(`exitCode=${input.exitCode ?? "unknown"}`);
   if (input.timedOut) highlights.push("command timed out");
@@ -373,7 +313,7 @@ function buildShellHighlights(input: ShellCommandResultInput, commandKind: strin
   return [...new Set(highlights)].slice(0, 12);
 }
 
-function buildShellSummary(input: ShellCommandResultInput, commandKind: string, lines: string[]): string {
+function buildProcessSummary(input: ProcessCommandResultInput, commandKind: string, lines: string[]): string {
   const status = input.ok ? "succeeded" : input.timedOut ? "timed out" : "failed";
   const base = `Command ${status} with exitCode=${input.exitCode ?? "unknown"} in ${input.durationMs}ms.`;
   const stderrLineCount = input.stderr.length > 0 ? splitLines(input.stderr).length : 0;
@@ -409,7 +349,7 @@ function compactSessionOutput(input: {
   signal: string | null;
   running: boolean;
 }): { outputPreview: string; observation: ToolContextObservation; rawOutput: string } {
-  const observation = buildShellObservation({
+  const observation = buildProcessObservation({
     ok: true,
     code: input.code,
     message: input.message,
@@ -424,7 +364,7 @@ function compactSessionOutput(input: {
     timedOut: false,
   });
   const outputPreview = renderContextObservation({
-    tool: "shell_session",
+    tool: "process_session",
     status: "success",
     message: input.running ? `${input.message}; session is still running.` : input.message,
     observation,
@@ -447,38 +387,34 @@ function waitToPolicy(inputWaitMs: number | undefined, fallback: number): number
 function nextSessionId(): string {
   const id = nextSessionCounter;
   nextSessionCounter += 1;
-  return `shell_${Date.now().toString(36)}_${id}`;
+  return `process_${Date.now().toString(36)}_${id}`;
 }
 
-function consumePendingOutput(session: ShellSessionState): string {
+function consumePendingOutput(session: ProcessSessionState): string {
   const out = session.pendingOutput;
   session.pendingOutput = "";
   return out.trim();
 }
 
-function ensureSessionNotIdle(session: ShellSessionState): ToolResult | null {
+function ensureSessionNotIdle(session: ProcessSessionState): ToolResult | null {
   if (session.exited) return null;
   const idleMs = Date.now() - session.lastActiveAt;
   if (idleMs <= DEFAULT_SESSION_IDLE_TIMEOUT_MS) return null;
   session.process.kill("SIGTERM");
   session.exited = true;
   return errorResult({
-    code: "SHELL_SESSION_EXPIRED",
+    code: "PROCESS_SESSION_EXPIRED",
     message: "Session expired due to inactivity. Start a new session.",
     category: "timeout",
     target: session.id,
     retryable: true,
     recoverable: true,
-    suggestedNextActions: ["Start a new shell session and rerun the needed command."],
+    suggestedNextActions: ["Start a new process and rerun the needed executable."],
   });
 }
 
 function validateStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((v) => typeof v === "string");
-}
-
-function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
-  return typeof err === "object" && err !== null && "code" in (err as ErrnoExceptionLike);
 }
 
 function validateAbsoluteShellPath(value: string, field: string): string | ToolResult {
@@ -495,12 +431,12 @@ function validateAbsoluteShellPath(value: string, field: string): string | ToolR
   });
 }
 
-function validateShellTargets(value: unknown): ShellMutationTargetInput[] | undefined | ToolResult {
+function validateProcessTargets(value: unknown): ProcessMutationTargetInput[] | undefined | ToolResult {
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) {
     return { ok: false, error: "Invalid input: targets must be an array when provided." };
   }
-  const targets: ShellMutationTargetInput[] = [];
+  const targets: ProcessMutationTargetInput[] = [];
   for (const [index, entry] of value.entries()) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
       return { ok: false, error: `Invalid input: targets[${index}] must be an object.` };
@@ -519,46 +455,14 @@ function validateShellTargets(value: unknown): ShellMutationTargetInput[] | unde
   return targets;
 }
 
-function validateShellExecInput(input: unknown): ShellExecInput | ToolResult {
+function validateProcessRunInput(input: unknown): ProcessRunInput | ToolResult {
   if (!input || typeof input !== "object") {
     return { ok: false, error: "Invalid input: expected object." };
   }
-  const v = input as Partial<ShellExecInput>;
-  if (typeof v.cmd !== "string" || v.cmd.trim().length === 0) {
-    return { ok: false, error: "Invalid input: cmd must be a non-empty string." };
+  const v = input as Partial<ProcessRunInput>;
+  if (typeof v.executable !== "string" || v.executable.trim().length === 0) {
+    return { ok: false, error: "Invalid input: executable must be a non-empty string." };
   }
-  if (v.cwd !== undefined && typeof v.cwd !== "string") {
-    return { ok: false, error: "Invalid input: cwd must be a string when provided." };
-  }
-  const cwd = v.cwd === undefined ? undefined : validateAbsoluteShellPath(v.cwd, "cwd");
-  if (cwd !== undefined && typeof cwd !== "string") return cwd;
-  const targets = validateShellTargets(v.targets);
-  if (targets && "ok" in targets) return targets;
-  if (v.timeoutMs !== undefined && (!Number.isFinite(v.timeoutMs) || v.timeoutMs <= 0)) {
-    return { ok: false, error: "Invalid input: timeoutMs must be a positive number." };
-  }
-  if (v.maxOutputChars !== undefined && (!Number.isFinite(v.maxOutputChars) || v.maxOutputChars <= 0)) {
-    return { ok: false, error: "Invalid input: maxOutputChars must be a positive number." };
-  }
-  return {
-    cmd: v.cmd,
-    cwd,
-    targets,
-    timeoutMs: v.timeoutMs,
-    maxOutputChars: v.maxOutputChars,
-  };
-}
-
-function validateRunScriptInput(input: unknown): ShellRunScriptInput | ToolResult {
-  if (!input || typeof input !== "object") {
-    return { ok: false, error: "Invalid input: expected object." };
-  }
-  const v = input as Partial<ShellRunScriptInput>;
-  if (typeof v.scriptPath !== "string" || v.scriptPath.trim().length === 0) {
-    return { ok: false, error: "Invalid input: scriptPath must be a non-empty string." };
-  }
-  const scriptPath = validateAbsoluteShellPath(v.scriptPath, "scriptPath");
-  if (typeof scriptPath !== "string") return scriptPath;
   if (v.args !== undefined && !validateStringArray(v.args)) {
     return { ok: false, error: "Invalid input: args must be an array of strings when provided." };
   }
@@ -567,7 +471,7 @@ function validateRunScriptInput(input: unknown): ShellRunScriptInput | ToolResul
   }
   const cwd = v.cwd === undefined ? undefined : validateAbsoluteShellPath(v.cwd, "cwd");
   if (cwd !== undefined && typeof cwd !== "string") return cwd;
-  const targets = validateShellTargets(v.targets);
+  const targets = validateProcessTargets(v.targets);
   if (targets && "ok" in targets) return targets;
   if (v.timeoutMs !== undefined && (!Number.isFinite(v.timeoutMs) || v.timeoutMs <= 0)) {
     return { ok: false, error: "Invalid input: timeoutMs must be a positive number." };
@@ -576,7 +480,7 @@ function validateRunScriptInput(input: unknown): ShellRunScriptInput | ToolResul
     return { ok: false, error: "Invalid input: maxOutputChars must be a positive number." };
   }
   return {
-    scriptPath,
+    executable: v.executable.trim(),
     args: v.args,
     cwd,
     targets,
@@ -585,20 +489,23 @@ function validateRunScriptInput(input: unknown): ShellRunScriptInput | ToolResul
   };
 }
 
-function validateSessionStartInput(input: unknown): ShellSessionStartInput | ToolResult {
+function validateProcessStartInput(input: unknown): ProcessStartInput | ToolResult {
   if (!input || typeof input !== "object") {
     return { ok: false, error: "Invalid input: expected object." };
   }
-  const v = input as Partial<ShellSessionStartInput>;
-  if (typeof v.cmd !== "string" || v.cmd.trim().length === 0) {
-    return { ok: false, error: "Invalid input: cmd must be a non-empty string." };
+  const v = input as Partial<ProcessStartInput>;
+  if (typeof v.executable !== "string" || v.executable.trim().length === 0) {
+    return { ok: false, error: "Invalid input: executable must be a non-empty string." };
+  }
+  if (v.args !== undefined && !validateStringArray(v.args)) {
+    return { ok: false, error: "Invalid input: args must be an array of strings when provided." };
   }
   if (v.cwd !== undefined && typeof v.cwd !== "string") {
     return { ok: false, error: "Invalid input: cwd must be a string when provided." };
   }
   const cwd = v.cwd === undefined ? undefined : validateAbsoluteShellPath(v.cwd, "cwd");
   if (cwd !== undefined && typeof cwd !== "string") return cwd;
-  const targets = validateShellTargets(v.targets);
+  const targets = validateProcessTargets(v.targets);
   if (targets && "ok" in targets) return targets;
   if (v.waitMs !== undefined && (!Number.isFinite(v.waitMs) || v.waitMs < 0)) {
     return { ok: false, error: "Invalid input: waitMs must be a non-negative number." };
@@ -607,7 +514,8 @@ function validateSessionStartInput(input: unknown): ShellSessionStartInput | Too
     return { ok: false, error: "Invalid input: maxOutputChars must be a positive number." };
   }
   return {
-    cmd: v.cmd,
+    executable: v.executable.trim(),
+    args: v.args,
     cwd,
     targets,
     waitMs: v.waitMs,
@@ -615,43 +523,52 @@ function validateSessionStartInput(input: unknown): ShellSessionStartInput | Too
   };
 }
 
-function validateSessionWriteInput(input: unknown): ShellSessionWriteInput | ToolResult {
+function validateProcessPollInput(input: unknown): ProcessPollInput | ToolResult {
   if (!input || typeof input !== "object") {
     return { ok: false, error: "Invalid input: expected object." };
   }
-  const v = input as Partial<ShellSessionWriteInput>;
+  const v = input as Partial<ProcessPollInput>;
   if (typeof v.sessionId !== "string" || v.sessionId.trim().length === 0) {
     return { ok: false, error: "Invalid input: sessionId must be a non-empty string." };
-  }
-  if (v.input !== undefined && typeof v.input !== "string") {
-    return { ok: false, error: "Invalid input: input must be a string when provided." };
-  }
-  const targets = validateShellTargets(v.targets);
-  if (targets && "ok" in targets) return targets;
-  if (v.closeStdin !== undefined && typeof v.closeStdin !== "boolean") {
-    return { ok: false, error: "Invalid input: closeStdin must be a boolean when provided." };
-  }
-  if (v.signal !== undefined && v.signal !== "SIGINT" && v.signal !== "SIGTERM" && v.signal !== "SIGKILL") {
-    return { ok: false, error: "Invalid input: unsupported signal." };
   }
   if (v.waitMs !== undefined && (!Number.isFinite(v.waitMs) || v.waitMs < 0)) {
     return { ok: false, error: "Invalid input: waitMs must be a non-negative number." };
   }
   return {
-    sessionId: v.sessionId,
+    sessionId: v.sessionId.trim(),
+    waitMs: v.waitMs,
+  };
+}
+
+function validateProcessSendInput(input: unknown): ProcessSendInputInput | ToolResult {
+  if (!input || typeof input !== "object") {
+    return { ok: false, error: "Invalid input: expected object." };
+  }
+  const v = input as Partial<ProcessSendInputInput>;
+  if (typeof v.sessionId !== "string" || v.sessionId.trim().length === 0) {
+    return { ok: false, error: "Invalid input: sessionId must be a non-empty string." };
+  }
+  if (typeof v.input !== "string" || v.input.length === 0) {
+    return { ok: false, error: "Invalid input: input must be a non-empty string." };
+  }
+  if (v.closeStdin !== undefined && typeof v.closeStdin !== "boolean") {
+    return { ok: false, error: "Invalid input: closeStdin must be a boolean when provided." };
+  }
+  const targets = validateProcessTargets(v.targets);
+  if (targets && "ok" in targets) return targets;
+  return {
+    sessionId: v.sessionId.trim(),
     input: v.input,
     closeStdin: v.closeStdin,
-    signal: v.signal,
-    waitMs: v.waitMs,
     targets,
   };
 }
 
-function validateSessionCloseInput(input: unknown): ShellSessionCloseInput | ToolResult {
+function validateProcessStopInput(input: unknown): ProcessStopInput | ToolResult {
   if (!input || typeof input !== "object") {
     return { ok: false, error: "Invalid input: expected object." };
   }
-  const v = input as Partial<ShellSessionCloseInput>;
+  const v = input as Partial<ProcessStopInput>;
   if (typeof v.sessionId !== "string" || v.sessionId.trim().length === 0) {
     return { ok: false, error: "Invalid input: sessionId must be a non-empty string." };
   }
@@ -666,59 +583,6 @@ function validateSessionCloseInput(input: unknown): ShellSessionCloseInput | Too
     force: v.force,
     waitMs: v.waitMs,
   };
-}
-
-async function runExecCommand(
-  cmd: string,
-  cwd: string | undefined,
-  timeoutMs: number,
-  maxOutputChars: number,
-): Promise<ToolResult> {
-  const start = Date.now();
-  try {
-    const { stdout, stderr } = await execAsync(cmd, {
-      cwd,
-      timeout: timeoutMs,
-      shell: "/bin/bash",
-      maxBuffer: Math.max(1_000_000, maxOutputChars * 4),
-    });
-    const durationMs = Date.now() - start;
-    const snapshot = buildOutputSnapshot(stdout, stderr, maxOutputChars);
-    return shellCommandResult({
-      ok: true,
-      code: "COMMAND_SUCCEEDED",
-      message: "Command exited with code 0.",
-      command: cmd,
-      cwd,
-      stdout: snapshot.stdout,
-      stderr: snapshot.stderr,
-      output: snapshot.output,
-      truncated: snapshot.truncated,
-      durationMs,
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown shell execution error";
-    const failureOutput = getExecFailureOutput(err, maxOutputChars);
-    const timedOut = execErrorTimedOut(err, message);
-    return shellCommandResult({
-      ok: false,
-      code: timedOut ? "COMMAND_TIMED_OUT" : "COMMAND_FAILED",
-      message,
-      command: cmd,
-      cwd,
-      stdout: failureOutput.stdout,
-      stderr: failureOutput.stderr,
-      output: failureOutput.output,
-      truncated: failureOutput.truncated,
-      durationMs: Date.now() - start,
-      exitCode: execErrorExitCode(err),
-      signal: execErrorSignal(err),
-      timedOut,
-    });
-  }
 }
 
 async function runProcessCommand(
@@ -760,7 +624,7 @@ async function runProcessCommand(
 
     child.on("error", (err: Error) => {
       clearTimeout(timeout);
-      finish(shellCommandResult({
+      finish(processCommandResult({
         ok: false,
         code: "PROCESS_START_FAILED",
         message: err.message,
@@ -783,7 +647,7 @@ async function runProcessCommand(
       const durationMs = Date.now() - start;
       const commandLine = [command, ...args].join(" ");
       if (timedOut) {
-        finish(shellCommandResult({
+        finish(processCommandResult({
           ok: false,
           code: "COMMAND_TIMED_OUT",
           message: "Command timed out and was terminated.",
@@ -801,7 +665,7 @@ async function runProcessCommand(
         return;
       }
       if (code === 0) {
-        finish(shellCommandResult({
+        finish(processCommandResult({
           ok: true,
           code: "COMMAND_SUCCEEDED",
           message: "Command exited with code 0.",
@@ -818,7 +682,7 @@ async function runProcessCommand(
         }));
         return;
       }
-      finish(shellCommandResult({
+      finish(processCommandResult({
         ok: false,
         code: "COMMAND_FAILED",
         message: `Process exited with code ${code ?? "unknown"}.`,
@@ -840,23 +704,98 @@ async function runProcessCommand(
 function preflightShellCommand(
   command: string,
   cwd: string | undefined,
-  source: "command" | "script" | "session",
+  source: "command" | "session",
   rootPath?: string,
 ): { ok: true; resolvedCwd?: string } | { ok: false; result: ToolResult } {
   const resolvedCwd = resolveWorkspaceCwd(cwd, rootPath);
-  const violation = classifyShellPolicy(command, source);
+  const violation = classifyProcessPolicy(command, source);
   if (violation) {
-    return { ok: false, result: shellPolicyBlockedResult(command, resolvedCwd, source, violation) };
+    return { ok: false, result: processPolicyBlockedResult(command, resolvedCwd, source, violation) };
   }
   return { ok: true, resolvedCwd };
 }
 
-function classifyShellPolicy(command: string, source: "command" | "script" | "session"): ShellPolicyViolation | undefined {
+const DOMAIN_OWNED_EXECUTABLES = new Map<string, string>([
+  ["cat", "read_files"],
+  ["head", "read_files"],
+  ["tail", "read_files"],
+  ["grep", "search_in_files"],
+  ["rg", "search_in_files"],
+  ["find", "find_files"],
+  ["ls", "list_directory"],
+  ["stat", "inspect_paths"],
+  ["file", "inspect_paths"],
+  ["sed", "patch_files"],
+  ["cp", "write_files"],
+  ["mv", "move"],
+  ["rm", "delete"],
+  ["touch", "write_files"],
+  ["mkdir", "create_directory"],
+  ["sqlite3", "database tools"],
+  ["curl", "file_fetch_url or a dedicated external-action tool"],
+  ["wget", "file_fetch_url or a dedicated external-action tool"],
+  ["git", "Git Context runtime"],
+  ["python", "python_execute"],
+  ["python3", "python_execute"],
+]);
+
+function preflightProcess(
+  executable: string,
+  args: string[],
+  cwd: string | undefined,
+  source: "command" | "session",
+  rootPath?: string,
+): { ok: true; resolvedCwd?: string; command: string } | { ok: false; result: ToolResult } {
+  const command = formatProcessCommand(executable, args);
+  const name = basename(executable).toLowerCase();
+  const owner = DOMAIN_OWNED_EXECUTABLES.get(name);
+  if (owner) {
+    return {
+      ok: false,
+      result: processPolicyBlockedResult(command, resolveWorkspaceCwd(cwd, rootPath), source, {
+        level: "workspace_mutation",
+        code: "PROCESS_DEDICATED_TOOL_REQUIRED",
+        pattern: name,
+        reason: `Executable '${name}' duplicates capability owned by ${owner}.`,
+      }),
+    };
+  }
+  if (["bash", "sh", "zsh", "fish"].includes(name)) {
+    return {
+      ok: false,
+      result: processPolicyBlockedResult(command, resolveWorkspaceCwd(cwd, rootPath), source, {
+        level: "workspace_mutation",
+        code: "PROCESS_SHELL_INTERPRETER_BLOCKED",
+        pattern: name,
+        reason: "Shell interpreters can bypass focused tool contracts; run a project command or executable directly.",
+      }),
+    };
+  }
+  if ((name === "node" || name === "bun" || name === "deno") && args.some((arg) => arg === "-e" || arg === "--eval" || arg === "-p" || arg === "--print")) {
+    return {
+      ok: false,
+      result: processPolicyBlockedResult(command, resolveWorkspaceCwd(cwd, rootPath), source, {
+        level: "workspace_mutation",
+        code: "PROCESS_INLINE_CODE_BLOCKED",
+        pattern: `${name} inline code`,
+        reason: "Inline interpreter code can bypass focused filesystem, database, and Python tool contracts.",
+      }),
+    };
+  }
+  const preflight = preflightShellCommand(command, cwd, source, rootPath);
+  return preflight.ok ? { ...preflight, command } : preflight;
+}
+
+function formatProcessCommand(executable: string, args: string[]): string {
+  return [executable, ...args].map((part) => JSON.stringify(part)).join(" ");
+}
+
+function classifyProcessPolicy(command: string, source: "command" | "session"): ProcessPolicyViolation | undefined {
   const normalized = command.trim();
   const lower = normalized.toLowerCase();
 
   const destructiveChecks: Array<[RegExp, string, string]> = [
-    [/\bsudo\b/, "sudo", "sudo/system privilege commands are blocked from shell tools."],
+    [/\bsudo\b/, "sudo", "sudo/system privilege commands are blocked from process tools."],
     [/\brm\s+-[^\n;&|]*r[^\n;&|]*f\b|\brm\s+-[^\n;&|]*f[^\n;&|]*r\b/, "rm -rf", "recursive force deletion is destructive."],
     [/\bgit\s+reset\s+--hard\b/, "git reset --hard", "hard git resets can destroy uncommitted work."],
     [/\bgit\s+clean\b/, "git clean", "git clean can delete untracked user files."],
@@ -876,7 +815,7 @@ function classifyShellPolicy(command: string, source: "command" | "script" | "se
     if (pattern.test(lower)) {
       return {
         level: "destructive",
-        code: "SHELL_DESTRUCTIVE_COMMAND_BLOCKED",
+        code: "PROCESS_DESTRUCTIVE_COMMAND_BLOCKED",
         pattern: label,
         reason,
       };
@@ -886,7 +825,7 @@ function classifyShellPolicy(command: string, source: "command" | "script" | "se
   if (/\b(?:curl|wget)\b[\s\S]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|python|python3|node)\b/i.test(normalized)) {
     return {
       level: "external_system",
-      code: "SHELL_EXTERNAL_INSTALL_BLOCKED",
+      code: "PROCESS_EXTERNAL_INSTALL_BLOCKED",
       pattern: "curl/wget pipe to interpreter",
       reason: "piping downloaded content into an interpreter is unsafe and mutates external/system state.",
     };
@@ -895,8 +834,8 @@ function classifyShellPolicy(command: string, source: "command" | "script" | "se
   if (source === "session" && /^(?:bash|sh|zsh|fish|python|python3|node|ruby)(?:\s|$)/i.test(normalized)) {
     return {
       level: "workspace_mutation",
-      code: "SHELL_INTERACTIVE_MUTATION_SURFACE_BLOCKED",
-      pattern: "interactive interpreter/shell session",
+      code: "PROCESS_INTERACTIVE_MUTATION_SURFACE_BLOCKED",
+      pattern: "interactive interpreter/process session",
       reason: "interactive shells and interpreters can bypass filesystem tool contracts through later stdin writes.",
     };
   }
@@ -913,7 +852,7 @@ function classifyShellPolicy(command: string, source: "command" | "script" | "se
     if (pattern.test(normalized)) {
       return {
         level: "workspace_mutation",
-        code: "SHELL_FILE_MUTATION_BLOCKED",
+        code: "PROCESS_FILE_MUTATION_BLOCKED",
         pattern: label,
         reason,
       };
@@ -923,11 +862,11 @@ function classifyShellPolicy(command: string, source: "command" | "script" | "se
   return undefined;
 }
 
-function shellPolicyBlockedResult(
+function processPolicyBlockedResult(
   command: string,
   cwd: string | undefined,
-  source: "command" | "script" | "session",
-  violation: ShellPolicyViolation,
+  source: "command" | "session",
+  violation: ProcessPolicyViolation,
 ): ToolResult {
   const message = `${violation.code}: ${violation.reason}`;
   const structuredContent = {
@@ -971,7 +910,7 @@ function shellPolicyBlockedResult(
       target: violation.pattern,
       suggestedNextActions: [
         "Use filesystem tools instead: read_files, write_files with baseSha256, patch_files, move, delete, or create_directory.",
-        "Use shell only for read-only inspection, build, test, and verification commands.",
+        "Use process_run only for project execution that no focused domain tool owns.",
       ],
       structuredContent,
       diagnostics: {
@@ -984,7 +923,7 @@ function shellPolicyBlockedResult(
   };
 }
 
-const shellCommandOutputSchema = {
+const processCommandOutputSchema = {
   type: "object",
   required: ["command", "exitCode", "stdoutPreview", "stderrPreview", "outputPreview", "observation", "timedOut", "durationMs", "truncated"],
   properties: {
@@ -1003,7 +942,7 @@ const shellCommandOutputSchema = {
   },
 };
 
-const shellMutationTargetsSchema = {
+const processMutationTargetsSchema = {
   type: "array",
   description: "Bounded host paths the command may create or modify. Required by task authorization for mutation-capable commands.",
   items: {
@@ -1017,8 +956,8 @@ const shellMutationTargetsSchema = {
   },
 };
 
-const shellCommandAnnotations = commonAnnotations({
-  domain: "shell",
+const processCommandAnnotations = commonAnnotations({
+  domain: "process",
   readOnly: false,
   mutatesWorkspace: true,
   mutatesExternalWorld: true,
@@ -1027,7 +966,7 @@ const shellCommandAnnotations = commonAnnotations({
   longRunning: false,
 });
 
-const shellCommandContract = succeededContract({
+const processCommandContract = succeededContract({
   assertions: [
     {
       id: "exit_code_zero",
@@ -1044,8 +983,8 @@ const shellCommandContract = succeededContract({
   ],
 });
 
-const shellSessionAnnotations = commonAnnotations({
-  domain: "shell",
+const processSessionAnnotations = commonAnnotations({
+  domain: "process",
   readOnly: false,
   mutatesWorkspace: true,
   mutatesExternalWorld: true,
@@ -1054,36 +993,55 @@ const shellSessionAnnotations = commonAnnotations({
   longRunning: true,
 });
 
-export const shellExecTool: ToolDefinition = {
-  name: "shell",
-  description: "Execute a shell command.",
+const processPollAnnotations = commonAnnotations({
+  domain: "process",
+  readOnly: false,
+  idempotent: false,
+  retrySafe: false,
+  longRunning: true,
+});
+
+const processStopAnnotations = commonAnnotations({
+  domain: "process",
+  readOnly: false,
+  mutatesExternalWorld: true,
+  idempotent: false,
+  retrySafe: false,
+  longRunning: true,
+});
+
+export const processRunTool: ToolDefinition = {
+  name: "process_run",
+  description: "Run one non-interactive project executable with structured arguments when no focused domain tool owns the operation.",
   inputSchema: {
     type: "object",
-    required: ["cmd"],
+    required: ["executable"],
     properties: {
-      cmd: { type: "string" },
+      executable: { type: "string", description: "Executable name or canonical absolute executable path. Shell command strings are not accepted." },
+      args: { type: "array", items: { type: "string" }, description: "Arguments passed directly to the executable without shell parsing." },
       cwd: { type: "string", description: "Canonical absolute working directory. Omit to use the task directory." },
-      targets: shellMutationTargetsSchema,
+      targets: processMutationTargetsSchema,
       timeoutMs: { type: "number" },
       maxOutputChars: { type: "number" },
     },
   },
-  outputSchema: shellCommandOutputSchema,
-  annotations: shellCommandAnnotations,
-  resultContract: shellCommandContract,
+  outputSchema: processCommandOutputSchema,
+  annotations: processCommandAnnotations,
+  resultContract: processCommandContract,
   selectionHints: {
-    tags: ["shell", "terminal", "command", "search", "find", "system"],
-    aliases: ["shell_exec", "run_command", "terminal_command"],
-    examples: ["find file in system", "run rg to search files", "list process output"],
+    tags: ["process", "command", "build", "test", "lint", "package-script"],
+    aliases: ["run_project_command", "run_executable"],
+    examples: ["run pnpm test", "run pnpm build", "run an existing project executable"],
     domain: "execution",
     priority: 15,
   },
   async execute(input, context): Promise<ToolResult> {
-    const parsed = validateShellExecInput(input);
+    const parsed = validateProcessRunInput(input);
     if ("ok" in parsed) return parsed;
 
-    const preflight = preflightShellCommand(
-      parsed.cmd,
+    const preflight = preflightProcess(
+      parsed.executable,
+      parsed.args ?? [],
       parsed.cwd,
       "command",
       context?.resourceScope?.rootPath,
@@ -1091,111 +1049,27 @@ export const shellExecTool: ToolDefinition = {
     if (!preflight.ok) return preflight.result;
     const timeoutMs = capWithDefault(parsed.timeoutMs, DEFAULT_TIMEOUT_MS);
     const maxOutputChars = capWithDefault(parsed.maxOutputChars, DEFAULT_MAX_OUTPUT_CHARS);
-    return await runExecCommand(parsed.cmd, preflight.resolvedCwd, timeoutMs, maxOutputChars);
+    return await runProcessCommand(parsed.executable, parsed.args ?? [], preflight.resolvedCwd, timeoutMs, maxOutputChars);
   },
 };
 
-export const shellRunScriptTool: ToolDefinition = {
-  name: "shell_run_script",
-  description: "Run a bash script file.",
+export const processStartTool: ToolDefinition = {
+  name: "process_start",
+  description: "Start one long-running project executable and return a sessionId.",
   inputSchema: {
     type: "object",
-    required: ["scriptPath"],
+    required: ["executable"],
     properties: {
-      scriptPath: { type: "string", description: "Canonical absolute path to the bash script." },
-      args: { type: "array", items: { type: "string" } },
+      executable: { type: "string", description: "Executable name or canonical absolute executable path. Shell command strings are not accepted." },
+      args: { type: "array", items: { type: "string" }, description: "Arguments passed directly to the executable without shell parsing." },
       cwd: { type: "string", description: "Canonical absolute working directory. Omit to use the task directory." },
-      targets: shellMutationTargetsSchema,
-      timeoutMs: { type: "number" },
-      maxOutputChars: { type: "number" },
-    },
-  },
-  outputSchema: shellCommandOutputSchema,
-  annotations: shellCommandAnnotations,
-  resultContract: shellCommandContract,
-  selectionHints: {
-    tags: ["shell", "script", "bash", "automation"],
-    aliases: ["run_script", "execute_script"],
-    examples: ["run deploy.sh", "execute setup script"],
-    domain: "execution",
-    priority: 30,
-  },
-  async execute(input, context): Promise<ToolResult> {
-    const parsed = validateRunScriptInput(input);
-    if ("ok" in parsed) return parsed;
-
-    const rootPath = context?.resourceScope?.rootPath;
-    const resolvedCwd = resolveWorkspaceCwd(parsed.cwd, rootPath);
-    const scriptPath = resolvePath(resolvedCwd, parsed.scriptPath);
-    let fileStats;
-    try {
-      fileStats = await stat(scriptPath);
-    } catch (err) {
-      if (isErrnoException(err) && err.code === "ENOENT") {
-        return errorResult({
-          code: "SCRIPT_NOT_FOUND",
-          message: `Script not found: ${scriptPath}`,
-          category: "missing_path",
-          target: scriptPath,
-          retryable: true,
-          recoverable: true,
-          suggestedNextActions: ["Check the script path or create the script before retrying."],
-        });
-      }
-
-      const message = err instanceof Error ? err.message : "Unable to inspect script path.";
-      return errorResult({
-        code: "SCRIPT_INSPECT_FAILED",
-        message: `Unable to inspect script path: ${message}`,
-        category: "unknown",
-        target: scriptPath,
-        retryable: false,
-        recoverable: true,
-        suggestedNextActions: ["Inspect the script path and permissions before retrying."],
-      });
-    }
-    if (!fileStats.isFile()) {
-      return errorResult({
-        code: "SCRIPT_PATH_NOT_FILE",
-        message: "scriptPath must point to a regular file.",
-        category: "validation",
-        target: scriptPath,
-        retryable: true,
-        recoverable: true,
-        suggestedNextActions: ["Retry with a path to a regular script file."],
-      });
-    }
-    const scriptContent = await readFile(scriptPath, "utf-8");
-    const scriptPreflight = preflightShellCommand(scriptContent, resolvedCwd, "script", rootPath);
-    if (!scriptPreflight.ok) return scriptPreflight.result;
-    const timeoutMs = capWithDefault(parsed.timeoutMs, DEFAULT_TIMEOUT_MS);
-    const maxOutputChars = capWithDefault(parsed.maxOutputChars, DEFAULT_MAX_OUTPUT_CHARS);
-    return await runProcessCommand(
-      "bash",
-      [scriptPath, ...(parsed.args ?? [])],
-      resolvedCwd,
-      timeoutMs,
-      maxOutputChars,
-    );
-  },
-};
-
-export const shellSessionStartTool: ToolDefinition = {
-  name: "shell_session_start",
-  description: "Start an interactive shell session and return a sessionId.",
-  inputSchema: {
-    type: "object",
-    required: ["cmd"],
-    properties: {
-      cmd: { type: "string" },
-      cwd: { type: "string", description: "Canonical absolute working directory. Omit to use the task directory." },
-      targets: shellMutationTargetsSchema,
+      targets: processMutationTargetsSchema,
       waitMs: { type: "number" },
       maxOutputChars: { type: "number" },
     },
   },
   outputSchema: genericObjectOutputSchema,
-  annotations: shellSessionAnnotations,
+  annotations: processSessionAnnotations,
   resultContract: succeededContract({
     assertions: [
       {
@@ -1211,25 +1085,26 @@ export const shellSessionStartTool: ToolDefinition = {
     ],
   }),
   selectionHints: {
-    tags: ["shell", "interactive", "session"],
-    aliases: ["terminal_session_start", "shell_start"],
-    examples: ["start tail -f session", "start interactive command"],
+    tags: ["process", "long-running", "server", "session"],
+    aliases: ["start_process", "start_server"],
+    examples: ["start the development server", "start an existing long-running project executable"],
     domain: "execution",
     priority: 28,
   },
   async execute(input, context): Promise<ToolResult> {
-    const parsed = validateSessionStartInput(input);
+    const parsed = validateProcessStartInput(input);
     if ("ok" in parsed) return parsed;
 
-    const preflight = preflightShellCommand(
-      parsed.cmd,
+    const preflight = preflightProcess(
+      parsed.executable,
+      parsed.args ?? [],
       parsed.cwd,
       "session",
       context?.resourceScope?.rootPath,
     );
     if (!preflight.ok) return preflight.result;
     const outputCap = capWithDefault(parsed.maxOutputChars, DEFAULT_MAX_SESSION_OUTPUT_CHARS);
-    const process = spawn("/bin/bash", ["-lc", parsed.cmd], {
+    const process = spawn(parsed.executable, parsed.args ?? [], {
       cwd: preflight.resolvedCwd,
       stdio: ["pipe", "pipe", "pipe"],
       shell: false,
@@ -1239,7 +1114,7 @@ export const shellSessionStartTool: ToolDefinition = {
     const closePromise = new Promise<void>((resolve) => {
       resolveClose = resolve;
     });
-    const session: ShellSessionState = {
+    const session: ProcessSessionState = {
       id: sessionId,
       process,
       pendingOutput: "",
@@ -1275,13 +1150,13 @@ export const shellSessionStartTool: ToolDefinition = {
       resolveClose?.();
     });
 
-    shellSessions.set(sessionId, session);
+    processSessions.set(sessionId, session);
     await sleep(waitToPolicy(parsed.waitMs, 150));
     const output = consumePendingOutput(session);
     const compact = compactSessionOutput({
-      code: "SHELL_SESSION_STARTED",
-      message: `Started shell session: ${sessionId}`,
-      command: parsed.cmd,
+      code: "PROCESS_SESSION_STARTED",
+      message: `Started process session: ${sessionId}`,
+      command: preflight.command,
       output,
       exitCode: session.exitCode,
       signal: session.signal,
@@ -1289,7 +1164,7 @@ export const shellSessionStartTool: ToolDefinition = {
     });
     const structuredContent = {
       sessionId,
-      command: parsed.cmd,
+      command: preflight.command,
       ...(preflight.resolvedCwd ? { cwd: preflight.resolvedCwd } : {}),
       outputPreview: compact.outputPreview,
       observation: compact.observation,
@@ -1309,8 +1184,8 @@ export const shellSessionStartTool: ToolDefinition = {
         output: compact.outputPreview,
         meta,
         v2: successV2({
-          code: "SHELL_SESSION_STARTED",
-          message: `Started shell session: ${sessionId}`,
+          code: "PROCESS_SESSION_STARTED",
+          message: `Started process session: ${sessionId}`,
           structuredContent,
           diagnostics: meta,
         }),
@@ -1320,23 +1195,21 @@ export const shellSessionStartTool: ToolDefinition = {
   },
 };
 
-export const shellSessionWriteTool: ToolDefinition = {
-  name: "shell_session_write",
-  description: "Write to an existing shell session stdin, optionally send signal, and read incremental output.",
+export const processSendInputTool: ToolDefinition = {
+  name: "process_send_input",
+  description: "Send stdin to one running process without polling or stopping it.",
   inputSchema: {
     type: "object",
-    required: ["sessionId"],
+    required: ["sessionId", "input"],
     properties: {
       sessionId: { type: "string" },
       input: { type: "string" },
-      targets: shellMutationTargetsSchema,
       closeStdin: { type: "boolean" },
-      signal: { type: "string" },
-      waitMs: { type: "number" },
+      targets: processMutationTargetsSchema,
     },
   },
   outputSchema: genericObjectOutputSchema,
-  annotations: shellSessionAnnotations,
+  annotations: processSessionAnnotations,
   resultContract: succeededContract({
     assertions: [{
       id: "session_id_present",
@@ -1345,36 +1218,33 @@ export const shellSessionWriteTool: ToolDefinition = {
     }],
   }),
   selectionHints: {
-    tags: ["shell", "interactive", "session"],
-    aliases: ["terminal_session_write", "shell_poll"],
-    examples: ["poll interactive output", "send input to running command"],
+    tags: ["process", "stdin", "input", "session"],
+    aliases: ["send_process_input"],
+    examples: ["send input to a running project process"],
     domain: "execution",
     priority: 27,
   },
   async execute(input): Promise<ToolResult> {
-    const parsed = validateSessionWriteInput(input);
+    const parsed = validateProcessSendInput(input);
     if ("ok" in parsed) return parsed;
 
-    const session = shellSessions.get(parsed.sessionId);
+    const session = processSessions.get(parsed.sessionId);
     if (!session) {
       return errorResult({
-        code: "SHELL_SESSION_NOT_FOUND",
-        message: `Unknown shell session: ${parsed.sessionId}`,
+        code: "PROCESS_SESSION_NOT_FOUND",
+        message: `Unknown process session: ${parsed.sessionId}`,
         category: "missing_path",
         target: parsed.sessionId,
         retryable: true,
         recoverable: true,
-        suggestedNextActions: ["Start a new shell session or use a valid active sessionId."],
+        suggestedNextActions: ["Start a new process session or use a valid active sessionId."],
       });
     }
 
     const idleError = ensureSessionNotIdle(session);
     if (idleError) return idleError;
 
-    if (parsed.signal && !session.exited) {
-      session.process.kill(parsed.signal);
-    }
-    if (parsed.input && !session.exited && !session.process.stdin.destroyed) {
+    if (!session.exited && !session.process.stdin.destroyed) {
       session.process.stdin.write(parsed.input);
     }
     if (parsed.closeStdin && !session.exited && !session.process.stdin.destroyed) {
@@ -1382,18 +1252,85 @@ export const shellSessionWriteTool: ToolDefinition = {
     }
 
     session.lastActiveAt = Date.now();
+    const structuredContent = {
+      sessionId: session.id,
+      running: !session.exited,
+      inputSent: true,
+      closeStdin: parsed.closeStdin === true,
+    };
+    const meta = {
+      sessionId: session.id,
+      running: !session.exited,
+    };
+    return okResult({
+      output: `Input sent to process session ${session.id}.`,
+      meta,
+      v2: successV2({
+        code: "PROCESS_INPUT_SENT",
+        message: `Sent input to process session: ${session.id}`,
+        structuredContent,
+        diagnostics: meta,
+      }),
+    });
+  },
+};
+
+export const processPollTool: ToolDefinition = {
+  name: "process_poll",
+  description: "Read incremental output and status from one running process without sending input or stopping it.",
+  inputSchema: {
+    type: "object",
+    required: ["sessionId"],
+    properties: {
+      sessionId: { type: "string" },
+      waitMs: { type: "number" },
+    },
+  },
+  outputSchema: genericObjectOutputSchema,
+  annotations: processPollAnnotations,
+  resultContract: succeededContract({
+    assertions: [{
+      id: "session_id_present",
+      kind: "json_path_exists",
+      path: "$.result.structuredContent.sessionId",
+    }],
+  }),
+  selectionHints: {
+    tags: ["process", "poll", "output", "session"],
+    aliases: ["poll_process"],
+    examples: ["check development server output"],
+    domain: "execution",
+    priority: 27,
+  },
+  async execute(input): Promise<ToolResult> {
+    const parsed = validateProcessPollInput(input);
+    if ("ok" in parsed) return parsed;
+    const session = processSessions.get(parsed.sessionId);
+    if (!session) {
+      return errorResult({
+        code: "PROCESS_SESSION_NOT_FOUND",
+        message: `Unknown process session: ${parsed.sessionId}`,
+        category: "missing_path",
+        target: parsed.sessionId,
+        retryable: true,
+        recoverable: true,
+        suggestedNextActions: ["Start a new process or use a valid active sessionId."],
+      });
+    }
+    const idleError = ensureSessionNotIdle(session);
+    if (idleError) return idleError;
+    session.lastActiveAt = Date.now();
     await sleep(waitToPolicy(parsed.waitMs, 120));
     const output = consumePendingOutput(session);
     const compact = compactSessionOutput({
-      code: "SHELL_SESSION_WRITTEN",
-      message: `Updated shell session: ${session.id}`,
-      command: `shell_session_write ${session.id}`,
+      code: "PROCESS_POLLED",
+      message: `Polled process session: ${session.id}`,
+      command: `process_poll ${session.id}`,
       output,
       exitCode: session.exitCode,
       signal: session.signal,
       running: !session.exited,
     });
-
     const structuredContent = {
       sessionId: session.id,
       outputPreview: compact.outputPreview,
@@ -1401,9 +1338,6 @@ export const shellSessionWriteTool: ToolDefinition = {
       running: !session.exited,
       exitCode: session.exitCode,
       signal: session.signal,
-      inputSent: parsed.input !== undefined,
-      closeStdin: parsed.closeStdin === true,
-      signalSent: parsed.signal ?? null,
       rawOutputChars: output.length,
     };
     const meta = {
@@ -1417,8 +1351,8 @@ export const shellSessionWriteTool: ToolDefinition = {
         output: compact.outputPreview,
         meta,
         v2: successV2({
-          code: "SHELL_SESSION_WRITTEN",
-          message: `Updated shell session: ${session.id}`,
+          code: "PROCESS_POLLED",
+          message: `Polled process session: ${session.id}`,
           structuredContent,
           diagnostics: meta,
         }),
@@ -1428,9 +1362,9 @@ export const shellSessionWriteTool: ToolDefinition = {
   },
 };
 
-export const shellSessionCloseTool: ToolDefinition = {
-  name: "shell_session_close",
-  description: "Close a shell session and return final output/status.",
+export const processStopTool: ToolDefinition = {
+  name: "process_stop",
+  description: "Stop one running process and return its final output and status.",
   inputSchema: {
     type: "object",
     required: ["sessionId"],
@@ -1441,7 +1375,7 @@ export const shellSessionCloseTool: ToolDefinition = {
     },
   },
   outputSchema: genericObjectOutputSchema,
-  annotations: shellSessionAnnotations,
+  annotations: processStopAnnotations,
   resultContract: succeededContract({
     assertions: [
       {
@@ -1458,26 +1392,26 @@ export const shellSessionCloseTool: ToolDefinition = {
     ],
   }),
   selectionHints: {
-    tags: ["shell", "interactive", "session"],
-    aliases: ["terminal_session_close", "shell_stop"],
-    examples: ["close shell session", "stop interactive command"],
+    tags: ["process", "stop", "server", "session"],
+    aliases: ["stop_process"],
+    examples: ["stop the development server"],
     domain: "execution",
     priority: 27,
   },
   async execute(input): Promise<ToolResult> {
-    const parsed = validateSessionCloseInput(input);
+    const parsed = validateProcessStopInput(input);
     if ("ok" in parsed) return parsed;
 
-    const session = shellSessions.get(parsed.sessionId);
+    const session = processSessions.get(parsed.sessionId);
     if (!session) {
       return errorResult({
-        code: "SHELL_SESSION_NOT_FOUND",
-        message: `Unknown shell session: ${parsed.sessionId}`,
+        code: "PROCESS_SESSION_NOT_FOUND",
+        message: `Unknown process session: ${parsed.sessionId}`,
         category: "missing_path",
         target: parsed.sessionId,
         retryable: true,
         recoverable: true,
-        suggestedNextActions: ["Start a new shell session or use a valid active sessionId."],
+        suggestedNextActions: ["Start a new process or use a valid active sessionId."],
       });
     }
 
@@ -1492,11 +1426,11 @@ export const shellSessionCloseTool: ToolDefinition = {
     }
 
     const output = consumePendingOutput(session);
-    shellSessions.delete(session.id);
+    processSessions.delete(session.id);
     const compact = compactSessionOutput({
-      code: "SHELL_SESSION_CLOSED",
-      message: `Closed shell session: ${session.id}`,
-      command: `shell_session_close ${session.id}`,
+      code: "PROCESS_SESSION_CLOSED",
+      message: `Closed process session: ${session.id}`,
+      command: `process_stop ${session.id}`,
       output,
       exitCode: session.exitCode,
       signal: session.signal,
@@ -1524,8 +1458,8 @@ export const shellSessionCloseTool: ToolDefinition = {
         output: compact.outputPreview,
         meta,
         v2: successV2({
-          code: "SHELL_SESSION_CLOSED",
-          message: `Closed shell session: ${session.id}`,
+          code: "PROCESS_SESSION_CLOSED",
+          message: `Closed process session: ${session.id}`,
           structuredContent,
           diagnostics: meta,
         }),
@@ -1535,31 +1469,27 @@ export const shellSessionCloseTool: ToolDefinition = {
   },
 };
 
-const SHELL_PROMPT_BLOCK = [
-  "Shell tools are built in.",
-  "Use them directly for terminal execution, developer workflows, and orchestrating system tools.",
-  "Default shell work to the configured workspace root unless the user or task clearly points to another directory.",
-  "When cwd or scriptPath is supplied, pass its canonical absolute filesystem path. Relative paths, workspace aliases, and ~ paths are rejected.",
-  "For a task command that may create or modify files, declare every bounded absolute mutation target in targets. Read-only validation commands do not need targets.",
-  "Shell tools block destructive commands and direct file mutation such as rm -rf, git reset --hard, sed -i, redirection to files, tee writes, and interactive shells; use filesystem tools for file changes.",
-  "Use shell_run_script to execute project scripts.",
-  "Use shell_session_start/shell_session_write/shell_session_close for interactive commands.",
-  "Prefer concise commands and summarize results clearly.",
-  "If command output is large, return a concise summary.",
+const PROCESS_PROMPT_BLOCK = [
+  "Focused process tools are built in for project commands that no domain tool owns.",
+  "Use process_run for one non-interactive executable, or process_start/process_poll/process_send_input/process_stop for one long-running process lifecycle.",
+  "Pass executable and args separately. Shell command strings, shell interpreters, inline interpreter code, and direct filesystem/search/database/Git commands are rejected.",
+  "Use read_files, search_in_files, find_files, list_directory, inspect_paths, filesystem mutation tools, database tools, Python tools, file_fetch_url, and Git Context for their owned capabilities.",
+  "Default process cwd to the task directory. Any supplied cwd and mutation targets must be canonical absolute paths.",
+  "For a project command that may create generated files, declare every bounded absolute mutation target in targets.",
 ].join("\n");
 
-const shellSkill: SkillDefinition = {
-  id: "shell",
-  version: "2.0.0",
-  description: "Run shell commands, scripts, and interactive terminal sessions.",
-  promptBlock: SHELL_PROMPT_BLOCK,
+const processSkill: SkillDefinition = {
+  id: "process",
+  version: "1.0.0",
+  description: "Run focused project executables and manage long-running process lifecycles.",
+  promptBlock: PROCESS_PROMPT_BLOCK,
   tools: [
-    shellExecTool,
-    shellRunScriptTool,
-    shellSessionStartTool,
-    shellSessionWriteTool,
-    shellSessionCloseTool,
+    processRunTool,
+    processStartTool,
+    processPollTool,
+    processSendInputTool,
+    processStopTool,
   ],
 };
 
-export default shellSkill;
+export default processSkill;

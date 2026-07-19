@@ -140,7 +140,7 @@ describe("createToolExecutor", () => {
   it("validate() returns error + tool list for unknown tool", () => {
     const executor = createToolExecutor([
       {
-        name: "shell",
+        name: "process_run",
         description: "Run",
         async execute() {
           return { ok: true };
@@ -153,14 +153,14 @@ describe("createToolExecutor", () => {
     if (!result.valid) {
       expect(result.error).toContain("Unknown tool: readFile");
       expect(result.schema).toHaveProperty("availableTools");
-      expect((result.schema as { availableTools: string[] }).availableTools).toContain("shell");
+      expect((result.schema as { availableTools: string[] }).availableTools).toContain("process_run");
     }
   });
 
   it("supports mounting scoped dynamic tool groups and expiring step-scoped tools", async () => {
     const executor = createToolExecutor([
       {
-        name: "shell",
+        name: "process_run",
         description: "Run",
         async execute() {
           return { ok: true };

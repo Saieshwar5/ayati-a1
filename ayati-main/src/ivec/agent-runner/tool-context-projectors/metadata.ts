@@ -1,11 +1,11 @@
 const READ_TOOLS = new Set(["read_files", "read_files__single", "inspect_paths"]);
 const SEARCH_TOOLS = new Set(["search_in_files", "find_files", "list_directory"]);
-const SHELL_TOOLS = new Set([
-  "shell",
-  "shell_run_script",
-  "shell_session_start",
-  "shell_session_write",
-  "shell_session_close",
+const PROCESS_TOOLS = new Set([
+  "process_run",
+  "process_start",
+  "process_poll",
+  "process_send_input",
+  "process_stop",
 ]);
 const WRITE_TOOLS = new Set(["write_files", "patch_files", "move", "delete", "create_directory"]);
 
@@ -27,7 +27,7 @@ export function buildToolProjectionMetadata(tool: string, structuredContent: unk
       maxStringChars: 500,
     });
   }
-  if (SHELL_TOOLS.has(tool)) {
+  if (PROCESS_TOOLS.has(tool)) {
     return pickFields(structuredContent, [
       "command",
       "cwd",

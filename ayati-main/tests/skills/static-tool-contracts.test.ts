@@ -12,12 +12,12 @@ import { readFilesTool } from "../../src/skills/builtins/filesystem/read-files.j
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
 import { pulseTool } from "../../src/skills/builtins/pulse/index.js";
 import {
-  shellExecTool,
-  shellRunScriptTool,
-  shellSessionCloseTool,
-  shellSessionStartTool,
-  shellSessionWriteTool,
-} from "../../src/skills/builtins/shell/index.js";
+  processPollTool,
+  processRunTool,
+  processSendInputTool,
+  processStartTool,
+  processStopTool,
+} from "../../src/skills/builtins/process/index.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
 
 describe("static built-in tool contracts", () => {
@@ -148,40 +148,41 @@ describe("static built-in tool contracts", () => {
     await expect(stat(destination)).rejects.toThrow();
   });
 
-  it("verifies shell command, shell script, and shell session contracts", async () => {
+  it("verifies focused process run and lifecycle contracts", async () => {
     const executor = createToolExecutor([
-      shellExecTool,
-      shellRunScriptTool,
-      shellSessionStartTool,
-      shellSessionWriteTool,
-      shellSessionCloseTool,
+      processRunTool,
+      processStartTool,
+      processPollTool,
+      processSendInputTool,
+      processStopTool,
     ]);
-    const shell = await executor.execute("shell", {
-      cmd: "printf contract-ok",
+    const scriptPath = join(tmp, "script.mjs");
+    await writeNodeFile(scriptPath, "console.log('contract-ok');\n", "utf-8");
+    const run = await executor.execute("process_run", {
+      executable: "node",
+      args: [scriptPath],
       cwd: tmp,
     });
-    expect(shell.ok).toBe(true);
-    expect(shell.v2?.verification?.status).toBe("passed");
-    expect(shell.v2?.structuredContent).toMatchObject({ exitCode: 0, timedOut: false });
+    expect(run.ok).toBe(true);
+    expect(run.v2?.verification?.status).toBe("passed");
+    expect(run.v2?.structuredContent).toMatchObject({ exitCode: 0, timedOut: false });
 
-    const scriptPath = join(tmp, "script.sh");
-    await writeNodeFile(scriptPath, "printf script-ok\n", "utf-8");
-    const script = await executor.execute("shell_run_script", { scriptPath, cwd: tmp });
-    expect(script.ok).toBe(true);
-    expect(script.v2?.verification?.status).toBe("passed");
-    expect(script.output).toContain("script-ok");
-
-    const started = await executor.execute("shell_session_start", { cmd: "cat", waitMs: 20 });
+    const echoScriptPath = join(tmp, "echo-input.mjs");
+    await writeNodeFile(echoScriptPath, "process.stdin.on('data', (value) => process.stdout.write(value));\n", "utf-8");
+    const started = await executor.execute("process_start", { executable: "node", args: [echoScriptPath], waitMs: 20 });
     expect(started.ok).toBe(true);
     expect(started.v2?.verification?.status).toBe("passed");
     const sessionId = String(started.meta?.["sessionId"]);
-    const wrote = await executor.execute("shell_session_write", { sessionId, input: "ping\n", waitMs: 100 });
-    expect(wrote.ok).toBe(true);
-    expect(wrote.v2?.verification?.status).toBe("passed");
-    expect(wrote.output).toContain("ping");
-    const closed = await executor.execute("shell_session_close", { sessionId });
-    expect(closed.ok).toBe(true);
-    expect(closed.v2?.verification?.status).toBe("passed");
+    const sent = await executor.execute("process_send_input", { sessionId, input: "ping\n" });
+    expect(sent.ok).toBe(true);
+    expect(sent.v2?.verification?.status).toBe("passed");
+    const polled = await executor.execute("process_poll", { sessionId, waitMs: 100 });
+    expect(polled.ok).toBe(true);
+    expect(polled.v2?.verification?.status).toBe("passed");
+    expect(polled.output).toContain("ping");
+    const stopped = await executor.execute("process_stop", { sessionId });
+    expect(stopped.ok).toBe(true);
+    expect(stopped.v2?.verification?.status).toBe("passed");
   });
 
   it("verifies calculator, database, and pulse contracts", async () => {

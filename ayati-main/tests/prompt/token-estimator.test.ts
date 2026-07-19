@@ -19,8 +19,8 @@ describe("token-estimator", () => {
       ],
       tools: [
         {
-          name: "shell",
-          description: "run shell commands",
+          name: "process_run",
+          description: "run one project executable",
           inputSchema: { type: "object", properties: { cmd: { type: "string" } } },
         },
       ],

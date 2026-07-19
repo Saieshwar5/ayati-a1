@@ -1,7 +1,9 @@
 import type { MemoryRunHandle } from "../../memory/types.js";
 import type { ToolDefinition } from "../../skills/types.js";
 import {
+  getToolPurpose,
   getToolTaxonomy,
+  isObservationalTool,
   isToolAllowedInPhase,
   type ToolPhase,
   type ToolTaxonomyEntry,
@@ -11,7 +13,6 @@ import {
   GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
   GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
   isGitContextAllowedDuringPendingRouting,
-  isGitContextReadOnlyToolName,
   isGitContextTurnRoutingToolName,
 } from "../../skills/builtins/git-context/tool-policy.js";
 import type { LoopState } from "../types.js";
@@ -80,6 +81,12 @@ export interface RuntimeCapabilityToolSummary {
   selectedNormalTools: string[];
   visibleReadTools: string[];
   selectedReadTools: string[];
+  visibleSearchTools: string[];
+  selectedSearchTools: string[];
+  visibleControlTools: string[];
+  selectedControlTools: string[];
+  visibleMutationTools: string[];
+  selectedMutationTools: string[];
   visibleTaskRoutingTools: string[];
   selectedTaskRoutingTools: string[];
   visibleToolCount: number;
@@ -146,7 +153,7 @@ export function detectRuntimeCapabilityMode(input: {
         allowedActions: [
           "direct_reply",
           "decision_load_tools",
-          "read_only_tools",
+          "observational_tools",
           ...freshRoutingActions,
         ],
         blockedCapabilities: [
@@ -154,8 +161,8 @@ export function detectRuntimeCapabilityMode(input: {
           "destructive_tools_until_task_binding",
         ],
         next: routingSuppressedForConversation
-          ? "Answer directly or use read-only tools; this turn has no durable task-routing intent."
-          : "Use read-only tools for inspection. Before durable mutation, search/activate an existing task or create a new task; ask a short clarification directly if ownership is unclear.",
+          ? "Answer directly or use read/search tools; this turn has no durable task-routing intent."
+          : "Use read/search tools for inspection. Before durable mutation, search/activate an existing task or create a new task; ask a short clarification directly if ownership is unclear.",
         repairCode: "R_FRESH_SESSION_NEEDS_TASK",
         allowToolLoading: true,
       };
@@ -167,13 +174,13 @@ export function detectRuntimeCapabilityMode(input: {
       allowedActions: [
         "direct_reply",
         "decision_load_tools",
-        "read_only_tools",
+        "observational_tools",
         ...freshRoutingActions,
       ],
       blockedCapabilities: freshBlockedCapabilities,
       next: routingSuppressedForConversation
-        ? "Answer directly or use read-only tools; this turn has no durable task-routing intent."
-        : "Use read-only tools for inspection. Before durable mutation, create or activate a task, ask a short clarification directly, or reply directly for non-task chat.",
+        ? "Answer directly or use read/search tools; this turn has no durable task-routing intent."
+        : "Use read/search tools for inspection. Before durable mutation, create or activate a task, ask a short clarification directly, or reply directly for non-task chat.",
       repairCode: "R_FRESH_SESSION_NEEDS_TASK",
       allowToolLoading: true,
     };
@@ -267,25 +274,18 @@ export function isFreshSessionRoutingMode(mode: RuntimeCapabilityMode): boolean 
 export function isRuntimeToolAllowed(mode: RuntimeCapabilityMode, toolName: string): boolean {
   const taxonomy = getToolTaxonomy(toolName);
   if (!taxonomy) {
-    if (
-      mode.hasSessionRun
-      && mode.pendingTurnStatus !== "clarifying"
-      && (mode.name === "fresh_session_routing" || mode.name === "pre_task_routing")
-    ) {
-      return true;
-    }
     return mode.name === "task_run" || mode.name === "active_task_ready" || mode.hasWorkRun;
   }
 
   if (mode.name === "task_run" || mode.hasWorkRun) {
-    return !isTaskRoutingMutation(taxonomy);
+    return !isTaskRoutingControl(taxonomy);
   }
 
   if (mode.name === "active_task_ready") {
     if (mode.hasDeferredMutation) {
       return isGitContextAllowedDuringPendingRouting(toolName);
     }
-    if (isTaskRoutingMutation(taxonomy)) {
+    if (isTaskRoutingControl(taxonomy)) {
       return Boolean(mode.routingWindow?.open) && taxonomy.canRunBeforeTask;
     }
     return true;
@@ -299,17 +299,17 @@ export function isRuntimeToolAllowed(mode: RuntimeCapabilityMode, toolName: stri
     mode.hasSessionRun
     && (mode.name === "fresh_session_routing" || mode.name === "pre_task_routing")
   ) {
-    if (isTaskRoutingMutation(taxonomy)) {
+    if (isTaskRoutingControl(taxonomy)) {
       return Boolean(mode.routingWindow?.open) && taxonomy.canRunBeforeTask;
     }
+    return isObservationalAllowedBeforeTask(mode, toolName, taxonomy);
+  }
+
+  if (isObservationalAllowedBeforeTask(mode, toolName, taxonomy)) {
     return true;
   }
 
-  if (isReadOnlyAllowedBeforeTask(mode, toolName, taxonomy)) {
-    return true;
-  }
-
-  if (isTaskRoutingMutation(taxonomy)) {
+  if (isTaskRoutingControl(taxonomy)) {
     return Boolean(mode.routingWindow?.open) && taxonomy.canRunBeforeTask;
   }
 
@@ -331,7 +331,7 @@ export function runtimeToolPhase(mode: RuntimeCapabilityMode, selectedToolCount 
   return selectedToolCount > 0 ? "enquiry" : "conversation";
 }
 
-export function requiredRoutingMutationToolsForRuntimeMode(mode: RuntimeCapabilityMode): string[] {
+export function requiredRoutingControlToolsForRuntimeMode(mode: RuntimeCapabilityMode): string[] {
   if (mode.routingSuppressedForConversation || mode.routingWindow?.routingToolsAvailable === false) {
     return [];
   }
@@ -382,12 +382,12 @@ export function isDecisionAllowedInRuntimeMode(mode: RuntimeCapabilityMode, deci
     && decision.action.allowedTools.every((tool) => isRuntimeToolAllowed(mode, tool));
 }
 
-function isReadOnlyAllowedBeforeTask(
+function isObservationalAllowedBeforeTask(
   mode: RuntimeCapabilityMode,
   toolName: string,
   taxonomy: ToolTaxonomyEntry,
 ): boolean {
-  if (taxonomy.effect !== "read_only") {
+  if (!isObservationalTool(toolName)) {
     return false;
   }
   if (mode.hasSessionRun) {
@@ -399,8 +399,8 @@ function isReadOnlyAllowedBeforeTask(
   return Boolean(mode.routingWindow?.open) && isToolAllowedInPhase(toolName, "enquiry");
 }
 
-function isTaskRoutingMutation(taxonomy: ToolTaxonomyEntry): boolean {
-  return taxonomy.effect === "context_mutation" && taxonomy.roles.includes("task_routing");
+function isTaskRoutingControl(taxonomy: ToolTaxonomyEntry): boolean {
+  return taxonomy.purpose === "control" && taxonomy.roles.includes("task_routing");
 }
 
 export function summarizeRuntimeCapabilityTools(input: {
@@ -421,8 +421,14 @@ export function summarizeRuntimeCapabilityTools(input: {
     selectedRoutingTools: selectedToolNames.filter(isGitContextRoutingToolName),
     visibleNormalTools: visibleToolNames.filter((tool) => !isGitContextRoutingToolName(tool)),
     selectedNormalTools: selectedToolNames.filter((tool) => !isGitContextRoutingToolName(tool)),
-    visibleReadTools: visibleToolNames.filter(isGitContextReadOnlyToolName),
-    selectedReadTools: selectedToolNames.filter(isGitContextReadOnlyToolName),
+    visibleReadTools: visibleToolNames.filter((tool) => getToolPurpose(tool) === "read"),
+    selectedReadTools: selectedToolNames.filter((tool) => getToolPurpose(tool) === "read"),
+    visibleSearchTools: visibleToolNames.filter((tool) => getToolPurpose(tool) === "search"),
+    selectedSearchTools: selectedToolNames.filter((tool) => getToolPurpose(tool) === "search"),
+    visibleControlTools: visibleToolNames.filter((tool) => getToolPurpose(tool) === "control"),
+    selectedControlTools: selectedToolNames.filter((tool) => getToolPurpose(tool) === "control"),
+    visibleMutationTools: visibleToolNames.filter((tool) => getToolPurpose(tool) === "mutation"),
+    selectedMutationTools: selectedToolNames.filter((tool) => getToolPurpose(tool) === "mutation"),
     visibleTaskRoutingTools: visibleToolNames.filter(isGitContextTurnRoutingToolName),
     selectedTaskRoutingTools: selectedToolNames.filter(isGitContextTurnRoutingToolName),
     visibleToolCount: visibleToolNames.length,
@@ -468,7 +474,7 @@ function buildRuntimeRoutingWindow(
     routingToolsAvailable: open,
     readToolsRemainAfterExpiry: true,
     guidance: routingSuppressedForConversation
-      ? "Task-routing mutation tools are hidden for this clearly conversational request; answer directly or use read-only tools."
+      ? "Task-routing controls are hidden for this clearly conversational request; answer directly or use read/search tools."
       : retryLimitReached
       ? "Task routing retry limit was reached for this turn. Ask the user a short clarification or explain the blocker; do not call create or activate again."
       : state.deferredMutation

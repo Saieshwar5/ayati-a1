@@ -35,13 +35,70 @@ Tool definitions can declare:
 - `resultContract`
 - `errorContract`
 
-The decision model sees annotations and schemas. The executor and verification
-layer use contracts to prove outcomes.
+The decision model receives native input schemas and a compact grouping of
+selected tool names by purpose. Output contracts, annotations, and effects stay
+runtime-owned. The executor and verification layer use them to prove outcomes.
+
+## Purpose and Effect Policy
+
+Every built-in executable tool has one primary model-facing purpose:
+
+- `read`: retrieve a known target or inspect known state
+- `search`: discover, filter, or locate an unknown target
+- `control`: change harness workflow or lifecycle state
+- `mutation`: change user data, workspace state, memory, UI state, or an
+  external system
+
+Purpose explains why the model would choose the tool. It does not grant
+permission. Safety is an orthogonal runtime-owned effect:
+
+- `read_only`
+- `workspace_mutation`
+- `context_mutation`
+- `external_mutation`
+- `destructive`
+
+Read and search are observational purposes and currently require a read-only
+effect to run before task binding. They are not described as harmless: they can
+still expose sensitive data, consume time, or return untrusted content. Control
+is also not synonymous with safe. For example, task activation has purpose
+`control` and effect `context_mutation`.
+
+Native harness controls—`decision_load_tools`, `ask_user_feedback`, and
+`task_completion`—share the same control-purpose registry even though they are
+not executable catalog tools. This keeps provider surface filtering, prompt
+grouping, feedback, and policy checks on one vocabulary.
+
+## Single Capability Ownership
+
+Each model-facing intent has one canonical tool owner. Batching related targets
+is allowed, but a public tool should not select unrelated operations through an
+`action` field, duplicate another public tool, or change between observational
+and mutating behavior through an automatic mode.
+
+Project process execution is intentionally narrow:
+
+- `process_run` runs one non-interactive executable with a structured argument
+  array.
+- `process_start` starts one long-running executable.
+- `process_poll` consumes incremental output without sending input or stopping it.
+- `process_send_input` sends stdin without consuming output or stopping it.
+- `process_stop` stops one process and returns its final status/output.
+
+There is no command-string tool or separate script alias. Shell interpreters,
+inline interpreter code, and direct filesystem, search, SQLite, Git, Python,
+or URL-fetch commands are rejected because focused tools own those
+capabilities. `process_run` and `process_start` are still treated as
+mutation-capable. A synchronous `process_run` without declared file targets
+receives context-only mutation authority; any unexpected repository change
+fails mutation verification. A long-running `process_start` must declare its
+bounded mutation targets because later process changes cannot be verified at
+start time.
 
 ## Host Filesystem Path Contract
 
 Every model-facing field that addresses a host file or directory uses a
-canonical absolute path. This includes filesystem paths, search roots, shell
+canonical absolute path. This includes filesystem paths, search roots, process
 working directories and scripts, Python datasets/scripts/input files, supplied
 SQLite database paths, and generated artifact registration paths. An omitted
 optional path may use a runtime-owned absolute default.
@@ -61,8 +118,8 @@ normal project content and remain valid.
 ## Task Routing Contract
 
 The model-facing routing tools are `git_context_create_task` and
-`git_context_activate_task`. They are single-use context mutations, not general
-filesystem tools.
+`git_context_activate_task`. They are single-use control-purpose tools with a
+context-mutation effect, not general filesystem tools.
 
 `git_context_create_task` creates a new V1 repository and initial request.
 `git_context_activate_task` selects an existing task; for V1 it must submit one
@@ -82,7 +139,7 @@ task creation as fully idempotent across independently repeated model calls.
 
 ## Task Mutation and External Outcomes
 
-Task-scoped filesystem, shell, Python, and database paths must remain inside the
+Task-scoped filesystem, process, Python, and database paths must remain inside the
 selected task working directory unless a separate capability explicitly allows
 another boundary. Symlink canonicalization must happen before authorization.
 
@@ -151,7 +208,7 @@ Filesystem writes should prove:
 - read-back hashes match requested content
 - artifacts reference the written files
 
-Shell work should prove:
+Process execution should prove:
 
 - command exit code
 - stdout/stderr capture
@@ -180,7 +237,7 @@ Examples:
 
 - `/home/user/project/todo/index.html exists`
 - `write_files read-back hash matched for /home/user/project/todo/app.js`
-- `shell command pnpm test exited 0`
+- `process_run pnpm test exited 0`
 - `document_query returned section evidence from contract.pdf`
 
 Avoid storing vague facts such as "the task is probably done" when a more
@@ -205,6 +262,7 @@ classifier.
 
 ## Migration Rule
 
-When updating or adding a built-in tool, prefer adding a contract at the same
-time. A broad tool without contracts increases token use and forces the model to
+When updating or adding a built-in tool, add its purpose/effect taxonomy and
+prefer adding a contract at the same time. Missing taxonomy fails policy audit;
+a broad tool without contracts increases token use and forces the model to
 guess whether work succeeded.

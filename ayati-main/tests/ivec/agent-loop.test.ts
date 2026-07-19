@@ -65,7 +65,7 @@ function addExplicitCompletionToFixtures(responses: unknown[]): unknown[] {
         "create_directory",
         "move",
         "delete",
-        "shell",
+        "process_run",
         "python_execute",
       ].includes(call.tool ?? ""));
     }
@@ -487,7 +487,7 @@ describe("agentLoop", () => {
     }
   });
 
-  it("executes read-only tools in a session run without creating a task run", async () => {
+  it("executes observational tools in a session run without creating a task run", async () => {
     const dataDir = makeTmpDir();
     try {
       const readTool: ToolDefinition = {
@@ -546,8 +546,10 @@ describe("agentLoop", () => {
           focus: { status: "none" as const },
           readContext: {
             revision: "read-revision-1",
-            entries: [{
-              key: "read_files:src/upload.ts",
+            inventory: [],
+            discovery: [],
+            evidence: [{
+              key: "evidence:read_files:src/upload.ts",
               runId: "R-session",
               step: 1,
               runClass: "session" as const,
@@ -559,6 +561,7 @@ describe("agentLoop", () => {
               verification: { passed: true },
               createdAt: "2026-07-14T10:00:00.000Z",
             }],
+            actions: [],
           },
         },
       }));
@@ -608,13 +611,13 @@ describe("agentLoop", () => {
           tool: "read_files",
           status: "success",
           mode: "reference",
-          readContextKeys: ["read_files:src/upload.ts"],
+          readContextKeys: ["evidence:read_files:src/upload.ts"],
         })],
       });
       expect(secondStateView.context.run.toolCalls[0]).not.toHaveProperty("output");
       expect(secondStateView.context.git.current.readContext).toMatchObject({
-        entries: [expect.objectContaining({
-          key: "read_files:src/upload.ts",
+        evidence: [expect.objectContaining({
+          key: "evidence:read_files:src/upload.ts",
           output: "upload handling lives in src/upload.ts",
         })],
       });
@@ -2487,7 +2490,7 @@ describe("agentLoop", () => {
         mode: "single",
         calls: [{
           id: "call_1",
-          tool: "shell",
+          tool: "process_run",
           input: { command: "pwd" },
           dependsOn: [],
           purpose: "Create the requested file",
@@ -2520,7 +2523,7 @@ describe("agentLoop", () => {
       expect(provider.generateTurn).toHaveBeenCalledTimes(3);
       expect(existsSync(outputPath)).toBe(false);
       expect(feedbackEvents(feedback.events, "decision", "failed_fallback")[0]?.data).toMatchObject({
-        repair: { code: "R_TOOL_NOT_SELECTED", blockedTargets: ["shell"] },
+        repair: { code: "R_TOOL_NOT_SELECTED", blockedTargets: ["process_run"] },
       });
       expect(feedbackEvents(feedback.events, "final", "reply")[0]?.data).toMatchObject({
         feedbackSummary: {

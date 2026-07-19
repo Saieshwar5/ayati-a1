@@ -15,7 +15,7 @@ import { noopRunRecorder } from "../ivec/noop-run-recorder.js";
 import { estimateTextTokens } from "../prompt/token-estimator.js";
 import { createDocumentSkill } from "../skills/builtins/documents/index.js";
 import filesystemSkill from "../skills/builtins/filesystem/index.js";
-import shellSkill from "../skills/builtins/shell/index.js";
+import processSkill from "../skills/builtins/process/index.js";
 import { createToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition } from "../skills/types.js";
 
@@ -207,7 +207,7 @@ interface StepTraceEntry {
 }
 
 const BENCHMARK_MODEL = "benchmark/mock-decision";
-const ALL_TOOLS = [...filesystemSkill.tools, ...shellSkill.tools];
+const ALL_TOOLS = [...filesystemSkill.tools, ...processSkill.tools];
 
 class BenchmarkDocumentStore extends DocumentStore {
   readonly preparationReports: DocumentPreparationReport[] = [];
@@ -912,12 +912,12 @@ function multistepBugfixSlugifyCase(): BenchmarkCase {
                 mode: "single",
                 calls: [{
                   id: "run_failing_test",
-                  tool: "shell",
-                  input: { cmd: "node tests/string-utils.test.mjs", cwd: workspacePath },
+                  tool: "process_run",
+                  input: { executable: "node", args: ["tests/string-utils.test.mjs"], cwd: workspacePath },
                   dependsOn: [],
                   purpose: "Run the failing slugify test",
                 }],
-                allowedTools: ["shell"],
+                allowedTools: ["process_run"],
               },
             },
             usage: { inputTokens: 2400, outputTokens: 180, totalTokens: 2580 },
@@ -959,13 +959,13 @@ function multistepBugfixSlugifyCase(): BenchmarkCase {
                   },
                   {
                     id: "rerun_test",
-                    tool: "shell",
-                    input: { cmd: "node tests/string-utils.test.mjs", cwd: workspacePath },
+                    tool: "process_run",
+                    input: { executable: "node", args: ["tests/string-utils.test.mjs"], cwd: workspacePath },
                     dependsOn: ["fix_slugify"],
                     purpose: "Verify the slugify fix",
                   },
                 ],
-                allowedTools: ["read_files", "write_files", "shell"],
+                allowedTools: ["read_files", "write_files", "process_run"],
               },
             },
             usage: { inputTokens: 3800, outputTokens: 420, totalTokens: 4220 },
@@ -985,9 +985,9 @@ function multistepBugfixSlugifyCase(): BenchmarkCase {
           const content = await readFile(sourcePath, "utf-8");
           return [
             check("completed", result.status === "completed", result.status),
-            check("test initially failed", readMetricNumber(metrics, ["stages", "tool:shell", "failures"]) >= 1),
+            check("test initially failed", readMetricNumber(metrics, ["stages", "tool:process_run", "failures"]) >= 1),
             check("source file fixed", content.includes("replace(/[^a-z0-9]+/g"), content),
-            check("verification rerun passed", await hasSuccessfulShellStep(result.runPath, "slugify tests passed")),
+            check("verification rerun passed", await hasSuccessfulProcessStep(result.runPath, "slugify tests passed")),
             check("final answer mentions test", result.content.includes("node tests/string-utils.test.mjs"), result.content),
             check("workspace retained", workspace !== undefined && workspace.length > 0),
           ];
@@ -1098,13 +1098,13 @@ function featureAddAverageHelperCase(): BenchmarkCase {
                   },
                   {
                     id: "run_tests",
-                    tool: "shell",
-                    input: { cmd: "node tests/calculator.test.mjs", cwd: workspacePath },
+                    tool: "process_run",
+                    input: { executable: "node", args: ["tests/calculator.test.mjs"], cwd: workspacePath },
                     dependsOn: ["write_tests"],
                     purpose: "Verify calculator tests",
                   },
                 ],
-                allowedTools: ["write_files", "shell"],
+                allowedTools: ["write_files", "process_run"],
               },
             },
             usage: { inputTokens: 3900, outputTokens: 520, totalTokens: 4420 },
@@ -1127,7 +1127,7 @@ function featureAddAverageHelperCase(): BenchmarkCase {
             check("completed", result.status === "completed", result.status),
             check("average exported", source.includes("export function average"), source),
             check("average tests added", test.includes("average([2, 4, 6])") && test.includes("average([])"), test),
-            check("verification passed", await hasSuccessfulShellStep(result.runPath, "calculator tests passed")),
+            check("verification passed", await hasSuccessfulProcessStep(result.runPath, "calculator tests passed")),
             check("final answer mentions test", result.content.includes("node tests/calculator.test.mjs"), result.content),
           ];
         },
@@ -1273,13 +1273,13 @@ function followupContinuePreviousFileEditCase(): BenchmarkCase {
                   },
                   {
                     id: "run_tests",
-                    tool: "shell",
-                    input: { cmd: "node tests/cache.test.mjs", cwd: workspacePath },
+                    tool: "process_run",
+                    input: { executable: "node", args: ["tests/cache.test.mjs"], cwd: workspacePath },
                     dependsOn: ["write_sync"],
                     purpose: "Verify sync cache TTL",
                   },
                 ],
-                allowedTools: ["read_files", "write_files", "shell"],
+                allowedTools: ["read_files", "write_files", "process_run"],
               },
             },
             usage: { inputTokens: 3400, outputTokens: 430, totalTokens: 3830 },
@@ -1292,7 +1292,7 @@ function followupContinuePreviousFileEditCase(): BenchmarkCase {
         tools: ALL_TOOLS,
         checks: async ({ result }) => [
           check("run 1 completed", result.status === "completed", result.status),
-          check("run 1 verified", await hasSuccessfulShellStep(result.runPath, "cache tests passed")),
+          check("run 1 verified", await hasSuccessfulProcessStep(result.runPath, "cache tests passed")),
         ],
       });
 
@@ -1321,13 +1321,13 @@ function followupContinuePreviousFileEditCase(): BenchmarkCase {
                   },
                   {
                     id: "run_tests",
-                    tool: "shell",
-                    input: { cmd: "node tests/cache.test.mjs", cwd: workspacePath },
+                    tool: "process_run",
+                    input: { executable: "node", args: ["tests/cache.test.mjs"], cwd: workspacePath },
                     dependsOn: ["write_async"],
                     purpose: "Verify async cache TTL",
                   },
                 ],
-                allowedTools: ["read_files", "write_files", "shell"],
+                allowedTools: ["read_files", "write_files", "process_run"],
               },
             },
             usage: { inputTokens: 3600, outputTokens: 450, totalTokens: 4050 },
@@ -1340,7 +1340,7 @@ function followupContinuePreviousFileEditCase(): BenchmarkCase {
         tools: ALL_TOOLS,
         checks: async ({ result }) => [
           check("run 2 completed", result.status === "completed", result.status),
-          check("run 2 verified", await hasSuccessfulShellStep(result.runPath, "cache tests passed")),
+          check("run 2 verified", await hasSuccessfulProcessStep(result.runPath, "cache tests passed")),
         ],
       });
 
@@ -2382,7 +2382,7 @@ function evaluateBudgets(budgets: BenchmarkBudget | undefined, actual: {
   ].filter((entry): entry is BenchmarkCheck => entry !== undefined);
 }
 
-async function hasSuccessfulShellStep(runPath: string, expectedText: string): Promise<boolean> {
+async function hasSuccessfulProcessStep(runPath: string, expectedText: string): Promise<boolean> {
   try {
     const stepsDir = join(runPath, "steps");
     const files = (await readdir(stepsDir)).filter((file) => file.endsWith("-act.md"));

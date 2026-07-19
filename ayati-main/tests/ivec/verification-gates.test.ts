@@ -10,7 +10,7 @@ describe("checkVerificationGates", () => {
   it("returns an execution failure when all tool calls fail", () => {
     const actOutput: ActOutput = {
       toolCalls: [
-        { tool: "shell", input: {}, output: "", error: "command not found" },
+        { tool: "process_run", input: {}, output: "", error: "command not found" },
       ],
       finalText: "",
     };
@@ -26,7 +26,7 @@ describe("checkVerificationGates", () => {
   it("returns null when execution succeeded and LLM validation should decide", () => {
     const actOutput: ActOutput = {
       toolCalls: [
-        { tool: "shell", input: {}, output: "hello" },
+        { tool: "process_run", input: {}, output: "hello" },
         { tool: "read", input: {}, output: "content" },
       ],
       finalText: "",
@@ -47,7 +47,7 @@ describe("checkVerificationGates", () => {
   it("returns null when there is partial execution success", () => {
     const actOutput: ActOutput = {
       toolCalls: [
-        { tool: "shell", input: {}, output: "ok" },
+        { tool: "process_run", input: {}, output: "ok" },
         { tool: "read", input: {}, output: "", error: "file not found" },
       ],
       finalText: "",

@@ -14,7 +14,7 @@ import {
 export type ToolPolicyViolationCode =
   | "unknown_tool_taxonomy"
   | "mutation_tool_without_task_run"
-  | "routing_mutation_after_task_bound"
+  | "routing_control_after_task_bound"
   | "long_running_tool_without_task_run"
   | "tool_not_allowed_in_phase";
 
@@ -76,16 +76,16 @@ export function auditToolPolicy(input: {
       });
     }
 
-    if (isRoutingMutationAfterTaskBound(input.mode, taxonomy)) {
+    if (isRoutingControlAfterTaskBound(input.mode, taxonomy)) {
       addViolation(violationMap, {
-        code: "routing_mutation_after_task_bound",
+        code: "routing_control_after_task_bound",
         severity: "error",
         tools: [toolName],
-        message: "A task-routing mutation tool was selected after the turn is already bound to task work.",
+        message: "A task-routing control was selected after the turn is already bound to task work.",
       });
     }
 
-    if (!isToolAllowedInPhase(toolName, phase) && !isActiveTaskRoutingWindowMutation(input.mode, taxonomy)) {
+    if (!isToolAllowedInPhase(toolName, phase) && !isActiveTaskRoutingWindowControl(input.mode, taxonomy)) {
       addViolation(violationMap, {
         code: "tool_not_allowed_in_phase",
         severity: "warning",
@@ -111,23 +111,23 @@ function normalizeToolNames(tools: ToolDefinition[] | string[]): string[] {
   return tools.map((tool) => typeof tool === "string" ? tool : tool.name);
 }
 
-function isRoutingMutationAfterTaskBound(
+function isRoutingControlAfterTaskBound(
   mode: RuntimeCapabilityMode,
   taxonomy: NonNullable<ReturnType<typeof getToolTaxonomy>>,
 ): boolean {
   if (mode.name !== "task_run" && mode.pendingTurnStatus !== "bound") {
     return false;
   }
-  return taxonomy.effect === "context_mutation" && taxonomy.roles.includes("task_routing");
+  return taxonomy.purpose === "control" && taxonomy.roles.includes("task_routing");
 }
 
-function isActiveTaskRoutingWindowMutation(
+function isActiveTaskRoutingWindowControl(
   mode: RuntimeCapabilityMode,
   taxonomy: NonNullable<ReturnType<typeof getToolTaxonomy>>,
 ): boolean {
   return mode.name === "active_task_ready"
     && Boolean(mode.routingWindow?.open)
-    && taxonomy.effect === "context_mutation"
+    && taxonomy.purpose === "control"
     && taxonomy.roles.includes("task_routing");
 }
 

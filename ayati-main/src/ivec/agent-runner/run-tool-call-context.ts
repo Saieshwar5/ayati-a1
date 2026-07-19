@@ -136,7 +136,7 @@ function buildToolCallSummary(call: PromptRunToolCallContext): string {
   if (isWriteTool(call.tool)) {
     return truncate(`${call.tool} changed workspace state${targetSuffix}.${outputSuffix}${artifactSuffix}`, PROMPT_TOOL_CALL_POLICY.maxSummaryChars);
   }
-  if (isShellTool(call.tool)) {
+  if (isProcessTool(call.tool)) {
     return truncate(`${call.tool} ran${targetSuffix}.${outputSuffix}${artifactSuffix}`, PROMPT_TOOL_CALL_POLICY.maxSummaryChars);
   }
   return truncate(`${call.tool} completed${targetSuffix}.${outputSuffix}${artifactSuffix}`, PROMPT_TOOL_CALL_POLICY.maxSummaryChars);
@@ -188,8 +188,8 @@ function isWriteTool(tool: string): boolean {
   return /\b(write|edit|patch|create|delete|move|rename|save)\b|apply_patch/.test(tool);
 }
 
-function isShellTool(tool: string): boolean {
-  return /\b(shell|exec|command|terminal|script)\b|exec_command|shell_run_script/.test(tool);
+function isProcessTool(tool: string): boolean {
+  return /\b(process|exec|command|terminal)\b|exec_command|process_run/.test(tool);
 }
 
 function compactUnknownForPrompt(value: unknown, maxStringChars: number): unknown {

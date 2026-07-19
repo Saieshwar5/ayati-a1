@@ -7,13 +7,18 @@ import type {
 } from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
 
-const REUSABLE_READ_TOOLS = new Set([
-  "find_files",
-  "inspect_paths",
-  "list_directory",
-  "read_files",
-  "search_in_files",
-]);
+type ContextBucket = "inventory" | "discovery" | "evidence" | "actions";
+
+const CONTEXT_BUCKET_BY_TOOL: Readonly<Record<string, ContextBucket>> = {
+  list_directory: "inventory",
+  find_files: "discovery",
+  search_in_files: "discovery",
+  inspect_paths: "evidence",
+  read_files: "evidence",
+  create_directory: "actions",
+  patch_files: "actions",
+  write_files: "actions",
+};
 
 interface TaskCommitBoundaryRow {
   run_id: string;
@@ -36,10 +41,22 @@ interface ReadContextStepRow {
   created_at: string;
 }
 
+interface StepToolCall {
+  callId?: string;
+  tool: string;
+  purpose: string;
+  input?: unknown;
+  output?: unknown;
+  error?: unknown;
+  outputHash?: string;
+}
+
+type ContextBucketMaps = Record<ContextBucket, Map<string, ReadContextEntry>>;
+
 /**
- * Builds the verified read working set since the latest successful task commit.
- * Raw run steps remain authoritative; this projection is disposable and can be
- * reconstructed after restart.
+ * Builds reusable context since the latest successful task commit. Raw run
+ * steps remain authoritative; this projection is disposable and reconstructs
+ * deterministically after restart.
  */
 export function buildReadContext(
   database: ContextDatabase,
@@ -56,42 +73,57 @@ export function buildReadContext(
     "ORDER BY r.run_sequence, rs.step",
   ].join(" ")).all(sessionId, boundary?.run_sequence ?? 0) as unknown as ReadContextStepRow[];
 
-  const entries = new Map<string, ReadContextEntry>();
+  const buckets = createBucketMaps();
   for (const row of rows) {
     const verification = parseJson(row.verification_json);
-    if (row.tool_effect === "mutating") {
-      applyMutationInvalidation(entries, row, verification);
-      continue;
+    if (row.status !== "completed" || !verificationPassed(verification)) continue;
+
+    const calls = readStepToolCalls(row);
+    for (const call of calls) {
+      if (call.error !== undefined && call.error !== null) continue;
+      const bucket = CONTEXT_BUCKET_BY_TOOL[call.tool];
+      if (bucket === "actions") {
+        const resources = readResourcePaths(call.input, call.output, verification);
+        invalidateObservedContext(buckets, resources);
+        setContextEntry(buckets.actions, bucket, row, call, resources, verification);
+        continue;
+      }
+      if (bucket) {
+        const resources = readResourcePaths(call.input, call.output, verification);
+        setContextEntry(buckets[bucket], bucket, row, call, resources, verification);
+        continue;
+      }
+      if (row.tool_effect === "mutating") {
+        invalidateObservedContext(
+          buckets,
+          readResourcePaths(call.input, call.output, verification),
+        );
+      }
     }
-    if (!isReusableVerifiedRead(row, verification)) continue;
-    const input = parseJson(row.input_json);
-    const output = parseJson(row.output_json);
-    const resources = readResourcePaths(input, output, verification);
-    const key = readEntryKey(row, resources, input);
-    entries.set(key, {
-      key,
-      runId: row.run_id,
-      step: Number(row.step),
-      runClass: row.run_class,
-      tool: row.tool,
-      purpose: row.purpose,
-      resources,
-      ...(input !== undefined ? { input } : {}),
-      ...(output !== undefined ? { output } : {}),
-      ...(row.output_hash ? { outputHash: row.output_hash } : {}),
-      verification,
-      createdAt: row.created_at,
-    });
   }
 
-  const projected = [...entries.values()];
+  const projected = {
+    inventory: [...buckets.inventory.values()],
+    discovery: [...buckets.discovery.values()],
+    evidence: [...buckets.evidence.values()],
+    actions: [...buckets.actions.values()],
+  };
   return {
     revision: hash(JSON.stringify({
       afterTaskRunId: boundary?.run_id ?? null,
-      entries: projected,
+      ...projected,
     })),
     ...(boundary ? { afterTaskRunId: boundary.run_id } : {}),
-    entries: projected,
+    ...projected,
+  };
+}
+
+function createBucketMaps(): ContextBucketMaps {
+  return {
+    inventory: new Map(),
+    discovery: new Map(),
+    evidence: new Map(),
+    actions: new Map(),
   };
 }
 
@@ -108,43 +140,97 @@ function readTaskCommitBoundary(
   ].join(" ")).get(sessionId) as TaskCommitBoundaryRow | undefined;
 }
 
-function isReusableVerifiedRead(row: ReadContextStepRow, verification: unknown): boolean {
-  return row.status === "completed"
-    && REUSABLE_READ_TOOLS.has(row.tool)
-    && verificationPassed(verification);
+function readStepToolCalls(row: ReadContextStepRow): StepToolCall[] {
+  const input = parseJson(row.input_json);
+  const output = parseJson(row.output_json);
+  if (!isRecord(input) || !Array.isArray(input["toolCalls"])) {
+    return [{
+      tool: row.tool,
+      purpose: row.purpose,
+      ...(input !== undefined ? { input } : {}),
+      ...(output !== undefined ? { output } : {}),
+      ...(row.output_hash ? { outputHash: row.output_hash } : {}),
+    }];
+  }
+
+  const outputCalls = isRecord(output) && Array.isArray(output["toolCalls"])
+    ? output["toolCalls"]
+    : [];
+  return input["toolCalls"].flatMap((value, index): StepToolCall[] => {
+    if (!isRecord(value) || typeof value["tool"] !== "string") return [];
+    const callId = typeof value["callId"] === "string" ? value["callId"] : undefined;
+    const matchingOutput = outputCalls.find((candidate) => (
+      isRecord(candidate)
+      && callId !== undefined
+      && candidate["callId"] === callId
+    )) ?? outputCalls[index];
+    const outputRecord = isRecord(matchingOutput) ? matchingOutput : undefined;
+    const callOutput = outputRecord?.["output"];
+    return [{
+      ...(callId ? { callId } : {}),
+      tool: value["tool"],
+      purpose: typeof value["purpose"] === "string" ? value["purpose"] : row.purpose,
+      ...(value["input"] !== undefined ? { input: value["input"] } : {}),
+      ...(callOutput !== undefined ? { output: callOutput } : {}),
+      ...(outputRecord?.["error"] !== undefined ? { error: outputRecord["error"] } : {}),
+      ...(callOutput !== undefined ? { outputHash: hash(JSON.stringify(callOutput)) } : {}),
+    }];
+  });
 }
 
-function applyMutationInvalidation(
+function setContextEntry(
   entries: Map<string, ReadContextEntry>,
+  bucket: ContextBucket,
   row: ReadContextStepRow,
+  call: StepToolCall,
+  resources: string[],
   verification: unknown,
 ): void {
-  if (row.status !== "completed" || !verificationPassed(verification)) return;
-  const resources = readResourcePaths(
-    parseJson(row.input_json),
-    parseJson(row.output_json),
+  const key = readEntryKey(bucket, call.tool, resources, call.input);
+  entries.set(key, {
+    key,
+    runId: row.run_id,
+    step: Number(row.step),
+    ...(call.callId ? { callId: call.callId } : {}),
+    runClass: row.run_class,
+    tool: call.tool,
+    purpose: call.purpose,
+    resources,
+    ...(call.input !== undefined ? { input: call.input } : {}),
+    ...(call.output !== undefined ? { output: call.output } : {}),
+    ...(call.outputHash ? { outputHash: call.outputHash } : {}),
     verification,
-  );
-  if (resources.length === 0) {
-    entries.clear();
-    return;
-  }
-  for (const [key, entry] of entries) {
-    if (entry.resources.length === 0 || resourcesOverlap(entry.resources, resources)) {
-      entries.delete(key);
+    createdAt: row.created_at,
+  });
+}
+
+function invalidateObservedContext(
+  buckets: ContextBucketMaps,
+  resources: string[],
+): void {
+  for (const bucket of [buckets.inventory, buckets.discovery, buckets.evidence]) {
+    if (resources.length === 0) {
+      bucket.clear();
+      continue;
+    }
+    for (const [key, entry] of bucket) {
+      if (entry.resources.length === 0 || resourcesOverlap(entry.resources, resources)) {
+        bucket.delete(key);
+      }
     }
   }
 }
 
 function readEntryKey(
-  row: ReadContextStepRow,
+  bucket: ContextBucket,
+  tool: string,
   resources: string[],
   input: unknown,
 ): string {
   if (resources.length > 0) {
-    return row.tool + ":" + resources.join("\0");
+    return bucket + ":" + tool + ":" + resources.join("\0");
   }
-  return row.tool + ":" + hash(JSON.stringify(input ?? null));
+  return bucket + ":" + tool + ":" + hash(JSON.stringify(input ?? null));
 }
 
 function readResourcePaths(...values: unknown[]): string[] {

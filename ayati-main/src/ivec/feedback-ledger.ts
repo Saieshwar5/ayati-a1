@@ -97,6 +97,15 @@ export interface AgentFeedbackContextEngineSummary {
   runClass?: "session" | "task";
   workStateRevision?: number;
   lastPersistedStep?: number;
+  readContextRevision?: string;
+  readContextAfterTaskRunId?: string;
+  readContextCounts?: {
+    inventory: number;
+    discovery: number;
+    evidence: number;
+    actions: number;
+    total: number;
+  };
   taskLifecycle?: FeedbackTaskLifecycle;
   warningCodes?: string[];
 }
@@ -584,6 +593,17 @@ export function buildContextEngineFeedbackSummary(input: {
     } : undefined,
   }) : undefined;
   const taskLifecycle = mergeFeedbackTaskLifecycle(contextTaskLifecycle, input.taskLifecycle);
+  const readContext = context?.readContext;
+  const readContextCounts = readContext ? {
+    inventory: readContext.inventory.length,
+    discovery: readContext.discovery.length,
+    evidence: readContext.evidence.length,
+    actions: readContext.actions.length,
+    total: readContext.inventory.length
+      + readContext.discovery.length
+      + readContext.evidence.length
+      + readContext.actions.length,
+  } : undefined;
 
   return compactContextEngineFeedbackSummary({
     ...(input.pendingTurnStatus ?? pendingTurn?.routingStatus ? { pendingTurnStatus: input.pendingTurnStatus ?? pendingTurn?.routingStatus } : {}),
@@ -611,6 +631,11 @@ export function buildContextEngineFeedbackSummary(input: {
       recentRunCount: task.recentRuns.length,
       recentEvidenceCount: task.recentEvidence.length,
     } : {}),
+    ...(readContext ? { readContextRevision: readContext.revision } : {}),
+    ...(readContext?.afterTaskRunId
+      ? { readContextAfterTaskRunId: readContext.afterTaskRunId }
+      : {}),
+    ...(readContextCounts ? { readContextCounts } : {}),
     ...(input.warningCodes && input.warningCodes.length > 0 ? { warningCodes: uniqueStrings(input.warningCodes) } : {}),
     ...(taskLifecycle ? { taskLifecycle } : {}),
   });
@@ -1381,6 +1406,9 @@ function readContextEngineFeedbackSummary(value: unknown): AgentFeedbackContextE
     ...(readRunClass(record["runClass"]) ? { runClass: readRunClass(record["runClass"]) } : {}),
     ...(readNumberValue(record["workStateRevision"]) !== undefined ? { workStateRevision: readNumberValue(record["workStateRevision"]) } : {}),
     ...(readNumberValue(record["lastPersistedStep"]) !== undefined ? { lastPersistedStep: readNumberValue(record["lastPersistedStep"]) } : {}),
+    ...(readStringValue(record["readContextRevision"]) ? { readContextRevision: readStringValue(record["readContextRevision"]) } : {}),
+    ...(readStringValue(record["readContextAfterTaskRunId"]) ? { readContextAfterTaskRunId: readStringValue(record["readContextAfterTaskRunId"]) } : {}),
+    ...(readContextCounts(record["readContextCounts"]) ? { readContextCounts: readContextCounts(record["readContextCounts"]) } : {}),
     ...(readFeedbackTaskLifecycle(record["taskLifecycle"])
       ? { taskLifecycle: readFeedbackTaskLifecycle(record["taskLifecycle"]) }
       : {}),
@@ -1442,6 +1470,9 @@ function compactContextEngineFeedbackSummary(
   if (value.runClass) output.runClass = value.runClass;
   if (value.workStateRevision !== undefined) output.workStateRevision = value.workStateRevision;
   if (value.lastPersistedStep !== undefined) output.lastPersistedStep = value.lastPersistedStep;
+  if (value.readContextRevision) output.readContextRevision = value.readContextRevision;
+  if (value.readContextAfterTaskRunId) output.readContextAfterTaskRunId = value.readContextAfterTaskRunId;
+  if (value.readContextCounts) output.readContextCounts = value.readContextCounts;
   const taskLifecycle = compactFeedbackTaskLifecycle(value.taskLifecycle);
   if (taskLifecycle) output.taskLifecycle = taskLifecycle;
   if (value.warningCodes && value.warningCodes.length > 0) output.warningCodes = uniqueStrings(value.warningCodes);
@@ -1523,6 +1554,28 @@ function readRunClass(value: unknown): AgentFeedbackContextEngineSummary["runCla
 
 function readNumberValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function readContextCounts(
+  value: unknown,
+): AgentFeedbackContextEngineSummary["readContextCounts"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const inventory = readNumberValue(record["inventory"]);
+  const discovery = readNumberValue(record["discovery"]);
+  const evidence = readNumberValue(record["evidence"]);
+  const actions = readNumberValue(record["actions"]);
+  const total = readNumberValue(record["total"]);
+  if (
+    inventory === undefined
+    || discovery === undefined
+    || evidence === undefined
+    || actions === undefined
+    || total === undefined
+  ) {
+    return undefined;
+  }
+  return { inventory, discovery, evidence, actions, total };
 }
 
 function readStringArray(value: unknown): string[] {

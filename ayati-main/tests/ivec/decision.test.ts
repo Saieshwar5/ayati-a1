@@ -1359,25 +1359,25 @@ describe("callAgentDecision", () => {
         calls: [
           {
             id: "call_1",
-            tool: "shell",
+            tool: "process_run",
             input: { command: "pwd" },
             dependsOn: [],
           },
           {
             id: "call_2",
             tool: "load_tools",
-            input: { groups: ["skill:shell"] },
+            input: { groups: ["skill:process"] },
             dependsOn: [],
           },
         ],
-        allowedTools: ["shell", "load_tools"],
+        allowedTools: ["process_run", "load_tools"],
       },
     };
     const repaired = {
       kind: "load_tools",
       request: {
-        groups: ["skill:shell"],
-        reason: "Need shell to run a command.",
+        groups: ["skill:process"],
+        reason: "Need process execution to run a project command.",
       },
     };
     const { provider, generateTurn } = createProvider([
@@ -1586,11 +1586,11 @@ describe("callAgentDecision", () => {
         mode: "single",
         calls: [{
           id: "call_1",
-          tool: "shell",
+          tool: "process_run",
           input: { command: "pwd" },
           dependsOn: [],
         }],
-        allowedTools: ["shell"],
+        allowedTools: ["process_run"],
       },
     });
     const { provider, generateTurn } = createProvider([badAction, badAction, badAction]);
@@ -1616,17 +1616,17 @@ describe("callAgentDecision", () => {
         mode: "single",
         calls: [{
           id: "call_1",
-          tool: "shell",
+          tool: "process_run",
           input: { command: "pwd" },
           dependsOn: [],
         }],
-        allowedTools: ["shell"],
+        allowedTools: ["process_run"],
       },
     };
     const repaired = {
       kind: "load_tools",
       request: {
-        groups: ["skill:shell"],
+        groups: ["skill:process"],
       },
     };
     const feedback = createFeedbackLedger();
@@ -1650,11 +1650,11 @@ describe("callAgentDecision", () => {
     expect(decision.kind).toBe("load_tools");
     const repairPrompt = generateTurn.mock.calls[1]?.[0]?.messages.at(-1)?.content ?? "";
     expect(repairPrompt).toContain("Repair code: R_TOOL_NOT_SELECTED");
-    expect(repairPrompt).toContain("Blocked targets: shell");
+    expect(repairPrompt).toContain("Blocked targets: process_run");
     expect(feedback.events.find((event) => event.event === "protocol_violation")?.data).toMatchObject({
       repair: {
         code: "R_TOOL_NOT_SELECTED",
-        blockedTargets: ["shell"],
+        blockedTargets: ["process_run"],
       },
     });
   });
@@ -1667,12 +1667,12 @@ describe("callAgentDecision", () => {
           mode: "single",
           calls: [{
             id: "call_1",
-            tool: "shell",
+            tool: "process_run",
             input: { command: "pwd" },
             dependsOn: [],
             purpose: "Inspect the current working directory.",
           }],
-          allowedTools: ["shell"],
+          allowedTools: ["process_run"],
         },
       }),
     ]);
@@ -1680,7 +1680,7 @@ describe("callAgentDecision", () => {
     const decision = await callAgentDecision({
       provider,
       stateView: createStateView(),
-      toolDefinitions: [createTool("shell")],
+      toolDefinitions: [createTool("process_run")],
     });
 
     expect(generateTurn).toHaveBeenCalledTimes(1);
@@ -1694,12 +1694,12 @@ describe("callAgentDecision", () => {
         mode: "single",
         calls: [{
           id: "call_1",
-          tool: "shell",
+          tool: "process_run",
           input: { command: "pwd" },
           dependsOn: [],
           ...(purpose ? { purpose } : {}),
         }],
-        allowedTools: ["shell"],
+        allowedTools: ["process_run"],
       },
     });
     const { provider, generateTurn } = createProvider([
@@ -1710,7 +1710,7 @@ describe("callAgentDecision", () => {
     const decision = await callAgentDecision({
       provider,
       stateView: createStateView(),
-      toolDefinitions: [createTool("shell")],
+      toolDefinitions: [createTool("process_run")],
     });
 
     expect(generateTurn).toHaveBeenCalledTimes(2);
@@ -1739,12 +1739,12 @@ describe("callAgentDecision", () => {
     expect(generateTurn.mock.calls[0]?.[0]?.parallelToolCalls).toBe(false);
   });
 
-  it("keeps callable schemas native and sends only selected tool names in text", async () => {
+  it("keeps callable schemas native and groups selected tool names by purpose in text", async () => {
     const { provider, generateTurn } = createProvider([
       JSON.stringify({ kind: "reply", status: "completed", message: "Done" }),
     ]);
     const selectedTool: ToolDefinition = {
-      name: "inspect_data",
+      name: "read_files",
       description: "Inspect structured data with a unique schema description.",
       inputSchema: {
         type: "object",
@@ -1774,7 +1774,7 @@ describe("callAgentDecision", () => {
     const turnInput = generateTurn.mock.calls[0]?.[0];
     const userPrompt = turnInput?.messages.find((message) => message.role === "user")?.content;
     if (typeof userPrompt !== "string") throw new Error("Expected a user prompt.");
-    expect(userPrompt).toContain("Selected tools:\n- inspect_data");
+    expect(userPrompt).toContain("Selected tools:\n- read: read_files");
     expect(userPrompt).not.toContain("UNIQUE_INPUT_SCHEMA_MARKER");
     expect(userPrompt).not.toContain("UNIQUE_OUTPUT_SCHEMA_MARKER");
     expect(userPrompt).not.toContain("UNIQUE_SELECTION_HINT_MARKER");
@@ -1783,7 +1783,7 @@ describe("callAgentDecision", () => {
     expect(userPrompt).not.toContain("outputSchema=");
     expect(userPrompt).not.toContain("hints=");
 
-    const nativeTool = turnInput?.tools?.find((tool) => tool.name === "inspect_data");
+    const nativeTool = turnInput?.tools?.find((tool) => tool.name === "read_files");
     expect(nativeTool?.description).toBe(selectedTool.description);
     expect(nativeTool?.inputSchema).toMatchObject({
       properties: {

@@ -32,7 +32,7 @@ describe("repair policy", () => {
 
   it("creates a repair signal with catalog defaults and compact detail fields", () => {
     const signal = createRepairSignal("R_FRESH_SESSION_NEEDS_TASK", {
-      blockedTargets: [" write_files ", "write_files", "", " shell  "],
+      blockedTargets: [" write_files ", "write_files", "", " process_run  "],
       operatorDetails: {
         seq: 31,
         selectedTools: ["write_files"],
@@ -44,7 +44,7 @@ describe("repair policy", () => {
       severity: "repairable",
       source: "runner.guard",
       message: "No active task exists yet. Normal work tools cannot run before task binding.",
-      blockedTargets: ["write_files", "shell"],
+      blockedTargets: ["write_files", "process_run"],
       missingFields: [],
       invalidFields: [],
       modelFacing: true,

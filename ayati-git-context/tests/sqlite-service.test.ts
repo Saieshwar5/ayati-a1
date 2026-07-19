@@ -566,7 +566,7 @@ describe("SQLite Git Context service", () => {
     }]);
     expect(restored.run?.workState).toEqual(step.workState);
     expect(restored.readContext).toMatchObject({
-      entries: [{
+      evidence: [{
         runId: run.run.runId,
         step: 1,
         tool: "read_files",
@@ -708,7 +708,7 @@ describe("SQLite Git Context service", () => {
     });
     expect(completedContext.run).toBeUndefined();
     expect(completedContext.readContext).toMatchObject({
-      entries: [{
+      evidence: [{
         runId: run.run.runId,
         step: 1,
         runClass: "session",
@@ -829,7 +829,7 @@ describe("SQLite Git Context service", () => {
       at: "2026-07-12T09:30:01.500+05:30",
     });
     expect((await service.getActiveContext({ sessionId: session.session.sessionId }))
-      .readContext?.entries).toEqual([
+      .readContext?.evidence).toEqual([
       expect.objectContaining({
         runId: selected.run.runId,
         runClass: "task",
@@ -906,7 +906,10 @@ describe("SQLite Git Context service", () => {
     expect(active.activeTask).toBeUndefined();
     expect(active.readContext).toMatchObject({
       afterTaskRunId: selected.run.runId,
-      entries: [],
+      inventory: [],
+      discovery: [],
+      evidence: [],
+      actions: [],
     });
     expect(active.taskCandidates).toEqual(expect.arrayContaining([
       expect.objectContaining({ taskId: selected.task.taskId, title: "Small Research Task" }),
@@ -1017,7 +1020,7 @@ describe("SQLite Git Context service", () => {
       verification: { passed: true, artifacts: ["requirements.md"] },
     });
     expect((await service.getActiveContext({ sessionId: session.session.sessionId }))
-      .readContext?.entries).toEqual([
+      .readContext?.evidence).toEqual([
       expect.objectContaining({
         step: 3,
         resources: ["requirements.md"],
@@ -1026,9 +1029,56 @@ describe("SQLite Git Context service", () => {
       expect.objectContaining({ step: 2, resources: ["src/index.ts"] }),
     ]);
 
-    await record({
-      requestId: "REQ-read-window-4",
+    await service.recordRunStep({
+      requestId: "REQ-read-window-buckets",
+      sessionId: session.session.sessionId,
+      runId: selected.run.runId,
       step: 4,
+      tool: "list_directory, search_in_files",
+      toolEffect: "read_only",
+      purpose: "List and search documentation.",
+      status: "completed",
+      input: {
+        toolCalls: [{
+          callId: "call-list",
+          tool: "list_directory",
+          purpose: "List documentation.",
+          input: { path: "docs" },
+        }, {
+          callId: "call-search",
+          tool: "search_in_files",
+          purpose: "Find lifecycle notes.",
+          input: { root: "docs", query: "lifecycle" },
+        }],
+      },
+      output: {
+        toolCalls: [{
+          callId: "call-list",
+          tool: "list_directory",
+          output: { entries: ["context.md"] },
+        }, {
+          callId: "call-search",
+          tool: "search_in_files",
+          output: { matches: [{ path: "docs/context.md", line: 4 }] },
+        }],
+      },
+      verification: { passed: true },
+      workState: emptyRunWorkState(),
+      at: "2026-07-12T09:45:05+05:30",
+    });
+    const bucketed = (await service.getActiveContext({
+      sessionId: session.session.sessionId,
+    })).readContext;
+    expect(bucketed?.inventory).toEqual([
+      expect.objectContaining({ callId: "call-list", tool: "list_directory" }),
+    ]);
+    expect(bucketed?.discovery).toEqual([
+      expect.objectContaining({ callId: "call-search", tool: "search_in_files" }),
+    ]);
+
+    await record({
+      requestId: "REQ-read-window-5",
+      step: 5,
       toolEffect: "mutating",
       purpose: "Update current source.",
       input: { files: [{ path: "src/index.ts", content: "new source" }] },
@@ -1036,8 +1086,12 @@ describe("SQLite Git Context service", () => {
       verification: { passed: true, artifacts: ["src/index.ts"] },
     });
     expect((await service.getActiveContext({ sessionId: session.session.sessionId }))
-      .readContext?.entries).toEqual([
+      .readContext?.evidence).toEqual([
       expect.objectContaining({ step: 3, resources: ["requirements.md"] }),
+    ]);
+    expect((await service.getActiveContext({ sessionId: session.session.sessionId }))
+      .readContext?.actions).toEqual([
+      expect.objectContaining({ step: 5, tool: "write_files", resources: ["src/index.ts"] }),
     ]);
   });
 

@@ -179,7 +179,7 @@ export interface FailureRecord {
 }
 
 export interface ReadProgressState {
-  readOnlyStepCount: number;
+  observationalStepCount: number;
   duplicateReadCount: number;
   mutationStepCount: number;
   rejectedReadCount: number;

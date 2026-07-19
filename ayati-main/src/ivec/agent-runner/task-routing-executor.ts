@@ -1,6 +1,6 @@
 import type { SessionInputHandle } from "../../memory/types.js";
 import type { ToolDefinition, ToolResult } from "../../skills/types.js";
-import { isReadOnlyTool } from "../../skills/tool-taxonomy.js";
+import { isObservationalTool } from "../../skills/tool-taxonomy.js";
 import {
   isGitContextAllowedDuringPendingRouting,
   isGitContextTurnRoutingToolName,
@@ -39,7 +39,7 @@ export interface ExecutePendingRoutingActionInput {
     sessionId: string;
     stepNumber: number;
   };
-  readOnlySessionAction?: boolean;
+  observationalSessionAction?: boolean;
   applyToolStateUpdates: (state: LoopState, deps: AgentLoopDeps, calls: ActToolCallRecord[]) => Promise<void>;
 }
 
@@ -244,8 +244,8 @@ function validatePendingRoutingAction(input: ExecutePendingRoutingActionInput): 
     if (!selected.has(tool)) {
       return `Allowed tool '${tool}' was not selected for this decision.`;
     }
-    if (input.readOnlySessionAction && !isReadOnlyTool(tool)) {
-      return `Allowed tool '${tool}' cannot run in a session read-only action before task binding.`;
+    if (input.observationalSessionAction && !isObservationalTool(tool)) {
+      return `Allowed tool '${tool}' cannot run in a session observational action before task binding.`;
     }
   }
   for (const call of action.calls) {
@@ -255,9 +255,9 @@ function validatePendingRoutingAction(input: ExecutePendingRoutingActionInput): 
     if (!allowed.has(call.tool)) {
       return `Tool '${call.tool}' was not listed in action.allowedTools.`;
     }
-    if (input.readOnlySessionAction) {
-      if (!isReadOnlyTool(call.tool)) {
-        return `Tool '${call.tool}' cannot run in a session read-only action before task binding.`;
+    if (input.observationalSessionAction) {
+      if (!isObservationalTool(call.tool)) {
+        return `Tool '${call.tool}' cannot run in a session observational action before task binding.`;
       }
     } else if (!isGitContextAllowedDuringPendingRouting(call.tool)) {
       return [

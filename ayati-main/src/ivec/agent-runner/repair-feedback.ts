@@ -287,7 +287,7 @@ function maybeEscalateEditRecovery(
       `Call read_files with files=[{path:${JSON.stringify(filePath)}, mode:"full"}] to get complete content and sha256.`,
       "Prepare the complete replacement content from that full read.",
       "Call write_files with files[].baseSha256 set to the sha256 returned by the full read.",
-      "Do not use shell mutation.",
+      "Do not use process execution for file mutation.",
     ],
     operatorDetails: {
       previousRepairCode: repair.code,

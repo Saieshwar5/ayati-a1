@@ -11,7 +11,7 @@ describe("builtInSkillsProvider", () => {
     const skills = await builtInSkillsProvider.getAllSkills();
 
     expect(skills.length).toBeGreaterThanOrEqual(1);
-    expect(skills.some((s) => s.id === "shell")).toBe(true);
+    expect(skills.some((s) => s.id === "process")).toBe(true);
     expect(skills.some((s) => s.id === "database")).toBe(true);
     expect(skills.some((s) => s.id === "pulse")).toBe(true);
   }, 20000);
@@ -22,7 +22,7 @@ describe("builtInSkillsProvider", () => {
     const blocks = await builtInSkillsProvider.getAllSkillBlocks();
 
     expect(blocks.length).toBeGreaterThanOrEqual(1);
-    expect(blocks.some((b) => b.id === "shell")).toBe(true);
+    expect(blocks.some((b) => b.id === "process")).toBe(true);
     expect(blocks.some((b) => b.id === "database")).toBe(true);
     expect(blocks.some((b) => b.id === "pulse")).toBe(true);
   }, 20000);
@@ -32,7 +32,7 @@ describe("builtInSkillsProvider", () => {
 
     const tools = await builtInSkillsProvider.getAllTools();
 
-    expect(tools.some((t) => t.name === "shell")).toBe(true);
+    expect(tools.some((t) => t.name === "process_run")).toBe(true);
     expect(tools.some((t) => t.name === "db_execute_sql")).toBe(true);
     expect(tools.some((t) => t.name === "pulse")).toBe(true);
     expect(tools.some((t) => t.name === "send_email")).toBe(false);
