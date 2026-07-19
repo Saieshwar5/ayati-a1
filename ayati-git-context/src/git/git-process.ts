@@ -48,6 +48,10 @@ export async function configureAyatiGitIdentity(repositoryPath: string): Promise
 
 export function gitCommitEnvironment(at: string): NodeJS.ProcessEnv {
   return {
+    GIT_AUTHOR_NAME: "Ayati Git Context Engine",
+    GIT_AUTHOR_EMAIL: "git-context@ayati.local",
+    GIT_COMMITTER_NAME: "Ayati Git Context Engine",
+    GIT_COMMITTER_EMAIL: "git-context@ayati.local",
     GIT_AUTHOR_DATE: at,
     GIT_COMMITTER_DATE: at,
   };

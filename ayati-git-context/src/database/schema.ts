@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const BASELINE_TABLES = [
   "conversation_segments",
@@ -12,10 +12,14 @@ const BASELINE_TABLES = [
   "schema_metadata",
   "session_attachments",
   "sessions",
+  "task_accesses",
   "task_attachment_bindings",
   "task_finalizations",
   "task_mutation_authorities",
+  "task_preferences",
+  "task_registration_inspections",
   "task_request_route_plans",
+  "task_search",
   "tasks",
   "unbound_run_finalizations",
 ] as const;
@@ -60,6 +64,19 @@ const BASELINE_SQL = [
   "  head_sha TEXT,",
   "  title_cache TEXT NOT NULL,",
   "  objective_cache TEXT NOT NULL,",
+  "  placement_mode TEXT NOT NULL DEFAULT 'managed' CHECK (placement_mode IN ('managed', 'requested')),",
+  "  trusted_root TEXT NOT NULL DEFAULT '',",
+  "  registration_head_before TEXT,",
+  "  registration_was_git INTEGER NOT NULL DEFAULT 0 CHECK (registration_was_git IN (0, 1)),",
+  "  registration_approval_id TEXT,",
+  "  registration_snapshot_hash TEXT,",
+  "  baseline_paths_json TEXT NOT NULL DEFAULT '[]',",
+  "  registration_excluded_paths_json TEXT NOT NULL DEFAULT '[]',",
+  "  lifecycle_status TEXT NOT NULL DEFAULT 'active' CHECK (lifecycle_status IN ('active', 'paused', 'archived')),",
+  "  repository_health TEXT NOT NULL DEFAULT 'ready' CHECK (repository_health IN ('ready', 'dirty_external', 'unavailable')),",
+  "  current_request_id TEXT,",
+  "  current_request_title TEXT,",
+  "  current_request_status TEXT CHECK (current_request_status IN ('queued', 'active', 'blocked', 'done', 'dropped')),",
   "  status TEXT NOT NULL CHECK (status IN ('initializing', 'active', 'archived')),",
   "  created_session_id TEXT NOT NULL REFERENCES sessions(session_id),",
   "  created_at TEXT NOT NULL,",
@@ -67,6 +84,35 @@ const BASELINE_SQL = [
   ");",
   "CREATE INDEX tasks_updated_at ON tasks(updated_at DESC);",
   "CREATE INDEX tasks_status ON tasks(status, updated_at DESC);",
+  "CREATE INDEX tasks_current_request ON tasks(current_request_status, updated_at DESC);",
+  "",
+  "CREATE TABLE task_preferences (",
+  "  task_id TEXT PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,",
+  "  starred INTEGER NOT NULL CHECK (starred IN (0, 1)),",
+  "  starred_at TEXT,",
+  "  updated_at TEXT NOT NULL,",
+  "  CHECK ((starred = 1 AND starred_at IS NOT NULL) OR (starred = 0 AND starred_at IS NULL))",
+  ");",
+  "CREATE INDEX task_preferences_starred ON task_preferences(starred, starred_at DESC);",
+  "",
+  "CREATE TABLE task_accesses (",
+  "  task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,",
+  "  run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,",
+  "  access_kind TEXT NOT NULL CHECK (access_kind IN ('opened', 'bound')),",
+  "  accessed_at TEXT NOT NULL,",
+  "  PRIMARY KEY(task_id, run_id, access_kind)",
+  ");",
+  "CREATE INDEX task_accesses_recent ON task_accesses(task_id, accessed_at DESC);",
+  "CREATE INDEX task_accesses_frequency ON task_accesses(access_kind, accessed_at DESC, task_id);",
+  "",
+  "CREATE VIRTUAL TABLE task_search USING fts5(",
+  "  task_id UNINDEXED,",
+  "  title,",
+  "  objective,",
+  "  current_request,",
+  "  repository_path,",
+  "  tokenize = 'unicode61 remove_diacritics 2'",
+  ");",
   "",
   "CREATE TABLE conversation_segments (",
   "  conversation_id TEXT PRIMARY KEY,",
@@ -285,6 +331,27 @@ const BASELINE_SQL = [
   "WHERE phase IN ('planned', 'authority_acquired', 'recovery_required');",
   "CREATE INDEX task_request_route_plans_recovery",
   "ON task_request_route_plans(phase, updated_at);",
+  "",
+  "CREATE TABLE task_registration_inspections (",
+  "  inspection_id TEXT PRIMARY KEY,",
+  "  request_id TEXT NOT NULL UNIQUE,",
+  "  session_id TEXT NOT NULL REFERENCES sessions(session_id),",
+  "  conversation_id TEXT NOT NULL REFERENCES conversation_segments(conversation_id),",
+  "  run_id TEXT NOT NULL REFERENCES runs(run_id),",
+  "  canonical_path TEXT NOT NULL,",
+  "  trusted_root TEXT NOT NULL,",
+  "  snapshot_hash TEXT NOT NULL,",
+  "  proposed_paths_json TEXT NOT NULL,",
+  "  excluded_paths_json TEXT NOT NULL,",
+  "  entry_count INTEGER NOT NULL,",
+  "  total_bytes INTEGER NOT NULL,",
+  "  status TEXT NOT NULL CHECK (status IN ('pending', 'consumed', 'expired')),",
+  "  created_at TEXT NOT NULL,",
+  "  expires_at TEXT NOT NULL,",
+  "  consumed_at TEXT",
+  ");",
+  "CREATE INDEX task_registration_inspections_pending",
+  "ON task_registration_inspections(status, expires_at);",
 ].join("\n");
 
 export function initializeSchema(database: DatabaseSync, now: () => string): void {
@@ -315,8 +382,8 @@ export function initializeSchema(database: DatabaseSync, now: () => string): voi
   if (!versionMatches || !tablesMatch) {
     throw new Error([
       "Git Context database reset required.",
-      "The configured database uses a pre-V2 or unsupported schema and was not modified.",
-      "Run context:archive-reset explicitly, then restart Ayati to create the V2 baseline.",
+      "The configured database uses a pre-V3 or unsupported schema and was not modified.",
+      "Run context:archive-reset explicitly, then restart Ayati to create the V3 baseline.",
     ].join(" "));
   }
 }
@@ -329,6 +396,7 @@ function readTableNames(database: DatabaseSync): string[] {
   const rows = database.prepare([
     "SELECT name FROM sqlite_schema",
     "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+    "AND name NOT GLOB 'task_search_*'",
     "ORDER BY name",
   ].join(" ")).all() as Array<{ name: string }>;
   return rows.map((row) => row.name);

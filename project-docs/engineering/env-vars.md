@@ -98,6 +98,7 @@ AYATI_GIT_CONTEXT_STOP_TIMEOUT_MS=10000
 AYATI_GIT_CONTEXT_REQUEST_TIMEOUT_MS=30000
 AYATI_GIT_CONTEXT_TIMEZONE=Asia/Kolkata
 AYATI_GIT_CONTEXT_AGENT_ID=local
+AYATI_GIT_CONTEXT_TRUSTED_ROOTS=
 ```
 
 Daily Git context is always on. By default, the daemon starts one independent
@@ -124,10 +125,18 @@ graceful shutdown, and each HTTP request.
 
 `AYATI_GIT_CONTEXT_AGENT_ID` controls the agent id used in daily session ids.
 
+`AYATI_GIT_CONTEXT_TRUSTED_ROOTS` is an optional platform-path-delimited list
+of parent directories in which Ayati may register an existing task directory.
+The configured workspace is always an implicit trust boundary. A trusted root
+does not authorize mutation by itself: the directory must pass registration,
+the current run must bind to the resulting task/request, and mutation still
+requires verified authority. Filesystem root and the user's home directory are
+refused as overly broad trust roots.
+
 The configured data root contains session repositories. Managed task
 repositories live under `<workspace>/tasks/`. Changing these paths relocates
-runtime state—it does not change repository ownership or make task data safe
-to commit with the Ayati source tree.
+runtime state. Registered repositories remain at their requested paths. These
+settings do not by themselves make arbitrary data safe to commit.
 
 Agent harness:
 

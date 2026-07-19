@@ -55,6 +55,10 @@ describe("tool taxonomy", () => {
     expect(canRunBeforeTask("git_context_create_task")).toBe(true);
     expect(isToolAllowedInPhase("git_context_create_task", "routing")).toBe(true);
     expect(isToolAllowedInPhase("git_context_create_task", "task_bound")).toBe(false);
+    expect(getToolPurpose("git_context_find_tasks")).toBe("search");
+    expect(getToolPurpose("git_context_read_task")).toBe("read");
+    expect(getToolPurpose("git_context_set_task_star")).toBe("control");
+    expect(canRunBeforeTask("git_context_set_task_star")).toBe(true);
 
     expect(getToolTaxonomy("write_file")).toBeUndefined();
     expect(hasMutationEffect("write_files")).toBe(true);

@@ -35,9 +35,14 @@ Primary value:
 - One-run execution: every accepted message or system event atomically creates
   one run. The run can remain unbound for conversation and observation or gain
   one immutable task/request binding for durable task work.
-- Turn-aware task routing: the agent can search/read tasks and route work by
-  creating one V1 task or selecting an existing task with an explicit
-  continue-current-request or create-new-request decision.
+- Autonomous durable-work routing: the agent receives a compact explained mix
+  of exact, relevant, unfinished, starred, recent, and frequent workstreams;
+  it can search/open the full catalog and create or select durable work without
+  asking the user to manage sessions or task lists. Ambiguous mutation
+  ownership still produces one focused question.
+- Safe in-place work: an empty directory or clean Git root inside configured
+  trust boundaries can become the task's stable working directory. Non-Git
+  content requires an explicit reviewed baseline; dirty Git is never adopted.
 - Long-lived task semantics: later features, lessons, analyses, and
   improvements normally become requests in the existing task.
 - Personal and episodic memory for personalization and recall.

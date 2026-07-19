@@ -247,6 +247,8 @@ export class MutationBoundaryService {
       taskRoot: this.taskRoot,
       repositoryPath: task.repositoryPath,
       expectedTaskId: task.taskId,
+      placement: task.placement,
+      trustedRoot: task.trustedRoot,
       requestReadMode: "all",
     });
     if (validation.head !== task.head) {

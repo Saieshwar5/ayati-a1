@@ -56,7 +56,15 @@ export class ActiveContextProjectionService {
       this.options.database,
       session.sessionId,
     );
-    const taskCandidates = await this.options.contextDataCache.taskCandidates(20);
+    const latestInput = [...conversations]
+      .reverse()
+      .flatMap((conversation) => [...conversation.messages].reverse())
+      .find((message) => message.role !== "assistant");
+    const taskCandidates = await this.options.contextDataCache.taskCandidates({
+      limit: 20,
+      sessionId: session.sessionId,
+      ...(latestInput ? { currentText: latestInput.content } : {}),
+    });
     const readContext = this.options.contextDataCache.readContext(session.sessionId);
     const attachments = this.options.contextDataCache.attachments(session.sessionId);
     const { revision, pendingDigest } = activeContextRevision({

@@ -32,10 +32,10 @@ Product rules:
   tasks use `T-*` V1 repositories with `.ayati/task.md`, requests, references,
   and ignored inbox staging; do not hide important dynamic task context only in
   a large prompt string.
-- Preserve the git-native ownership boundary: the agent may search/read context
-  and explicitly select/create tasks through `git_context_activate_task` and
-  `git_context_create_task`, but runtime owns request allocation, task state
-  reduction, finalization, and commits.
+- Preserve the git-native ownership boundary: the agent may discover/open
+  context, inspect trusted locations, and select/create tasks through the typed
+  Git Context tools, but runtime owns registration, request allocation, task
+  state reduction, finalization, and commits.
 - For V1 activation, explicitly pass `requestDecision.kind="continue"` or
   `requestDecision.kind="create"`. A candidate or previously active task is
   not mutation authority.

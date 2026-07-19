@@ -11,6 +11,7 @@ import {
   succeededContract,
 } from "../contract-helpers.js";
 import type { TaskRequestRoute } from "ayati-git-context";
+import { createTaskDiscoveryTools } from "./discovery-tools.js";
 
 export interface GitContextSkillDeps {
   service: GitContextService;
@@ -22,11 +23,17 @@ const PROMPT = [
   "Continue the current request only when the user is still pursuing its unfinished outcome. A materially separate outcome belongs to a new request in the same task, not automatically to a new task.",
   "Completing one request does not complete or archive its task. A task may remain active with no current request.",
   "There is no session-global active task. Each task-bound run owns exactly one task.",
-  "The current context includes recent task candidates. Resource ownership and existing task files are stronger routing signals than text similarity.",
+  "The current context contains a compact mix of exact, relevant, unfinished, starred, recent, and frequent workstreams.",
+  "Use git_context_find_tasks when the compact candidates are insufficient, and git_context_read_task to confirm ownership without binding the run.",
+  "Exact task identity, canonical path ownership, and explicit conversational continuation are stronger than text relevance. Star, recency, and frequency help discovery but never prove ownership.",
   "Use git_context_activate_task when the request continues or changes an existing task.",
   "Use git_context_create_task only when the request starts a distinct durable deliverable.",
   "Never default an unclear mutation to the most recent task. Ask the user when ownership remains ambiguous.",
-  "Every new task is created as one normal repository under the managed task directory.",
+  "Create durable work automatically when the user begins a stable goal likely to recur across sessions, a multi-step deliverable, ongoing learning or research, maintained automation, or work that creates or mutates persistent artifacts. Casual conversation, one-off explanations, and isolated list/search/read observations remain unbound unless the user establishes an ongoing goal.",
+  "A task is the durable subject or owned resource. A request is the bounded outcome being pursued now. Reuse the same task for later lessons, features, investigations, maintenance, and improvements that share that durable subject or resource.",
+  "Stars are strictly user-controlled. Never star or unstar a workstream unless the current user message explicitly asks for it.",
+  "New tasks normally use a managed repository. A user-requested existing directory must first pass Git Context location inspection and registration policy.",
+  "Use git_context_inspect_task_location for that inspection. Empty directories and clean Git roots can be registered directly. Dirty Git roots require the user to reconcile changes. Non-empty non-Git directories require showing the proposed and excluded paths, ending the run for explicit approval, then using the returned receipt in the next run.",
   "When activating a T-* task, explicitly choose requestDecision=continue for its unfinished current request or requestDecision=create for a materially separate outcome in the same task.",
   "Do not create a new task merely because the current request is complete; create a new request in the existing task when the durable workstream is the same.",
   "For external actions, keep only verified non-secret identifiers or safe receipt paths in durable task context; Git does not own or undo external state.",
@@ -36,12 +43,13 @@ const PROMPT = [
 export function createGitContextSkill(deps: GitContextSkillDeps): SkillDefinition {
   return {
     id: "git-context",
-    version: "2.0.0",
-    description: "Select exactly one durable Git task repository before mutation.",
+    version: "3.0.0",
+    description: "Discover, open, create, and continue durable Git workstreams without user-managed sessions.",
     promptBlock: PROMPT,
     tools: [
       createTaskTool(deps),
       activateTaskTool(deps.service),
+      ...createTaskDiscoveryTools(deps.service),
     ],
   };
 }
@@ -50,13 +58,21 @@ function createTaskTool(deps: GitContextSkillDeps): ToolDefinition {
   const service = deps.service;
   return {
     name: "git_context_create_task",
-    description: "Create one managed mount-free V1 task repository and start its initial request run.",
+    description: "Create one durable task repository, optionally registering an inspected trusted directory, and start its initial request.",
     inputSchema: {
       type: "object",
       properties: {
         title: { type: "string", description: "Short durable task title." },
         objective: { type: "string", description: "Concrete deliverable or durable objective." },
         reason: { type: "string", description: "Why this request is a new task instead of an existing task." },
+        workingDirectory: {
+          type: "string",
+          description: "Optional trusted existing directory previously inspected by Git Context.",
+        },
+        registrationApprovalId: {
+          type: "string",
+          description: "Approval receipt required for a non-empty non-Git directory baseline.",
+        },
       },
       required: ["title", "objective", "reason"],
       additionalProperties: false,
@@ -83,6 +99,7 @@ function createTaskTool(deps: GitContextSkillDeps): ToolDefinition {
         if (!run || run.conversationId !== conversation.conversationId) {
           return routingError("Task creation requires the current prepared run.");
         }
+        const operationAt = run.startedAt;
         const selected = await service.createTaskForRun({
           requestId: toolRequestId(context, "create-task"),
           sessionId: parsed.sessionId,
@@ -90,8 +107,16 @@ function createTaskTool(deps: GitContextSkillDeps): ToolDefinition {
           runId: run.runId,
           title: parsed.title,
           objective: parsed.objective,
-          placement: { mode: "managed" },
-          at: new Date().toISOString(),
+          placement: parsed.workingDirectory
+            ? {
+                mode: "requested",
+                workingDirectory: parsed.workingDirectory,
+                ...(parsed.registrationApprovalId
+                  ? { registrationApprovalId: parsed.registrationApprovalId }
+                  : {}),
+              }
+            : { mode: "managed" },
+          at: operationAt,
         });
         await service.bindTaskAttachments({
           requestId: toolRequestId(context, "bind-attachments"),
@@ -99,7 +124,7 @@ function createTaskTool(deps: GitContextSkillDeps): ToolDefinition {
           conversationId: conversation.conversationId,
           runId: selected.run.runId,
           taskId: selected.task.taskId,
-          at: new Date().toISOString(),
+          at: operationAt,
         });
         return routingSuccess(service, parsed.sessionId, selected, "created");
       } catch (error) {
@@ -158,6 +183,7 @@ function activateTaskTool(service: GitContextService): ToolDefinition {
         if (!run || run.conversationId !== conversation.conversationId) {
           return routingError("Task activation requires the current prepared run.");
         }
+        const operationAt = run.startedAt;
         const selected = await service.activateTaskForRun({
           requestId: toolRequestId(context, "activate-task"),
           sessionId: parsed.sessionId,
@@ -165,7 +191,7 @@ function activateTaskTool(service: GitContextService): ToolDefinition {
           runId: run.runId,
           taskId: parsed.taskId,
           route: parsed.route,
-          at: new Date().toISOString(),
+          at: operationAt,
         });
         await service.bindTaskAttachments({
           requestId: toolRequestId(context, "bind-attachments"),
@@ -173,7 +199,7 @@ function activateTaskTool(service: GitContextService): ToolDefinition {
           conversationId: conversation.conversationId,
           runId: selected.run.runId,
           taskId: selected.task.taskId,
-          at: new Date().toISOString(),
+          at: operationAt,
         });
         return routingSuccess(service, parsed.sessionId, selected, "activated");
       } catch (error) {
@@ -270,6 +296,8 @@ function parseCreateInput(input: unknown, context?: ToolExecutionContext): {
   title: string;
   objective: string;
   reason: string;
+  workingDirectory?: string;
+  registrationApprovalId?: string;
 } | ToolResult {
   const record = objectInput(input);
   const sessionId = context?.sessionId?.trim();
@@ -279,7 +307,19 @@ function parseCreateInput(input: unknown, context?: ToolExecutionContext): {
   if (!sessionId || !title || !objective || !reason) {
     return routingError("sessionId, title, objective, and reason are required.");
   }
-  return { sessionId, title, objective, reason };
+  const workingDirectory = stringField(record, "workingDirectory");
+  const registrationApprovalId = stringField(record, "registrationApprovalId");
+  if (registrationApprovalId && !workingDirectory) {
+    return routingError("registrationApprovalId requires workingDirectory.");
+  }
+  return {
+    sessionId,
+    title,
+    objective,
+    reason,
+    ...(workingDirectory ? { workingDirectory } : {}),
+    ...(registrationApprovalId ? { registrationApprovalId } : {}),
+  };
 }
 
 function parseActivateInput(input: unknown, context?: ToolExecutionContext): {

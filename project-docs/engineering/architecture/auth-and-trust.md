@@ -26,11 +26,13 @@ Security-sensitive capabilities:
 - Webhook/event integrations.
 - Git repository and `.ayati/` lifecycle mutation.
 
-The model may select a task and request through the two routing tools, but the
-runtime owns task creation, request allocation, lifecycle-file writes, and Git
-commits. Path checks must resolve symlinks before verifying that a mutation
-remains inside the selected task root. User attachments enter managed storage
-or ignored inbox staging first; they are not trusted for automatic Git commit.
+The model may discover, inspect, and select a task/request through typed Git
+Context tools, but the runtime owns registration, task creation, request
+allocation, lifecycle-file writes, and Git commits. Requested directories must
+be below configured trust roots and pass clean-Git or explicit-baseline policy.
+Path checks resolve symlinks before verifying that mutation remains inside the
+selected task root. User attachments enter managed storage or ignored inbox
+staging first; they are not trusted for automatic Git commit.
 
 Before exposing the daemon beyond local development, review transport auth, CORS, webhook validation, tool policy, filesystem boundaries, memory privacy, artifact access, and secret handling.
 

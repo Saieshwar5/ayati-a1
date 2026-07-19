@@ -138,6 +138,16 @@ describe("task-bound run finalization", () => {
       taskCard: { currentRequest: null, currentSnapshot: "The requested work is complete." },
       requests: [{ id: "R-0001", status: "done" }],
     });
+    expect(fixture.database.prepare([
+      "SELECT current_request_id, current_request_title, current_request_status",
+      "FROM tasks WHERE task_id = ?",
+    ].join(" ")).get(selected.task.taskId)).toEqual({
+      current_request_id: null,
+      current_request_title: null,
+      current_request_status: null,
+    });
+    expect((await fixture.service.findTasks({ view: "unfinished" })).tasks)
+      .not.toContainEqual(expect.objectContaining({ taskId: selected.task.taskId }));
   });
 
   it("commits verified task mutation and engine-owned context exactly once", async () => {

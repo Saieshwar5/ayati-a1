@@ -41,6 +41,20 @@ pnpm --filter ayati-git-context test
 Normal local use starts Git Context through `ayati-main`; the standalone
 commands are mainly for focused service development and debugging.
 
+Git Context clean reset and catalog recovery are preview-first:
+
+```bash
+pnpm context:archive-reset
+pnpm context:archive-reset -- --confirm
+pnpm context:archive-reset -- --confirm --preserve-task-repositories
+pnpm context:catalog-rebuild
+pnpm context:catalog-rebuild -- --confirm
+```
+
+Both mutation commands refuse a live Git Context socket/writer. Catalog
+rebuild requires an empty version-3 catalog and an initialized daily session;
+after an archive reset, start and stop Ayati once before confirming rebuild.
+
 Backend runtime performance benchmark:
 
 ```bash

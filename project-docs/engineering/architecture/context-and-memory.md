@@ -60,6 +60,10 @@ Every accepted provider-handled turn atomically creates one unbound run.
 Read-only exploration can continue without selecting a task. Durable mutation
 requires an explicit task binding:
 
+- `git_context_find_tasks` and `git_context_read_task` discover and inspect
+  likely durable ownership without binding the run.
+- `git_context_inspect_task_location` checks an existing trusted directory
+  before in-place registration.
 - `git_context_create_task` creates and selects a new V1 task and initial
   request.
 - `git_context_activate_task` selects an existing task. V1 calls explicitly
@@ -75,7 +79,8 @@ the assistant asks the user a direct question; the answer arrives as a fresh
 turn and can then select a task explicitly.
 
 No session-global active task grants mutation authority. A visible candidate,
-recent task, or prior selection is useful context only.
+star, recent/frequent signal, or prior selection is useful discovery context
+only.
 
 ## Requests and Runs
 

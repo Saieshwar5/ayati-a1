@@ -4,10 +4,7 @@ import type {
   GetTaskResponse,
   GitContextRequestEnvelope,
   TaskCatalogEntry,
-  TaskCandidate,
   TaskContextProjection,
-  ListTasksRequest,
-  ListTasksResponse,
   SessionId,
   TaskPlacement,
 } from "../contracts.js";
@@ -24,9 +21,9 @@ import {
   allocateSimpleTask,
   readInitializingTasks,
   readTaskCatalogEntry,
-  readTaskCatalogEntries,
   readTaskInitialization,
   type TaskInitializationRecord,
+  type RequestedTaskAllocation,
 } from "../repositories/task-records.js";
 import { readTaskContext } from "../tasks/task-context-reader.js";
 import {
@@ -34,13 +31,19 @@ import {
   ensureSimpleTaskRepository,
   type SimpleTaskCreationHook,
 } from "../tasks/simple-task-repository-creator.js";
+import {
+  consumeRegistrationApproval,
+  TaskLocationService,
+} from "./task-location-service.js";
 
 export interface TaskLifecycleServiceOptions {
   database: ContextDatabase;
   dataRoot: string;
   workspaceRoot: string;
   now: () => string;
+  taskLocations?: TaskLocationService;
   simpleTaskCreationHook?: SimpleTaskCreationHook;
+  onContextRead?: (task: TaskCatalogEntry, context: TaskContextProjection) => void;
 }
 
 export interface CreateSimpleTaskResult {
@@ -50,6 +53,7 @@ export interface CreateSimpleTaskResult {
 
 export interface CreateSimpleTaskInput extends GitContextRequestEnvelope {
   sessionId: SessionId;
+  runId?: string;
   title: string;
   objective: string;
   placement: TaskPlacement;
@@ -60,13 +64,25 @@ export class TaskLifecycleService {
   private readonly database: ContextDatabase;
   private readonly taskRoot: string;
   private readonly now: () => string;
+  private readonly taskLocations: TaskLocationService;
   private readonly simpleTaskCreationHook?: SimpleTaskCreationHook;
+  private readonly onContextRead?: (
+    task: TaskCatalogEntry,
+    context: TaskContextProjection,
+  ) => void;
 
   constructor(options: TaskLifecycleServiceOptions) {
     this.database = options.database;
     this.taskRoot = join(options.workspaceRoot, "tasks");
     this.now = options.now;
+    this.taskLocations = options.taskLocations ?? new TaskLocationService({
+      database: options.database,
+      workspaceRoot: options.workspaceRoot,
+      trustedRoots: [],
+      now: options.now,
+    });
     this.simpleTaskCreationHook = options.simpleTaskCreationHook;
+    this.onContextRead = options.onContextRead;
   }
 
   async createSimpleTask(input: CreateSimpleTaskInput): Promise<CreateSimpleTaskResult> {
@@ -78,6 +94,23 @@ export class TaskLifecycleService {
       operation: "create_simple_task",
       payload: input,
     });
+    let requested: RequestedTaskAllocation | undefined;
+    if (!recovering && input.placement.mode === "requested") {
+      if (!input.runId) {
+        throw new GitContextServiceError({
+          code: "INVALID_REQUEST",
+          message: "Requested task placement requires the current run identity.",
+        });
+      }
+      requested = await this.taskLocations.resolvePlacement({
+        placement: input.placement,
+        sessionId: input.sessionId,
+        runId: input.runId,
+        at: input.at,
+        managedRepositoryPath: "",
+        taskRoot: this.taskRoot,
+      });
+    }
     type CreationRecord = { taskId: string; created: boolean } | CreateSimpleTaskResult;
     const pending = beginRecoverableIdempotent<CreationRecord>({
       database: this.database,
@@ -86,11 +119,19 @@ export class TaskLifecycleService {
       payload: input,
       now: input.at,
       execute: () => {
+        if (requested?.registrationApprovalId) {
+          consumeRegistrationApproval({
+            database: this.database,
+            approvalId: requested.registrationApprovalId,
+            at: input.at,
+          });
+        }
         const task = allocateSimpleTask(
           this.database,
           this.taskRoot,
           input,
           normalized,
+          requested,
         );
         return { taskId: task.taskId, created: true };
       },
@@ -140,64 +181,6 @@ export class TaskLifecycleService {
       },
       context,
     };
-  }
-
-  listTasks(input: ListTasksRequest): ListTasksResponse {
-    const limit = Math.min(Math.max(input.limit ?? 20, 1), 100);
-    return {
-      tasks: readTaskCatalogEntries(this.database, {
-        ...(input.query?.trim() ? { query: input.query.trim() } : {}),
-        limit,
-      }).map((task) => ({
-        taskId: task.taskId,
-        title: task.title,
-        objective: task.objective,
-        status: task.status,
-        head: task.head,
-        workingDirectory: task.workingPath,
-        updatedAt: task.updatedAt,
-      })),
-    };
-  }
-
-  async listRoutingCandidates(input: ListTasksRequest): Promise<TaskCandidate[]> {
-    const limit = Math.min(Math.max(input.limit ?? 20, 1), 100);
-    const tasks = readTaskCatalogEntries(this.database, {
-      ...(input.query?.trim() ? { query: input.query.trim() } : {}),
-      limit,
-    });
-    return await Promise.all(tasks.map(async (task): Promise<TaskCandidate> => {
-      const base: TaskCandidate = {
-        taskId: task.taskId,
-        title: task.title,
-        objective: task.objective,
-        status: task.status,
-        head: task.head,
-        workingDirectory: task.workingPath,
-        updatedAt: task.updatedAt,
-      };
-      try {
-        const context = await this.readContext(task);
-        return {
-          ...base,
-          title: context.title,
-          objective: context.objective,
-          lifecycleStatus: context.lifecycleStatus,
-          repositoryHealth: context.repositoryHealth,
-          ...(context.currentRequest
-            ? {
-                currentRequest: {
-                  id: context.currentRequest.id,
-                  title: context.currentRequest.title,
-                  status: context.currentRequest.status,
-                },
-              }
-            : {}),
-        };
-      } catch {
-        return { ...base, repositoryHealth: "unavailable" };
-      }
-    }));
   }
 
   async recoverInitializingState(): Promise<void> {
@@ -259,9 +242,11 @@ export class TaskLifecycleService {
   async readContext(
     task: TaskCatalogEntry,
   ): Promise<TaskContextProjection> {
-    return await readTaskContext(task, {
+    const context = await readTaskContext(task, {
       taskRoot: this.taskRoot,
     });
+    this.onContextRead?.(task, context);
+    return context;
   }
 }
 
@@ -293,12 +278,6 @@ function validateTaskId(taskId: string): void {
 }
 
 function validateSimpleTaskCreationInput(input: CreateSimpleTaskInput): void {
-  if (input.placement.mode !== "managed") {
-    throw new GitContextServiceError({
-      code: "INVALID_REQUEST",
-      message: "V1 task creation currently supports managed placement only.",
-    });
-  }
   if (!Number.isFinite(Date.parse(input.at))) {
     throw new GitContextServiceError({
       code: "INVALID_REQUEST",

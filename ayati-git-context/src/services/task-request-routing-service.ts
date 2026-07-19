@@ -64,6 +64,8 @@ export class TaskRequestRoutingService {
       taskRoot: this.options.taskRoot,
       repositoryPath: task.repositoryPath,
       expectedTaskId: input.taskId,
+      placement: task.placement,
+      trustedRoot: task.trustedRoot,
       requestReadMode: "all",
     });
     if (validation.head !== input.expectedTaskHead || validation.branch !== task.branch) {
@@ -174,10 +176,20 @@ export class TaskRequestRoutingService {
     if (!record || (record.phase !== "planned" && record.phase !== "authority_acquired")) {
       return context;
     }
+    const task = readTaskInitialization(this.options.database, context.task.taskId);
+    if (!task?.head) {
+      throw new GitContextServiceError({
+        code: "TASK_NOT_FOUND",
+        message: "Task context projection requires an active task.",
+        details: { runId, taskId: context.task.taskId },
+      });
+    }
     const validation = await validateTaskRepository({
       taskRoot: this.options.taskRoot,
       repositoryPath: context.task.repositoryPath,
       expectedTaskId: context.task.taskId,
+      placement: task.placement,
+      trustedRoot: task.trustedRoot,
       requestReadMode: "all",
     });
     const planned = resolvePlannedTaskRequestState(record, validation);

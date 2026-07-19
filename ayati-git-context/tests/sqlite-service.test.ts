@@ -17,14 +17,14 @@ afterEach(async () => {
   }));
 });
 
-describe("SQLite Git Context version-2 baseline", () => {
-  it("creates only the clean version-2 schema with durable SQLite settings", async () => {
+describe("SQLite Git Context version-3 baseline", () => {
+  it("creates only the clean version-3 schema with durable SQLite settings", async () => {
     const fixture = await createFixture();
 
-    expect(latestSchemaVersion()).toBe(2);
+    expect(latestSchemaVersion()).toBe(3);
     expect(fixture.database.prepare(
       "SELECT version FROM schema_metadata WHERE singleton = 1",
-    ).get()).toEqual({ version: 2 });
+    ).get()).toEqual({ version: 3 });
     expect((fixture.database.prepare([
       "SELECT name FROM sqlite_schema",
       "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
@@ -39,10 +39,19 @@ describe("SQLite Git Context version-2 baseline", () => {
       "schema_metadata",
       "session_attachments",
       "sessions",
+      "task_accesses",
       "task_attachment_bindings",
       "task_finalizations",
       "task_mutation_authorities",
+      "task_preferences",
+      "task_registration_inspections",
       "task_request_route_plans",
+      "task_search",
+      "task_search_config",
+      "task_search_content",
+      "task_search_data",
+      "task_search_docsize",
+      "task_search_idx",
       "tasks",
       "unbound_run_finalizations",
     ]);
@@ -61,7 +70,7 @@ describe("SQLite Git Context version-2 baseline", () => {
     old.close();
 
     await expect(ContextDatabase.open({ path: databasePath })).rejects.toThrow(
-      "The configured database uses a pre-V2 or unsupported schema and was not modified.",
+      "The configured database uses a pre-V3 or unsupported schema and was not modified.",
     );
     const unchanged = new DatabaseSync(databasePath);
     expect(unchanged.prepare([

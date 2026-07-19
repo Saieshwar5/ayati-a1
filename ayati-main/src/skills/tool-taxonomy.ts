@@ -14,6 +14,7 @@ export type ToolRole =
   | "enquiry_read"
   | "task_routing"
   | "task_discovery"
+  | "task_preference"
   | "task_mutation"
   | "verification"
   | "evidence_access"
@@ -233,6 +234,10 @@ export const TOOL_TAXONOMY: Readonly<Record<string, ToolTaxonomyEntry>> = buildT
 
   git_context_activate_task: control(["task_routing"], "single_use", ROUTING_ONLY, { loadGroups: ["task:routing"] }),
   git_context_create_task: control(["task_routing"], "single_use", ROUTING_ONLY, { loadGroups: ["task:routing"] }),
+  git_context_find_tasks: search(["enquiry_read", "task_discovery"], "run", READ_ONLY_PHASES, { loadGroups: ["task:discovery"] }),
+  git_context_read_task: readOnly(["enquiry_read", "task_discovery", "evidence_access"], "run", READ_ONLY_PHASES, { loadGroups: ["task:discovery"] }),
+  git_context_inspect_task_location: control(["task_routing"], "one_step", ["routing"], { loadGroups: ["task:routing"] }),
+  git_context_set_task_star: control(["task_preference"], "one_step", ["routing", "task_bound"], { loadGroups: ["task:preferences"] }),
 
   workspace_get_state: readOnly(["enquiry_read", "ui_control"], "phase", ["enquiry", "task_bound"], { loadGroups: ["ui:workspace"] }),
   workspace_set_layout: workspaceMutation(["ui_control"], "one_step", TASK_BOUND_ONLY, { loadGroups: ["ui:workspace"] }),
@@ -329,6 +334,7 @@ export function summarizeToolTaxonomy(toolNames: string[]): ToolTaxonomySummary 
     "enquiry_read",
     "task_routing",
     "task_discovery",
+    "task_preference",
     "task_mutation",
     "verification",
     "evidence_access",

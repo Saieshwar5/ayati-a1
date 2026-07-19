@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,7 +34,7 @@ afterEach(async () => {
   }));
 });
 
-describe("Git Context protocol 34 HTTP transport", () => {
+describe("Git Context protocol 35 HTTP transport", () => {
   it("round-trips atomic preparation, one step, and one finalization over TCP", async () => {
     const service = await createService();
     const { client } = await startTcpServer(service);
@@ -151,6 +151,49 @@ describe("Git Context protocol 34 HTTP transport", () => {
       taskCreated: true,
       taskRequestDecision: "initial",
     });
+  });
+
+  it("round-trips trusted location inspection without binding the run", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ayati-http-location-"));
+    roots.push(root);
+    const workspaceRoot = join(root, "workspace");
+    const directory = join(workspaceRoot, "existing-work");
+    await mkdir(directory, { recursive: true });
+    const database = await ContextDatabase.open({ path: join(root, "context.sqlite") });
+    const service = new SqliteGitContextService({
+      database,
+      dataRoot: join(root, "session-data"),
+      workspaceRoot,
+      now: () => "2026-07-19T12:00:00+05:30",
+    });
+    services.push(service);
+    const { client } = await startTcpServer(service);
+    const prepared = await client.prepareContextTurn({
+      requestId: "REQ-http-location-prepare",
+      date: "2026-07-19",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      role: "user",
+      content: "Use this existing directory.",
+      at: "2026-07-19T12:00:00+05:30",
+    });
+
+    const inspected = await client.inspectTaskLocation({
+      requestId: "REQ-http-location-inspect",
+      sessionId: prepared.session.sessionId,
+      conversationId: prepared.conversation.conversationId,
+      runId: prepared.run.runId,
+      workingDirectory: directory,
+      at: "2026-07-19T12:00:01+05:30",
+    });
+
+    expect(inspected).toMatchObject({
+      canonicalPath: directory,
+      trustedRoot: workspaceRoot,
+      kind: "empty_directory",
+    });
+    expect((await client.getActiveContext({ sessionId: prepared.session.sessionId }))
+      .run?.run.taskBinding).toBeUndefined();
   });
 
   it("propagates request, session, and run correlation into transport events", async () => {

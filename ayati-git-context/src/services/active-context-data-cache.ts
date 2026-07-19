@@ -14,19 +14,25 @@ interface TaskCandidateCacheEntry {
   candidates: TaskCandidate[];
 }
 
+export interface TaskCandidateLoadInput {
+  limit: number;
+  sessionId?: string;
+  currentText?: string;
+}
+
 export class ActiveContextDataCache {
   private readonly readContextBySession = new Map<string, ReadContextProjection>();
   private readonly attachmentsBySession = new Map<
     string,
     SessionAttachmentsProjection | null
   >();
-  private readonly taskCandidatesByLimit = new Map<number, TaskCandidateCacheEntry>();
+  private readonly taskCandidatesByKey = new Map<string, TaskCandidateCacheEntry>();
 
   constructor(private readonly options: {
     database: ContextDatabase;
     loadReadContext: (sessionId: string) => ReadContextProjection;
     loadAttachments: (sessionId: string) => SessionAttachmentsProjection | undefined;
-    loadTaskCandidates: (limit: number) => Promise<TaskCandidate[]>;
+    loadTaskCandidates: (input: TaskCandidateLoadInput) => Promise<TaskCandidate[]>;
     taskCandidateMaxAgeMs: number;
     now: () => string;
   }) {}
@@ -47,9 +53,10 @@ export class ActiveContextDataCache {
     return loaded;
   }
 
-  async taskCandidates(limit: number): Promise<TaskCandidate[]> {
+  async taskCandidates(input: TaskCandidateLoadInput): Promise<TaskCandidate[]> {
     const catalogRevision = taskCatalogRevision(this.options.database);
-    const cached = this.taskCandidatesByLimit.get(limit);
+    const key = taskCandidateKey(input);
+    const cached = this.taskCandidatesByKey.get(key);
     const ageMs = cached
       ? timestampMilliseconds(this.options.now()) - cached.loadedAtMs
       : undefined;
@@ -60,8 +67,8 @@ export class ActiveContextDataCache {
       && ageMs <= this.options.taskCandidateMaxAgeMs) {
       return cached.candidates;
     }
-    const candidates = await this.options.loadTaskCandidates(limit);
-    this.taskCandidatesByLimit.set(limit, {
+    const candidates = await this.options.loadTaskCandidates(input);
+    this.taskCandidatesByKey.set(key, {
       catalogRevision,
       loadedAtMs: timestampMilliseconds(this.options.now()),
       candidates,
@@ -78,23 +85,39 @@ export class ActiveContextDataCache {
   }
 
   invalidateTaskCandidates(): void {
-    this.taskCandidatesByLimit.clear();
+    this.taskCandidatesByKey.clear();
   }
 
   clear(): void {
     this.readContextBySession.clear();
     this.attachmentsBySession.clear();
-    this.taskCandidatesByLimit.clear();
+    this.taskCandidatesByKey.clear();
   }
 }
 
 function taskCatalogRevision(database: ContextDatabase): string {
   const rows = database.prepare([
-    "SELECT task_id, repository_path, branch,",
-    "head_sha, title_cache, objective_cache, status, updated_at",
+    "SELECT task_id, repository_path, branch, head_sha, title_cache, objective_cache,",
+    "status, lifecycle_status, repository_health, current_request_id,",
+    "current_request_title, current_request_status, updated_at",
     "FROM tasks ORDER BY task_id",
   ].join(" ")).all() as unknown[];
-  return hash(JSON.stringify(rows));
+  const preferences = database.prepare([
+    "SELECT task_id, starred, starred_at, updated_at",
+    "FROM task_preferences ORDER BY task_id",
+  ].join(" ")).all() as unknown[];
+  const accesses = database.prepare([
+    "SELECT task_id, run_id, access_kind, accessed_at",
+    "FROM task_accesses ORDER BY task_id, run_id, access_kind",
+  ].join(" ")).all() as unknown[];
+  return hash(JSON.stringify({ rows, preferences, accesses }));
+}
+
+function taskCandidateKey(input: TaskCandidateLoadInput): string {
+  return String(input.limit) + ":" + hash(JSON.stringify({
+    sessionId: input.sessionId ?? null,
+    currentText: input.currentText ?? null,
+  }));
 }
 
 function timestampMilliseconds(value: string): number {

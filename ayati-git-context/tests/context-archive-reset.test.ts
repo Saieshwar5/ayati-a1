@@ -83,6 +83,38 @@ describe("context archive reset", () => {
       });
   });
 
+  it("can preserve task repositories while resetting the catalog and session state", async () => {
+    const fixture = await createFixture();
+    await createRuntimeState(fixture);
+
+    const result = await runArchiveReset(fixture.env, [
+      "--confirm",
+      "--preserve-task-repositories",
+    ]);
+
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    const archiveRoot = result.stdout.trim().replace("Archived Git Context state to ", "");
+    await expect(access(fixture.databasePath)).rejects.toThrow();
+    await expect(access(fixture.sessionRoot)).rejects.toThrow();
+    await expect(access(join(fixture.taskRoot, "task.json"))).resolves.toBeUndefined();
+    await expect(access(join(archiveRoot, "tasks"))).rejects.toThrow();
+    const manifest = JSON.parse(
+      await readFile(join(archiveRoot, "manifest.json"), "utf8"),
+    ) as { status: string; preserveTaskRepositories: boolean; entries: unknown[] };
+    expect(manifest).toMatchObject({
+      status: "completed",
+      preserveTaskRepositories: true,
+    });
+    expect(manifest.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        label: "task-root",
+        action: "preserve",
+        archived: false,
+        preserved: true,
+      }),
+    ]));
+  });
+
   it("refuses a broad database directory before creating an archive", async () => {
     const fixture = await createFixture();
 

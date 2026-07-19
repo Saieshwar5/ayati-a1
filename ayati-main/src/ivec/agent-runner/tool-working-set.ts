@@ -4,7 +4,9 @@ import type { ActToolCallRecord, LoopState } from "../types.js";
 import type { ToolCatalog, ToolCatalogEntry } from "./tool-catalog.js";
 import {
   GIT_CONTEXT_UNBOUND_RUN_ROUTING_TOOL_NAMES,
+  GIT_CONTEXT_PREFERENCE_TOOL_NAMES,
   GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
+  GIT_CONTEXT_ROUTING_SUPPORT_TOOL_NAMES,
   GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
   isGitContextTurnRoutingToolName,
 } from "../../skills/builtins/git-context/tool-policy.js";
@@ -531,6 +533,8 @@ function buildDeterministicLoadRequest(
     return {
       toolNames: [
         ...GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
+        ...GIT_CONTEXT_PREFERENCE_TOOL_NAMES,
+        ...GIT_CONTEXT_ROUTING_SUPPORT_TOOL_NAMES,
         ...GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
       ],
     };

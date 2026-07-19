@@ -117,11 +117,19 @@ normal project content and remain valid.
 
 ## Task Routing Contract
 
+`git_context_find_tasks` searches durable work by explained deterministic
+reasons, and `git_context_read_task` opens one candidate without binding it.
+`git_context_set_task_star` changes only an explicit user preference.
+`git_context_inspect_task_location` is a pre-binding control that may create a
+short-lived approval receipt but never changes the inspected directory.
+
 The model-facing routing tools are `git_context_create_task` and
 `git_context_activate_task`. They are single-use control-purpose tools with a
 context-mutation effect, not general filesystem tools.
 
-`git_context_create_task` creates a new V1 repository and initial request.
+`git_context_create_task` creates a new V1 repository and initial request. It
+may use managed placement or a requested directory that passed the trusted
+registration policy.
 `git_context_activate_task` selects an existing task; for V1 it must submit one
 of these explicit decisions:
 
@@ -133,9 +141,9 @@ harness context containing the selected request. V1 never requires a mount.
 The model must not edit `.ayati/`, commit, or manufacture task/request
 identifiers itself.
 
-Fresh model tool calls currently generate a new operation identity internally.
-Until a stable replay key is carried across retries, callers must not describe
-task creation as fully idempotent across independently repeated model calls.
+Model-facing operations derive replay identity from the immutable run id and
+native tool-call id. A transport retry of the same logical call is idempotent;
+a genuinely new model call is a new decision and therefore a new operation.
 
 ## Task Mutation and External Outcomes
 

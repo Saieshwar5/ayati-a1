@@ -12,21 +12,29 @@ import type {
   EnsureActiveSessionResponse,
   FinalizeRunRequest,
   FinalizeRunResponse,
+  FindTasksRequest,
+  FindTasksResponse,
   GetActiveContextRequest,
   GetTaskRequest,
   GetTaskResponse,
   HealthResponse,
+  InspectTaskLocationRequest,
+  InspectTaskLocationResponse,
   ListTasksRequest,
   ListTasksResponse,
   PlanTaskRequestRouteRequest,
   PlanTaskRequestRouteResponse,
   PrepareContextTurnRequest,
   PrepareContextTurnResponse,
+  ReadTaskRequest,
+  ReadTaskResponse,
   RecordRunStepRequest,
   RecordRunStepResponse,
   RecordSessionAttachmentsRequest,
   RecordSessionAttachmentsResponse,
   SelectedTaskForRunResponse,
+  SetTaskStarRequest,
+  SetTaskStarResponse,
   VerifyMutationRequest,
   VerifyMutationResponse,
 } from "./contracts.js";
@@ -42,7 +50,11 @@ export interface GitContextService {
     input: PlanTaskRequestRouteRequest,
   ): Promise<PlanTaskRequestRouteResponse>;
   listTasks(input: ListTasksRequest): Promise<ListTasksResponse>;
+  findTasks(input: FindTasksRequest): Promise<FindTasksResponse>;
+  inspectTaskLocation(input: InspectTaskLocationRequest): Promise<InspectTaskLocationResponse>;
   getTask(input: GetTaskRequest): Promise<GetTaskResponse>;
+  readTask(input: ReadTaskRequest): Promise<ReadTaskResponse>;
+  setTaskStar(input: SetTaskStarRequest): Promise<SetTaskStarResponse>;
   recordSessionAttachments(
     input: RecordSessionAttachmentsRequest,
   ): Promise<RecordSessionAttachmentsResponse>;

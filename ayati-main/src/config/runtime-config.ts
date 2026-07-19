@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { LoopConfig } from "../ivec/types.js";
 
@@ -52,6 +52,7 @@ export interface GitContextRuntimeConfig {
   databasePath: string;
   dataRoot: string;
   workspaceRoot: string;
+  trustedRoots: string[];
   socketPath: string;
   managed: boolean;
   startTimeoutMs: number;
@@ -151,6 +152,7 @@ function loadGitContextRuntimeConfig(
       join(workspaceRoot, ".ayati-context"),
     ),
     workspaceRoot,
+    trustedRoots: resolveTrustedRoots(env["AYATI_GIT_CONTEXT_TRUSTED_ROOTS"], workspaceRoot),
     socketPath: resolveConfiguredPath(
       env["AYATI_GIT_CONTEXT_SOCKET"],
       join(storeDir, "git-context.sock"),
@@ -171,6 +173,14 @@ function loadGitContextRuntimeConfig(
     timezone: trimOptional(env["AYATI_GIT_CONTEXT_TIMEZONE"]) ?? DEFAULT_GIT_CONTEXT_TIMEZONE,
     agentId: trimOptional(env["AYATI_GIT_CONTEXT_AGENT_ID"]) ?? DEFAULT_GIT_CONTEXT_AGENT_ID,
   };
+}
+
+function resolveTrustedRoots(rawValue: string | undefined, workspaceRoot: string): string[] {
+  if (!rawValue?.trim()) return [];
+  return [...new Set(rawValue.split(delimiter)
+    .map((entry) => normalizeSpecialPath(entry.trim()))
+    .filter((entry): entry is string => Boolean(entry))
+    .map((entry) => isAbsolute(entry) ? resolve(entry) : resolve(workspaceRoot, entry)))];
 }
 
 function resolveConfiguredPath(rawValue: string | undefined, fallback: string): string {

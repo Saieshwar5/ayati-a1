@@ -54,24 +54,34 @@ describe("active context cache scope", () => {
     expect(cache.readContext("S-one")).toMatchObject({ revision: "read-1" });
     expect(cache.attachments("S-one")).toBeUndefined();
     expect(cache.attachments("S-one")).toBeUndefined();
-    await cache.taskCandidates(20);
-    await cache.taskCandidates(20);
+    const candidateInput = {
+      limit: 20,
+      sessionId: "S-one",
+      currentText: "Continue the cache task.",
+    };
+    await cache.taskCandidates(candidateInput);
+    await cache.taskCandidates(candidateInput);
     expect({ readLoads, attachmentLoads, candidateLoads }).toEqual({
       readLoads: 1,
       attachmentLoads: 1,
       candidateLoads: 1,
     });
+    await cache.taskCandidates({
+      ...candidateInput,
+      currentText: "Open a different workstream.",
+    });
+    expect(candidateLoads).toBe(2);
 
     cache.invalidateReadContext("S-one");
     cache.invalidateAttachments("S-one");
     cache.invalidateTaskCandidates();
     cache.readContext("S-one");
     cache.attachments("S-one");
-    await cache.taskCandidates(20);
+    await cache.taskCandidates(candidateInput);
     expect({ readLoads, attachmentLoads, candidateLoads }).toEqual({
       readLoads: 2,
       attachmentLoads: 2,
-      candidateLoads: 2,
+      candidateLoads: 3,
     });
     database.close();
   });

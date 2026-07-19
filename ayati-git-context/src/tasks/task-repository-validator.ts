@@ -1,5 +1,5 @@
 import { lstat, realpath } from "node:fs/promises";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { GitContextServiceError } from "../errors.js";
 import { runGit, runGitRaw } from "../git/git-process.js";
 import { parseTaskCard, type TaskCard } from "./task-card.js";
@@ -30,15 +30,21 @@ export interface TaskRepositoryValidation {
   workingTreeChanges: string[];
 }
 
-const REQUIRED_INBOX_IGNORE_RULES = [
+const MANAGED_INBOX_IGNORE_RULES = [
   ".ayati/inbox/*",
   "!.ayati/inbox/.gitkeep",
+] as const;
+const REQUESTED_INBOX_IGNORE_RULES = [
+  "inbox/*",
+  "!inbox/.gitkeep",
 ] as const;
 
 export async function validateTaskRepository(input: {
   taskRoot: string;
   repositoryPath: string;
   expectedTaskId?: string;
+  placement?: "managed" | "requested";
+  trustedRoot?: string;
   requestReadMode?: "all" | "current";
 }): Promise<TaskRepositoryValidation> {
   try {
@@ -56,14 +62,19 @@ async function validate(input: {
   taskRoot: string;
   repositoryPath: string;
   expectedTaskId?: string;
+  placement?: "managed" | "requested";
+  trustedRoot?: string;
   requestReadMode?: "all" | "current";
 }): Promise<TaskRepositoryValidation> {
-  const root = await realpath(input.taskRoot).catch((error: NodeJS.ErrnoException) => {
-    throw invalidRepository("Configured task root is unavailable.", {
-      taskRoot: input.taskRoot,
-      cause: error.message,
-    });
-  });
+  const placement = input.placement ?? "managed";
+  const root = placement === "managed"
+    ? await realpath(input.taskRoot).catch((error: NodeJS.ErrnoException) => {
+        throw invalidRepository("Configured task root is unavailable.", {
+          taskRoot: input.taskRoot,
+          cause: error.message,
+        });
+      })
+    : resolve(input.taskRoot);
   const stat = await lstat(input.repositoryPath).catch((error: NodeJS.ErrnoException) => {
     throw invalidRepository("Task repository directory is unavailable.", {
       repositoryPath: input.repositoryPath,
@@ -77,11 +88,23 @@ async function validate(input: {
     });
   }
   const repositoryPath = await realpath(input.repositoryPath);
-  if (dirname(repositoryPath) !== root) {
-    throw invalidRepository("Task repository must be a direct child of the configured task root.", {
-      taskRoot: root,
-      repositoryPath,
-    });
+  if (placement === "managed") {
+    if (dirname(repositoryPath) !== root) {
+      throw invalidRepository("Managed task repository must be a direct child of the task root.", {
+        taskRoot: root,
+        repositoryPath,
+      });
+    }
+  } else {
+    const trustedRoot = input.trustedRoot
+      ? await realpath(input.trustedRoot).catch(() => undefined)
+      : undefined;
+    if (!trustedRoot || !isWithinPath(trustedRoot, repositoryPath)) {
+      throw invalidRepository("Requested task repository is outside its recorded trusted root.", {
+        trustedRoot: input.trustedRoot,
+        repositoryPath,
+      });
+    }
   }
   const gitRoot = resolve(await git(repositoryPath, ["rev-parse", "--show-toplevel"]));
   if (gitRoot !== resolve(repositoryPath)) {
@@ -120,7 +143,7 @@ async function validate(input: {
     await committedFile(repositoryPath, TASK_CARD_PATH),
     input.expectedTaskId,
   );
-  if (!basename(repositoryPath).startsWith(taskCard.id + "-")) {
+  if (placement === "managed" && !basename(repositoryPath).startsWith(taskCard.id + "-")) {
     throw new GitContextServiceError({
       code: "TASK_ID_MISMATCH",
       message: "Task repository directory does not begin with its task identity.",
@@ -142,7 +165,11 @@ async function validate(input: {
   );
   validateReferenceRequests(references, requestPaths);
   await validateAdoptedPaths(repositoryPath, references);
-  validateInboxIgnore(await committedFile(repositoryPath, ".gitignore"));
+  const ignorePath = placement === "managed" ? ".gitignore" : ".ayati/.gitignore";
+  validateInboxIgnore(
+    await committedFile(repositoryPath, ignorePath),
+    placement === "managed" ? MANAGED_INBOX_IGNORE_RULES : REQUESTED_INBOX_IGNORE_RULES,
+  );
 
   const importantPathPresence = await Promise.all(taskCard.importantPaths.map(async (entry) => ({
     path: entry.path,
@@ -333,9 +360,9 @@ async function validateAdoptedPaths(
   }
 }
 
-function validateInboxIgnore(content: string): void {
+function validateInboxIgnore(content: string, requiredRules: readonly string[]): void {
   const lines = new Set(content.replaceAll("\r\n", "\n").split("\n").map((line) => line.trim()));
-  const missing = REQUIRED_INBOX_IGNORE_RULES.filter((rule) => !lines.has(rule));
+  const missing = requiredRules.filter((rule) => !lines.has(rule));
   if (missing.length > 0) {
     throw invalidRepository("Task repository is missing required inbox ignore rules.", {
       missingRules: missing,
@@ -348,6 +375,7 @@ function validateAyatiPaths(paths: string[]): void {
     && path !== TASK_CARD_PATH
     && path !== TASK_REFERENCES_PATH
     && path !== TASK_INBOX_KEEP_PATH
+    && path !== ".ayati/.gitignore"
     && !path.startsWith(TASK_REQUESTS_DIRECTORY + "/"));
   const trackedInbox = paths.filter((path) => path.startsWith(".ayati/inbox/")
     && path !== TASK_INBOX_KEEP_PATH);
@@ -356,6 +384,11 @@ function validateAyatiPaths(paths: string[]): void {
       unexpectedPaths: [...new Set([...unexpected, ...trackedInbox])],
     });
   }
+}
+
+function isWithinPath(parent: string, candidate: string): boolean {
+  const path = relative(resolve(parent), resolve(candidate));
+  return path === "" || (path !== ".." && !path.startsWith(".." + sep) && !isAbsolute(path));
 }
 
 function requireTracked(tracked: ReadonlySet<string>, path: string): void {

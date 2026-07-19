@@ -13,6 +13,7 @@ export interface GitContextServerRuntimeOptions {
   databasePath: string;
   dataRoot: string;
   workspaceRoot?: string;
+  trustedRoots?: string[];
   timezone?: string;
   agentId?: string;
   socketPath: string;
@@ -61,6 +62,7 @@ export async function startGitContextServerRuntime(
       database,
       dataRoot: options.dataRoot,
       workspaceRoot,
+      trustedRoots: options.trustedRoots ?? [],
       observer,
     });
     const at = new Date().toISOString();

@@ -12,6 +12,7 @@
     "start:main": "pnpm --filter ayati-main start",
     "start:git-context": "pnpm --filter ayati-git-context start",
     "context:archive-reset": "node --env-file-if-exists=.env scripts/context-archive-reset.mjs",
+    "context:catalog-rebuild": "pnpm --filter ayati-git-context build && node --env-file-if-exists=.env scripts/context-catalog-rebuild.mjs",
     "start:main:feedback": "AYATI_TEST_AGENT=1 AYATI_FEEDBACK_TRACE=1 pnpm --filter ayati-main start",
     "feedback:git-context": "node scripts/git-context-feedback-report.mjs",
     "start:cli": "pnpm --filter ayati-cli start",

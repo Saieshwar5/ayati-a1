@@ -17,11 +17,11 @@ Main runtime flow:
 3. The backend sends conversation and context lifecycle requests through the
    typed Git Context client to an independently managed local server over a
    Unix socket. The server alone owns context SQLite and Git writes.
-4. The context server returns active session, task candidates with stable
-   working directories, selected task, and run context. New durable work uses
-   one managed `T-*` repository. Selecting an existing V1 task requires an
-   explicit request decision; no session-global active task silently owns a
-   mutation.
+4. The context server returns active session, explained durable-work
+   candidates, optional selected task, and run context. New work uses a
+   managed repository or a safely registered trusted directory. Selecting an
+   existing V1 task requires an explicit request decision; no session-global
+   active task silently owns a mutation.
 5. `IVecEngine` builds static decision context and enters the decision-action-reducer runner.
 6. The decision model returns direct assistant text for normal terminal
    replies, or chooses exactly one native tool call for tool loading,

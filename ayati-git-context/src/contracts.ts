@@ -1,4 +1,4 @@
-export const GIT_CONTEXT_PROTOCOL_VERSION = 34;
+export const GIT_CONTEXT_PROTOCOL_VERSION = 35;
 
 export type SessionId = string;
 export type TaskId = string;
@@ -64,6 +64,9 @@ export interface TaskCatalogEntry extends TaskRef {
   title: string;
   objective: string;
   status: TaskStatus;
+  placement: "managed" | "requested";
+  trustedRoot?: string;
+  registrationHeadBefore?: string;
   createdSessionId: SessionId;
   createdAt: string;
   updatedAt: string;
@@ -333,6 +336,27 @@ export interface TaskContextProjection {
   };
 }
 
+export type TaskDiscoveryReason =
+  | "exact_task_id"
+  | "exact_title"
+  | "owned_path"
+  | "direct_continuation"
+  | "matching_request"
+  | "text_match"
+  | "unfinished_request"
+  | "starred"
+  | "recent"
+  | "frequent";
+
+export type TaskDiscoveryTier = "definite" | "probable" | "candidate";
+
+export type TaskDiscoveryView =
+  | "relevant"
+  | "unfinished"
+  | "starred"
+  | "recent"
+  | "frequent";
+
 export interface TaskCandidate {
   taskId: TaskId;
   title: string;
@@ -348,6 +372,13 @@ export interface TaskCandidate {
   head: string;
   workingDirectory: string;
   updatedAt: string;
+  discovery: {
+    tier: TaskDiscoveryTier;
+    reasons: TaskDiscoveryReason[];
+  };
+  starred: boolean;
+  lastOpenedAt?: string;
+  boundRunsLast30Days: number;
 }
 
 export interface RunContextProjection {
@@ -442,6 +473,8 @@ export type TaskPlacement =
       mode: "requested";
       /** Exact user-requested task directory. Relative paths resolve from the configured workspace. */
       workingDirectory: string;
+      /** Required only after an approved non-Git directory inspection. */
+      registrationApprovalId?: string;
     };
 
 export interface ListTasksRequest {
@@ -453,6 +486,22 @@ export interface ListTasksResponse {
   tasks: TaskCandidate[];
 }
 
+export interface FindTasksRequest {
+  query?: string;
+  paths?: string[];
+  view?: TaskDiscoveryView;
+  includeArchived?: boolean;
+  limit?: number;
+  /** Enables direct-continuation discovery for the current session. */
+  sessionId?: SessionId;
+  /** Current ingress text. It is used only for deterministic candidate discovery. */
+  currentText?: string;
+}
+
+export interface FindTasksResponse {
+  tasks: TaskCandidate[];
+}
+
 export interface GetTaskRequest {
   taskId: TaskId;
 }
@@ -461,6 +510,61 @@ export interface GetTaskResponse {
   task: TaskCatalogEntry;
   /** Durable task context. */
   context?: TaskContextProjection;
+}
+
+export interface ReadTaskRequest extends GitContextRequestEnvelope {
+  sessionId: SessionId;
+  runId: RunId;
+  taskId: TaskId;
+  at: string;
+}
+
+export interface ReadTaskResponse extends GetTaskResponse {
+  opened: true;
+}
+
+export interface SetTaskStarRequest extends GitContextRequestEnvelope {
+  sessionId: SessionId;
+  runId: RunId;
+  taskId: TaskId;
+  starred: boolean;
+  at: string;
+}
+
+export interface SetTaskStarResponse {
+  taskId: TaskId;
+  starred: boolean;
+  starredAt?: string;
+}
+
+export type TaskLocationKind =
+  | "empty_directory"
+  | "clean_git_repository"
+  | "dirty_git_repository"
+  | "non_git_directory";
+
+export interface InspectTaskLocationRequest extends GitContextRequestEnvelope {
+  sessionId: SessionId;
+  conversationId: ConversationId;
+  runId: RunId;
+  workingDirectory: string;
+  at: string;
+}
+
+export interface InspectTaskLocationResponse {
+  canonicalPath: string;
+  kind: TaskLocationKind;
+  trustedRoot: string;
+  branch?: string;
+  head?: string;
+  changes?: string[];
+  entryCount: number;
+  totalBytes: number;
+  proposedPaths: string[];
+  excludedPaths: string[];
+  warnings: string[];
+  registrationApprovalId?: string;
+  approvalExpiresAt?: string;
 }
 
 export interface SelectTaskForRunInput {
@@ -743,7 +847,38 @@ function isTaskPlacement(value: unknown): value is TaskPlacement {
   }
   return value["mode"] === "requested"
     && isBoundedString(value["workingDirectory"], 4_096)
-    && Object.keys(value).every((key) => key === "mode" || key === "workingDirectory");
+    && optionalNonEmptyString(value["registrationApprovalId"])
+    && Object.keys(value).every((key) => key === "mode"
+      || key === "workingDirectory"
+      || key === "registrationApprovalId");
+}
+
+export function isReadTaskRequest(value: unknown): value is ReadTaskRequest {
+  return isRequestEnvelope(value)
+    && isNonEmptyString(value["sessionId"])
+    && isNonEmptyString(value["runId"])
+    && /^T-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
+    && isNonEmptyString(value["at"]);
+}
+
+export function isSetTaskStarRequest(value: unknown): value is SetTaskStarRequest {
+  return isRequestEnvelope(value)
+    && isNonEmptyString(value["sessionId"])
+    && isNonEmptyString(value["runId"])
+    && /^T-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
+    && typeof value["starred"] === "boolean"
+    && isNonEmptyString(value["at"]);
+}
+
+export function isInspectTaskLocationRequest(
+  value: unknown,
+): value is InspectTaskLocationRequest {
+  return isRequestEnvelope(value)
+    && isNonEmptyString(value["sessionId"])
+    && isNonEmptyString(value["conversationId"])
+    && isNonEmptyString(value["runId"])
+    && isBoundedString(value["workingDirectory"], 4_096)
+    && isNonEmptyString(value["at"]);
 }
 
 export function isActivateTaskForRunRequest(value: unknown): value is ActivateTaskForRunRequest {

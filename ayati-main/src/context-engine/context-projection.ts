@@ -60,6 +60,10 @@ export function buildContextEngineProjection(
       head: task.head,
       workingDirectory: task.workingDirectory,
       updatedAt: task.updatedAt,
+      discovery: task.discovery,
+      starred: task.starred,
+      ...(task.lastOpenedAt ? { lastOpenedAt: task.lastOpenedAt } : {}),
+      boundRunsLast30Days: task.boundRunsLast30Days,
     })),
     ...(taskBound && activeTask
       ? {

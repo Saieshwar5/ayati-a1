@@ -382,6 +382,7 @@ describe("ToolWorkingSetManager", () => {
     manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 });
 
     expect(manager.listActive({ runId: "r1" })).toEqual([
+      "git_context_read_task",
       "git_context_activate_task",
       "git_context_create_task",
     ]);

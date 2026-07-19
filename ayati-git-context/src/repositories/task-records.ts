@@ -18,6 +18,19 @@ interface TaskRow {
   head_sha: string | null;
   title_cache: string;
   objective_cache: string;
+  placement_mode: "managed" | "requested";
+  trusted_root: string;
+  registration_head_before: string | null;
+  registration_was_git: number;
+  registration_approval_id: string | null;
+  registration_snapshot_hash: string | null;
+  baseline_paths_json: string;
+  registration_excluded_paths_json: string;
+  lifecycle_status: "active" | "paused" | "archived";
+  repository_health: "ready" | "dirty_external" | "unavailable";
+  current_request_id: string | null;
+  current_request_title: string | null;
+  current_request_status: "queued" | "active" | "blocked" | "done" | "dropped" | null;
   status: TaskStatus;
   created_session_id: string;
   created_at: string;
@@ -32,6 +45,14 @@ export interface TaskInitializationRecord {
   head: string | null;
   title: string;
   objective: string;
+  placement: "managed" | "requested";
+  trustedRoot: string;
+  registrationHeadBefore?: string;
+  registrationWasGit: boolean;
+  registrationApprovalId?: string;
+  registrationSnapshotHash?: string;
+  baselinePaths: string[];
+  registrationExcludedPaths: string[];
   status: TaskStatus;
   createdSessionId: string;
   createdAt: string;
@@ -44,16 +65,29 @@ interface SimpleTaskAllocationInput extends GitContextRequestEnvelope {
   at: string;
 }
 
+export interface RequestedTaskAllocation {
+  repositoryPath: string;
+  trustedRoot: string;
+  branch: string;
+  registrationHeadBefore?: string;
+  registrationWasGit: boolean;
+  registrationApprovalId?: string;
+  registrationSnapshotHash?: string;
+  baselinePaths: string[];
+  registrationExcludedPaths: string[];
+}
+
 export function allocateSimpleTask(
   database: ContextDatabase,
   taskRoot: string,
   input: SimpleTaskAllocationInput,
   normalized: { title: string; objective: string },
+  requested?: RequestedTaskAllocation,
 ): TaskInitializationRecord {
-  if (input.placement.mode !== "managed") {
+  if ((input.placement.mode === "requested") !== Boolean(requested)) {
     throw new GitContextServiceError({
       code: "INVALID_REQUEST",
-      message: "V1 task repositories must use managed placement under the configured task root.",
+      message: "Task placement was not resolved consistently before allocation.",
     });
   }
   const datePart = input.sessionId.match(/^S-(\d{8})-/)?.[1]
@@ -64,7 +98,8 @@ export function allocateSimpleTask(
     "FROM tasks WHERE task_id LIKE ?",
   ].join(" ")).get(prefix + "%") as { next: number };
   const taskId = prefix + String(Number(row.next)).padStart(4, "0");
-  const repositoryPath = join(taskRoot, taskDirectoryName(taskId, normalized.title));
+  const repositoryPath = requested?.repositoryPath
+    ?? join(taskRoot, taskDirectoryName(taskId, normalized.title));
   const owner = findOverlappingTaskRoot(database, repositoryPath);
   if (owner) {
     throw new GitContextServiceError({
@@ -77,16 +112,35 @@ export function allocateSimpleTask(
       },
     });
   }
+  const placement = requested ? "requested" : "managed";
+  const trustedRoot = requested?.trustedRoot ?? taskRoot;
+  const branch = requested?.branch ?? "main";
   database.prepare([
     "INSERT INTO tasks(",
     "task_id, repository_path, branch, head_sha,",
-    "title_cache, objective_cache, status, created_session_id, created_at, updated_at",
-    ") VALUES (?, ?, 'main', NULL, ?, ?, 'initializing', ?, ?, ?)",
+    "title_cache, objective_cache, placement_mode, trusted_root, registration_head_before,",
+    "registration_was_git,",
+    "registration_approval_id, registration_snapshot_hash, baseline_paths_json,",
+    "registration_excluded_paths_json,",
+    "lifecycle_status, repository_health, current_request_id, current_request_title,",
+    "current_request_status, status, created_session_id, created_at, updated_at",
+    ") VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,",
+    "'active', 'ready', 'R-0001', ?, 'active', 'initializing', ?, ?, ?)",
   ].join(" ")).run(
     taskId,
     repositoryPath,
+    branch,
     normalized.title,
     normalized.objective,
+    placement,
+    trustedRoot,
+    requested?.registrationHeadBefore ?? null,
+    requested?.registrationWasGit ? 1 : 0,
+    requested?.registrationApprovalId ?? null,
+    requested?.registrationSnapshotHash ?? null,
+    JSON.stringify(requested?.baselinePaths ?? []),
+    JSON.stringify(requested?.registrationExcludedPaths ?? []),
+    normalized.title,
     input.sessionId,
     input.at,
     input.at,
@@ -217,7 +271,11 @@ function readTaskRow(database: ContextDatabase, taskId: string): TaskRow | undef
 function taskSelect(): string {
   return [
     "SELECT task_id, repository_path, branch, head_sha, title_cache,",
-    "objective_cache, status, created_session_id, created_at, updated_at FROM tasks",
+    "objective_cache, placement_mode, trusted_root, registration_head_before, registration_was_git,",
+    "registration_approval_id, registration_snapshot_hash, baseline_paths_json,",
+    "registration_excluded_paths_json, lifecycle_status,",
+    "repository_health, current_request_id, current_request_title, current_request_status,",
+    "status, created_session_id, created_at, updated_at FROM tasks",
   ].join(" ");
 }
 
@@ -230,6 +288,24 @@ function initializationRecord(row: TaskRow): TaskInitializationRecord {
     head: row.head_sha,
     title: row.title_cache,
     objective: row.objective_cache,
+    placement: row.placement_mode,
+    trustedRoot: row.trusted_root,
+    ...(row.registration_head_before
+      ? { registrationHeadBefore: row.registration_head_before }
+      : {}),
+    registrationWasGit: row.registration_was_git === 1,
+    ...(row.registration_approval_id
+      ? { registrationApprovalId: row.registration_approval_id }
+      : {}),
+    ...(row.registration_snapshot_hash
+      ? { registrationSnapshotHash: row.registration_snapshot_hash }
+      : {}),
+    baselinePaths: parseBaselinePaths(row),
+    registrationExcludedPaths: parseStringArray(
+      row.registration_excluded_paths_json,
+      row.task_id,
+      "registration excluded paths",
+    ),
     status: row.status,
     createdSessionId: row.created_session_id,
     createdAt: row.created_at,
@@ -252,9 +328,26 @@ function catalogEntry(row: TaskRow): TaskCatalogEntry {
     ...task,
     title: row.title_cache,
     objective: row.objective_cache,
+    placement: row.placement_mode,
+    trustedRoot: row.trusted_root,
+    ...(row.registration_head_before
+      ? { registrationHeadBefore: row.registration_head_before }
+      : {}),
     status: row.status,
     createdSessionId: row.created_session_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function parseBaselinePaths(row: TaskRow): string[] {
+  return parseStringArray(row.baseline_paths_json, row.task_id, "baseline paths");
+}
+
+function parseStringArray(value: string, taskId: string, label: string): string[] {
+  const parsed = JSON.parse(value) as unknown;
+  if (!Array.isArray(parsed) || !parsed.every((item) => typeof item === "string")) {
+    throw new Error(`Task catalog contains invalid ${label}: ${taskId}`);
+  }
+  return parsed;
 }

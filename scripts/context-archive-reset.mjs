@@ -26,13 +26,14 @@ import { fileURLToPath } from "node:url";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const mainRoot = join(repositoryRoot, "ayati-main");
 const confirmed = process.argv.slice(2).includes("--confirm");
+const preserveTaskRepositories = process.argv.slice(2).includes("--preserve-task-repositories");
 const paths = resolveRuntimePaths(process.env);
 
 if (!confirmed) {
   process.stdout.write([
     `database: ${paths.databasePath}`,
     `session-data: ${paths.sessionRoot}`,
-    `task-root: ${paths.taskRoot}`,
+    `task-root: ${paths.taskRoot}${preserveTaskRepositories ? " (preserved)" : ""}`,
     "No files were changed. Re-run with --confirm to archive this state.",
     "",
   ].join("\n"));
@@ -48,7 +49,12 @@ const entries = [
   { label: "database-wal", source: paths.databasePath + "-wal", destination: join(archiveRoot, "database", basename(paths.databasePath) + "-wal") },
   { label: "database-shm", source: paths.databasePath + "-shm", destination: join(archiveRoot, "database", basename(paths.databasePath) + "-shm") },
   { label: "session-data", source: paths.sessionRoot, destination: join(archiveRoot, "sessions") },
-  { label: "task-root", source: paths.taskRoot, destination: join(archiveRoot, "tasks") },
+  {
+    label: "task-root",
+    source: paths.taskRoot,
+    destination: join(archiveRoot, "tasks"),
+    action: preserveTaskRepositories ? "preserve" : "archive",
+  },
 ];
 const manifest = {
   version: 1,
@@ -56,14 +62,24 @@ const manifest = {
   createdAt: new Date().toISOString(),
   archiveRoot,
   socketPath: paths.socketPath,
+  preserveTaskRepositories,
   status: "in_progress",
-  entries: entries.map((entry) => ({ ...entry, archived: false })),
+  entries: entries.map((entry) => ({
+    ...entry,
+    action: entry.action ?? "archive",
+    archived: false,
+    preserved: false,
+  })),
 };
 await writeManifest(archiveRoot, manifest);
 
 try {
   for (const entry of manifest.entries) {
-    entry.archived = await moveIfPresent(entry.source, entry.destination);
+    if (entry.action === "preserve") {
+      entry.preserved = await pathExists(entry.source);
+    } else {
+      entry.archived = await moveIfPresent(entry.source, entry.destination);
+    }
     await writeManifest(archiveRoot, manifest);
   }
   manifest.status = "completed";
@@ -226,6 +242,13 @@ async function moveIfPresent(source, destination) {
     await rm(source, { recursive: stat.isDirectory(), force: false });
   }
   return true;
+}
+
+async function pathExists(path) {
+  return await lstat(path).then(() => true, (error) => {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  });
 }
 
 async function readWriterOwner(path) {

@@ -9,6 +9,7 @@ export * from "./server-runtime.js";
 export * from "./observability.js";
 export * from "./service.js";
 export * from "./services/sqlite-git-context-service.js";
+export * from "./services/task-catalog-rebuild-service.js";
 export * from "./tasks/task-card.js";
 export * from "./tasks/task-commit-metadata.js";
 export * from "./tasks/task-references.js";

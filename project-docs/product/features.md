@@ -17,9 +17,18 @@ Current product features:
 - Structured context pack with recent conversation, selected git task
   context, pending-turn state, task assets, hot evidence, personal memory, and
   current run state.
+- Deterministic durable-work discovery through compact candidates and
+  `git_context_find_tasks`/`git_context_read_task`, with explained exact,
+  path-owner, continuation, text, unfinished, starred, recent, and frequent
+  reasons. Discovery signals never grant mutation authority.
 - Git-native task routing through `git_context_create_task` and
   `git_context_activate_task`, with explicit continue-current-request or
   create-new-request decisions for existing V1 tasks.
+- User-controlled workstream stars and safe trusted-directory inspection.
+- Managed task repositories plus in-place registration of empty directories,
+  clean Git roots, and explicitly approved non-Git baselines.
+- Preview-first archive/reset and empty-catalog rebuild commands for preserving
+  and rediscovering validated task repositories.
 - Deterministic tool verification through tool contracts, assertions, verified facts, and progress reduction.
 - Deterministic executable-tool input validation, action execution, and
   deny-by-default parallel execution for explicitly safe read-only local flows.

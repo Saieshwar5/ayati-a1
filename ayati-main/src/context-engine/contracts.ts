@@ -308,6 +308,24 @@ export interface ContextEngineMachineContext {
     head: string;
     workingDirectory: string;
     updatedAt: string;
+    discovery: {
+      tier: "definite" | "probable" | "candidate";
+      reasons: Array<
+        | "exact_task_id"
+        | "exact_title"
+        | "owned_path"
+        | "direct_continuation"
+        | "matching_request"
+        | "text_match"
+        | "unfinished_request"
+        | "starred"
+        | "recent"
+        | "frequent"
+      >;
+    };
+    starred: boolean;
+    lastOpenedAt?: string;
+    boundRunsLast30Days: number;
   }>;
   task?: {
     /** Stable user-facing directory where task files are edited. */

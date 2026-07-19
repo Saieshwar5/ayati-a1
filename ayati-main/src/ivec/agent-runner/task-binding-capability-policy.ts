@@ -10,6 +10,7 @@ import {
   GIT_CONTEXT_UNBOUND_RUN_ROUTING_TOOL_NAMES,
   GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
   isGitContextAllowedDuringPendingRouting,
+  isGitContextRoutingSupportToolName,
   isGitContextTurnRoutingToolName,
 } from "../../skills/builtins/git-context/tool-policy.js";
 import type { LoopState } from "../types.js";
@@ -84,15 +85,18 @@ export function isToolAllowedByTaskBinding(
 ): boolean {
   const taxonomy = getToolTaxonomy(toolName);
   if (!taxonomy) return false;
-  if (policy.taskBound) return !isTaskRoutingControl(taxonomy);
+  if (policy.taskBound) {
+    return !isTaskRoutingControl(taxonomy) && !isGitContextRoutingSupportToolName(toolName);
+  }
   if (isTaskRoutingControl(taxonomy)) {
     return policy.routingAvailable && taxonomy.canRunBeforeTask;
   }
-  if (taxonomy.purpose === "mutation" || taxonomy.effect !== "read_only") return false;
   if (taxonomy.purpose === "control") {
-    return isGitContextAllowedDuringPendingRouting(toolName)
+    return taxonomy.canRunBeforeTask
+      && isGitContextAllowedDuringPendingRouting(toolName)
       && policy.pendingTurnStatus !== "clarifying";
   }
+  if (taxonomy.purpose === "mutation" || taxonomy.effect !== "read_only") return false;
   return taxonomy.purpose === "list"
     || taxonomy.purpose === "read"
     || taxonomy.purpose === "search";

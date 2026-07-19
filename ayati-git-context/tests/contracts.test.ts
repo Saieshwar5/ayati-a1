@@ -20,9 +20,9 @@ import {
   isGitContextErrorResponse,
 } from "../src/errors.js";
 
-describe("Git Context protocol 34 contracts", () => {
-  it("exposes the version-2 one-run protocol", () => {
-    expect(GIT_CONTEXT_PROTOCOL_VERSION).toBe(34);
+describe("Git Context protocol 35 contracts", () => {
+  it("exposes the version-3 autonomous-workstream protocol", () => {
+    expect(GIT_CONTEXT_PROTOCOL_VERSION).toBe(35);
     expect(isRequestEnvelope({ requestId: "REQ-1" })).toBe(true);
     expect(isRequestEnvelope({ requestId: " " })).toBe(false);
   });

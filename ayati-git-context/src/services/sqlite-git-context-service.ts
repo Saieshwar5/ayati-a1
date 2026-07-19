@@ -14,21 +14,29 @@ import {
   type EnsureActiveSessionResponse,
   type FinalizeRunRequest,
   type FinalizeRunResponse,
+  type FindTasksRequest,
+  type FindTasksResponse,
   type GetActiveContextRequest,
   type GetTaskRequest,
   type GetTaskResponse,
   type HealthResponse,
+  type InspectTaskLocationRequest,
+  type InspectTaskLocationResponse,
   type ListTasksRequest,
   type ListTasksResponse,
   type PlanTaskRequestRouteRequest,
   type PlanTaskRequestRouteResponse,
   type PrepareContextTurnRequest,
   type PrepareContextTurnResponse,
+  type ReadTaskRequest,
+  type ReadTaskResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
   type RecordSessionAttachmentsRequest,
   type RecordSessionAttachmentsResponse,
   type SessionRef,
+  type SetTaskStarRequest,
+  type SetTaskStarResponse,
   type SelectedTaskForRunResponse,
   type VerifyMutationRequest,
   type VerifyMutationResponse,
@@ -90,7 +98,7 @@ import {
 import { TaskBindingService } from "./task-binding-service.js";
 import { TaskRequestRoutingService } from "./task-request-routing-service.js";
 import { readMutationAuthority } from "../repositories/mutation-authority-records.js";
-import { readRun } from "../repositories/run-records.js";
+import { readRun, readRunEvidence } from "../repositories/run-records.js";
 import { GitContextObserver } from "../observability.js";
 import { GitContextServiceObservability } from "./service-observability.js";
 import { buildReadContext } from "./read-context-builder.js";
@@ -103,6 +111,9 @@ import { TurnPreparationService } from "./turn-preparation-service.js";
 import { UnboundRunFinalizationService } from "./unbound-run-finalization-service.js";
 import { RunFinalizationService } from "./run-finalization-service.js";
 import { StartupRunRecoveryService } from "./startup-run-recovery-service.js";
+import { TaskDiscoveryService } from "./task-discovery-service.js";
+import { refreshTaskDiscoveryProjection } from "../repositories/task-discovery-records.js";
+import { TaskLocationService } from "./task-location-service.js";
 
 export interface SqliteGitContextServiceOptions {
   database: ContextDatabase;
@@ -113,6 +124,7 @@ export interface SqliteGitContextServiceOptions {
   rolloverCheckIntervalMs?: number;
   sessionRepositoryValidationIntervalMs?: number;
   taskCandidateCacheIntervalMs?: number;
+  trustedRoots?: string[];
 }
 
 interface TurnRolloverAssessment {
@@ -138,6 +150,8 @@ export class SqliteGitContextService implements GitContextService {
   private readonly sessionRepositoryValidation: SessionRepositoryValidationService;
   private readonly runs: RunLifecycleService;
   private readonly taskLifecycle: TaskLifecycleService;
+  private readonly taskLocations: TaskLocationService;
+  private readonly taskDiscovery: TaskDiscoveryService;
   private readonly taskBinding: TaskBindingService;
   private readonly taskRequestRouting: TaskRequestRoutingService;
   private readonly mutationBoundary: MutationBoundaryService;
@@ -175,11 +189,26 @@ export class SqliteGitContextService implements GitContextService {
     this.turnPreparation = new TurnPreparationService(this.database);
     const workspaceRoot = options.workspaceRoot ?? join(this.dataRoot, "workspace");
     const taskRoot = join(workspaceRoot, "tasks");
+    this.taskLocations = new TaskLocationService({
+      database: this.database,
+      workspaceRoot,
+      trustedRoots: options.trustedRoots ?? [],
+      now: this.now,
+    });
+    this.taskDiscovery = new TaskDiscoveryService(this.database, this.now);
     this.taskLifecycle = new TaskLifecycleService({
       database: this.database,
       dataRoot: this.dataRoot,
       workspaceRoot,
       now: this.now,
+      taskLocations: this.taskLocations,
+      onContextRead: (task, context) => {
+        refreshTaskDiscoveryProjection({
+          database: this.database,
+          task,
+          context,
+        });
+      },
     });
     this.taskRequestRouting = new TaskRequestRoutingService({
       database: this.database,
@@ -243,7 +272,11 @@ export class SqliteGitContextService implements GitContextService {
       database: this.database,
       loadReadContext: (sessionId) => buildReadContext(this.database, sessionId),
       loadAttachments: (sessionId) => this.taskAttachments.sessionProjection(sessionId),
-      loadTaskCandidates: async (limit) => await this.taskLifecycle.listRoutingCandidates({ limit }),
+      loadTaskCandidates: async (input) => this.taskDiscovery.find({
+        limit: input.limit,
+        ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+        ...(input.currentText ? { currentText: input.currentText } : {}),
+      }).tasks,
       taskCandidateMaxAgeMs: options.taskCandidateCacheIntervalMs
         ?? DEFAULT_TASK_CANDIDATE_CACHE_INTERVAL_MS,
       now: this.now,
@@ -527,6 +560,12 @@ export class SqliteGitContextService implements GitContextService {
       const session = this.requireWritableSession(input.sessionId);
       verifyExpectedHead(session, input.expectedHead);
       const result = await this.taskBinding.create(input);
+      this.taskDiscovery.recordAccess({
+        taskId: result.task.taskId,
+        runId: result.run.runId,
+        kind: "bound",
+        at: input.at,
+      });
       this.runs.refresh(result.run.runId);
       this.invalidateContext("run_task_bound", {
         sessionId: input.sessionId,
@@ -536,6 +575,21 @@ export class SqliteGitContextService implements GitContextService {
         taskCandidates: true,
       });
       this.events.taskSelected("created", result);
+      this.events.emit({
+        level: "info",
+        event: result.task.placement === "requested" ? "task_registered" : "task_created",
+        requestId: input.requestId,
+        sessionId: input.sessionId,
+        runId: result.run.runId,
+        taskId: result.task.taskId,
+        outcome: "succeeded",
+        data: {
+          placement: result.task.placement,
+          repositoryPath: result.task.repositoryPath,
+          taskCreated: result.taskCreated,
+          registrationHeadBefore: result.task.registrationHeadBefore,
+        },
+      });
       return result;
     });
   }
@@ -546,6 +600,12 @@ export class SqliteGitContextService implements GitContextService {
       const session = this.requireWritableSession(input.sessionId);
       verifyExpectedHead(session, input.expectedHead);
       const result = await this.taskBinding.activate(input);
+      this.taskDiscovery.recordAccess({
+        taskId: result.task.taskId,
+        runId: result.run.runId,
+        kind: "bound",
+        at: input.at,
+      });
       this.runs.refresh(result.run.runId);
       this.invalidateContext("run_task_bound", {
         sessionId: input.sessionId,
@@ -579,7 +639,56 @@ export class SqliteGitContextService implements GitContextService {
   async listTasks(input: ListTasksRequest): Promise<ListTasksResponse> {
     return await this.queue.enqueue(async () => {
       await this.ensureStartupRecovery();
-      return this.taskLifecycle.listTasks(input);
+      return this.taskDiscovery.find(input);
+    });
+  }
+
+  async findTasks(input: FindTasksRequest): Promise<FindTasksResponse> {
+    return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
+      const result = this.taskDiscovery.find(input);
+      this.events.emit({
+        level: "info",
+        event: "task_candidates_discovered",
+        sessionId: input.sessionId,
+        outcome: "succeeded",
+        data: {
+          count: result.tasks.length,
+          view: input.view ?? "relevant",
+          queried: Boolean(input.query),
+          pathCount: input.paths?.length ?? 0,
+          candidates: result.tasks.slice(0, 20).map((task) => ({
+            taskId: task.taskId,
+            tier: task.discovery.tier,
+            reasons: task.discovery.reasons,
+          })),
+        },
+      });
+      return result;
+    });
+  }
+
+  async inspectTaskLocation(
+    input: InspectTaskLocationRequest,
+  ): Promise<InspectTaskLocationResponse> {
+    return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
+      this.requireWritableSession(input.sessionId);
+      const result = await this.taskLocations.inspect(input);
+      this.events.emit({
+        level: "info",
+        event: "task_location_inspected",
+        requestId: input.requestId,
+        sessionId: input.sessionId,
+        runId: input.runId,
+        outcome: "succeeded",
+        data: {
+          kind: result.kind,
+          repositoryPath: result.canonicalPath,
+          approvalRequired: Boolean(result.registrationApprovalId),
+        },
+      });
+      return result;
     });
   }
 
@@ -587,6 +696,68 @@ export class SqliteGitContextService implements GitContextService {
     return await this.queue.enqueue(async () => {
       await this.ensureStartupRecovery();
       return await this.taskLifecycle.getTask(input);
+    });
+  }
+
+  async readTask(input: ReadTaskRequest): Promise<ReadTaskResponse> {
+    return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
+      const run = readRunEvidence(this.database, input.runId);
+      if (!run || run.sessionId !== input.sessionId || run.status !== "running") {
+        throw new GitContextServiceError({
+          code: "RUN_NOT_ACTIVE",
+          message: "Opening a task requires the matching active run.",
+          details: { sessionId: input.sessionId, runId: input.runId },
+        });
+      }
+      const result = await this.taskLifecycle.getTask({ taskId: input.taskId });
+      this.taskDiscovery.recordAccess({
+        taskId: input.taskId,
+        runId: input.runId,
+        kind: "opened",
+        at: input.at,
+      });
+      this.invalidateContext("task_opened", {
+        sessionId: input.sessionId,
+        taskCandidates: true,
+      });
+      this.events.emit({
+        level: "info",
+        event: "task_opened",
+        requestId: input.requestId,
+        sessionId: input.sessionId,
+        runId: input.runId,
+        taskId: input.taskId,
+        outcome: "succeeded",
+        data: {
+          repositoryPath: result.task.repositoryPath,
+          repositoryHealth: result.context?.repositoryHealth,
+        },
+      });
+      return { ...result, opened: true };
+    });
+  }
+
+  async setTaskStar(input: SetTaskStarRequest): Promise<SetTaskStarResponse> {
+    return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
+      const result = this.taskDiscovery.setStar(input);
+      this.invalidateContext("task_star_changed", {
+        sessionId: input.sessionId,
+        allSessions: true,
+        taskCandidates: true,
+      });
+      this.events.emit({
+        level: "info",
+        event: "task_star_changed",
+        requestId: input.requestId,
+        sessionId: input.sessionId,
+        runId: input.runId,
+        taskId: input.taskId,
+        outcome: "succeeded",
+        data: { starred: input.starred },
+      });
+      return result;
     });
   }
 

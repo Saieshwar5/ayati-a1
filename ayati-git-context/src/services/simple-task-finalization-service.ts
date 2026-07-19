@@ -66,6 +66,7 @@ import {
   readTaskInitialization,
   updateTaskHead,
 } from "../repositories/task-records.js";
+import { writeTaskDiscoveryProjection } from "../repositories/task-discovery-records.js";
 import {
   readTaskRequestRoutePlan,
   updateTaskRequestRoutePlan,
@@ -75,7 +76,10 @@ import { renderTaskCommit, type TaskCommitOutcome } from "../tasks/task-commit-m
 import { reduceSimpleTaskContext } from "../tasks/simple-task-context-reducer.js";
 import { renderTaskReferences } from "../tasks/task-references.js";
 import { TASK_REFERENCES_PATH } from "../tasks/task-repository-layout.js";
-import { validateTaskRepository } from "../tasks/task-repository-validator.js";
+import {
+  validateTaskRepository,
+  type TaskRepositoryValidation,
+} from "../tasks/task-repository-validator.js";
 import type { MutationBoundaryService } from "./mutation-boundary-service.js";
 
 export type SimpleTaskFinalizationHook = (
@@ -258,6 +262,8 @@ export class SimpleTaskFinalizationService {
       taskRoot: this.options.taskRoot,
       repositoryPath: task.repositoryPath,
       expectedTaskId: input.taskId,
+      placement: task.placement,
+      trustedRoot: task.trustedRoot,
       requestReadMode: "all",
     });
     if (validation.head !== task.head || validation.branch !== task.branch) {
@@ -490,20 +496,28 @@ export class SimpleTaskFinalizationService {
       commitCreated: committed.created,
       at,
     });
-    await this.validateCommittedContext(record, task.repositoryPath, committed.head);
-    this.acknowledge(record, committed, at);
+    const validation = await this.validateCommittedContext(
+      record,
+      task.repositoryPath,
+      committed.head,
+    );
+    this.acknowledge(record, committed, validation, at);
   }
 
   private async validateCommittedContext(
     record: SimpleTaskFinalizationRecord,
     repositoryPath: string,
     head: string,
-  ): Promise<void> {
-    if (!record.plan.commitRequired) return;
+  ): Promise<TaskRepositoryValidation | undefined> {
+    if (!record.plan.commitRequired) return undefined;
+    const task = readTaskInitialization(this.options.database, record.taskId);
+    if (!task) throw recovery("Committed task is missing from the catalog.");
     const validation = await validateTaskRepository({
       taskRoot: this.options.taskRoot,
       repositoryPath,
       expectedTaskId: record.taskId,
+      placement: task.placement,
+      trustedRoot: task.trustedRoot,
       requestReadMode: "all",
     });
     if (validation.head !== head || validation.health !== "ready") {
@@ -518,11 +532,13 @@ export class SimpleTaskFinalizationService {
       && request.status !== "blocked") {
       throw recovery("Blocked V1 run did not persist a blocked request.");
     }
+    return validation;
   }
 
   private acknowledge(
     record: SimpleTaskFinalizationRecord,
     commit: { head: string; created: boolean },
+    validation: TaskRepositoryValidation | undefined,
     at: string,
   ): void {
     this.options.database.transaction(() => {
@@ -533,6 +549,25 @@ export class SimpleTaskFinalizationService {
         } else if (task?.head !== commit.head) {
           throw new Error("V1 task catalog HEAD cannot acknowledge the finalization commit.");
         }
+      }
+      if (validation) {
+        const current = validation.currentRequest;
+        writeTaskDiscoveryProjection(this.options.database, {
+          taskId: record.taskId,
+          expectedHead: commit.head,
+          title: validation.taskCard.title,
+          objective: validation.taskCard.purpose,
+          lifecycleStatus: validation.taskCard.status,
+          repositoryHealth: validation.health,
+          ...(current ? {
+              currentRequest: {
+                id: current.id,
+                title: current.title,
+                status: current.status,
+                searchText: [current.title, current.request].join("\n"),
+              },
+            } : {}),
+        });
       }
       const run = readRunEvidence(this.options.database, record.runId);
       if (run?.status === "running" || run?.status === "recovery_required") {

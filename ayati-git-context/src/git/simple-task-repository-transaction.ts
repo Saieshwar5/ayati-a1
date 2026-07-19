@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { GitContextServiceError } from "../errors.js";
 import { writeFileAtomically } from "../files/atomic-file.js";
 import type { SimpleTaskCommitPlan } from "../repositories/simple-task-finalization-records.js";
-import { configureAyatiGitIdentity, gitCommitEnvironment, runGit } from "./git-process.js";
+import { gitCommitEnvironment, runGit } from "./git-process.js";
 
 export async function commitSimpleTaskPlan(input: {
   repositoryPath: string;
@@ -44,7 +44,6 @@ export async function commitSimpleTaskPlan(input: {
       throw recovery("Rendered V1 task context could not be verified.", { path: write.path });
     }
   }
-  await configureAyatiGitIdentity(input.repositoryPath);
   await runGit(["add", "-A", "--", ...input.plan.stagedPaths], {
     cwd: input.repositoryPath,
   });
@@ -73,7 +72,7 @@ export async function commitSimpleTaskPlan(input: {
   if (stagedPaths.length === 0) {
     throw recovery("V1 finalization refused to create an empty task commit.");
   }
-  await runGit(["commit", "-m", input.plan.commitMessage], {
+  await runGit(["-c", "commit.gpgsign=false", "commit", "-m", input.plan.commitMessage], {
     cwd: input.repositoryPath,
     env: gitCommitEnvironment(input.at),
   });

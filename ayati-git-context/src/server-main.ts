@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startGitContextServerRuntime } from "./server-runtime.js";
 import {
@@ -13,6 +13,11 @@ const defaultDataRoot = resolve(packageDirectory, "..", "data", "git-context-eng
 const dataRoot = process.env["AYATI_GIT_CONTEXT_DATA_DIR"]?.trim() || defaultDataRoot;
 const workspaceRoot = process.env["AYATI_GIT_CONTEXT_WORKSPACE_DIR"]?.trim()
   || join(dataRoot, "workspace");
+const trustedRoots = (process.env["AYATI_GIT_CONTEXT_TRUSTED_ROOTS"] ?? "")
+  .split(delimiter)
+  .map((entry) => entry.trim())
+  .filter(Boolean)
+  .map((entry) => resolve(workspaceRoot, entry));
 const databasePath = process.env["AYATI_GIT_CONTEXT_DATABASE"]?.trim()
   || join(dataRoot, "context.db");
 const socketPath = process.env["AYATI_GIT_CONTEXT_SOCKET"]?.trim()
@@ -26,6 +31,7 @@ const runtime = await startGitContextServerRuntime({
   databasePath,
   dataRoot,
   workspaceRoot,
+  trustedRoots,
   socketPath,
   timezone,
   agentId,

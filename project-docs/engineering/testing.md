@@ -32,7 +32,15 @@ cross-package boundary when applicable:
 6. Finalization updates the request/task card, retains raw evidence outside
    task Git, and creates exactly one task commit on retry.
 7. Restart can reopen the same task/request and working directory.
+8. Discovery explains exact/path/continuation matches and keeps star, recency,
+   frequency, and search separate from mutation authority.
+9. Requested-directory registration preserves clean Git history, rejects dirty
+   Git, and imports only an explicitly approved non-Git baseline.
+10. Archive preservation and catalog rebuild validate repositories before any
+    catalog write.
 Existing focused suites include `simple-task-*`,
+`task-discovery.test.ts`, `task-location-registration.test.ts`,
+`task-catalog-rebuild.test.ts`,
 `prepare-context-turn.test.ts`, `record-run-step.test.ts`,
 `finalize-run.test.ts`, `task-bound-run-finalization.test.ts`, and the SQLite
 service suites in `ayati-git-context/tests`.

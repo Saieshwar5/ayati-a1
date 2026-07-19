@@ -16,6 +16,8 @@ export async function readSimpleTaskContext(
     taskRoot: options.taskRoot,
     repositoryPath: task.repositoryPath,
     expectedTaskId: task.taskId,
+    placement: task.placement,
+    trustedRoot: task.trustedRoot,
     requestReadMode: "current",
   });
   const logOutput = await runGitRaw([

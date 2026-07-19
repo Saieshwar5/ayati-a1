@@ -52,7 +52,7 @@ describe("Git Context server runtime", () => {
     ]));
   });
 
-  it("restarts against the same version-2 catalog without conflicting startup idempotency", async () => {
+  it("restarts against the same version-3 catalog without conflicting startup idempotency", async () => {
     const root = await mkdtemp(join(tmpdir(), "ayati-git-context-restart-"));
     const databasePath = join(root, "store", "context.sqlite");
     const dataRoot = join(root, "git-data");
@@ -78,7 +78,7 @@ describe("Git Context server runtime", () => {
 
     const client = new GitContextClient({ connection: restarted.address });
     await expect(client.getHealth()).resolves.toMatchObject({
-      protocolVersion: 34,
+      protocolVersion: 35,
       ready: true,
     });
   });

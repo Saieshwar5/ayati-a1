@@ -11,6 +11,9 @@ import {
   isCreateTaskForRunRequest,
   isEnsureActiveSessionRequest,
   isFinalizeRunRequest,
+  isInspectTaskLocationRequest,
+  isReadTaskRequest,
+  isSetTaskStarRequest,
   isPlanTaskRequestRouteRequest,
   isPrepareContextTurnRequest,
   isRecordRunStepRequest,
@@ -201,6 +204,37 @@ export class GitContextHttpServer {
         return;
       }
 
+      if (method === "GET" && url.pathname === "/tasks/find") {
+        const query = url.searchParams.get("query")?.trim();
+        const paths = url.searchParams.getAll("path").map((path) => path.trim()).filter(Boolean);
+        const view = url.searchParams.get("view")?.trim();
+        const allowedViews = new Set(["relevant", "unfinished", "starred", "recent", "frequent"]);
+        if (view && !allowedViews.has(view)) {
+          throw invalidRequest("Unknown task discovery view.");
+        }
+        const limitText = url.searchParams.get("limit")?.trim();
+        const limit = limitText ? Number(limitText) : undefined;
+        if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 50)) {
+          throw invalidRequest("Task discovery limit must be between 1 and 50.");
+        }
+        if (paths.length > 20 || paths.some((path) => path.length > 4_096)) {
+          throw invalidRequest("Task discovery accepts at most 20 bounded paths.");
+        }
+        const sessionId = url.searchParams.get("sessionId")?.trim();
+        const currentText = url.searchParams.get("currentText")?.trim();
+        const includeArchived = url.searchParams.get("includeArchived") === "true";
+        sendJson(response, 200, await this.service.findTasks({
+          ...(query ? { query } : {}),
+          ...(paths.length > 0 ? { paths } : {}),
+          ...(view ? { view: view as "relevant" | "unfinished" | "starred" | "recent" | "frequent" } : {}),
+          ...(includeArchived ? { includeArchived: true } : {}),
+          ...(limit ? { limit } : {}),
+          ...(sessionId ? { sessionId } : {}),
+          ...(currentText ? { currentText } : {}),
+        }));
+        return;
+      }
+
       const createTaskMatch = url.pathname.match(/^\/runs\/([^/]+)\/tasks\/create$/);
       if (method === "POST" && createTaskMatch) {
         const body = await readJsonBody(request, this.maxBodyBytes);
@@ -212,6 +246,22 @@ export class GitContextHttpServer {
           throw invalidRequest("Run ID in request path and body must match.");
         }
         sendJson(response, 200, await this.service.createTaskForRun(body));
+        return;
+      }
+
+      const inspectTaskLocationMatch = url.pathname.match(
+        /^\/runs\/([^/]+)\/task-location\/inspect$/,
+      );
+      if (method === "POST" && inspectTaskLocationMatch) {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isInspectTaskLocationRequest(body)) {
+          throw invalidRequest("Invalid inspect-task-location request.");
+        }
+        const runId = decodePathComponent(inspectTaskLocationMatch[1] ?? "");
+        if (body.runId !== runId) {
+          throw invalidRequest("Run ID in request path and body must match.");
+        }
+        sendJson(response, 200, await this.service.inspectTaskLocation(body));
         return;
       }
 
@@ -247,6 +297,34 @@ export class GitContextHttpServer {
       if (method === "GET" && taskMatch) {
         const taskId = decodePathComponent(taskMatch[1] ?? "");
         sendJson(response, 200, await this.service.getTask({ taskId }));
+        return;
+      }
+
+      const taskOpenMatch = url.pathname.match(/^\/tasks\/([^/]+)\/open$/);
+      if (method === "POST" && taskOpenMatch) {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isReadTaskRequest(body)) {
+          throw invalidRequest("Invalid read-task request.");
+        }
+        const taskId = decodePathComponent(taskOpenMatch[1] ?? "");
+        if (body.taskId !== taskId) {
+          throw invalidRequest("Task ID in request path and body must match.");
+        }
+        sendJson(response, 200, await this.service.readTask(body));
+        return;
+      }
+
+      const taskStarMatch = url.pathname.match(/^\/tasks\/([^/]+)\/star$/);
+      if (method === "POST" && taskStarMatch) {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isSetTaskStarRequest(body)) {
+          throw invalidRequest("Invalid set-task-star request.");
+        }
+        const taskId = decodePathComponent(taskStarMatch[1] ?? "");
+        if (body.taskId !== taskId) {
+          throw invalidRequest("Task ID in request path and body must match.");
+        }
+        sendJson(response, 200, await this.service.setTaskStar(body));
         return;
       }
 

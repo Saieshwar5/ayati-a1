@@ -8,7 +8,7 @@ canonical stable description of the current task model.
 ```text
 task = long-lived workstream
 request = bounded user intention inside a task
-run = one attempt to advance a request
+run = one compute, audit, and recovery boundary for one accepted event
 commit = verified durable result of a mutating run
 session = temporary conversation and runtime container
 ```
@@ -38,6 +38,11 @@ Every newly created managed task uses one normal non-bare repository:
 The repository directory is both canonical task history and the stable working
 directory. Ayati does not create a second working repository for the task.
 
+Ayati can also register a user-requested existing directory in place. A
+registered directory remains at its canonical path and keeps its existing Git
+history. Its Ayati inbox ignore rules live in `.ayati/.gitignore`, so an
+existing root `.gitignore` is never replaced.
+
 Only `.ayati/` has a universal engine-owned layout. Task content remains
 natural for its domain.
 
@@ -52,9 +57,17 @@ The Git Context service renders and commits reserved context.
 
 ## Creation And Selection
 
-The model-facing routing tools are:
+The model-facing discovery and routing tools are:
 
-- `git_context_create_task`: create one managed V1 task and its initial request.
+- `git_context_find_tasks`: query the whole catalog by identity, text, path, or
+  an unfinished, starred, recent, or frequent view.
+- `git_context_read_task`: deliberately open committed context without binding
+  the run.
+- `git_context_set_task_star`: change the user's explicit star preference.
+- `git_context_inspect_task_location`: classify an existing trusted directory
+  before registration without changing user files.
+- `git_context_create_task`: create a managed task or register an inspected
+  directory, then create its initial request.
 - `git_context_activate_task`: select an existing task.
 
 Activating a `T-*` task requires an explicit request decision:
@@ -63,11 +76,42 @@ Activating a `T-*` task requires an explicit request decision:
 - create a new active request for a materially separate outcome in the same
   workstream.
 
-Ambiguous ownership is resolved by reading task candidates or asking the user
-directly. Ayati must not silently mutate the most recent unrelated task.
+Ayati resolves ownership autonomously when deterministic evidence is clear.
+Exact task identity, canonical resource ownership, and explicit continuation
+are strongest. A unique text/request match can be probable. Stars, recency,
+frequency, and unfinished state organize discovery but never authorize
+mutation. The resolver uses explained tiers and reason codes rather than an
+opaque weighted score, embedding search, or a separate routing controller.
 
-Selection returns the canonical absolute `workingDirectory`. The current routing tools use fresh internal operation request
-IDs, so stable model-tool replay identity remains an open reliability item.
+Ambiguous ownership is resolved by opening the small candidate set or asking
+one focused question. Ayati must not silently mutate the most recent unrelated
+task.
+
+Selection returns the canonical absolute `workingDirectory`. Routing,
+inspection, preference, and open operations derive stable replay identity from
+the run and native tool-call identity.
+
+## Existing Directory Registration
+
+Requested directories must be normal directories below the configured
+workspace or an `AYATI_GIT_CONTEXT_TRUSTED_ROOTS` entry. Symlinks, overlapping
+task roots, nested Git working directories, bare repositories, and detached
+HEADs are rejected.
+
+- An empty directory is initialized and registered automatically.
+- A clean Git root receives one Ayati identity commit whose parent is the
+  previously inspected HEAD. Existing files, branch, history, and root
+  `.gitignore` remain intact.
+- A dirty Git root is never adopted; the user must reconcile its changes.
+- A non-empty non-Git directory is inventoried with file-count and byte caps.
+  Cache/build directories, symlinks, and likely secrets are excluded. The
+  proposed baseline requires explicit user approval, and the short-lived
+  receipt is valid only in the next run after a truthful
+  `needs_user_input` finalization. Changed content invalidates the receipt.
+
+Registration stages only the approved baseline and Ayati scaffold. Excluded
+paths remain on disk and are placed in the repository-local Git exclude file;
+they are not committed or deleted.
 
 ## Read Path
 
@@ -83,9 +127,13 @@ The V1 projection reads committed Git state:
 Reading a dirty or locked repository remains possible, but dirty content is not
 presented as committed task truth.
 
-Task listing and candidate discovery currently depend on the SQLite catalog.
-Rebuilding lost catalog rows from repositories is designed but not yet
-implemented.
+Task discovery uses the SQLite catalog and FTS index; committed repository
+state remains authoritative when a task is opened. The operator can preserve
+task repositories during a clean reset and reconstruct an empty catalog with
+`pnpm context:catalog-rebuild`. The command validates every discovered
+repository, previews by default, refuses a live daemon or non-empty catalog,
+and writes only with `--confirm`. Stars and access-frequency history are
+operational preferences and are not reconstructible from task Git.
 
 ## Mutation And Finalization
 
@@ -145,12 +193,12 @@ or application mutation tools is not yet implemented.
 
 ## Current Reliability Gaps
 
-The repository happy path is implemented, but these capabilities remain open:
+The repository happy path, deterministic discovery, requested-directory
+registration, and empty-catalog rebuild are implemented. These capabilities
+remain open:
 
-- stable replay identity for model-facing create/activate operations
 - live queued-request activation, blocked-request resume, and task
   pause/archive/reopen operations
-- catalog rebuild from validated managed repositories
 - typed real external-action outcomes and uncertain-result recovery
 - restart and manually inspected live acceptance across the example domains
 
@@ -162,6 +210,9 @@ preserve the V1 topology while closing them.
 - `ayati-git-context/src/contracts.ts`
 - `ayati-git-context/src/tasks/`
 - `ayati-git-context/src/services/task-lifecycle-service.ts`
+- `ayati-git-context/src/services/task-discovery-service.ts`
+- `ayati-git-context/src/services/task-location-service.ts`
+- `ayati-git-context/src/services/task-catalog-rebuild-service.ts`
 - `ayati-git-context/src/services/task-binding-service.ts`
 - `ayati-git-context/src/services/task-request-routing-service.ts`
 - `ayati-git-context/src/services/mutation-boundary-service.ts`

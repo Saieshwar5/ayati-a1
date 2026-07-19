@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import {
   GIT_CONTEXT_PROTOCOL_VERSION,
   GitContextClient,
@@ -20,6 +20,8 @@ import {
   type EnsureActiveSessionResponse,
   type FinalizeRunRequest,
   type FinalizeRunResponse,
+  type FindTasksRequest,
+  type FindTasksResponse,
   type GetActiveContextRequest,
   type GetTaskRequest,
   type GetTaskResponse,
@@ -27,17 +29,23 @@ import {
   type GitContextObservabilityEvent,
   type GitContextObservabilitySink,
   type HealthResponse,
+  type InspectTaskLocationRequest,
+  type InspectTaskLocationResponse,
   type ListTasksRequest,
   type ListTasksResponse,
   type PlanTaskRequestRouteRequest,
   type PlanTaskRequestRouteResponse,
   type PrepareContextTurnRequest,
   type PrepareContextTurnResponse,
+  type ReadTaskRequest,
+  type ReadTaskResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
   type RecordSessionAttachmentsRequest,
   type RecordSessionAttachmentsResponse,
   type SelectedTaskForRunResponse,
+  type SetTaskStarRequest,
+  type SetTaskStarResponse,
   type VerifyMutationRequest,
   type VerifyMutationResponse,
 } from "ayati-git-context";
@@ -162,8 +170,26 @@ export class ManagedGitContextProcess implements GitContextService {
     return await this.invoke((client) => client.listTasks(input));
   }
 
+  async findTasks(input: FindTasksRequest): Promise<FindTasksResponse> {
+    return await this.invoke((client) => client.findTasks(input));
+  }
+
+  async inspectTaskLocation(
+    input: InspectTaskLocationRequest,
+  ): Promise<InspectTaskLocationResponse> {
+    return await this.invoke((client) => client.inspectTaskLocation(input));
+  }
+
   async getTask(input: GetTaskRequest): Promise<GetTaskResponse> {
     return await this.invoke((client) => client.getTask(input));
+  }
+
+  async readTask(input: ReadTaskRequest): Promise<ReadTaskResponse> {
+    return await this.invoke((client) => client.readTask(input));
+  }
+
+  async setTaskStar(input: SetTaskStarRequest): Promise<SetTaskStarResponse> {
+    return await this.invoke((client) => client.setTaskStar(input));
   }
 
   async recordSessionAttachments(
@@ -231,6 +257,7 @@ export class ManagedGitContextProcess implements GitContextService {
         AYATI_GIT_CONTEXT_DATABASE: this.options.databasePath,
         AYATI_GIT_CONTEXT_DATA_DIR: this.options.dataRoot,
         AYATI_GIT_CONTEXT_WORKSPACE_DIR: this.options.workspaceRoot,
+        AYATI_GIT_CONTEXT_TRUSTED_ROOTS: (this.options.trustedRoots ?? []).join(delimiter),
         AYATI_GIT_CONTEXT_SOCKET: this.options.socketPath,
         AYATI_GIT_CONTEXT_TIMEZONE: this.options.timezone,
         AYATI_GIT_CONTEXT_AGENT_ID: this.options.agentId,

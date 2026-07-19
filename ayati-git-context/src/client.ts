@@ -14,21 +14,29 @@ import type {
   EnsureActiveSessionResponse,
   FinalizeRunRequest,
   FinalizeRunResponse,
+  FindTasksRequest,
+  FindTasksResponse,
   GetActiveContextRequest,
   GetTaskRequest,
   GetTaskResponse,
   HealthResponse,
+  InspectTaskLocationRequest,
+  InspectTaskLocationResponse,
   ListTasksRequest,
   ListTasksResponse,
   PlanTaskRequestRouteRequest,
   PlanTaskRequestRouteResponse,
   PrepareContextTurnRequest,
   PrepareContextTurnResponse,
+  ReadTaskRequest,
+  ReadTaskResponse,
   RecordRunStepRequest,
   RecordRunStepResponse,
   RecordSessionAttachmentsRequest,
   RecordSessionAttachmentsResponse,
   SelectedTaskForRunResponse,
+  SetTaskStarRequest,
+  SetTaskStarResponse,
   VerifyMutationRequest,
   VerifyMutationResponse,
 } from "./contracts.js";
@@ -115,6 +123,16 @@ export class GitContextClient implements GitContextService {
     );
   }
 
+  async inspectTaskLocation(
+    input: InspectTaskLocationRequest,
+  ): Promise<InspectTaskLocationResponse> {
+    return await this.requestJson<InspectTaskLocationResponse>(
+      "POST",
+      "/runs/" + encodeURIComponent(input.runId) + "/task-location/inspect",
+      input,
+    );
+  }
+
   async activateTaskForRun(input: ActivateTaskForRunRequest): Promise<SelectedTaskForRunResponse> {
     return await this.requestJson<SelectedTaskForRunResponse>(
       "POST",
@@ -141,10 +159,39 @@ export class GitContextClient implements GitContextService {
     return await this.requestJson<ListTasksResponse>("GET", "/tasks" + query);
   }
 
+  async findTasks(input: FindTasksRequest): Promise<FindTasksResponse> {
+    const params = new URLSearchParams();
+    if (input.query) params.set("query", input.query);
+    for (const path of input.paths ?? []) params.append("path", path);
+    if (input.view) params.set("view", input.view);
+    if (input.includeArchived) params.set("includeArchived", "true");
+    if (input.limit) params.set("limit", String(input.limit));
+    if (input.sessionId) params.set("sessionId", input.sessionId);
+    if (input.currentText) params.set("currentText", input.currentText);
+    const query = params.size > 0 ? "?" + params.toString() : "";
+    return await this.requestJson<FindTasksResponse>("GET", "/tasks/find" + query);
+  }
+
   async getTask(input: GetTaskRequest): Promise<GetTaskResponse> {
     return await this.requestJson<GetTaskResponse>(
       "GET",
       "/tasks/" + encodeURIComponent(input.taskId),
+    );
+  }
+
+  async readTask(input: ReadTaskRequest): Promise<ReadTaskResponse> {
+    return await this.requestJson<ReadTaskResponse>(
+      "POST",
+      "/tasks/" + encodeURIComponent(input.taskId) + "/open",
+      input,
+    );
+  }
+
+  async setTaskStar(input: SetTaskStarRequest): Promise<SetTaskStarResponse> {
+    return await this.requestJson<SetTaskStarResponse>(
+      "POST",
+      "/tasks/" + encodeURIComponent(input.taskId) + "/star",
+      input,
     );
   }
 

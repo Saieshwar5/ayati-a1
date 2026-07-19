@@ -16,6 +16,14 @@ import {
 } from "./task-commit-metadata.js";
 import { renderTaskReferences } from "./task-references.js";
 import {
+  assertRequestedTaskStartingState,
+  validateRequestedTaskLocation,
+  verifyOnlyRequestedTaskRegistrationChanges,
+  verifyRequestedTaskBaseline,
+  verifyRequestedTaskScaffoldCompatibility,
+  writeRequestedTaskRegistrationExcludes,
+} from "./requested-task-repository-registration.js";
+import {
   requestFileName,
   TASK_CARD_PATH,
   TASK_INBOX_KEEP_PATH,
@@ -40,10 +48,16 @@ export type SimpleTaskCreationHook = (
 
 const INITIAL_REQUEST_ID = "R-0001";
 const CREATION_MARKER_PATH = ".ayati-creation";
-const GITIGNORE = [
+const MANAGED_GITIGNORE = [
   "# Ayati local input bytes. Durable provenance lives in .ayati/references.md.",
   ".ayati/inbox/*",
   "!.ayati/inbox/.gitkeep",
+  "",
+].join("\n");
+const REQUESTED_GITIGNORE = [
+  "# Ayati local input bytes. Durable provenance lives in references.md.",
+  "inbox/*",
+  "!inbox/.gitkeep",
   "",
 ].join("\n");
 
@@ -78,16 +92,17 @@ async function ensureRepository(input: {
   await mkdir(input.taskRoot, { recursive: true });
   const taskRoot = await realpath(input.taskRoot);
   const target = resolve(input.task.repositoryPath);
-  if (dirname(target) !== taskRoot
-    || input.task.workingPath !== input.task.repositoryPath
-    || !basename(target).startsWith(input.task.taskId + "-")) {
-    throw invalidRepository(input.task, "V1 task allocation is outside its configured task root.");
+  const managed = input.task.placement === "managed";
+  if (managed && (dirname(target) !== taskRoot
+      || input.task.workingPath !== input.task.repositoryPath
+      || !basename(target).startsWith(input.task.taskId + "-"))) {
+    throw invalidRepository(input.task, "Managed task allocation is outside its configured task root.");
   }
   const existing = await lstat(target).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return undefined;
     throw error;
   });
-  if (!existing) {
+  if (managed && !existing) {
     await mkdir(target).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "EEXIST") {
         throw ambiguousRepository(input.task, [basename(target)]);
@@ -96,18 +111,55 @@ async function ensureRepository(input: {
     });
     await writeFileAtomically(join(target, CREATION_MARKER_PATH), creationMarker(input.task));
     await input.onPhase?.("directory_created", input.task);
-  } else if (!input.recovering) {
+  } else if (managed && !input.recovering) {
     throw ambiguousRepository(input.task, [basename(target)]);
-  } else if (existing.isSymbolicLink() || !existing.isDirectory()) {
-    throw invalidRepository(input.task, "V1 task path must be a normal directory.");
+  } else if (managed && existing && (existing.isSymbolicLink() || !existing.isDirectory())) {
+    throw invalidRepository(input.task, "Managed task path must be a normal directory.");
+  } else if (!managed) {
+    if (!existing || existing.isSymbolicLink() || !existing.isDirectory()) {
+      throw invalidRepository(input.task, "Requested task path must be an existing normal directory.");
+    }
   }
   const repositoryPath = await realpath(target);
-  if (dirname(repositoryPath) !== taskRoot) {
-    throw invalidRepository(input.task, "V1 task directory does not resolve beneath its task root.");
+  if (managed && dirname(repositoryPath) !== taskRoot) {
+    throw invalidRepository(input.task, "Managed task directory does not resolve beneath its task root.");
+  }
+  if (!managed) {
+    await validateRequestedTaskLocation(input.task, repositoryPath);
   }
   const scaffold = renderScaffold(input.task);
-  if (existing) {
+  if (managed && existing) {
     await requireRecoveryEvidence(input.task, repositoryPath);
+  } else if (!managed && input.recovering) {
+    const marker = await creationMarkerState(input.task, repositoryPath);
+    if (marker === "mismatched") {
+      throw ambiguousRepository(input.task, [CREATION_MARKER_PATH]);
+    }
+    if (marker === "absent") {
+      await assertRequestedTaskStartingState(
+        input.task,
+        repositoryPath,
+        scaffold,
+        CREATION_MARKER_PATH,
+      );
+      await writeFileAtomically(
+        join(repositoryPath, CREATION_MARKER_PATH),
+        creationMarker(input.task),
+      );
+      await input.onPhase?.("directory_created", input.task);
+    }
+  } else if (!managed) {
+    await assertRequestedTaskStartingState(
+      input.task,
+      repositoryPath,
+      scaffold,
+      CREATION_MARKER_PATH,
+    );
+    await writeFileAtomically(
+      join(repositoryPath, CREATION_MARKER_PATH),
+      creationMarker(input.task),
+    );
+    await input.onPhase?.("directory_created", input.task);
   }
 
   const gitPath = join(repositoryPath, ".git");
@@ -116,9 +168,13 @@ async function ensureRepository(input: {
     throw error;
   });
   if (!gitState) {
-    const entries = await readdir(repositoryPath);
-    if (entries.length !== 1 || entries[0] !== CREATION_MARKER_PATH) {
-      throw ambiguousRepository(input.task, entries);
+    if (managed || !input.task.registrationApprovalId) {
+      const entries = await readdir(repositoryPath);
+      if (entries.length !== 1 || entries[0] !== CREATION_MARKER_PATH) {
+        throw ambiguousRepository(input.task, entries);
+      }
+    } else {
+      await verifyRequestedTaskBaseline(input.task, repositoryPath);
     }
     await runGit(["init", "--initial-branch=" + input.task.branch], { cwd: repositoryPath });
     await input.onPhase?.("git_initialized", input.task);
@@ -127,21 +183,50 @@ async function ensureRepository(input: {
   }
 
   await verifyRepositoryShell(input.task, repositoryPath);
-  await configureAyatiGitIdentity(repositoryPath);
+  if (!input.task.registrationWasGit) {
+    await configureAyatiGitIdentity(repositoryPath);
+  }
+  await writeRequestedTaskRegistrationExcludes(input.task, repositoryPath);
   const head = await readHead(repositoryPath);
-  if (!head) {
-    await verifyRecoverableContent(input.task, repositoryPath, scaffold);
+  const identityCommitted = head
+    ? input.task.registrationHeadBefore
+      ? head !== input.task.registrationHeadBefore
+      : true
+    : false;
+  if (identityCommitted && head) {
+    await verifyIdentityCommit(input.task, repositoryPath, head);
+  } else {
+    if (input.task.registrationHeadBefore && head !== input.task.registrationHeadBefore) {
+      throw invalidRepository(input.task, "Registered Git HEAD changed before task identity creation.");
+    }
+    if (managed) {
+      await verifyRecoverableContent(input.task, repositoryPath, scaffold);
+    } else {
+      await verifyRequestedTaskBaseline(input.task, repositoryPath);
+      await verifyRequestedTaskScaffoldCompatibility(input.task, repositoryPath, scaffold);
+    }
     await writeMissingScaffold(repositoryPath, scaffold);
     await input.onPhase?.("scaffold_written", input.task);
-    const paths = [...scaffold.keys()].sort();
-    await runGit(["add", "--", ...paths], { cwd: repositoryPath });
+    if (!managed) {
+      await verifyOnlyRequestedTaskRegistrationChanges(
+        input.task,
+        repositoryPath,
+        scaffold,
+        CREATION_MARKER_PATH,
+      );
+    }
+    const paths = [...new Set([
+      ...(input.task.registrationHeadBefore ? [] : input.task.baselinePaths),
+      ...scaffold.keys(),
+    ])].sort();
+    await stageExactPaths(repositoryPath, paths);
     const staged = (await runGit(["diff", "--cached", "--name-only"], {
       cwd: repositoryPath,
     })).split("\n").filter(Boolean).sort();
     if (JSON.stringify(staged) !== JSON.stringify(paths)) {
       throw ambiguousRepository(input.task, staged);
     }
-    await runGit(["commit", "-m", renderTaskIdentityCommit({
+    await runGit(["-c", "commit.gpgsign=false", "commit", "-m", renderTaskIdentityCommit({
       subject: "create task " + input.task.taskId.toLowerCase(),
       taskId: input.task.taskId,
       requestId: INITIAL_REQUEST_ID,
@@ -156,6 +241,8 @@ async function ensureRepository(input: {
     taskRoot,
     repositoryPath,
     expectedTaskId: input.task.taskId,
+    placement: input.task.placement,
+    trustedRoot: input.task.trustedRoot,
   });
   await verifyIdentityCommit(input.task, repositoryPath, validation.head);
   const expectedCreationDirt = ["?? " + CREATION_MARKER_PATH];
@@ -170,7 +257,8 @@ async function ensureRepository(input: {
 function renderScaffold(task: TaskInitializationRecord): Map<string, string> {
   const requestPath = ".ayati/requests/" + requestFileName(INITIAL_REQUEST_ID, task.title);
   return new Map([
-    [".gitignore", GITIGNORE],
+    [task.placement === "managed" ? ".gitignore" : ".ayati/.gitignore",
+      task.placement === "managed" ? MANAGED_GITIGNORE : REQUESTED_GITIGNORE],
     [TASK_CARD_PATH, renderTaskCard({
       schema: "ayati.task/v1",
       id: task.taskId,
@@ -202,6 +290,14 @@ function renderScaffold(task: TaskInitializationRecord): Map<string, string> {
     [TASK_REFERENCES_PATH, renderTaskReferences([])],
     [TASK_INBOX_KEEP_PATH, ""],
   ]);
+}
+
+async function stageExactPaths(repositoryPath: string, paths: string[]): Promise<void> {
+  for (let offset = 0; offset < paths.length; offset += 200) {
+    await runGit(["add", "-f", "--", ...paths.slice(offset, offset + 200)], {
+      cwd: repositoryPath,
+    });
+  }
 }
 
 async function verifyRecoverableContent(
@@ -246,6 +342,22 @@ async function requireRecoveryEvidence(
     return;
   }
   throw ambiguousRepository(task, await readdir(repositoryPath));
+}
+
+async function creationMarkerState(
+  task: TaskInitializationRecord,
+  repositoryPath: string,
+): Promise<"absent" | "matching" | "mismatched"> {
+  const markerPath = join(repositoryPath, CREATION_MARKER_PATH);
+  const marker = await lstat(markerPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (!marker) return "absent";
+  if (marker.isFile() && await readFile(markerPath, "utf8") === creationMarker(task)) {
+    return "matching";
+  }
+  return "mismatched";
 }
 
 export async function completeSimpleTaskCreation(
@@ -326,7 +438,11 @@ async function verifyIdentityCommit(
     cwd: repositoryPath,
   });
   const metadata = parseSimpleTaskCommit(message);
-  if (count !== "1"
+  const historyMatches = task.registrationHeadBefore
+    ? await runGit(["rev-parse", head + "^"], { cwd: repositoryPath })
+      .then((parent) => parent === task.registrationHeadBefore, () => false)
+    : count === "1";
+  if (!historyMatches
     || metadata?.event !== "task_created"
     || metadata.taskId !== task.taskId
     || metadata.requestId !== INITIAL_REQUEST_ID) {

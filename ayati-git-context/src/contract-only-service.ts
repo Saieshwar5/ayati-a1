@@ -13,21 +13,29 @@ import {
   type EnsureActiveSessionResponse,
   type FinalizeRunRequest,
   type FinalizeRunResponse,
+  type FindTasksRequest,
+  type FindTasksResponse,
   type GetActiveContextRequest,
   type GetTaskRequest,
   type GetTaskResponse,
   type HealthResponse,
+  type InspectTaskLocationRequest,
+  type InspectTaskLocationResponse,
   type ListTasksRequest,
   type ListTasksResponse,
   type PlanTaskRequestRouteRequest,
   type PlanTaskRequestRouteResponse,
   type PrepareContextTurnRequest,
   type PrepareContextTurnResponse,
+  type ReadTaskRequest,
+  type ReadTaskResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
   type RecordSessionAttachmentsRequest,
   type RecordSessionAttachmentsResponse,
   type SelectedTaskForRunResponse,
+  type SetTaskStarRequest,
+  type SetTaskStarResponse,
   type VerifyMutationRequest,
   type VerifyMutationResponse,
 } from "./contracts.js";
@@ -81,7 +89,25 @@ export class ContractOnlyGitContextService implements GitContextService {
     throw notReady();
   }
 
+  async findTasks(_input: FindTasksRequest): Promise<FindTasksResponse> {
+    throw notReady();
+  }
+
+  async inspectTaskLocation(
+    _input: InspectTaskLocationRequest,
+  ): Promise<InspectTaskLocationResponse> {
+    throw notReady();
+  }
+
   async getTask(_input: GetTaskRequest): Promise<GetTaskResponse> {
+    throw notReady();
+  }
+
+  async readTask(_input: ReadTaskRequest): Promise<ReadTaskResponse> {
+    throw notReady();
+  }
+
+  async setTaskStar(_input: SetTaskStarRequest): Promise<SetTaskStarResponse> {
     throw notReady();
   }
 

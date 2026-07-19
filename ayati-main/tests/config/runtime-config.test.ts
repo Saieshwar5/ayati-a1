@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import {
   DEFAULT_DOCUMENT_EMBED_BATCH_SIZE,
   DEFAULT_DOCUMENT_VECTOR_MIN_CHUNKS,
@@ -51,6 +51,7 @@ describe("ayati runtime config", () => {
         databasePath: join(DEFAULT_GIT_CONTEXT_STORE_DIR, "context.sqlite"),
         dataRoot: join(DEFAULT_WORKSPACE_DIR, ".ayati-context"),
         workspaceRoot: DEFAULT_WORKSPACE_DIR,
+        trustedRoots: [],
         socketPath: join(DEFAULT_GIT_CONTEXT_STORE_DIR, "git-context.sock"),
         managed: true,
         startTimeoutMs: DEFAULT_GIT_CONTEXT_START_TIMEOUT_MS,
@@ -85,6 +86,7 @@ describe("ayati runtime config", () => {
       AYATI_GIT_CONTEXT_REQUEST_TIMEOUT_MS: "1400",
       AYATI_GIT_CONTEXT_TIMEZONE: " UTC ",
       AYATI_GIT_CONTEXT_AGENT_ID: " local-agent ",
+      AYATI_GIT_CONTEXT_TRUSTED_ROOTS: ["/tmp/trusted-projects", "learning"].join(delimiter),
     });
 
     expect(config).toEqual({
@@ -116,6 +118,7 @@ describe("ayati runtime config", () => {
         databasePath: "/tmp/ayati-db/context.sqlite",
         dataRoot: "/tmp/ayati-git-data",
         workspaceRoot: "/tmp/ayati-workspace",
+        trustedRoots: ["/tmp/trusted-projects", "/tmp/ayati-workspace/learning"],
         socketPath: "/tmp/ayati-context.sock",
         managed: false,
         startTimeoutMs: 1200,

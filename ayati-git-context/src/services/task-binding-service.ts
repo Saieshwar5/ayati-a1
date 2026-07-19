@@ -27,6 +27,7 @@ export class TaskBindingService {
     const creation = await this.taskLifecycle.createSimpleTask({
       requestId: input.requestId + ":task",
       sessionId: input.sessionId,
+      runId: input.runId,
       title: input.title,
       objective: input.objective,
       placement: input.placement,

@@ -69,7 +69,10 @@ describe("live V1 task request routing", () => {
       repositoryHealth: "ready",
     }));
     expect(before.taskCandidates?.find((task) => task.taskId === fixture.taskId))
-      .not.toHaveProperty("currentRequest");
+      .toMatchObject({
+        currentRequest: { id: "R-0001", status: "active" },
+        discovery: { reasons: expect.arrayContaining(["unfinished_request"]) },
+      });
 
     const routeInput = requestRouteInput(fixture);
     const planned = await fixture.service.planTaskRequestRoute(routeInput);

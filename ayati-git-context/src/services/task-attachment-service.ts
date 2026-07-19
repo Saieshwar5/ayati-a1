@@ -112,6 +112,8 @@ export class TaskAttachmentService {
       taskRoot: this.options.taskRoot,
       repositoryPath: task.repositoryPath,
       expectedTaskId: task.taskId,
+      placement: task.placement,
+      trustedRoot: task.trustedRoot,
       requestReadMode: "all",
     });
     const routePlan = readTaskRequestRoutePlan(this.options.database, input.runId);
