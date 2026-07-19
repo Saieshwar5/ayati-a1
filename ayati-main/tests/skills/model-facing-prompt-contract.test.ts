@@ -4,31 +4,31 @@ import { createGitContextSkill } from "../../src/skills/builtins/git-context/ind
 import { createSkillBundle, SkillCatalog } from "../../src/skills/skill-catalog.js";
 
 describe("model-facing skill prompt contract", () => {
-  it("uses the grouped V1 task and attachment context model", () => {
+  it("uses the workstream/resource and attachment context model", () => {
     const gitContextSkill = createGitContextSkill({ service: {} as never });
     const attachmentSkill = createAttachmentSkill({ sessionAttachmentService: {} as never });
-    const activateTask = gitContextSkill.tools.find((tool) => tool.name === "git_context_activate_task");
+    const activateWorkstream = gitContextSkill.tools.find((tool) => tool.name === "git_context_activate_workstream");
     const catalogPrompt = new SkillCatalog([
       createSkillBundle(gitContextSkill),
     ]).promptBlock();
 
-    expect(gitContextSkill.promptBlock).toContain("independent Git repositories");
-    expect(gitContextSkill.promptBlock).toContain("requestDecision=continue");
-    expect(activateTask?.description).toContain("V1 task repository");
-    expect(activateTask?.inputSchema?.properties?.["taskId"]).toMatchObject({
-      pattern: "^T-[0-9]{8}-[0-9]{4}$",
+    expect(gitContextSkill.promptBlock).toContain("workstream context repository contains only Ayati-maintained context");
+    expect(gitContextSkill.promptBlock).toContain("Continue the active request only for the same unfinished outcome");
+    expect(activateWorkstream?.description).toContain("existing workstream");
+    expect(activateWorkstream?.inputSchema?.properties?.["workstreamId"]).toMatchObject({
+      pattern: "^W-[0-9]{8}-[0-9]{4}$",
     });
-    expect(attachmentSkill.promptBlock).toContain("context.git.current.task.assets");
-    expect(catalogPrompt).toContain("V1 task repositories, requests, and recent task evidence");
+    expect(attachmentSkill.promptBlock).toContain("context.git.current.workstream.resources");
+    expect(catalogPrompt).toContain("durable workstreams, linked resources, requests, and recent evidence");
 
     const allPromptText = [
       gitContextSkill.promptBlock,
       attachmentSkill.promptBlock,
-      activateTask?.description,
+      activateWorkstream?.description,
       catalogPrompt,
     ].join("\n");
     expect(allPromptText).not.toContain("context.gitContext");
+    expect(allPromptText).not.toContain("V1 task");
     expect(allPromptText).not.toContain("task branch");
-    expect(allPromptText).not.toContain("work branch");
   });
 });

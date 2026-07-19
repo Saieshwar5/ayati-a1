@@ -1,6 +1,8 @@
 import type {
   GitContextService,
-  SelectedTaskForRunResponse,
+  ResourceRole,
+  SelectedWorkstreamForRunResponse,
+  WorkstreamRequestRoute,
 } from "ayati-git-context";
 import { buildContextEngineProjection } from "../../../context-engine/index.js";
 import type { SkillDefinition, ToolDefinition, ToolExecutionContext, ToolResult } from "../../types.js";
@@ -10,68 +12,58 @@ import {
   okJsonResult,
   succeededContract,
 } from "../contract-helpers.js";
-import type { TaskRequestRoute } from "ayati-git-context";
-import { createTaskDiscoveryTools } from "./discovery-tools.js";
+import { createWorkstreamDiscoveryTools } from "./discovery-tools.js";
 
 export interface GitContextSkillDeps {
   service: GitContextService;
 }
 
 const PROMPT = [
-  "Tasks are long-lived workstreams stored in independent Git repositories with one stable working directory.",
-  "A request is one bounded feature, lesson, analysis, or improvement inside a task; a run is only the current attempt.",
-  "Continue the current request only when the user is still pursuing its unfinished outcome. A materially separate outcome belongs to a new request in the same task, not automatically to a new task.",
-  "Completing one request does not complete or archive its task. A task may remain active with no current request.",
-  "There is no session-global active task. Each task-bound run owns exactly one task.",
-  "The current context contains a compact mix of exact, relevant, unfinished, starred, recent, and frequent workstreams.",
-  "Use git_context_find_tasks when the compact candidates are insufficient, and git_context_read_task to confirm ownership without binding the run.",
-  "Exact task identity, canonical path ownership, and explicit conversational continuation are stronger than text relevance. Star, recency, and frequency help discovery but never prove ownership.",
-  "Use git_context_activate_task when the request continues or changes an existing task.",
-  "Use git_context_create_task only when the request starts a distinct durable deliverable.",
-  "Never default an unclear mutation to the most recent task. Ask the user when ownership remains ambiguous.",
-  "Create durable work automatically when the user begins a stable goal likely to recur across sessions, a multi-step deliverable, ongoing learning or research, maintained automation, or work that creates or mutates persistent artifacts. Casual conversation, one-off explanations, and isolated list/search/read observations remain unbound unless the user establishes an ongoing goal.",
-  "A task is the durable subject or owned resource. A request is the bounded outcome being pursued now. Reuse the same task for later lessons, features, investigations, maintenance, and improvements that share that durable subject or resource.",
-  "Stars are strictly user-controlled. Never star or unstar a workstream unless the current user message explicitly asks for it.",
-  "New tasks normally use a managed repository. A user-requested existing directory must first pass Git Context location inspection and registration policy.",
-  "Use git_context_inspect_task_location for that inspection. Empty directories and clean Git roots can be registered directly. Dirty Git roots require the user to reconcile changes. Non-empty non-Git directories require showing the proposed and excluded paths, ending the run for explicit approval, then using the returned receipt in the next run.",
-  "When activating a T-* task, explicitly choose requestDecision=continue for its unfinished current request or requestDecision=create for a materially separate outcome in the same task.",
-  "Do not create a new task merely because the current request is complete; create a new request in the existing task when the durable workstream is the same.",
-  "For external actions, keep only verified non-secret identifiers or safe receipt paths in durable task context; Git does not own or undo external state.",
-  "After either tool succeeds, use absolute paths rooted inside the returned workingDirectory for every host filesystem tool call.",
+  "A workstream is durable context for a long-lived subject, goal, or maintained body of work. It is not the project directory.",
+  "A request is one bounded outcome inside a workstream. A run is only the current compute, audit, and recovery boundary.",
+  "Real files, directories, URLs, repositories, media, databases, and external objects are resources linked to workstreams.",
+  "The workstream context repository contains only Ayati-maintained context. Never write deliverables into it.",
+  "When the user gives no destination, creating a workstream also creates one user-visible primary output directory under the Ayati workspace.",
+  "When the user names an existing path or resource, inspect it and bind that exact resource instead of moving it or initializing Git inside it.",
+  "Continue the active request only for the same unfinished outcome. Create a new request in the same workstream for a materially separate outcome on the same durable subject or resources.",
+  "Use git_context_find_workstreams and git_context_read_workstream when compact candidates do not prove ownership.",
+  "Use git_context_find_resources to locate work by an artifact, path, URL, description, or alias.",
+  "Use git_context_activate_workstream for existing ownership and git_context_create_workstream for genuinely distinct durable work.",
+  "Casual conversation and isolated list, search, or read work may remain unbound. Persistent mutation requires one immutable workstream/request binding.",
+  "Never choose by recency alone. Exact workstream identity, exact resource identity, and explicit continuation are strongest; ask one focused question if mutation ownership remains ambiguous.",
+  "Stars are user-controlled and may change only when the current user message explicitly requests it.",
+  "After binding, use the returned resource locators. Mutation authority is granted only for exact mutable resources and exact targets.",
 ].join("\n");
 
 export function createGitContextSkill(deps: GitContextSkillDeps): SkillDefinition {
   return {
     id: "git-context",
-    version: "3.0.0",
-    description: "Discover, open, create, and continue durable Git workstreams without user-managed sessions.",
+    version: "4.0.0",
+    description: "Discover, create, and continue durable workstreams linked to real resources.",
     promptBlock: PROMPT,
     tools: [
-      createTaskTool(deps),
-      activateTaskTool(deps.service),
-      ...createTaskDiscoveryTools(deps.service),
+      createWorkstreamTool(deps.service),
+      activateWorkstreamTool(deps.service),
+      ...createWorkstreamDiscoveryTools(deps.service),
     ],
   };
 }
 
-function createTaskTool(deps: GitContextSkillDeps): ToolDefinition {
-  const service = deps.service;
+function createWorkstreamTool(service: GitContextService): ToolDefinition {
   return {
-    name: "git_context_create_task",
-    description: "Create one durable task repository, optionally registering an inspected trusted directory, and start its initial request.",
+    name: "git_context_create_workstream",
+    description: "Create durable context for distinct multi-turn work and bind this run to its initial request.",
     inputSchema: {
       type: "object",
       properties: {
-        title: { type: "string", description: "Short durable task title." },
-        objective: { type: "string", description: "Concrete deliverable or durable objective." },
-        reason: { type: "string", description: "Why this request is a new task instead of an existing task." },
-        workingDirectory: {
-          type: "string",
-          description: "Optional trusted existing directory previously inspected by Git Context.",
-        },
-        registrationApprovalId: {
-          type: "string",
-          description: "Approval receipt required for a non-empty non-Git directory baseline.",
+        title: { type: "string", description: "Short durable workstream title." },
+        objective: { type: "string", description: "Stable objective or subject this workstream carries across runs." },
+        reason: { type: "string", description: "Why existing workstreams do not own this request." },
+        resources: {
+          type: "array",
+          maxItems: 32,
+          items: resourceBindingSchema(),
+          description: "Existing resource ids that belong to the new workstream. Omit to receive a managed output directory.",
         },
       },
       required: ["title", "objective", "reason"],
@@ -81,8 +73,8 @@ function createTaskTool(deps: GitContextSkillDeps): ToolDefinition {
     annotations: routingAnnotations(),
     resultContract: succeededContract(),
     selectionHints: {
-      tags: ["git-context", "task", "create", "routing"],
-      aliases: ["create task", "start new durable work"],
+      tags: ["git-context", "workstream", "create", "routing"],
+      aliases: ["create workstream", "start durable work"],
       domain: "git_context",
       priority: 10,
     },
@@ -90,43 +82,18 @@ function createTaskTool(deps: GitContextSkillDeps): ToolDefinition {
       const parsed = parseCreateInput(input, context);
       if ("ok" in parsed) return parsed;
       try {
-        const active = await service.getActiveContext({ sessionId: parsed.sessionId });
-        const conversation = active.session?.pendingConversationContext.at(-1)?.conversation;
-        if (!conversation || conversation.status !== "active") {
-          return routingError("No active conversation exists for task creation.");
-        }
-        const run = active.run?.run;
-        if (!run || run.conversationId !== conversation.conversationId) {
-          return routingError("Task creation requires the current prepared run.");
-        }
-        const operationAt = run.startedAt;
-        const selected = await service.createTaskForRun({
-          requestId: toolRequestId(context, "create-task"),
+        const current = await currentRun(service, parsed.sessionId, context);
+        const selected = await service.createWorkstreamForRun({
+          requestId: toolRequestId(context, "create-workstream"),
           sessionId: parsed.sessionId,
-          conversationId: conversation.conversationId,
-          runId: run.runId,
+          conversationId: current.conversationId,
+          runId: current.runId,
           title: parsed.title,
           objective: parsed.objective,
-          placement: parsed.workingDirectory
-            ? {
-                mode: "requested",
-                workingDirectory: parsed.workingDirectory,
-                ...(parsed.registrationApprovalId
-                  ? { registrationApprovalId: parsed.registrationApprovalId }
-                  : {}),
-              }
-            : { mode: "managed" },
-          at: operationAt,
+          ...(parsed.resources.length > 0 ? { resources: parsed.resources } : {}),
+          at: current.startedAt,
         });
-        await service.bindTaskAttachments({
-          requestId: toolRequestId(context, "bind-attachments"),
-          sessionId: parsed.sessionId,
-          conversationId: conversation.conversationId,
-          runId: selected.run.runId,
-          taskId: selected.task.taskId,
-          at: operationAt,
-        });
-        return routingSuccess(service, parsed.sessionId, selected, "created");
+        return await routingSuccess(service, parsed.sessionId, selected, "created");
       } catch (error) {
         return routingError(errorMessage(error));
       }
@@ -134,18 +101,21 @@ function createTaskTool(deps: GitContextSkillDeps): ToolDefinition {
   };
 }
 
-function activateTaskTool(service: GitContextService): ToolDefinition {
+function activateWorkstreamTool(service: GitContextService): ToolDefinition {
   return {
-    name: "git_context_activate_task",
-    description: "Select an existing V1 task repository and explicitly continue its unfinished request or create a new active request.",
+    name: "git_context_activate_workstream",
+    description: "Bind this run to an existing workstream and explicitly continue or create its active request.",
     inputSchema: {
       type: "object",
       properties: {
-        taskId: { type: "string", pattern: "^T-[0-9]{8}-[0-9]{4}$", description: "Exact V1 task id from current task candidates." },
-        reason: { type: "string", description: "Why the current request belongs to this task and its resources." },
+        workstreamId: {
+          type: "string",
+          pattern: "^W-[0-9]{8}-[0-9]{4}$",
+          description: "Exact workstream id returned by discovery.",
+        },
+        reason: { type: "string", description: "Why this workstream and its resources own the current request." },
         requestDecision: {
           type: "object",
-          description: "Continue the exact unfinished request, or create one materially separate request in the same V1 task.",
           properties: {
             kind: { enum: ["continue", "create"] },
             requestId: { type: "string", pattern: "^R-[0-9]{4}$" },
@@ -158,15 +128,15 @@ function activateTaskTool(service: GitContextService): ToolDefinition {
           additionalProperties: false,
         },
       },
-      required: ["taskId", "reason", "requestDecision"],
+      required: ["workstreamId", "reason", "requestDecision"],
       additionalProperties: false,
     },
     outputSchema: routingOutputSchema(),
     annotations: routingAnnotations(),
     resultContract: succeededContract(),
     selectionHints: {
-      tags: ["git-context", "task", "activate", "routing"],
-      aliases: ["activate task", "continue existing task", "switch task"],
+      tags: ["git-context", "workstream", "activate", "continue", "routing"],
+      aliases: ["activate workstream", "continue durable work"],
       domain: "git_context",
       priority: 10,
     },
@@ -174,34 +144,17 @@ function activateTaskTool(service: GitContextService): ToolDefinition {
       const parsed = parseActivateInput(input, context);
       if ("ok" in parsed) return parsed;
       try {
-        const active = await service.getActiveContext({ sessionId: parsed.sessionId });
-        const conversation = active.session?.pendingConversationContext.at(-1)?.conversation;
-        if (!conversation || conversation.status !== "active") {
-          return routingError("No active conversation exists for task activation.");
-        }
-        const run = active.run?.run;
-        if (!run || run.conversationId !== conversation.conversationId) {
-          return routingError("Task activation requires the current prepared run.");
-        }
-        const operationAt = run.startedAt;
-        const selected = await service.activateTaskForRun({
-          requestId: toolRequestId(context, "activate-task"),
+        const current = await currentRun(service, parsed.sessionId, context);
+        const selected = await service.activateWorkstreamForRun({
+          requestId: toolRequestId(context, "activate-workstream"),
           sessionId: parsed.sessionId,
-          conversationId: conversation.conversationId,
-          runId: run.runId,
-          taskId: parsed.taskId,
+          conversationId: current.conversationId,
+          runId: current.runId,
+          workstreamId: parsed.workstreamId,
           route: parsed.route,
-          at: operationAt,
+          at: current.startedAt,
         });
-        await service.bindTaskAttachments({
-          requestId: toolRequestId(context, "bind-attachments"),
-          sessionId: parsed.sessionId,
-          conversationId: conversation.conversationId,
-          runId: selected.run.runId,
-          taskId: selected.task.taskId,
-          at: operationAt,
-        });
-        return routingSuccess(service, parsed.sessionId, selected, "activated");
+        return await routingSuccess(service, parsed.sessionId, selected, "activated");
       } catch (error) {
         return routingError(errorMessage(error));
       }
@@ -209,140 +162,142 @@ function activateTaskTool(service: GitContextService): ToolDefinition {
   };
 }
 
+async function currentRun(
+  service: GitContextService,
+  sessionId: string,
+  context?: ToolExecutionContext,
+): Promise<{ runId: string; conversationId: string; startedAt: string }> {
+  const active = await service.getActiveContext({ sessionId });
+  const conversation = active.session?.pendingConversationContext.at(-1)?.conversation;
+  const run = active.run?.run;
+  if (!conversation || conversation.status !== "active" || !run
+    || run.runId !== context?.runId || run.conversationId !== conversation.conversationId) {
+    throw new Error("Workstream routing requires the current prepared run and conversation.");
+  }
+  return { runId: run.runId, conversationId: run.conversationId, startedAt: run.startedAt };
+}
+
 async function routingSuccess(
   service: GitContextService,
   sessionId: string,
-  selected: SelectedTaskForRunResponse,
+  selected: SelectedWorkstreamForRunResponse,
   mode: "created" | "activated",
 ): Promise<ToolResult> {
   const active = await service.getActiveContext({ sessionId });
-  const task = active.activeTask;
-  if (!task) return routingError("Selected task context is unavailable after activation.");
+  const workstream = active.activeWorkstream;
+  if (!workstream) return routingError("Selected workstream context is unavailable after binding.");
   return okJsonResult({
-    code: mode === "created" ? "GIT_CONTEXT_TASK_CREATED" : "GIT_CONTEXT_TASK_ACTIVATED",
-    message: mode === "created" ? "Task repository created and selected." : "Task repository selected.",
+    code: mode === "created"
+      ? "GIT_CONTEXT_WORKSTREAM_CREATED"
+      : "GIT_CONTEXT_WORKSTREAM_ACTIVATED",
+    message: mode === "created" ? "Workstream created and selected." : "Workstream selected.",
     structuredContent: {
       status: "ready",
       sessionId,
-      taskId: selected.task.taskId,
-      branch: task.task.branch,
+      workstreamId: selected.workstream.workstreamId,
+      contextRepositoryPath: selected.workstream.contextRepositoryPath,
+      branch: selected.workstream.branch,
       mode,
       runId: selected.run.runId,
-      workingDirectory: task.workingDirectory,
-      taskHead: selected.task.head,
-      taskCreated: selected.taskCreated,
-      requestDecision: selected.taskRequestDecision,
-      taskRequestId: selected.run.taskBinding?.taskRequestId,
-      taskRequestStatus: selected.context.currentRequest?.status,
-      taskRequestCreated: selected.taskRequestCreated,
+      workstreamHead: selected.workstream.head,
+      workstreamCreated: selected.workstreamCreated,
+      requestDecision: selected.workstreamRequestDecision,
+      requestId: selected.run.workstreamBinding?.requestId,
+      requestStatus: selected.context.currentRequest?.status,
+      requestCreated: selected.workstreamRequestCreated,
       headBeforeSelection: selected.headBeforeSelection,
-      harnessContext: {
-        contextEngine: buildContextEngineProjection(active),
-      },
+      resources: selected.resourceBindings,
+      harnessContext: { contextEngine: buildContextEngineProjection(active) },
     },
   });
 }
 
-function routingOutputSchema() {
+function resourceBindingSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      resourceId: { type: "string", pattern: "^RES-[0-9A-F]{24}$" },
+      role: {
+        enum: ["input", "reference", "primary", "supporting", "output", "deliverable", "evidence", "asset"],
+      },
+      access: { enum: ["read", "mutate"] },
+      primary: { type: "boolean" },
+    },
+    required: ["resourceId", "role", "access"],
+    additionalProperties: false,
+  };
+}
+
+function routingOutputSchema(): Record<string, unknown> {
   return {
     type: "object",
     properties: {
       status: { const: "ready" },
       sessionId: { type: "string" },
-      taskId: { type: "string" },
+      workstreamId: { type: "string" },
+      contextRepositoryPath: { type: "string" },
       branch: { type: "string" },
       mode: { enum: ["created", "activated"] },
       runId: { type: "string" },
-      workingDirectory: { type: "string" },
-      taskHead: { type: "string" },
-      taskCreated: { type: "boolean" },
+      workstreamHead: { type: "string" },
+      workstreamCreated: { type: "boolean" },
       requestDecision: { enum: ["initial", "continue", "create"] },
-      taskRequestId: { type: "string" },
-      taskRequestStatus: { enum: ["queued", "active", "blocked", "done", "dropped"] },
-      taskRequestCreated: { type: "boolean" },
+      requestId: { type: "string" },
+      requestStatus: { enum: ["queued", "active", "blocked", "done", "dropped"] },
+      requestCreated: { type: "boolean" },
       headBeforeSelection: { type: "string" },
+      resources: { type: "array", items: { type: "object" } },
       harnessContext: { type: "object" },
     },
     required: [
-      "status",
-      "sessionId",
-      "taskId",
-      "branch",
-      "mode",
-      "runId",
-      "workingDirectory",
-      "taskHead",
-      "taskCreated",
-      "requestDecision",
-      "taskRequestCreated",
-      "headBeforeSelection",
-      "harnessContext",
+      "status", "sessionId", "workstreamId", "contextRepositoryPath", "branch", "mode", "runId",
+      "workstreamHead", "workstreamCreated", "requestDecision", "requestCreated",
+      "headBeforeSelection", "resources", "harnessContext",
     ],
     additionalProperties: false,
   };
 }
 
 function routingAnnotations() {
-  return commonAnnotations({
-    domain: "git_context",
-    readOnly: false,
-    idempotent: false,
-    retrySafe: false,
-  });
+  return commonAnnotations({ domain: "git_context", readOnly: false, idempotent: false, retrySafe: false });
 }
 
 function parseCreateInput(input: unknown, context?: ToolExecutionContext): {
   sessionId: string;
   title: string;
   objective: string;
-  reason: string;
-  workingDirectory?: string;
-  registrationApprovalId?: string;
+  resources: Array<{ resourceId: string; role: ResourceRole; access: "read" | "mutate"; primary?: boolean }>;
 } | ToolResult {
   const record = objectInput(input);
   const sessionId = context?.sessionId?.trim();
   const title = stringField(record, "title");
   const objective = stringField(record, "objective");
   const reason = stringField(record, "reason");
-  if (!sessionId || !title || !objective || !reason) {
-    return routingError("sessionId, title, objective, and reason are required.");
+  const resources = resourceBindings(record["resources"]);
+  if (!sessionId || !title || !objective || !reason || resources === undefined) {
+    return routingError("sessionId, title, objective, reason, and valid resource bindings are required.");
   }
-  const workingDirectory = stringField(record, "workingDirectory");
-  const registrationApprovalId = stringField(record, "registrationApprovalId");
-  if (registrationApprovalId && !workingDirectory) {
-    return routingError("registrationApprovalId requires workingDirectory.");
-  }
-  return {
-    sessionId,
-    title,
-    objective,
-    reason,
-    ...(workingDirectory ? { workingDirectory } : {}),
-    ...(registrationApprovalId ? { registrationApprovalId } : {}),
-  };
+  return { sessionId, title, objective, resources };
 }
 
 function parseActivateInput(input: unknown, context?: ToolExecutionContext): {
   sessionId: string;
-  taskId: string;
-  reason: string;
-  route: TaskRequestRoute;
+  workstreamId: string;
+  route: WorkstreamRequestRoute;
 } | ToolResult {
   const record = objectInput(input);
   const sessionId = context?.sessionId?.trim();
-  const taskId = stringField(record, "taskId");
+  const workstreamId = stringField(record, "workstreamId");
   const reason = stringField(record, "reason");
-  if (!sessionId || !taskId || !/^T-\d{8}-\d{4}$/.test(taskId) || !reason) {
-    return routingError("sessionId, a valid V1 T-* taskId, and reason are required.");
+  if (!sessionId || !workstreamId || !/^W-\d{8}-\d{4}$/.test(workstreamId) || !reason) {
+    return routingError("sessionId, a valid W-* workstreamId, and reason are required.");
   }
   const route = parseRequestDecision(record["requestDecision"], reason);
-  if (!route) {
-    return routingError("T-* task activation requires requestDecision=continue or requestDecision=create with complete request details.");
-  }
-  return { sessionId, taskId, reason, route };
+  if (!route) return routingError("Activation requires a complete continue-or-create request decision.");
+  return { sessionId, workstreamId, route };
 }
 
-function parseRequestDecision(value: unknown, reason: string): TaskRequestRoute | undefined {
+function parseRequestDecision(value: unknown, reason: string): WorkstreamRequestRoute | undefined {
   const record = objectInput(value);
   if (record["kind"] === "continue") {
     const requestId = stringField(record, "requestId");
@@ -360,6 +315,36 @@ function parseRequestDecision(value: unknown, reason: string): TaskRequestRoute 
       : undefined;
   }
   return undefined;
+}
+
+function resourceBindings(value: unknown): Array<{
+  resourceId: string;
+  role: ResourceRole;
+  access: "read" | "mutate";
+  primary?: boolean;
+}> | undefined {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return undefined;
+  const result: Array<{ resourceId: string; role: ResourceRole; access: "read" | "mutate"; primary?: boolean }> = [];
+  for (const entry of value) {
+    const record = objectInput(entry);
+    const resourceId = stringField(record, "resourceId");
+    const role = stringField(record, "role") as ResourceRole | undefined;
+    const access = stringField(record, "access");
+    if (!resourceId || !/^RES-[0-9A-F]{24}$/.test(resourceId) || !isResourceRole(role)
+      || (access !== "read" && access !== "mutate")
+      || (record["primary"] !== undefined && typeof record["primary"] !== "boolean")) {
+      return undefined;
+    }
+    result.push({ resourceId, role, access, ...(record["primary"] === true ? { primary: true } : {}) });
+  }
+  return result;
+}
+
+function isResourceRole(value: string | undefined): value is ResourceRole {
+  return value === "input" || value === "reference" || value === "primary"
+    || value === "supporting" || value === "output" || value === "deliverable"
+    || value === "evidence" || value === "asset";
 }
 
 function stringArray(value: unknown): string[] {
@@ -382,11 +367,11 @@ function stringField(value: Record<string, unknown>, key: string): string | unde
 
 function routingError(message: string): ToolResult {
   return errorResult({
-    code: "GIT_CONTEXT_TASK_ROUTING_FAILED",
+    code: "GIT_CONTEXT_WORKSTREAM_ROUTING_FAILED",
     message,
     category: "conflict",
     retryable: false,
-    suggestedNextActions: ["Correct the task id or ask the user which task owns the requested resources."],
+    suggestedNextActions: ["Correct the workstream/resource identity or ask one focused ownership question."],
   });
 }
 
@@ -397,8 +382,6 @@ function errorMessage(error: unknown): string {
 function toolRequestId(context: ToolExecutionContext | undefined, operation: string): string {
   const runId = context?.runId?.trim();
   const callId = context?.callId?.trim();
-  if (!runId || !callId) {
-    throw new Error("Git Context routing requires run and tool-call identity.");
-  }
+  if (!runId || !callId) throw new Error("Git Context routing requires run and tool-call identity.");
   return runId + ":" + callId + ":" + operation;
 }

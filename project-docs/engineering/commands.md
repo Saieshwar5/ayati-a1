@@ -46,14 +46,14 @@ Git Context clean reset and catalog recovery are preview-first:
 ```bash
 pnpm context:archive-reset
 pnpm context:archive-reset -- --confirm
-pnpm context:archive-reset -- --confirm --preserve-task-repositories
 pnpm context:catalog-rebuild
 pnpm context:catalog-rebuild -- --confirm
 ```
 
-Both mutation commands refuse a live Git Context socket/writer. Catalog
-rebuild requires an empty version-3 catalog and an initialized daily session;
-after an archive reset, start and stop Ayati once before confirming rebuild.
+Both mutation commands refuse a live Git Context socket/writer. Archive reset
+preserves `<AYATI_ROOT_DIR>/workspace/`. Catalog rebuild requires an empty V5
+catalog; after an archive reset, start and stop Ayati once before confirming
+rebuild.
 
 Backend runtime performance benchmark:
 

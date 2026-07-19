@@ -15,7 +15,7 @@ afterEach(async () => {
 });
 
 describe("session summary hot cache", () => {
-  it("keeps five detailed commits and compacts older task-bound-run commits", async () => {
+  it("keeps five detailed commits and compacts older workstream-bound-run commits", async () => {
     const repositoryPath = await mkdtemp(join(tmpdir(), "ayati-session-summary-"));
     directories.push(repositoryPath);
     await git(repositoryPath, ["init", "--initial-branch=main"]);
@@ -45,18 +45,18 @@ describe("session summary hot cache", () => {
 
     expect(first.recentCommits).toHaveLength(5);
     expect(first.recentCommits[0]).toMatchObject({
-      subject: "session: complete task work 6",
+      subject: "session: complete workstream work 6",
       conversationSummary: "Conversation summary 6.",
-      workSummary: "Complete task work 6.",
+      workSummary: "Complete workstream work 6.",
       outcome: "done",
       validation: "passed",
-      taskId: "T-20260712-0006",
+      workstreamId: "T-20260712-0006",
       runId: "R-20260712-0006",
       assets: [{ path: "file-6.txt", description: "Asset 6" }],
     });
     expect(first.recentCommits[0]?.message).toContain("Assets:\n- file-6.txt — Asset 6");
-    expect(first.summary).toContain("Complete task work 1.");
-    expect(first.summary).not.toContain("Complete task work 2.");
+    expect(first.summary).toContain("Complete workstream work 1.");
+    expect(first.summary).not.toContain("Complete workstream work 2.");
     expect(restarted).toEqual(first);
   });
 });
@@ -64,26 +64,26 @@ describe("session summary hot cache", () => {
 function commitMessage(index: number): string {
   const suffix = String(index).padStart(4, "0");
   return [
-    "session: complete task work " + index,
+    "session: complete workstream work " + index,
     "",
     "Conversation:",
     "Conversation summary " + index + ".",
     "",
-    "Task work:",
-    "Complete task work " + index + ".",
+    "Workstream work:",
+    "Complete workstream work " + index + ".",
     "",
     "Assets:",
     "- file-" + index + ".txt — Asset " + index,
     "",
     "Session-Id: S-20260712-local",
     "Conversation-Id: S-20260712-local-C-" + suffix,
-    "Task-Id: T-20260712-" + suffix,
-    "Task-Before: " + "a".repeat(40),
-    "Task-After: " + "b".repeat(40),
+    "Workstream-Id: T-20260712-" + suffix,
+    "Workstream-Before: " + "a".repeat(40),
+    "Workstream-After: " + "b".repeat(40),
     "Run: R-20260712-" + suffix,
     "Outcome: done",
     "Validation: passed",
-    "Ayati-Event: task_bound_run_committed",
+    "Ayati-Event: workstream_bound_run_committed",
   ].join("\n");
 }
 

@@ -10,12 +10,12 @@ Review priorities:
 - Transport contract compatibility.
 - Missing tests for changed behavior.
 - Runtime data or secret leakage.
-- Task/request selection ambiguity or accidental implicit mutation authority.
-- V1 regressions that introduce a second task working directory or model-owned
-  lifecycle commits.
+- Workstream/request selection ambiguity or accidental implicit authority.
+- Regressions that place deliverables in context Git, infer authority from
+  binding alone, or allow model-owned lifecycle commits.
 - Protocol/client/server drift across `ayati-main` and `ayati-git-context`.
 - Missing restart, retry/idempotency, or repository-inspection
-  coverage for task-context changes.
+  coverage for workstream/resource changes.
 
 Before merging significant backend changes, prefer:
 

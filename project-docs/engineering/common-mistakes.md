@@ -11,28 +11,27 @@ Avoid these:
 - Assuming every interaction is synchronous chat; system events and background work are part of the product.
 - Coupling provider-specific behavior into the core loop when provider abstraction should handle it.
 - Adding a new tool without validation and tests.
-- Changing prompt context without considering token budget, the structured context pack, and deterministic git task resolution behavior.
+- Changing prompt context without considering token budget, the structured context pack, and deterministic workstream/resource resolution.
 - Adding tool-loading behavior in prompt prose instead of the tool taxonomy,
   working-set policy, and focused tests.
 - Loading process tools for generic create/build requests when file
   create/write/read tools are the safer deterministic default.
-- Solving read loops by storing all raw file context in task state instead of
+- Solving read loops by storing all raw file context in workstream state instead of
   using hot read context, observations, and run evidence.
-- Adding model-callable lifecycle tools for task state updates or run commits
+- Adding model-callable lifecycle tools for workstream state updates or commits
   instead of keeping those deterministic in runtime finalization.
-- Assuming a previously active or obvious task may be mutated without an
-  explicit V1 request decision.
-- Creating a new task for every feature, lesson, or run instead of adding a
+- Assuming a previously active or obvious workstream may be mutated without an
+  explicit request decision and exact mutable resource.
+- Creating a new workstream for every feature, lesson, or run instead of adding a
   request to the same durable workstream when ownership is clear.
-- Creating a second working copy instead of using the task repository as its
-  stable working directory.
-- Editing `.ayati/task.md` or request lifecycle files directly from the model
-  instead of letting runtime finalization own them.
-- Loading every task repository, old conversation, or raw output record into the
+- Putting project files or deliverables in the workstream context repository.
+- Editing `workstream.md`, request files, or `resources.json` directly from
+  general tools instead of letting runtime finalization own them.
+- Loading every workstream repository, old conversation, or raw output record into the
   default prompt instead of using compact active context, git-context retrieval,
   and narrower domain-tool calls.
-- Committing every attachment, raw tool transcript, runtime database, or
-  external-action payload into task Git.
+- Committing attachments, deliverables, raw transcripts, runtime databases, or
+  external-action payloads into workstream context Git.
 - Writing runtime state into source-controlled docs.
 - Ignoring `context/system-event-policy.json`.
 - Breaking CLI/server message contracts.

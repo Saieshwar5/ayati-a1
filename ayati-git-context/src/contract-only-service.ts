@@ -1,43 +1,41 @@
 import {
   GIT_CONTEXT_PROTOCOL_VERSION,
-  type AdoptTaskReferenceRequest,
-  type AdoptTaskReferenceResponse,
-  type ActivateTaskForRunRequest,
+  type ActivateWorkstreamForRunRequest,
   type ActiveContext,
-  type AcquireMutationAuthorityRequest,
-  type AcquireMutationAuthorityResponse,
-  type BindTaskAttachmentsRequest,
-  type BindTaskAttachmentsResponse,
-  type CreateTaskForRunRequest,
+  type BindResourcesForRunRequest,
+  type BindResourcesForRunResponse,
+  type CreateWorkstreamForRunRequest,
   type EnsureActiveSessionRequest,
   type EnsureActiveSessionResponse,
   type FinalizeRunRequest,
   type FinalizeRunResponse,
-  type FindTasksRequest,
-  type FindTasksResponse,
+  type FindWorkstreamsRequest,
+  type FindWorkstreamsResponse,
+  type FindResourcesRequest,
+  type FindResourcesResponse,
   type GetActiveContextRequest,
-  type GetTaskRequest,
-  type GetTaskResponse,
+  type GetWorkstreamRequest,
+  type GetWorkstreamResponse,
   type HealthResponse,
-  type InspectTaskLocationRequest,
-  type InspectTaskLocationResponse,
-  type ListTasksRequest,
-  type ListTasksResponse,
-  type PlanTaskRequestRouteRequest,
-  type PlanTaskRequestRouteResponse,
+  type InspectResourceForRunRequest,
+  type InspectResourceForRunResponse,
+  type ListWorkstreamsRequest,
+  type ListWorkstreamsResponse,
+  type PlanWorkstreamRequestRouteRequest,
+  type PlanWorkstreamRequestRouteResponse,
   type PrepareContextTurnRequest,
   type PrepareContextTurnResponse,
-  type ReadTaskRequest,
-  type ReadTaskResponse,
+  type ReadWorkstreamRequest,
+  type ReadWorkstreamResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
-  type RecordSessionAttachmentsRequest,
-  type RecordSessionAttachmentsResponse,
-  type SelectedTaskForRunResponse,
-  type SetTaskStarRequest,
-  type SetTaskStarResponse,
-  type VerifyMutationRequest,
-  type VerifyMutationResponse,
+  type PrepareResourceMutationRequest,
+  type PrepareResourceMutationResponse,
+  type SelectedWorkstreamForRunResponse,
+  type SetWorkstreamStarRequest,
+  type SetWorkstreamStarResponse,
+  type VerifyResourceMutationRequest,
+  type VerifyResourceMutationResponse,
 } from "./contracts.js";
 import { GitContextServiceError } from "./errors.js";
 import type { GitContextService } from "./service.js";
@@ -69,73 +67,67 @@ export class ContractOnlyGitContextService implements GitContextService {
     throw notReady();
   }
 
-  async createTaskForRun(_input: CreateTaskForRunRequest): Promise<SelectedTaskForRunResponse> {
+  async createWorkstreamForRun(_input: CreateWorkstreamForRunRequest): Promise<SelectedWorkstreamForRunResponse> {
     throw notReady();
   }
 
-  async activateTaskForRun(
-    _input: ActivateTaskForRunRequest,
-  ): Promise<SelectedTaskForRunResponse> {
+  async activateWorkstreamForRun(
+    _input: ActivateWorkstreamForRunRequest,
+  ): Promise<SelectedWorkstreamForRunResponse> {
     throw notReady();
   }
 
-  async planTaskRequestRoute(
-    _input: PlanTaskRequestRouteRequest,
-  ): Promise<PlanTaskRequestRouteResponse> {
+  async planWorkstreamRequestRoute(
+    _input: PlanWorkstreamRequestRouteRequest,
+  ): Promise<PlanWorkstreamRequestRouteResponse> {
     throw notReady();
   }
 
-  async listTasks(_input: ListTasksRequest): Promise<ListTasksResponse> {
+  async listWorkstreams(_input: ListWorkstreamsRequest): Promise<ListWorkstreamsResponse> {
     throw notReady();
   }
 
-  async findTasks(_input: FindTasksRequest): Promise<FindTasksResponse> {
+  async findWorkstreams(_input: FindWorkstreamsRequest): Promise<FindWorkstreamsResponse> {
     throw notReady();
   }
 
-  async inspectTaskLocation(
-    _input: InspectTaskLocationRequest,
-  ): Promise<InspectTaskLocationResponse> {
+  async getWorkstream(_input: GetWorkstreamRequest): Promise<GetWorkstreamResponse> {
     throw notReady();
   }
 
-  async getTask(_input: GetTaskRequest): Promise<GetTaskResponse> {
+  async readWorkstream(_input: ReadWorkstreamRequest): Promise<ReadWorkstreamResponse> {
     throw notReady();
   }
 
-  async readTask(_input: ReadTaskRequest): Promise<ReadTaskResponse> {
+  async setWorkstreamStar(_input: SetWorkstreamStarRequest): Promise<SetWorkstreamStarResponse> {
     throw notReady();
   }
 
-  async setTaskStar(_input: SetTaskStarRequest): Promise<SetTaskStarResponse> {
+  async findResources(_input: FindResourcesRequest): Promise<FindResourcesResponse> {
     throw notReady();
   }
 
-  async recordSessionAttachments(
-    _input: RecordSessionAttachmentsRequest,
-  ): Promise<RecordSessionAttachmentsResponse> {
+  async inspectResourceForRun(
+    _input: InspectResourceForRunRequest,
+  ): Promise<InspectResourceForRunResponse> {
     throw notReady();
   }
 
-  async bindTaskAttachments(
-    _input: BindTaskAttachmentsRequest,
-  ): Promise<BindTaskAttachmentsResponse> {
+  async bindResourcesForRun(
+    _input: BindResourcesForRunRequest,
+  ): Promise<BindResourcesForRunResponse> {
     throw notReady();
   }
 
-  async adoptTaskReference(
-    _input: AdoptTaskReferenceRequest,
-  ): Promise<AdoptTaskReferenceResponse> {
+  async prepareResourceMutation(
+    _input: PrepareResourceMutationRequest,
+  ): Promise<PrepareResourceMutationResponse> {
     throw notReady();
   }
 
-  async acquireMutationAuthority(
-    _input: AcquireMutationAuthorityRequest,
-  ): Promise<AcquireMutationAuthorityResponse> {
-    throw notReady();
-  }
-
-  async verifyMutation(_input: VerifyMutationRequest): Promise<VerifyMutationResponse> {
+  async verifyResourceMutation(
+    _input: VerifyResourceMutationRequest,
+  ): Promise<VerifyResourceMutationResponse> {
     throw notReady();
   }
 

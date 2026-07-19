@@ -185,7 +185,7 @@ export async function compileDecisionContext(input: {
 
   const timelinePlan = planTimelineCheckpoint({
     events: exactTimelineEvents(input.stateView),
-    continuityCheckpoint: input.stateView.context.git?.session.recentTaskRuns?.at(-1),
+    continuityCheckpoint: input.stateView.context.git?.session.recentRunCheckpoints?.at(-1),
     requiredSavingsTokens: sessionBudget.measuredInputTokens
       - sessionBudget.recoveryTargetTokens,
   });

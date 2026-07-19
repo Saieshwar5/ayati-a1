@@ -1,28 +1,25 @@
-import type { ActiveContext } from "ayati-git-context";
-import { basename, isAbsolute, resolve } from "node:path";
+import type {
+  ActiveContext,
+} from "ayati-git-context";
+import { isAbsolute, resolve } from "node:path";
 import type {
   ContextCommitSummary,
-  ContextEngineMachineContext,
   ContextConversationRecord,
-  TaskAssetRecord,
+  ContextEngineMachineContext,
 } from "./contracts.js";
 
 export function buildContextEngineProjection(
   active: ActiveContext,
 ): ContextEngineMachineContext {
-  if (!active.session) {
-    return emptyProjection();
-  }
-  const conversationTail = conversationRecords(active);
-  const activeTask = active.activeTask;
+  if (!active.session) return emptyProjection();
+
+  const activeWorkstream = active.activeWorkstream;
   const run = active.run?.run;
-  const taskBound = Boolean(
-    activeTask && run?.taskBinding?.taskId === activeTask.task.taskId,
+  const workstreamBound = Boolean(
+    activeWorkstream
+      && run?.workstreamBinding?.workstreamId === activeWorkstream.workstream.workstreamId,
   );
-  const taskWorkingDirectories = new Map(
-    (active.taskCandidates ?? []).map((task) => [task.taskId, task.workingDirectory]),
-  );
-  if (activeTask) taskWorkingDirectories.set(activeTask.task.taskId, activeTask.workingDirectory);
+
   return {
     session: {
       meta: {
@@ -30,42 +27,24 @@ export function buildContextEngineProjection(
         date: active.session.session.date,
         timezone: active.session.session.timezone,
         repoKind: "daily_session",
-        assetCount: active.session.attachments?.count ?? 0,
+        resourceCount: active.session.resources?.count ?? 0,
       },
-      conversationTail,
-      summary: {
-        text: active.session.summary,
-      },
+      conversationTail: conversationRecords(active),
+      summary: { text: active.session.summary },
       activityTail: [],
-      recentCommits: active.session.recentCommits.map((commit) =>
-        commitSummary(commit, commit.taskId ? taskWorkingDirectories.get(commit.taskId) : undefined)),
-      ...(active.session.attachments ? { attachments: active.session.attachments } : {}),
+      recentCommits: active.session.recentCommits.map(commitSummary),
     },
-    focus: taskBound && activeTask
+    focus: workstreamBound && activeWorkstream
       ? {
           status: "active",
-          ref: "refs/heads/" + activeTask.task.branch,
-          workId: activeTask.task.taskId,
+          ref: "refs/heads/" + activeWorkstream.workstream.branch,
+          workstreamId: activeWorkstream.workstream.workstreamId,
         }
       : { status: "none" },
     ...(active.readContext ? { readContext: active.readContext } : {}),
-    taskCandidates: (active.taskCandidates ?? []).map((task) => ({
-      taskId: task.taskId,
-      title: task.title,
-      objective: task.objective,
-      status: task.status,
-      ...(task.lifecycleStatus ? { lifecycleStatus: task.lifecycleStatus } : {}),
-      ...(task.repositoryHealth ? { repositoryHealth: task.repositoryHealth } : {}),
-      ...(task.currentRequest ? { currentRequest: task.currentRequest } : {}),
-      head: task.head,
-      workingDirectory: task.workingDirectory,
-      updatedAt: task.updatedAt,
-      discovery: task.discovery,
-      starred: task.starred,
-      ...(task.lastOpenedAt ? { lastOpenedAt: task.lastOpenedAt } : {}),
-      boundRunsLast30Days: task.boundRunsLast30Days,
-    })),
-    ...(taskBound && activeTask
+    workstreamCandidates: active.workstreamCandidates ?? [],
+    ingressResources: active.ingressResources ?? [],
+    ...(workstreamBound && activeWorkstream
       ? {
           pendingTurn: {
             fromSeq: currentConversationSequence(active),
@@ -73,27 +52,31 @@ export function buildContextEngineProjection(
             text: latestInputText(active),
             at: latestInputAt(active),
             routingStatus: "bound" as const,
-            workId: activeTask.task.taskId,
-            branch: activeTask.task.branch,
+            workstreamId: activeWorkstream.workstream.workstreamId,
+            branch: activeWorkstream.workstream.branch,
             runId: run!.runId,
           },
-          task: {
-            workingDirectory: activeTask.workingDirectory,
-            ref: "refs/heads/" + activeTask.task.branch,
-            workId: activeTask.task.taskId,
-            title: activeTask.title,
-            objective: activeTask.objective,
-            status: activeTask.latestOutcome ?? "in_progress",
-            completed: activeTask.latestOutcome === "done" ? [activeTask.summary] : [],
-            open: activeTask.latestOutcome === "done" ? [] : [activeTask.summary],
-            blockers: activeTask.latestOutcome === "blocked" ? [activeTask.summary] : [],
-            facts: [],
-            next: activeTask.latestOutcome === "done" ? undefined : activeTask.summary,
-            assets: taskAssets(activeTask),
-            recentRuns: [],
-            recentCommits: activeTask.recentCommits.map((commit) =>
-              commitSummary(commit, activeTask.workingDirectory)),
-            recentEvidence: [],
+          workstream: {
+            contextRepositoryPath: activeWorkstream.workstream.contextRepositoryPath,
+            ref: "refs/heads/" + activeWorkstream.workstream.branch,
+            workstreamId: activeWorkstream.workstream.workstreamId,
+            title: activeWorkstream.title,
+            objective: activeWorkstream.objective,
+            summary: activeWorkstream.summary,
+            workstreamStatus: activeWorkstream.workstreamStatus
+              ?? (activeWorkstream.latestOutcome === "done"
+                ? "done"
+                : activeWorkstream.latestOutcome === "blocked"
+                  ? "blocked"
+                  : "in_progress"),
+            lifecycleStatus: activeWorkstream.lifecycleStatus ?? "active",
+            repositoryHealth: activeWorkstream.repositoryHealth ?? "ready",
+            ...(activeWorkstream.currentFocus ? { currentFocus: activeWorkstream.currentFocus } : {}),
+            blockers: activeWorkstream.blockers ?? [],
+            ...(activeWorkstream.next ? { next: activeWorkstream.next } : {}),
+            ...(activeWorkstream.currentRequest ? { currentRequest: activeWorkstream.currentRequest } : {}),
+            resources: activeWorkstream.resources ?? [],
+            recentCommits: activeWorkstream.recentCommits.map(commitSummary),
           },
         }
       : {}),
@@ -103,7 +86,7 @@ export function buildContextEngineProjection(
 function emptyProjection(): ContextEngineMachineContext {
   return {
     session: {
-      meta: { sessionId: "unavailable", assetCount: 0 },
+      meta: { sessionId: "unavailable", resourceCount: 0 },
       conversationTail: [],
       activityTail: [],
     },
@@ -122,7 +105,7 @@ function conversationRecords(active: ActiveContext): ContextConversationRecord[]
       role: message.role === "system_event" ? "system" as const : message.role,
       at: message.at,
       text: message.content,
-    }))
+    })),
   );
 }
 
@@ -141,12 +124,11 @@ function latestInputAt(active: ActiveContext): string {
     ?? new Date(0).toISOString();
 }
 
-function commitSummary(commit: ActiveContext["session"] extends infer _T
-  ? NonNullable<ActiveContext["session"]>["recentCommits"][number]
-  : never, workingDirectory?: string): ContextCommitSummary {
-  const assets = (commit.assets ?? []).flatMap((asset) => {
+function commitSummary(
+  commit: NonNullable<ActiveContext["session"]>["recentCommits"][number],
+): ContextCommitSummary {
+  const resources = (commit.assets ?? []).flatMap((asset) => {
     if (isAbsolute(asset.path)) return [{ ...asset, path: resolve(asset.path) }];
-    if (workingDirectory) return [{ ...asset, path: resolve(workingDirectory, asset.path) }];
     return [];
   });
   return {
@@ -154,23 +136,11 @@ function commitSummary(commit: ActiveContext["session"] extends infer _T
     subject: commit.subject,
     ...(commit.conversationSummary ? { conversationSummary: commit.conversationSummary } : {}),
     ...(commit.workSummary ? { workSummary: commit.workSummary } : {}),
-    ...(assets.length > 0 ? { assets } : {}),
+    ...(resources.length > 0 ? { resources } : {}),
     ...(commit.outcome ? { outcome: commit.outcome } : {}),
     ...(commit.validation ? { validation: commit.validation } : {}),
     ...(commit.committedAt ? { at: commit.committedAt } : {}),
-    ...(commit.taskId ? { workId: commit.taskId } : {}),
+    ...(commit.workstreamId ? { workstreamId: commit.workstreamId } : {}),
     ...(commit.runId ? { runId: commit.runId } : {}),
   };
-}
-
-function taskAssets(task: NonNullable<ActiveContext["activeTask"]>): TaskAssetRecord[] {
-  const paths = task.importantPaths.length > 0 ? task.importantPaths : ["."];
-  return paths.map((path) => ({
-    assetId: task.task.taskId + ":" + resolve(task.workingDirectory, path),
-    role: "output",
-    kind: path === "." ? "directory" : "file",
-    name: path === "." ? basename(task.workingDirectory) : basename(path),
-    description: path === "." ? "Task repository checkout" : "Task-owned file",
-    path: resolve(task.workingDirectory, path),
-  }));
 }

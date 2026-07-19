@@ -281,7 +281,7 @@ export class SkillActivationManager {
 }
 
 function hasAttachmentWork(state: ActivationRouterState): boolean {
-  return hasCurrentRunAttachments(state) || hasFocusArtifactContext(state);
+  return hasCurrentRunAttachments(state) || hasWorkstreamResourceContext(state);
 }
 
 function hasCurrentRunAttachments(state: ActivationRouterState): boolean {
@@ -293,18 +293,18 @@ function hasCurrentRunAttachments(state: ActivationRouterState): boolean {
   ].some((items) => Array.isArray(items) && items.length > 0);
 }
 
-function hasFocusArtifactContext(state: ActivationRouterState): boolean {
+function hasWorkstreamResourceContext(state: ActivationRouterState): boolean {
   const contextEngine = state.harnessContext?.contextEngine;
   if (!contextEngine || typeof contextEngine !== "object" || Array.isArray(contextEngine)) {
     return false;
   }
-  const task = (contextEngine as { task?: unknown }).task;
+  const workstream = (contextEngine as { workstream?: unknown }).workstream;
   return Boolean(
-    task
-      && typeof task === "object"
-      && !Array.isArray(task)
-      && Array.isArray((task as { assets?: unknown[] }).assets)
-      && ((task as { assets: unknown[] }).assets).length > 0,
+    workstream
+      && typeof workstream === "object"
+      && !Array.isArray(workstream)
+      && Array.isArray((workstream as { resources?: unknown[] }).resources)
+      && ((workstream as { resources: unknown[] }).resources).length > 0,
   );
 }
 

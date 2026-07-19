@@ -3,9 +3,10 @@ import type {
   ActiveContext,
   ConversationContext,
   ReadContextProjection,
+  ResourceRef,
   RunContextProjection,
-  SessionAttachmentsProjection,
-  TaskCandidate,
+  SessionResourcesProjection,
+  WorkstreamCandidate,
 } from "../contracts.js";
 
 export class ActiveContextCache {
@@ -59,8 +60,9 @@ export function activeContextRevision(input: {
   conversations: ConversationContext[];
   readContext?: ReadContextProjection;
   run?: RunContextProjection;
-  attachments?: SessionAttachmentsProjection;
-  taskCandidates: TaskCandidate[];
+  resources?: SessionResourcesProjection;
+  ingressResources?: ResourceRef[];
+  workstreamCandidates: WorkstreamCandidate[];
 }): { revision: string; pendingDigest: string } {
   const pendingDigest = hash(JSON.stringify(input.conversations.map((item) => ({
     id: item.conversation.conversationId,
@@ -73,22 +75,28 @@ export function activeContextRevision(input: {
     status: input.status,
     pendingDigest,
     readContextRevision: input.readContext?.revision ?? null,
-    attachments: input.attachments
+    resources: input.resources
       ? {
-          count: input.attachments.count,
-          updatedAt: input.attachments.updatedAt ?? null,
-          recent: input.attachments.recent.map((attachment) => ({
-            sessionAssetId: attachment.sessionAssetId,
-            status: attachment.status,
-            checksum: attachment.checksum ?? null,
-            lastUsedAt: attachment.lastUsedAt ?? null,
+          count: input.resources.count,
+          updatedAt: input.resources.updatedAt ?? null,
+          recent: input.resources.recent.map((resource) => ({
+            resourceId: resource.resourceId,
+            availability: resource.availability,
+            versionKey: resource.version.key,
+            updatedAt: resource.updatedAt,
           })),
         }
       : null,
+    ingressResources: (input.ingressResources ?? []).map((resource) => ({
+      resourceId: resource.resourceId,
+      availability: resource.availability,
+      versionKey: resource.version.key,
+      updatedAt: resource.updatedAt,
+    })),
     run: input.run
       ? {
           runId: input.run.run.runId,
-          taskBinding: input.run.run.taskBinding ?? null,
+          workstreamBinding: input.run.run.workstreamBinding ?? null,
           status: input.run.run.status,
           stepCount: input.run.run.stepCount,
           workStateRevision: input.run.workState.revision,
@@ -96,18 +104,18 @@ export function activeContextRevision(input: {
           updatedAt: input.run.workState.updatedAt,
         }
       : null,
-    taskCandidates: input.taskCandidates.map((task) => ({
-      taskId: task.taskId,
-      status: task.status,
-      lifecycleStatus: task.lifecycleStatus ?? null,
-      repositoryHealth: task.repositoryHealth ?? null,
-      currentRequest: task.currentRequest ?? null,
-      discovery: task.discovery,
-      starred: task.starred,
-      lastOpenedAt: task.lastOpenedAt ?? null,
-      boundRunsLast30Days: task.boundRunsLast30Days,
-      head: task.head,
-      updatedAt: task.updatedAt,
+    workstreamCandidates: input.workstreamCandidates.map((workstream) => ({
+      workstreamId: workstream.workstreamId,
+      status: workstream.status,
+      lifecycleStatus: workstream.lifecycleStatus ?? null,
+      repositoryHealth: workstream.repositoryHealth ?? null,
+      currentRequest: workstream.currentRequest ?? null,
+      discovery: workstream.discovery,
+      starred: workstream.starred,
+      lastOpenedAt: workstream.lastOpenedAt ?? null,
+      boundRunsLast30Days: workstream.boundRunsLast30Days,
+      head: workstream.head,
+      updatedAt: workstream.updatedAt,
     })),
   }));
   return { revision, pendingDigest };

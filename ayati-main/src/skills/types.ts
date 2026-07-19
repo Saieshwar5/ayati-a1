@@ -1,5 +1,5 @@
 import type { AgentUiContext } from "../ui/context.js";
-import type { TaskAssetRecord } from "../context-engine/index.js";
+import type { WorkstreamResourceBinding } from "ayati-git-context";
 
 export interface SkillPromptBlock {
   id: string;
@@ -19,16 +19,21 @@ export interface ToolExecutionContext {
   runId?: string;
   callId?: string;
   sessionId?: string;
-  taskAssets?: TaskAssetRecord[];
+  workstreamResources?: WorkstreamResourceBinding[];
   stepNumber?: number;
   uiContext?: AgentUiContext;
   resourceScope?: ToolResourceScope;
 }
 
 export interface ToolResourceScope {
-  kind: "workspace" | "task";
+  kind: "workspace" | "resource";
+  /** Directory used by filesystem and process tools for relative-path resolution. */
   rootPath: string;
-  taskId?: string;
+  /** Exact filesystem authority retained by the resource-scoping wrapper. */
+  authorityPath: string;
+  authorityKind: "file" | "directory";
+  workstreamId?: string;
+  resourceId?: string;
 }
 
 export type JsonSchema = Record<string, unknown>;

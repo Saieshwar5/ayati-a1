@@ -64,7 +64,7 @@ describe("session registry cache", () => {
   it("does not reread immutable Git metadata during normal context reads", async () => {
     const directory = await temporaryDirectory();
     const database = await ContextDatabase.open({ path: join(directory, "context.db") });
-    const service = new SqliteGitContextService({ database, dataRoot: directory });
+    const service = new SqliteGitContextService({ database, rootDirectory: directory });
     services.push(service);
     const created = await service.ensureActiveSession({
       requestId: "REQ-session",

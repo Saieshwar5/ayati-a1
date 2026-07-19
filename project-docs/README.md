@@ -29,7 +29,7 @@ Read these first before major code changes:
 1. `product/overview.md`
 2. `engineering/README.md`
 3. `engineering/architecture/overview.md`
-4. `engineering/architecture/task-repositories.md`
+4. `engineering/architecture/workstreams-and-resources.md`
 5. `engineering/architecture/agent-harness.md`
 6. `engineering/architecture/context-and-memory.md`
 7. `engineering/testing.md`

@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { estimateTextTokens } from "../../prompt/token-estimator.js";
-import type { ContextSessionTaskRunCheckpoint } from "../../context-engine/index.js";
+import type { ContextSessionRunCheckpoint } from "../../context-engine/index.js";
 
-export type TimelineContinuityCheckpoint = Omit<ContextSessionTaskRunCheckpoint, "runId">;
+export type TimelineContinuityCheckpoint = Omit<ContextSessionRunCheckpoint, "runId">;
 
 export type ExactTimelineEvent =
   | {
@@ -131,7 +131,7 @@ const DEFAULT_CHECKPOINT_ESTIMATE_TOKENS = 1_200;
 
 export function planTimelineCheckpoint(input: {
   events: ExactTimelineEvent[];
-  continuityCheckpoint?: ContextSessionTaskRunCheckpoint | TimelineContinuityCheckpoint;
+  continuityCheckpoint?: ContextSessionRunCheckpoint | TimelineContinuityCheckpoint;
   requiredSavingsTokens: number;
   estimatedCheckpointTokens?: number;
 }): TimelineCheckpointPlan {
@@ -334,9 +334,9 @@ function hashTimelineSource(
 }
 
 function withoutRunId(
-  checkpoint: ContextSessionTaskRunCheckpoint | TimelineContinuityCheckpoint,
+  checkpoint: ContextSessionRunCheckpoint | TimelineContinuityCheckpoint,
 ): TimelineContinuityCheckpoint {
-  const { runId: _runId, ...projected } = checkpoint as ContextSessionTaskRunCheckpoint;
+  const { runId: _runId, ...projected } = checkpoint as ContextSessionRunCheckpoint;
   return projected;
 }
 

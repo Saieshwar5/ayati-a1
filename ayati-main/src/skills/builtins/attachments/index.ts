@@ -7,10 +7,10 @@ export interface AttachmentSkillDeps {
 
 const ATTACHMENT_PROMPT_BLOCK = [
   "Unified attachment restoration is built in.",
-  "Use attachment_restore when the user refers to a file, document, dataset, or directory listed in the current git task assets.",
-  "For follow-up work, use the asset name, path, file id, directory id, document id, prepared input id, or asset id from context.git.current.task.assets.",
+  "Use attachment_restore when the user refers to a file, document, dataset, or directory listed in the current workstream resources.",
+  "For follow-up work, use the resource display name, alias, path, or resource id from context.git.current.workstream.resources.",
   "If the current run already has attached files, do not restore an older attachment unless the user explicitly asks for the earlier one.",
-  "Inputs accept assetId or a reference such as preparedInputId, fileId, directoryId, display name, or path.",
+  "Inputs accept resourceId or a reference such as display name, alias, or filesystem path.",
 ].join("\n");
 
 function buildSuccessResult(output: Record<string, unknown>, meta?: Record<string, unknown>): ToolResult {
@@ -35,13 +35,13 @@ function createRestoreAttachmentContextTool(deps: AttachmentSkillDeps, name = "a
     inputSchema: {
       type: "object",
       properties: {
-        assetId: {
+        resourceId: {
           type: "string",
-          description: "Optional git task asset id to restore.",
+          description: "Optional workstream resource id to restore.",
         },
         reference: {
           type: "string",
-          description: "Optional git task asset reference. Use display name, asset id, session asset id, file path, or directory path when known.",
+          description: "Optional workstream resource reference. Use display name, alias, resource id, file path, or directory path when known.",
         },
       },
       additionalProperties: false,
@@ -53,14 +53,14 @@ function createRestoreAttachmentContextTool(deps: AttachmentSkillDeps, name = "a
     },
     async execute(input, context): Promise<ToolResult> {
       const runId = readRunId(context);
-      const assetId = readOptionalString(input, "assetId");
+      const resourceId = readOptionalString(input, "resourceId");
       const reference = readOptionalString(input, "reference");
       try {
         const restored = await deps.sessionAttachmentService.restoreAttachmentContext({
           runId,
-          assetId,
+          resourceId,
           reference,
-          taskAssets: context?.taskAssets,
+          workstreamResources: context?.workstreamResources,
         });
         const stateUpdates = buildRestoreStateUpdates(restored);
         return buildSuccessResult(buildRestoreOutput(restored), stateUpdates.length > 0 ? { stateUpdates } : undefined);
@@ -75,7 +75,7 @@ export function createAttachmentSkill(deps: AttachmentSkillDeps): SkillDefinitio
   return {
     id: "attachments",
     version: "1.0.0",
-    description: "Restore previously used attachments from current git task assets into the current run.",
+    description: "Restore a bound workstream resource into the current run's attachment tools.",
     promptBlock: ATTACHMENT_PROMPT_BLOCK,
     tools: [
       createRestoreAttachmentContextTool(deps),
@@ -88,7 +88,7 @@ function buildRestoreOutput(restored: RestoredAttachmentContext): Record<string,
     return {
       restored: restored.restored,
       attachmentKind: restored.attachmentKind,
-      assetId: restored.assetId,
+      resourceId: restored.resourceId,
       attachmentId: restored.fileId ?? restored.path,
       ...(restored.fileId ? { fileId: restored.fileId } : {}),
       path: restored.path,
@@ -101,7 +101,7 @@ function buildRestoreOutput(restored: RestoredAttachmentContext): Record<string,
     return {
       restored: restored.restored,
       attachmentKind: restored.attachmentKind,
-      assetId: restored.assetId,
+      resourceId: restored.resourceId,
       attachmentId: restored.directoryId ?? restored.path,
       ...(restored.directoryId ? { directoryId: restored.directoryId } : {}),
       path: restored.path,
@@ -113,7 +113,7 @@ function buildRestoreOutput(restored: RestoredAttachmentContext): Record<string,
   return {
     restored: restored.restored,
     attachmentKind: restored.attachmentKind,
-    assetId: restored.assetId,
+    resourceId: restored.resourceId,
     attachmentId: restored.summary.preparedInputId,
     preparedInputId: restored.summary.preparedInputId,
     documentId: restored.summary.documentId,

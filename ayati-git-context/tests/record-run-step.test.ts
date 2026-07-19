@@ -65,7 +65,7 @@ describe("recordRunStep", () => {
     })).rejects.toMatchObject({ code: "RUN_STEP_NOT_CONTIGUOUS" });
   });
 
-  it("rejects mutation calls before task binding", async () => {
+  it("rejects mutation calls before workstream binding", async () => {
     const fixture = await createFixture();
     const prepared = await prepare(fixture.service, "unbound-mutation");
 
@@ -76,13 +76,13 @@ describe("recordRunStep", () => {
       record: step(1, {
         callId: "call-write",
         tool: "write_files",
-        purpose: "Write a task-owned file.",
+        purpose: "Write a workstream-owned file.",
         toolPurpose: "mutation",
         toolEffect: "workspace_mutation",
         status: "success",
         input: { path: "src/app.ts" },
       }),
-    })).rejects.toMatchObject({ code: "MUTATION_REQUIRES_TASK_BINDING" });
+    })).rejects.toMatchObject({ code: "MUTATION_REQUIRES_WORKSTREAM_BINDING" });
     expect(fixture.database.prepare(
       "SELECT step_count FROM runs WHERE run_id = ?",
     ).get(prepared.run.runId)).toEqual({ step_count: 0 });
@@ -99,16 +99,16 @@ describe("recordRunStep", () => {
       record: {
         ...step(1, {
           callId: "call-route",
-          tool: "git_context_activate_task",
-          purpose: "Route to the requested existing task.",
+          tool: "git_context_activate_workstream",
+          purpose: "Route to the requested existing workstream.",
           toolPurpose: "control",
           toolEffect: "context_mutation",
           status: "failed",
-          input: { taskId: "T-missing" },
-          error: { code: "TASK_NOT_FOUND" },
+          input: { workstreamId: "T-missing" },
+          error: { code: "WORKSTREAM_NOT_FOUND" },
         }),
         status: "failed",
-        summary: "Routing failed without changing task ownership.",
+        summary: "Routing failed without changing workstream ownership.",
         verification: { passed: false },
       },
     });
@@ -195,8 +195,7 @@ async function createFixture() {
   const database = await ContextDatabase.open({ path: join(root, "context.sqlite") });
   const service = new SqliteGitContextService({
     database,
-    dataRoot: join(root, "session-data"),
-    workspaceRoot: join(root, "workspace"),
+    rootDirectory: root,
     now: () => "2026-07-19T10:00:00+05:30",
   });
   services.push(service);

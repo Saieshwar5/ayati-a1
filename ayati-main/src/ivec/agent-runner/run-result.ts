@@ -2,13 +2,13 @@ import { createHash } from "node:crypto";
 import { dirname, isAbsolute, resolve } from "node:path";
 import type { PreparedAttachmentRecord } from "../../documents/prepared-attachment-registry.js";
 import type { PreparedAttachmentSummary } from "../../documents/types.js";
-import type { TaskAssetRecord } from "../../context-engine/index.js";
 import type {
   AgentLoopResult,
-  AgentTaskSummaryRecord,
+  AgentResourceRecord,
+  AgentWorkstreamSummaryRecord,
   CompletionDirective,
   LoopState,
-  TaskSummaryFailureSummary,
+  WorkstreamSummaryFailureSummary,
   WorkState,
 } from "../types.js";
 import {
@@ -16,19 +16,19 @@ import {
   stepHasGeneratedArtifactEvidence,
 } from "./final-response-policy.js";
 
-export function buildTaskSummaryRecord(
+export function buildWorkstreamSummaryRecord(
   state: LoopState,
   assistantResponse: string,
   runStatus: AgentLoopResult["status"],
   responseKind: AgentLoopResult["type"],
   completion?: CompletionDirective,
-): AgentTaskSummaryRecord {
+): AgentWorkstreamSummaryRecord {
   const userFacingSummary = completion?.summary?.trim() || assistantResponse.trim();
   const progressSummary = state.workState.summary.trim();
-  const taskStatus = toTaskSummaryTaskStatus(state.workState.status);
+  const workstreamStatus = toWorkstreamSummaryStatus(state.workState.status);
   const failureSummary = buildFailureSummary(state);
-  const openWork = buildTaskSummaryOpenWork(state, taskStatus, failureSummary);
-  const blockers = buildTaskSummaryBlockers(state, taskStatus, failureSummary);
+  const openWork = buildWorkstreamSummaryOpenWork(state, workstreamStatus, failureSummary);
+  const blockers = buildWorkstreamSummaryBlockers(state, workstreamStatus, failureSummary);
   return {
     runId: state.runId,
     runPath: "",
@@ -36,12 +36,14 @@ export function buildTaskSummaryRecord(
     discussionStartSeq: findDiscussionStartSeq(state),
     discussionEndSeq: state.currentSeq,
     runStatus,
-    taskStatus,
+    workstreamStatus,
     objective: state.userMessage.trim() || undefined,
     summary: userFacingSummary || progressSummary,
     progressSummary: progressSummary || undefined,
     currentFocus: state.workState.nextStep?.trim() || undefined,
-    completedMilestones: normalizeList(state.harnessContext.contextEngine?.task?.completed),
+    completedMilestones: state.harnessContext.contextEngine?.workstream?.workstreamStatus === "done"
+      ? [state.harnessContext.contextEngine.workstream.summary]
+      : [],
     openWork,
     blockers,
     keyFacts: normalizeList(state.workState.verifiedFacts),
@@ -62,53 +64,68 @@ export function buildTaskSummaryRecord(
   };
 }
 
-export function buildTaskAssets(state: LoopState): TaskAssetRecord[] {
-  const sessionId = readContextSessionId(state.harnessContext.contextEngine?.session);
-  return dedupeTaskAssets([
-    ...(state.preparedAttachmentRecords ?? []).map((record) => attachmentRecordToTaskAsset(record, sessionId)),
-    ...(state.managedFiles ?? []).map((file): TaskAssetRecord => ({
-      assetId: stableAssetId("file", file.fileId),
+export function buildRunResources(state: LoopState): AgentResourceRecord[] {
+  return dedupeResources([
+    ...(state.harnessContext.contextEngine?.workstream?.resources ?? []).map(({ resource, role }) => ({
+      resourceId: resource.resourceId,
+      role,
+      kind: resource.kind,
+      origin: resource.origin,
+      displayName: resource.displayName,
+      description: resource.description,
+      aliases: resource.aliases,
+      locator: resource.locator,
+    } satisfies AgentResourceRecord)),
+    ...(state.preparedAttachmentRecords ?? []).map(attachmentRecordToResource),
+    ...(state.managedFiles ?? []).map((file): AgentResourceRecord => ({
+      resourceId: stableResourceId(absolutePath(file.storagePath)),
       role: "input",
       kind: "file",
-      name: file.originalName,
-      ...(sessionId ? { sessionAssetId: stableSessionAssetId(sessionId, "file", file.fileId) } : {}),
-      path: absolutePath(file.storagePath),
+      origin: "user_attachment",
+      displayName: file.originalName,
+      description: `User-provided file ${file.originalName}.`,
+      aliases: [file.originalName, file.fileId],
+      locator: { kind: "filesystem", path: absolutePath(file.storagePath) },
     })),
-    ...(state.managedDirectories ?? []).map((directory): TaskAssetRecord => ({
-      assetId: stableAssetId("directory", directory.directoryId),
+    ...(state.managedDirectories ?? []).map((directory): AgentResourceRecord => ({
+      resourceId: stableResourceId(absolutePath(directory.rootPath)),
       role: "input",
       kind: "directory",
-      name: directory.name,
-      ...(sessionId ? { sessionAssetId: stableSessionAssetId(sessionId, "directory", directory.directoryId) } : {}),
-      path: absolutePath(directory.rootPath),
+      origin: "user_attachment",
+      displayName: directory.name,
+      description: `User-provided directory ${directory.name}.`,
+      aliases: [directory.name, directory.directoryId],
+      locator: { kind: "filesystem", path: absolutePath(directory.rootPath) },
     })),
-    ...buildGeneratedArtifactAssets(state),
-    ...buildVerifiedCompletionAssets(state),
+    ...buildGeneratedResources(state),
+    ...buildVerifiedCompletionResources(state),
   ]);
 }
 
-export function buildVerifiedCompletionAssets(state: LoopState): TaskAssetRecord[] {
-  return (state.completionAssets ?? []).map((asset) => ({
-    assetId: stableAssetId(asset.kind, asset.path),
-    role: "generated",
+export function buildVerifiedCompletionResources(state: LoopState): AgentResourceRecord[] {
+  return (state.completionResources ?? []).map((asset) => ({
+    resourceId: stableResourceId(asset.resolvedPath),
+    role: "deliverable",
     kind: asset.kind,
-    name: asset.path.split("/").pop() || asset.path,
-    path: asset.path,
+    origin: "agent_created",
+    displayName: asset.path.split("/").pop() || asset.path,
     description: asset.description,
+    aliases: [asset.path.split("/").pop() || asset.path],
+    locator: { kind: "filesystem", path: asset.resolvedPath },
   }));
 }
 
-function toTaskSummaryTaskStatus(status: WorkState["status"]): AgentTaskSummaryRecord["taskStatus"] {
+function toWorkstreamSummaryStatus(status: WorkState["status"]): AgentWorkstreamSummaryRecord["workstreamStatus"] {
   return status === "not_done" ? "open" : status;
 }
 
-function buildTaskSummaryOpenWork(
+function buildWorkstreamSummaryOpenWork(
   state: LoopState,
-  taskStatus: AgentTaskSummaryRecord["taskStatus"],
-  failureSummary: TaskSummaryFailureSummary | undefined,
+  workstreamStatus: AgentWorkstreamSummaryRecord["workstreamStatus"],
+  failureSummary: WorkstreamSummaryFailureSummary | undefined,
 ): string[] {
   const openWork = normalizeList(state.workState.openWork);
-  if (taskStatus !== "open" || openWork.length > 0) {
+  if (workstreamStatus !== "open" || openWork.length > 0) {
     return openWork;
   }
   const nextAction = deriveNextAction(state);
@@ -118,22 +135,22 @@ function buildTaskSummaryOpenWork(
   if (failureSummary?.suggestedRecovery) {
     return [failureSummary.suggestedRecovery];
   }
-  return ["Continue the requested task."];
+  return ["Continue the active workstream request."];
 }
 
-function buildTaskSummaryBlockers(
+function buildWorkstreamSummaryBlockers(
   state: LoopState,
-  taskStatus: AgentTaskSummaryRecord["taskStatus"],
-  failureSummary: TaskSummaryFailureSummary | undefined,
+  workstreamStatus: AgentWorkstreamSummaryRecord["workstreamStatus"],
+  failureSummary: WorkstreamSummaryFailureSummary | undefined,
 ): string[] {
   const blockers = normalizeList(state.workState.blockers);
-  if (taskStatus !== "blocked" || blockers.length > 0) {
+  if (workstreamStatus !== "blocked" || blockers.length > 0) {
     return blockers;
   }
   if (failureSummary?.error) {
     return [failureSummary.error];
   }
-  return ["Task is blocked."];
+  return ["The workstream request is blocked."];
 }
 
 function deriveNextAction(state: LoopState): string | undefined {
@@ -164,7 +181,7 @@ function findDiscussionStartSeq(state: LoopState): number | undefined {
 function deriveStopReason(
   state: LoopState,
   status: AgentLoopResult["status"],
-): AgentTaskSummaryRecord["stopReason"] {
+): AgentWorkstreamSummaryRecord["stopReason"] {
   if (state.contextLimitReached) return "context_limit";
   if (state.runLimitReached) return "run_limit";
   if (state.workState.status === "needs_user_input") return "needs_user_input";
@@ -174,7 +191,7 @@ function deriveStopReason(
   return "completed";
 }
 
-function buildFailureSummary(state: LoopState): TaskSummaryFailureSummary | undefined {
+function buildFailureSummary(state: LoopState): WorkstreamSummaryFailureSummary | undefined {
   if (state.workState.status !== "blocked" && state.status !== "failed" && state.status !== "stuck") {
     return undefined;
   }
@@ -211,7 +228,7 @@ function suggestFailureRecovery(
   error: string,
 ): string | undefined {
   if (failedTool === "directory_search" && /No managed directories are available/i.test(error)) {
-    return "Restore the relevant task asset or use the absolute project path directly before searching.";
+    return "Restore the relevant workstream resource or use its absolute path directly before searching.";
   }
   if (failureType === "missing_path") {
     return "Restore or verify the absolute path before retrying.";
@@ -229,22 +246,13 @@ function buildAttachmentNames(preparedAttachments: PreparedAttachmentSummary[] |
   return (preparedAttachments ?? []).map((attachment) => attachment.displayName);
 }
 
-function readContextSessionId(
-  session: NonNullable<LoopState["harnessContext"]["contextEngine"]>["session"] | undefined,
-): string | undefined {
-  if (!session) {
-    return undefined;
-  }
-  return session.meta?.sessionId ?? (session as unknown as { sessionId?: string }).sessionId;
-}
-
-function buildGeneratedArtifactAssets(state: LoopState): TaskAssetRecord[] {
+function buildGeneratedResources(state: LoopState): AgentResourceRecord[] {
   const artifacts = normalizeList(state.completedSteps.flatMap((step) => (
     stepHasGeneratedArtifactEvidence(step) ? step.artifacts : []
   )))
     .filter((artifact) => isDurableStepArtifact(artifact))
     .map((artifact) => absolutePath(artifact));
-  const assets: TaskAssetRecord[] = [];
+  const resources: AgentResourceRecord[] = [];
   const directoryCounts = new Map<string, number>();
 
   for (const artifact of artifacts) {
@@ -253,13 +261,16 @@ function buildGeneratedArtifactAssets(state: LoopState): TaskAssetRecord[] {
       const parent = dirname(artifact);
       directoryCounts.set(parent, (directoryCounts.get(parent) ?? 0) + 1);
     }
-    assets.push({
-      assetId: stableAssetId(kind, artifact),
-      role: "generated",
+    resources.push({
+      resourceId: stableResourceId(artifact),
+      role: "output",
       kind,
-      name: artifact.split("/").pop() || artifact,
-      path: artifact,
-      ...completionAssetDescription(state, artifact),
+      origin: "agent_created",
+      displayName: artifact.split("/").pop() || artifact,
+      description: completionResourceDescription(state, artifact)
+        ?? `Agent-created ${kind} ${artifact.split("/").pop() || artifact}.`,
+      aliases: [artifact.split("/").pop() || artifact],
+      locator: { kind: "filesystem", path: artifact },
     });
   }
 
@@ -267,51 +278,56 @@ function buildGeneratedArtifactAssets(state: LoopState): TaskAssetRecord[] {
     if (count < 2) {
       continue;
     }
-    assets.push({
-      assetId: stableAssetId("directory", directoryPath),
-      role: "generated",
+    resources.push({
+      resourceId: stableResourceId(directoryPath),
+      role: "output",
       kind: "directory",
-      name: directoryPath.split("/").pop() || directoryPath,
-      path: directoryPath,
-      ...completionAssetDescription(state, directoryPath),
+      origin: "agent_created",
+      displayName: directoryPath.split("/").pop() || directoryPath,
+      description: completionResourceDescription(state, directoryPath)
+        ?? `Agent-created directory ${directoryPath.split("/").pop() || directoryPath}.`,
+      aliases: [directoryPath.split("/").pop() || directoryPath],
+      locator: { kind: "filesystem", path: directoryPath },
     });
   }
 
-  return assets;
+  return resources;
 }
 
-function completionAssetDescription(
+function completionResourceDescription(
   state: LoopState,
   path: string,
-): Pick<TaskAssetRecord, "description"> | Record<string, never> {
-  const asset = state.completionAssets?.find((candidate) => candidate.resolvedPath === path);
-  return asset?.description ? { description: asset.description } : {};
+): string | undefined {
+  const asset = state.completionResources?.find((candidate) => candidate.resolvedPath === path);
+  return asset?.description;
 }
 
-function attachmentRecordToTaskAsset(
+function attachmentRecordToResource(
   record: PreparedAttachmentRecord,
-  sessionId: string | undefined,
-): TaskAssetRecord {
+): AgentResourceRecord {
   const kind = record.summary.mode === "structured_data" ? "dataset" : "document";
+  const path = absolutePath(record.manifest.originalPath || record.summary.artifactPath);
   return {
-    assetId: stableAssetId(kind, record.summary.documentId),
+    resourceId: stableResourceId(path),
     role: "input",
     kind,
-    name: record.summary.displayName,
-    ...(sessionId ? { sessionAssetId: stableSessionAssetId(sessionId, "document", record.summary.documentId) } : {}),
-    path: absolutePath(record.manifest.originalPath || record.summary.artifactPath),
+    origin: "user_attachment",
+    displayName: record.summary.displayName,
+    description: `User-provided ${kind} ${record.summary.displayName}.`,
+    aliases: [record.summary.displayName, record.summary.documentId],
+    locator: { kind: "filesystem", path },
   };
 }
 
-function dedupeTaskAssets(assets: TaskAssetRecord[]): TaskAssetRecord[] {
-  const output = new Map<string, TaskAssetRecord>();
-  for (const asset of assets) {
-    output.set(asset.assetId, asset);
+function dedupeResources(resources: AgentResourceRecord[]): AgentResourceRecord[] {
+  const output = new Map<string, AgentResourceRecord>();
+  for (const resource of resources) {
+    output.set(resource.resourceId, resource);
   }
   return [...output.values()];
 }
 
-function inferPathAssetKind(path: string): string {
+function inferPathAssetKind(path: string): "file" | "directory" {
   if (/\.(?:html|css|js|jsx|ts|tsx|json|md|txt|py|sql|csv|pdf|png|jpg|jpeg|svg)$/i.test(path)) {
     return "file";
   }
@@ -322,12 +338,8 @@ function absolutePath(path: string): string {
   return isAbsolute(path) ? path : resolve(path);
 }
 
-function stableAssetId(kind: string, identity: string): string {
-  return `asset_${createHash("sha256").update(`${kind}:${identity}`).digest("hex").slice(0, 20)}`;
-}
-
-function stableSessionAssetId(sessionId: string, kind: string, identity: string): string {
-  return `SA-${createHash("sha256").update(`${sessionId}\0${kind}\0${identity}`).digest("hex").slice(0, 16)}`;
+function stableResourceId(path: string): string {
+  return `RES-${createHash("sha256").update(`filesystem:${resolve(path)}`).digest("hex").slice(0, 24).toUpperCase()}`;
 }
 
 function normalizeList(values: string[] | undefined): string[] {

@@ -2,7 +2,7 @@ import { compactInputFields, projectStructuredCall, readMetadata } from "./share
 import type { ToolContextProjector } from "./types.js";
 
 export const gitContextProjector: ToolContextProjector = {
-  id: "git_context_v1",
+  id: "git_context_v4",
   supports(call) {
     return call.tool.startsWith("git_context_");
   },
@@ -10,8 +10,9 @@ export const gitContextProjector: ToolContextProjector = {
     const compactInput = compactInputFields(call.input, {
       keep: [
         "sessionId",
-        "taskId",
-        "workId",
+        "workstreamId",
+        "requestId",
+        "resourceId",
         "runId",
         "step",
         "callId",

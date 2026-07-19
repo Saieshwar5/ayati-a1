@@ -1,122 +1,77 @@
 # Transport Contracts
 
-Ayati transports are communication channels into the agent daemon. The daemon owns intelligence, memory, tools, providers, and event processing.
+Ayati clients are communication surfaces. The daemon owns intelligence,
+context, tools, providers, and event processing.
 
-WebSocket chat server:
+## WebSocket
 
-- Default URL: `ws://localhost:8080`
-- Implemented by `ayati-main/src/server/ws-server.ts`
-- CLI client hook: `ayati-cli/src/app/hooks/use-websocket.ts`
+Default URL: `ws://localhost:8080`.
 
-Typical client chat payload:
+A client sends normalized chat with optional attachments. Streaming-capable
+clients announce `replyStreaming`; they receive `reply_started`, zero or more
+`reply_delta` events, and one terminal `reply_done`. Other clients receive the
+equivalent final `reply`, `feedback`, `notification`, or `error` envelope.
 
-```json
-{
-  "type": "chat",
-  "content": "User message",
-  "attachments": []
-}
-```
+Terminal envelopes include the run id and workstream context-commit state:
 
-Streaming-capable clients may announce support after connecting:
+- `not_required`: no context commit was needed.
+- `no_change`: a bound run reduced to the existing context state.
+- `committed`: one acknowledged workstream-context commit was created.
+- `failed`: finalization failed; no successful terminal acknowledgement may be
+  inferred.
 
-```json
-{
-  "type": "client_hello",
-  "capabilities": {
-    "replyStreaming": true
-  }
-}
-```
+Text may stream before finalization, but `reply_done` is sent only after the
+database, resource verification, materialization, and optional context commit
+are acknowledged. The CLI then sends `reply_rendered` for the exact server turn
+to distinguish dispatch from confirmed rendering.
 
-Server response types handled by the CLI:
+## HTTP
 
-- `reply`
-- `feedback`
-- `notification`
-- `error`
-- `progress`
-- `reply_started`
-- `reply_delta`
-- `reply_done`
+Default URL: `http://127.0.0.1:8081`.
 
-For clients that do not send `client_hello.capabilities.replyStreaming=true`,
-the daemon keeps sending final `reply`, `feedback`, and `notification` events.
-For streaming-capable clients, final user-visible responses may be delivered as
-`reply_started` followed by one or more `reply_delta` events and a final
-`reply_done`. The `reply_done.content` field is the assembled canonical
-assistant response and includes a `commitStatus` value:
-
-- `not_required`: the finalized run required no task commit.
-- `no_change`: a task-bound run finalized without creating a new commit.
-- `committed`: a task-bound run created and acknowledged its verified commit.
-- `failed`: run finalization failed after response text was assembled; no
-  successful terminal acknowledgement may be inferred.
-
-After committing the canonical `reply_done` content and making the newest
-message visible, the CLI acknowledges the exact server-issued turn:
-
-```json
-{
-  "type": "reply_rendered",
-  "turnId": "server-issued-turn-id",
-  "renderedAt": "2026-07-18T08:30:00.000Z"
-}
-```
-
-The WebSocket server accepts this acknowledgement only when the same client
-previously received `reply_done` for that `turnId`. This provides transport
-telemetry that distinguishes reply dispatch from confirmed client rendering.
-
-Provider-native token streaming is used only for response-only final text after
-the harness has reached a user-visible reply or feedback path. Normal
-decision/tool-selection calls are not streamed to clients. Native final-response
-streaming is currently implemented for OpenAI and Fireworks providers; other
-providers use the same transport events with daemon-chunked final text.
-
-Future clients should preserve the same principle even if they use a different transport:
-
-- Send normalized user messages, attachments, events, or approvals to the daemon.
-- Render replies, feedback, notifications, and errors from the daemon.
-- Keep channel-specific UI behavior outside the core runtime.
-
-HTTP API server:
-
-- Default URL: `http://127.0.0.1:8081`
-- Implemented by `ayati-main/src/server/upload-server.ts`
-
-Known HTTP paths:
-
-- `POST /api/uploads`
-- `POST /api/pulse`
-
-Use `AYATI_HTTP_API_TOKEN` when Pulse API access needs token protection.
+Current routes include uploads, artifacts, and Pulse ingress. Use
+`AYATI_HTTP_API_TOKEN` where HTTP ingress needs token protection.
 
 ## Git Context Protocol
 
-Git Context is an internal local service, not a user-facing remote API.
-`ManagedGitContextProcess` starts it and the typed client connects over the Unix
-socket configured by `AYATI_GIT_CONTEXT_SOCKET`. Client and server must agree on
-`GIT_CONTEXT_PROTOCOL_VERSION` (currently `32`). The selection result makes the
-request decision (`initial`, `continue`, or `create`) explicit and records
-whether that selection created a request. These
-fields feed both model routing and live-test feedback.
+Git Context is an internal local service over the Unix socket configured by
+`AYATI_GIT_CONTEXT_SOCKET`. Client and server must both use protocol version
+36. SQLite uses clean schema version 5; no compatibility migration reader is
+provided for older development state.
 
-The protocol covers health, sessions, conversation records, task catalog reads,
-task creation/selection, request routing, mutation authority, attachments,
-context projection, run lifecycle, and finalization. The server alone owns its
-SQLite database and Git mutations.
+The service owns:
 
-V1 guarantees:
+- atomic turn preparation;
+- sessions and conversation records;
+- one-run lifecycle and structured steps;
+- workstream/request catalog, discovery, creation, activation, and stars;
+- resource admission, metadata, bindings, inspection, and reverse discovery;
+- exact resource mutation preparation and verification;
+- context-only Git transactions;
+- finalization and startup recovery.
 
-- new durable tasks are normal independent `T-*` repositories;
-- task selection returns a stable working directory;
-- selecting an existing task requires an explicit request decision;
-- task finalization updates `.ayati/` and creates the task commit; and
-- protocol errors use typed codes rather than guessed filesystem recovery.
+Normal run ingress uses one `prepareContextTurn` operation. There is no separate
+run-start or direct assistant-message persistence API. Workstream creation and
+activation require session, conversation, and existing run identities; they
+cannot allocate or switch the run.
 
-The raw `POST /tasks` transport is lower-level than the
-model-facing `git_context_create_task` workflow; callers should use the typed
-service workflow that creates the initial V1 request.
+One `recordRunStep` operation stores an ordered structured action record and
+updates WorkState in the same transaction. One `finalizeRun` operation loads
+binding from the run and returns distinct facts:
 
-See [Task Repositories](task-repositories.md) for the repository contract.
+```text
+run + conversation + persistence
+materialization
+resourceEffects
+workstreamContextCommit
+```
+
+Stable idempotency identities derive from the logical preparation id, run and
+tool-call id for routing/mutation, run and step number for persistence, and run
+id for finalization.
+
+Protocol errors use typed codes. Old schema versions are refused, never deleted
+automatically. Use the archive/reset command deliberately before starting a
+new catalog.
+
+See [Workstreams and Resources](workstreams-and-resources.md).

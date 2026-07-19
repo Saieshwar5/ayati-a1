@@ -3,10 +3,10 @@ import { dirname, join } from "node:path";
 import type { ContextEngineMachineContext } from "../context-engine/index.js";
 import { devWarn } from "../shared/index.js";
 import {
-  compactFeedbackTaskLifecycle,
-  mergeFeedbackTaskLifecycle,
-  readFeedbackTaskLifecycle,
-  type FeedbackTaskLifecycle,
+  compactFeedbackWorkstreamLifecycle,
+  mergeFeedbackWorkstreamLifecycle,
+  readFeedbackWorkstreamLifecycle,
+  type FeedbackWorkstreamLifecycle,
 } from "./git-context-feedback-model.js";
 import { buildGitContextLifecycleFindings } from "./git-context-feedback-triage.js";
 import {
@@ -73,8 +73,8 @@ export interface AgentFeedbackContextEngineSummary {
   routeMode?: string;
   routeSource?: AgentFeedbackContextRouteSource;
   finalizationStatus?: AgentFeedbackContextFinalizationStatus;
-  activeTaskId?: string;
-  taskId?: string;
+  activeWorkstreamId?: string;
+  workstreamId?: string;
   branch?: string;
   ref?: string;
   runId?: string;
@@ -85,7 +85,7 @@ export interface AgentFeedbackContextEngineSummary {
     toSeq: number;
   }>;
   pendingWriteCount?: number;
-  taskAssetCount?: number;
+  resourceCount?: number;
   recentRunCount?: number;
   recentEvidenceCount?: number;
   contextRevision?: string;
@@ -94,7 +94,7 @@ export interface AgentFeedbackContextEngineSummary {
   cacheHits?: number;
   cacheMisses?: number;
   cacheRefreshes?: number;
-  taskBound?: boolean;
+  workstreamBound?: boolean;
   runOutcome?: "done" | "incomplete" | "failed" | "blocked" | "needs_user_input";
   stopReason?: "completed" | "run_limit" | "context_limit" | "failed" | "blocked" | "needs_user_input" | "interrupted";
   materializationStatus?: "not_requested" | "materialized";
@@ -112,7 +112,7 @@ export interface AgentFeedbackContextEngineSummary {
     actions: number;
     total: number;
   };
-  taskLifecycle?: FeedbackTaskLifecycle;
+  workstreamLifecycle?: FeedbackWorkstreamLifecycle;
   warningCodes?: string[];
 }
 
@@ -512,7 +512,7 @@ function executionEvidence(
   verificationPassed?: boolean,
 ): FeedbackExecutionEvidence {
   const context = summary.contextEngine;
-  const lifecycle = context?.taskLifecycle;
+  const lifecycle = context?.workstreamLifecycle;
   const finalization = lifecycle?.finalization;
   const warningSet = new Set(summary.warnings);
   return {
@@ -523,9 +523,9 @@ function executionEvidence(
         : summary.execution?.verification === "failed" ? false : undefined),
     verificationFailed: warningSet.has("verification_failed")
       || warningSet.has("R_VERIFICATION_FAILED"),
-    taskBound: context?.taskBound
-      ?? lifecycle?.run?.taskBound
-      ?? Boolean(context?.taskId && context.runId),
+    workstreamBound: context?.workstreamBound
+      ?? lifecycle?.run?.workstreamBound
+      ?? Boolean(context?.workstreamId && context.runId),
     finalizationStatus: finalization?.status ?? context?.finalizationStatus,
     commitStatus: context?.commitStatus,
     committed: context?.committed ?? (finalization?.status === "committed"),
@@ -538,13 +538,13 @@ function executionTriageInput(
   summary: AgentFeedbackLatestSummary,
 ): FeedbackExecutionTriageInput {
   const context = summary.contextEngine;
-  const lifecycle = context?.taskLifecycle;
+  const lifecycle = context?.workstreamLifecycle;
   return {
     execution: summary.execution,
     actionSteps: summary.actionSteps,
-    taskBound: context?.taskBound === true
-      || lifecycle?.run?.taskBound === true
-      || Boolean(context?.taskId && context.runId),
+    workstreamBound: context?.workstreamBound === true
+      || lifecycle?.run?.workstreamBound === true
+      || Boolean(context?.workstreamId && context.runId),
     commitIdentity: lifecycle?.finalization?.commit ?? context?.commit,
   };
 }
@@ -556,11 +556,11 @@ export function buildContextEngineFeedbackSummary(input: {
   routeMode?: string;
   routeSource?: AgentFeedbackContextRouteSource;
   finalizationStatus?: AgentFeedbackContextFinalizationStatus;
-  taskId?: string;
+  workstreamId?: string;
   branch?: string;
   ref?: string;
   runId?: string;
-  taskBound?: boolean;
+  workstreamBound?: boolean;
   runOutcome?: AgentFeedbackContextEngineSummary["runOutcome"];
   stopReason?: AgentFeedbackContextEngineSummary["stopReason"];
   materializationStatus?: AgentFeedbackContextEngineSummary["materializationStatus"];
@@ -571,24 +571,27 @@ export function buildContextEngineFeedbackSummary(input: {
   commit?: string;
   conversationRefs?: AgentFeedbackContextEngineSummary["conversationRefs"];
   warningCodes?: string[];
-  taskLifecycle?: FeedbackTaskLifecycle;
+  workstreamLifecycle?: FeedbackWorkstreamLifecycle;
 }): AgentFeedbackContextEngineSummary | undefined {
   const context = input.context;
   const pendingTurn = context?.pendingTurn;
-  const task = context?.task;
+  const workstream = context?.workstream;
   const focus = context?.focus;
-  const activeTaskId = focus?.status === "active" ? focus.workId : undefined;
+  const activeWorkstreamId = focus?.status === "active" ? focus.workstreamId : undefined;
   const activeRef = focus?.status === "active" ? focus.ref : undefined;
-  const taskRef = task?.ref;
-  const ref = input.ref ?? taskRef ?? activeRef;
+  const workstreamRef = workstream?.ref;
+  const ref = input.ref ?? workstreamRef ?? activeRef;
   const branch = input.branch ?? pendingTurn?.branch ?? branchFromRef(ref);
-  const taskId = input.taskId ?? pendingTurn?.workId ?? task?.workId ?? activeTaskId;
+  const workstreamId = input.workstreamId
+    ?? pendingTurn?.workstreamId
+    ?? workstream?.workstreamId
+    ?? activeWorkstreamId;
   const runId = input.runId ?? pendingTurn?.runId;
-  const candidate = context?.taskCandidates?.find((item) => item.taskId === taskId);
-  const contextTaskLifecycle = taskId ? compactFeedbackTaskLifecycle({
+  const candidate = context?.workstreamCandidates?.find((item) => item.workstreamId === workstreamId);
+  const contextWorkstreamLifecycle = workstreamId ? compactFeedbackWorkstreamLifecycle({
     repository: {
-      taskId,
-      workingDirectory: candidate?.workingDirectory ?? task?.workingDirectory,
+      workstreamId,
+      contextRepositoryPath: workstream?.contextRepositoryPath,
       branch,
       health: candidate?.repositoryHealth,
       headBefore: candidate?.head,
@@ -599,10 +602,10 @@ export function buildContextEngineFeedbackSummary(input: {
     } : undefined,
     run: runId ? {
       runId,
-      taskBound: Boolean(taskId),
+      workstreamBound: Boolean(workstreamId),
     } : undefined,
   }) : undefined;
-  const taskLifecycle = mergeFeedbackTaskLifecycle(contextTaskLifecycle, input.taskLifecycle);
+  const workstreamLifecycle = mergeFeedbackWorkstreamLifecycle(contextWorkstreamLifecycle, input.workstreamLifecycle);
   const readContext = context?.readContext;
   const readContextCounts = readContext ? {
     inventory: readContext.inventory.length,
@@ -627,12 +630,12 @@ export function buildContextEngineFeedbackSummary(input: {
     ...(input.routeMode ? { routeMode: input.routeMode } : {}),
     ...(input.routeSource ? { routeSource: input.routeSource } : {}),
     ...(input.finalizationStatus ? { finalizationStatus: input.finalizationStatus } : {}),
-    ...(activeTaskId ? { activeTaskId } : {}),
-    ...(taskId ? { taskId } : {}),
+    ...(activeWorkstreamId ? { activeWorkstreamId } : {}),
+    ...(workstreamId ? { workstreamId } : {}),
     ...(branch ? { branch } : {}),
     ...(ref ? { ref } : {}),
     ...(runId ? { runId } : {}),
-    ...(input.taskBound !== undefined ? { taskBound: input.taskBound } : {}),
+    ...(input.workstreamBound !== undefined ? { workstreamBound: input.workstreamBound } : {}),
     ...(input.runOutcome ? { runOutcome: input.runOutcome } : {}),
     ...(input.stopReason ? { stopReason: input.stopReason } : {}),
     ...(input.materializationStatus ? { materializationStatus: input.materializationStatus } : {}),
@@ -643,10 +646,8 @@ export function buildContextEngineFeedbackSummary(input: {
     ...(input.commit ? { commit: input.commit } : {}),
     ...(input.conversationRefs && input.conversationRefs.length > 0 ? { conversationRefs: input.conversationRefs } : {}),
     ...((context?.pendingWrites?.length ?? 0) > 0 ? { pendingWriteCount: context!.pendingWrites!.length } : {}),
-    ...(task ? {
-      taskAssetCount: task.assets.length,
-      recentRunCount: task.recentRuns.length,
-      recentEvidenceCount: task.recentEvidence.length,
+    ...(workstream ? {
+      resourceCount: workstream.resources.length,
     } : {}),
     ...(readContext ? { readContextRevision: readContext.revision } : {}),
     ...(readContext?.afterCommitRunId
@@ -654,7 +655,7 @@ export function buildContextEngineFeedbackSummary(input: {
       : {}),
     ...(readContextCounts ? { readContextCounts } : {}),
     ...(input.warningCodes && input.warningCodes.length > 0 ? { warningCodes: uniqueStrings(input.warningCodes) } : {}),
-    ...(taskLifecycle ? { taskLifecycle } : {}),
+    ...(workstreamLifecycle ? { workstreamLifecycle } : {}),
   });
 }
 
@@ -665,9 +666,9 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
   const executionTriage = executionTriageInput(summary);
 
   findings.push(...buildGitContextLifecycleFindings({
-    lifecycle: contextEngine?.taskLifecycle,
+    lifecycle: contextEngine?.workstreamLifecycle,
     pendingTurnStatus: contextEngine?.pendingTurnStatus,
-    taskBound: contextEngine?.taskBound,
+    workstreamBound: contextEngine?.workstreamBound,
   }));
   findings.push(...buildExecutionOutcomeFindings(executionTriage));
 
@@ -781,9 +782,9 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
     findings.push({
       code: "unbound_run_tool_repair_requested",
       severity: "warning",
-      title: "Unbound run needed task routing",
-      details: "The model tried to load or call task-scoped tools before the run had a task binding.",
-      recommendation: "Inspect task candidates, then activate the matching task or create a distinct task before mutation.",
+      title: "Unbound run needed workstream routing",
+      details: "The model tried to load or call workstream-scoped tools before the run had a workstream binding.",
+      recommendation: "Inspect workstream candidates, then activate the matching workstream or create a distinct workstream before mutation.",
     });
   }
 
@@ -817,23 +818,23 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
     });
   }
 
-  if (warningSet.has("task_tools_selected_without_binding")) {
+  if (warningSet.has("workstream_tools_selected_without_binding")) {
     findings.push({
-      code: "task_tools_selected_without_binding",
+      code: "workstream_tools_selected_without_binding",
       severity: "error",
-      title: "Task tools were selected without a task binding",
-      details: "The model saw task-scoped executable tools even though the current run was unbound.",
-      recommendation: "Inspect tools.working_set_prepared and decision.selected. Ensure binding state is represented before task-scoped tools are exposed.",
+      title: "Workstream tools were selected without a binding",
+      details: "The model saw workstream-scoped executable tools even though the current run was unbound.",
+      recommendation: "Inspect tools.working_set_prepared and decision.selected. Ensure binding state is represented before workstream-scoped tools are exposed.",
     });
   }
 
-  if (warningSet.has("task_binding_required_for_action")) {
+  if (warningSet.has("workstream_binding_required_for_action")) {
     findings.push({
-      code: "task_binding_required_for_action",
+      code: "workstream_binding_required_for_action",
       severity: "error",
-      title: "Action needed a task binding",
-      details: "A normal executable action reached the run guard before task ownership was bound.",
-      recommendation: "Route the current run first, or block task-scoped executable tools until it is task-bound.",
+      title: "Action needed a workstream binding",
+      details: "A normal executable action reached the run guard before workstream ownership was bound.",
+      recommendation: "Route the current run first, or block workstream-scoped executable tools until it is workstream-bound.",
     });
   }
 
@@ -842,8 +843,8 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
       code: "normal_tool_before_routing",
       severity: "error",
       title: "Normal tool was chosen before routing",
-      details: "The decision selected a non git-context tool before task ownership was resolved.",
-      recommendation: "Check the projected state view and selected tool list; the model should only see routing and observational tools until a task binding exists.",
+      details: "The decision selected a non git-context tool before workstream ownership was resolved.",
+      recommendation: "Check the projected state view and selected tool list; the model should only see routing and observational tools until a workstream binding exists.",
     });
   }
 
@@ -852,7 +853,7 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
       code: "routing_state_mismatch",
       severity: "error",
       title: "Routing state and tool surface disagreed",
-      details: "Feedback saw pending routing while the selected executable tool surface included normal task tools.",
+      details: "Feedback saw pending routing while the selected executable tool surface included normal workstream tools.",
       recommendation: "Inspect context.git.current.pendingTurn and tool selector filtering for the same decision iteration.",
     });
   }
@@ -868,17 +869,17 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
   }
 
   if (
-    contextEngine?.taskId
+    contextEngine?.workstreamId
     && contextEngine.runId
     && contextEngine.committed === false
     && summary.status
     && summary.status !== "stuck"
   ) {
     findings.push({
-      code: "task_bound_run_not_committed",
+      code: "workstream_bound_run_not_committed",
       severity: "warning",
-      title: "Task-bound run was not committed",
-      details: "The run had a git-context task/run binding but no committed context-engine result.",
+      title: "Workstream-bound run was not committed",
+      details: "The run had a git-context workstream/run binding but no committed context-engine result.",
       recommendation: "Check whether app-level finalization ran after the agent loop returned.",
     });
   }
@@ -887,9 +888,9 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
     findings.push({
       code: "route_ambiguous",
       severity: "warning",
-      title: "Task route was ambiguous",
-      details: "The context engine could not safely choose one owning task for the turn.",
-      recommendation: "Inspect candidate tasks and the clarification response path.",
+      title: "Workstream route was ambiguous",
+      details: "The context engine could not safely choose one owning workstream for the turn.",
+      recommendation: "Inspect candidate workstreams, resource ownership, and the clarification response path.",
     });
   }
 
@@ -909,7 +910,7 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
           code: "healthy_conversation",
           severity: "info",
           title: "Healthy direct conversation",
-          details: "Messages were saved and no executable verification, task finalization, or task commit was required.",
+          details: "Messages were saved and no executable verification, workstream finalization, or workstream commit was required.",
           recommendation: "No action is required for this turn.",
         }
       : {
@@ -994,12 +995,12 @@ const REPAIR_TRIAGE_FINDINGS: ReadonlyArray<[string, AgentFeedbackTriageFinding]
     details: "The model called a selected tool without required input fields.",
     recommendation: "Inspect missingFields in the repair feedback and retry with all required fields.",
   }],
-  ["R_TASK_FEEDBACK_UNAVAILABLE", {
-    code: "R_TASK_FEEDBACK_UNAVAILABLE",
+  ["R_WORKSTREAM_FEEDBACK_UNAVAILABLE", {
+    code: "R_WORKSTREAM_FEEDBACK_UNAVAILABLE",
     severity: "warning",
-    title: "Task feedback tool was unavailable",
-    details: "The model attempted to ask task-bound feedback when the feedback tool was not exposed.",
-    recommendation: "Use direct assistant text during an unbound run; use ask_user_feedback only during an active task-bound run.",
+    title: "Workstream feedback tool was unavailable",
+    details: "The model attempted to ask workstream-bound feedback when the feedback tool was not exposed.",
+    recommendation: "Use direct assistant text during an unbound run; use ask_user_feedback only during an active workstream-bound run.",
   }],
   ["R_MULTIPLE_NATIVE_TOOL_CALLS", {
     code: "R_MULTIPLE_NATIVE_TOOL_CALLS",
@@ -1040,36 +1041,36 @@ const REPAIR_TRIAGE_FINDINGS: ReadonlyArray<[string, AgentFeedbackTriageFinding]
     code: "R_NO_PROGRESS",
     severity: "warning",
     title: "Step made no useful progress",
-    details: "The run attempted a step that produced no useful tool output or task progress.",
+    details: "The run attempted a step that produced no useful tool output or workstream progress.",
     recommendation: "Change strategy, choose a concrete tool action, or stop with a clear failure if no useful next action exists.",
   }],
-  ["R_UNBOUND_RUN_NEEDS_TASK_BINDING", {
-    code: "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
+  ["R_UNBOUND_RUN_NEEDS_WORKSTREAM_BINDING", {
+    code: "R_UNBOUND_RUN_NEEDS_WORKSTREAM_BINDING",
     severity: "warning",
-    title: "Unbound run needs task routing",
-    details: "The model tried to use task-scoped tools before the current run had a task binding.",
-    recommendation: "Search and activate an existing task, create a new task, or ask a short clarification directly.",
+    title: "Unbound run needs workstream routing",
+    details: "The model tried to use workstream-scoped tools before the current run had a workstream binding.",
+    recommendation: "Search and activate an existing workstream, create a new workstream, or ask a short clarification directly.",
   }],
-  ["R_TOOL_REQUIRES_TASK_BINDING", {
-    code: "R_TOOL_REQUIRES_TASK_BINDING",
+  ["R_TOOL_REQUIRES_WORKSTREAM_BINDING", {
+    code: "R_TOOL_REQUIRES_WORKSTREAM_BINDING",
     severity: "error",
-    title: "Task-scoped tool reached runner without a binding",
-    details: "A task-scoped executable tool reached the runner while the current run was unbound.",
-    recommendation: "Route, create, or activate the correct task before normal tool execution.",
+    title: "Workstream-scoped tool reached runner without a binding",
+    details: "A workstream-scoped executable tool reached the runner while the current run was unbound.",
+    recommendation: "Route, create, or activate the correct workstream before normal tool execution.",
   }],
   ["R_PENDING_TURN_UNBOUND", {
     code: "R_PENDING_TURN_UNBOUND",
     severity: "error",
     title: "Pending turn was unbound before tool work",
-    details: "The model attempted normal task work while the current turn was not bound to a task.",
-    recommendation: "Use git-context read/search/create/activate/clarify tools before normal task work.",
+    details: "The model attempted normal workstream work while the current turn was not bound to a workstream.",
+    recommendation: "Use git-context read/search/create/activate/clarify tools before normal workstream work.",
   }],
   ["R_PENDING_TURN_CLARIFYING", {
     code: "R_PENDING_TURN_CLARIFYING",
     severity: "warning",
     title: "Pending turn was still clarifying",
-    details: "The model attempted tool work while task ownership was waiting for user clarification.",
-    recommendation: "Ask the user directly which task or target they mean.",
+    details: "The model attempted tool work while workstream ownership was waiting for user clarification.",
+    recommendation: "Ask the user directly which workstream or target they mean.",
   }],
   ["R_REPEATED_REPAIR_FAILURE", {
     code: "R_REPEATED_REPAIR_FAILURE",
@@ -1167,34 +1168,34 @@ function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFe
   if (event.event === "run_started") {
     return compactContextEngineFeedbackSummary({
       ...(event.runId ? { runId: event.runId } : {}),
-      taskBound: false,
+      workstreamBound: false,
       finalizationStatus: "not_started",
     });
   }
-  if (event.event === "run_task_bound") {
-    const taskId = readStringValue(data["taskId"]);
+  if (event.event === "run_workstream_bound") {
+    const workstreamId = readStringValue(data["workstreamId"]);
     const runId = event.runId ?? readStringValue(data["runId"]);
     return compactContextEngineFeedbackSummary({
-      ...(taskId ? { taskId } : {}),
+      ...(workstreamId ? { workstreamId } : {}),
       ...(runId ? { runId } : {}),
-      taskBound: true,
+      workstreamBound: true,
       pendingTurnStatus: "bound",
-      taskLifecycle: {
+      workstreamLifecycle: {
         repository: {
-          taskId,
-          workingDirectory: readStringValue(data["workingDirectory"]),
+          workstreamId,
+          contextRepositoryPath: readStringValue(data["contextRepositoryPath"]),
           branch: readStringValue(data["branch"]),
           selectionMode: readSelectionMode(data["mode"]),
-          taskCreated: readBooleanValue(data["taskCreated"]),
-          headBefore: readStringValue(data["taskHead"]),
+          workstreamCreated: readBooleanValue(data["workstreamCreated"]),
+          headBefore: readStringValue(data["workstreamHead"]),
         },
         request: {
-          decision: readTaskRequestDecision(data["taskRequestDecision"]),
-          requestId: readStringValue(data["taskRequestId"]),
-          status: readTaskRequestStatus(data["taskRequestStatus"]),
-          created: readBooleanValue(data["taskRequestCreated"]),
+          decision: readWorkstreamRequestDecision(data["requestDecision"]),
+          requestId: readStringValue(data["requestId"]),
+          status: readWorkstreamRequestStatus(data["requestStatus"]),
+          created: readBooleanValue(data["requestCreated"]),
         },
-        run: { runId, taskBound: true },
+        run: { runId, workstreamBound: true },
         finalization: { status: "not_started" },
       },
     });
@@ -1202,7 +1203,7 @@ function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFe
   if (event.event === "run_finalization_started") {
     return compactContextEngineFeedbackSummary({
       ...(event.runId ? { runId: event.runId } : {}),
-      taskBound: readBooleanValue(data["taskBound"]),
+      workstreamBound: readBooleanValue(data["workstreamBound"]),
       runOutcome: readFinalizationOutcome(data["outcome"]),
       stopReason: readRunStopReason(data["stopReason"]),
       finalizationStatus: "started",
@@ -1210,19 +1211,19 @@ function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFe
     });
   }
   if (event.event === "run_finalization_completed") {
-    const binding = readRecordValue(data["taskBinding"]);
+    const binding = readRecordValue(data["workstreamBinding"]);
     const materialization = readRecordValue(data["materialization"]);
-    const commit = readRecordValue(data["commit"]);
+    const commit = readRecordValue(data["workstreamContextCommit"]);
     const commitStatus = readCommitStatus(commit?.["status"]);
-    const taskId = readStringValue(binding?.["taskId"]);
+    const workstreamId = readStringValue(binding?.["workstreamId"]);
     const runId = event.runId ?? readStringValue(data["runId"]);
     const headBefore = readStringValue(commit?.["headBefore"]);
     const headAfter = readStringValue(commit?.["headAfter"]);
     const commitIdentity = readStringValue(commit?.["commit"]);
     return compactContextEngineFeedbackSummary({
       ...(runId ? { runId } : {}),
-      ...(taskId ? { taskId } : {}),
-      taskBound: Boolean(binding),
+      ...(workstreamId ? { workstreamId } : {}),
+      workstreamBound: Boolean(binding),
       runOutcome: readFinalizationOutcome(data["outcome"]),
       stopReason: readRunStopReason(data["stopReason"]),
       materializationStatus: readMaterializationStatus(materialization?.["status"]),
@@ -1233,10 +1234,10 @@ function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFe
       ...(headBefore ? { headBefore } : {}),
       ...(headAfter ? { headAfter } : {}),
       ...(binding ? {
-        taskLifecycle: {
-          repository: { taskId, headBefore, headAfter },
-          request: { requestId: readStringValue(binding["taskRequestId"]) },
-          run: { runId, taskBound: true },
+        workstreamLifecycle: {
+          repository: { workstreamId, headBefore, headAfter },
+          request: { requestId: readStringValue(binding["requestId"]) },
+          run: { runId, workstreamBound: true },
           finalization: {
             status: commitStatus,
             outcome: readFinalizationOutcome(data["outcome"]),
@@ -1293,7 +1294,7 @@ function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFe
       ...(routeStatus && routeStatus !== "skipped" ? { routeStatus } : {}),
       ...(readStringValue(data["mode"]) ? { routeMode: readStringValue(data["mode"]) } : {}),
       routeSource: routeStatus === "ambiguous" ? "deterministic_router" : "auto",
-      ...(readStringValue(data["taskId"]) ? { taskId: readStringValue(data["taskId"]) } : {}),
+      ...(readStringValue(data["workstreamId"]) ? { workstreamId: readStringValue(data["workstreamId"]) } : {}),
       ...(readStringValue(data["branch"]) ? { branch: readStringValue(data["branch"]) } : {}),
       ...(readStringValue(data["ref"]) ? { ref: readStringValue(data["ref"]) } : {}),
       ...(readStringValue(data["runId"]) ? { runId: readStringValue(data["runId"]) } : {}),
@@ -1306,7 +1307,7 @@ function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFe
       ...(routeStatus && routeStatus !== "skipped" ? { routeStatus } : {}),
       ...(readStringValue(data["mode"]) ? { routeMode: readStringValue(data["mode"]) } : {}),
       routeSource: readRouteSource(data["routeSource"]) ?? "deterministic_router",
-      ...(readStringValue(data["taskId"]) ? { taskId: readStringValue(data["taskId"]) } : {}),
+      ...(readStringValue(data["workstreamId"]) ? { workstreamId: readStringValue(data["workstreamId"]) } : {}),
       ...(readStringValue(data["branch"]) ? { branch: readStringValue(data["branch"]) } : {}),
       ...(readStringValue(data["ref"]) ? { ref: readStringValue(data["ref"]) } : {}),
       ...(readStringValue(data["runId"]) ? { runId: readStringValue(data["runId"]) } : {}),
@@ -1319,7 +1320,7 @@ function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFe
       ...(routeStatus ? { routeStatus } : {}),
       ...(readStringValue(data["mode"]) ? { routeMode: readStringValue(data["mode"]) } : {}),
       routeSource: routeStatus === "ready" ? "auto" : "deterministic_router",
-      ...(readStringValue(data["taskId"]) ? { taskId: readStringValue(data["taskId"]) } : {}),
+      ...(readStringValue(data["workstreamId"]) ? { workstreamId: readStringValue(data["workstreamId"]) } : {}),
       ...(readStringValue(data["branch"]) ? { branch: readStringValue(data["branch"]) } : {}),
       ...(readStringValue(data["ref"]) ? { ref: readStringValue(data["ref"]) } : {}),
       ...(readStringValue(data["runId"]) ? { runId: readStringValue(data["runId"]) } : {}),
@@ -1331,7 +1332,7 @@ function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFe
       routeStatus: "ready",
       routeSource: "agent_tool",
       pendingTurnStatus: "bound",
-      ...(readStringValue(data["taskId"]) ? { taskId: readStringValue(data["taskId"]) } : {}),
+      ...(readStringValue(data["workstreamId"]) ? { workstreamId: readStringValue(data["workstreamId"]) } : {}),
       ...(readStringValue(data["branch"]) ? { branch: readStringValue(data["branch"]) } : {}),
       ...(readStringValue(data["runId"]) ? { runId: readStringValue(data["runId"]) } : {}),
     });
@@ -1358,8 +1359,8 @@ function readContextEngineFeedbackSummary(value: unknown): AgentFeedbackContextE
     ...(readStringValue(record["routeMode"]) ? { routeMode: readStringValue(record["routeMode"]) } : {}),
     ...(readRouteSource(record["routeSource"]) ? { routeSource: readRouteSource(record["routeSource"]) } : {}),
     ...(readFinalizationStatus(record["finalizationStatus"]) ? { finalizationStatus: readFinalizationStatus(record["finalizationStatus"]) } : {}),
-    ...(readStringValue(record["activeTaskId"]) ? { activeTaskId: readStringValue(record["activeTaskId"]) } : {}),
-    ...(readStringValue(record["taskId"]) ? { taskId: readStringValue(record["taskId"]) } : {}),
+    ...(readStringValue(record["activeWorkstreamId"]) ? { activeWorkstreamId: readStringValue(record["activeWorkstreamId"]) } : {}),
+    ...(readStringValue(record["workstreamId"]) ? { workstreamId: readStringValue(record["workstreamId"]) } : {}),
     ...(readStringValue(record["branch"]) ? { branch: readStringValue(record["branch"]) } : {}),
     ...(readStringValue(record["ref"]) ? { ref: readStringValue(record["ref"]) } : {}),
     ...(readStringValue(record["runId"]) ? { runId: readStringValue(record["runId"]) } : {}),
@@ -1367,7 +1368,7 @@ function readContextEngineFeedbackSummary(value: unknown): AgentFeedbackContextE
     ...(readStringValue(record["commit"]) ? { commit: readStringValue(record["commit"]) } : {}),
     ...(readConversationRefs(record["conversationRefs"]) ? { conversationRefs: readConversationRefs(record["conversationRefs"]) } : {}),
     ...(readNumberValue(record["pendingWriteCount"]) !== undefined ? { pendingWriteCount: readNumberValue(record["pendingWriteCount"]) } : {}),
-    ...(readNumberValue(record["taskAssetCount"]) !== undefined ? { taskAssetCount: readNumberValue(record["taskAssetCount"]) } : {}),
+    ...(readNumberValue(record["resourceCount"]) !== undefined ? { resourceCount: readNumberValue(record["resourceCount"]) } : {}),
     ...(readNumberValue(record["recentRunCount"]) !== undefined ? { recentRunCount: readNumberValue(record["recentRunCount"]) } : {}),
     ...(readNumberValue(record["recentEvidenceCount"]) !== undefined ? { recentEvidenceCount: readNumberValue(record["recentEvidenceCount"]) } : {}),
     ...(readStringValue(record["contextRevision"]) ? { contextRevision: readStringValue(record["contextRevision"]) } : {}),
@@ -1376,7 +1377,7 @@ function readContextEngineFeedbackSummary(value: unknown): AgentFeedbackContextE
     ...(readNumberValue(record["cacheHits"]) !== undefined ? { cacheHits: readNumberValue(record["cacheHits"]) } : {}),
     ...(readNumberValue(record["cacheMisses"]) !== undefined ? { cacheMisses: readNumberValue(record["cacheMisses"]) } : {}),
     ...(readNumberValue(record["cacheRefreshes"]) !== undefined ? { cacheRefreshes: readNumberValue(record["cacheRefreshes"]) } : {}),
-    ...(typeof record["taskBound"] === "boolean" ? { taskBound: record["taskBound"] } : {}),
+    ...(typeof record["workstreamBound"] === "boolean" ? { workstreamBound: record["workstreamBound"] } : {}),
     ...(readFinalizationOutcome(record["runOutcome"]) ? { runOutcome: readFinalizationOutcome(record["runOutcome"]) } : {}),
     ...(readRunStopReason(record["stopReason"]) ? { stopReason: readRunStopReason(record["stopReason"]) } : {}),
     ...(readMaterializationStatus(record["materializationStatus"]) ? { materializationStatus: readMaterializationStatus(record["materializationStatus"]) } : {}),
@@ -1388,8 +1389,8 @@ function readContextEngineFeedbackSummary(value: unknown): AgentFeedbackContextE
     ...(readStringValue(record["readContextRevision"]) ? { readContextRevision: readStringValue(record["readContextRevision"]) } : {}),
     ...(readStringValue(record["readContextAfterCommitRunId"]) ? { readContextAfterCommitRunId: readStringValue(record["readContextAfterCommitRunId"]) } : {}),
     ...(readContextCounts(record["readContextCounts"]) ? { readContextCounts: readContextCounts(record["readContextCounts"]) } : {}),
-    ...(readFeedbackTaskLifecycle(record["taskLifecycle"])
-      ? { taskLifecycle: readFeedbackTaskLifecycle(record["taskLifecycle"]) }
+    ...(readFeedbackWorkstreamLifecycle(record["workstreamLifecycle"])
+      ? { workstreamLifecycle: readFeedbackWorkstreamLifecycle(record["workstreamLifecycle"]) }
       : {}),
     ...(readStringArray(record["warningCodes"]).length > 0 ? { warningCodes: readStringArray(record["warningCodes"]) } : {}),
   });
@@ -1410,7 +1411,7 @@ function mergeContextEngineFeedbackSummary(
     ...right,
     pendingTurnRange: right.pendingTurnRange ?? left.pendingTurnRange,
     conversationRefs: right.conversationRefs ?? left.conversationRefs,
-    taskLifecycle: mergeFeedbackTaskLifecycle(left.taskLifecycle, right.taskLifecycle),
+    workstreamLifecycle: mergeFeedbackWorkstreamLifecycle(left.workstreamLifecycle, right.workstreamLifecycle),
     warningCodes: uniqueStrings([
       ...(left.warningCodes ?? []),
       ...(right.warningCodes ?? []),
@@ -1428,8 +1429,8 @@ function compactContextEngineFeedbackSummary(
   if (value.routeMode) output.routeMode = value.routeMode;
   if (value.routeSource) output.routeSource = value.routeSource;
   if (value.finalizationStatus) output.finalizationStatus = value.finalizationStatus;
-  if (value.activeTaskId) output.activeTaskId = value.activeTaskId;
-  if (value.taskId) output.taskId = value.taskId;
+  if (value.activeWorkstreamId) output.activeWorkstreamId = value.activeWorkstreamId;
+  if (value.workstreamId) output.workstreamId = value.workstreamId;
   if (value.branch) output.branch = value.branch;
   if (value.ref) output.ref = value.ref;
   if (value.runId) output.runId = value.runId;
@@ -1437,7 +1438,7 @@ function compactContextEngineFeedbackSummary(
   if (value.commit) output.commit = value.commit;
   if (value.conversationRefs && value.conversationRefs.length > 0) output.conversationRefs = value.conversationRefs;
   if (value.pendingWriteCount !== undefined) output.pendingWriteCount = value.pendingWriteCount;
-  if (value.taskAssetCount !== undefined) output.taskAssetCount = value.taskAssetCount;
+  if (value.resourceCount !== undefined) output.resourceCount = value.resourceCount;
   if (value.recentRunCount !== undefined) output.recentRunCount = value.recentRunCount;
   if (value.recentEvidenceCount !== undefined) output.recentEvidenceCount = value.recentEvidenceCount;
   if (value.contextRevision) output.contextRevision = value.contextRevision;
@@ -1446,7 +1447,7 @@ function compactContextEngineFeedbackSummary(
   if (value.cacheHits !== undefined) output.cacheHits = value.cacheHits;
   if (value.cacheMisses !== undefined) output.cacheMisses = value.cacheMisses;
   if (value.cacheRefreshes !== undefined) output.cacheRefreshes = value.cacheRefreshes;
-  if (value.taskBound !== undefined) output.taskBound = value.taskBound;
+  if (value.workstreamBound !== undefined) output.workstreamBound = value.workstreamBound;
   if (value.runOutcome) output.runOutcome = value.runOutcome;
   if (value.stopReason) output.stopReason = value.stopReason;
   if (value.materializationStatus) output.materializationStatus = value.materializationStatus;
@@ -1458,8 +1459,8 @@ function compactContextEngineFeedbackSummary(
   if (value.readContextRevision) output.readContextRevision = value.readContextRevision;
   if (value.readContextAfterCommitRunId) output.readContextAfterCommitRunId = value.readContextAfterCommitRunId;
   if (value.readContextCounts) output.readContextCounts = value.readContextCounts;
-  const taskLifecycle = compactFeedbackTaskLifecycle(value.taskLifecycle);
-  if (taskLifecycle) output.taskLifecycle = taskLifecycle;
+  const workstreamLifecycle = compactFeedbackWorkstreamLifecycle(value.workstreamLifecycle);
+  if (workstreamLifecycle) output.workstreamLifecycle = workstreamLifecycle;
   if (value.warningCodes && value.warningCodes.length > 0) output.warningCodes = uniqueStrings(value.warningCodes);
   return Object.keys(output).length > 0 ? output : undefined;
 }
@@ -1519,7 +1520,7 @@ function readSelectionMode(value: unknown): "created" | "activated" | undefined 
   return value === "created" || value === "activated" ? value : undefined;
 }
 
-function readTaskRequestDecision(
+function readWorkstreamRequestDecision(
   value: unknown,
 ): "initial" | "continue" | "create" | undefined {
   return value === "initial" || value === "continue" || value === "create"
@@ -1527,7 +1528,7 @@ function readTaskRequestDecision(
     : undefined;
 }
 
-function readTaskRequestStatus(
+function readWorkstreamRequestStatus(
   value: unknown,
 ): "queued" | "active" | "blocked" | "done" | "dropped" | undefined {
   return value === "queued" || value === "active" || value === "blocked" || value === "done" || value === "dropped"

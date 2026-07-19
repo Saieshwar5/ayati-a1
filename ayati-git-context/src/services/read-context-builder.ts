@@ -19,7 +19,7 @@ const CONTEXT_BUCKET_BY_TOOL: Readonly<Record<string, ContextBucket>> = {
   write_files: "actions",
 };
 
-interface TaskCommitBoundaryRow {
+interface WorkstreamCommitBoundaryRow {
   run_id: string;
   run_sequence: number;
 }
@@ -39,7 +39,7 @@ type StepToolCall = RunStepToolCall;
 type ContextBucketMaps = Record<ContextBucket, Map<string, ReadContextEntry>>;
 
 /**
- * Builds reusable context since the latest successful task commit. Raw run
+ * Builds reusable context since the latest successful workstream commit. Raw run
  * steps remain authoritative; this projection is disposable and reconstructs
  * deterministically after restart.
  */
@@ -47,7 +47,7 @@ export function buildReadContext(
   database: ContextDatabase,
   sessionId: string,
 ): ReadContextProjection {
-  const boundary = readTaskCommitBoundary(database, sessionId);
+  const boundary = readWorkstreamCommitBoundary(database, sessionId);
   const rows = database.prepare([
     "SELECT r.run_id, r.run_sequence, rs.step, rs.status, rs.tool_calls_json,",
     "rs.verification_json, rs.created_at",
@@ -111,17 +111,17 @@ function createBucketMaps(): ContextBucketMaps {
   };
 }
 
-function readTaskCommitBoundary(
+function readWorkstreamCommitBoundary(
   database: ContextDatabase,
   sessionId: string,
-): TaskCommitBoundaryRow | undefined {
+): WorkstreamCommitBoundaryRow | undefined {
   return database.prepare([
     "SELECT r.run_id, r.run_sequence",
     "FROM runs r",
-    "WHERE r.session_id = ? AND EXISTS (SELECT 1 FROM task_finalizations f",
+    "WHERE r.session_id = ? AND EXISTS (SELECT 1 FROM workstream_finalizations f",
     "  WHERE f.run_id = r.run_id AND f.phase = 'completed' AND f.commit_created = 1)",
     "ORDER BY r.run_sequence DESC LIMIT 1",
-  ].join(" ")).get(sessionId) as TaskCommitBoundaryRow | undefined;
+  ].join(" ")).get(sessionId) as WorkstreamCommitBoundaryRow | undefined;
 }
 
 function readStepToolCalls(row: ReadContextStepRow): StepToolCall[] {

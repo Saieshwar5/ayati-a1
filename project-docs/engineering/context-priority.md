@@ -6,7 +6,7 @@ For most tasks, read in this order:
 2. `project-docs/product/overview.md`.
 3. `project-docs/engineering/README.md`.
 4. `project-docs/engineering/architecture/overview.md`.
-5. `project-docs/engineering/architecture/task-repositories.md` for task work.
+5. `project-docs/engineering/architecture/workstreams-and-resources.md` for durable work.
 6. `project-docs/engineering/architecture/agent-harness.md`.
 7. `project-docs/engineering/conventions.md`.
 8. Relevant source files.
@@ -42,7 +42,7 @@ For backend runtime tasks, prioritize:
 
 For context and memory tasks, prioritize:
 
-- `project-docs/engineering/architecture/task-repositories.md`
+- `project-docs/engineering/architecture/workstreams-and-resources.md`
 - `project-docs/engineering/architecture/context-and-memory.md`
 - `project-docs/engineering/architecture/agent-harness.md`
 - `project-docs/engineering/env-vars.md` for runtime context configuration
@@ -53,7 +53,7 @@ For context and memory tasks, prioritize:
 - `ayati-main/src/app/git-context-process.ts`
 - `ayati-main/src/skills/builtins/git-context`
 - `ayati-git-context/tests`
-- `ayati-main/tests/skills/git-context-v1-routing.test.ts`
+- `ayati-main/tests/skills/workstream-resource-routing.test.ts`
 - `ayati-main/src/memory`
 - `ayati-main/tests/memory`
 

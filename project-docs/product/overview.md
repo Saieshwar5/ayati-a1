@@ -1,55 +1,57 @@
 # Product Overview
 
-Ayati is an autonomous general AI agent project. Its purpose is to use intelligence to help people in real life: computer work, files, communication, reminders, planning, research, automation, and other useful tasks.
+Ayati is an autonomous general AI agent intended to help with computer work,
+files, communication, reminders, learning, research, automation, and other
+long-running real-life goals.
 
-The core product is a persistent agent daemon. `ayati-main` is expected to run in the background for long periods, eventually 24/7. Users communicate with this daemon through clients. Today the active client is the CLI, but the architecture should support many communication surfaces later.
+The core product is a persistent local daemon. `ayati-main` can run for long
+periods while clients connect through different communication surfaces. The
+CLI is the current client; models, tools, plugins, clients, memory, and channels
+can evolve without replacing the daemon or harness.
 
-The project goal is to keep the agent daemon stable while allowing models, skills, tools, plugins, clients, memory behavior, and communication channels to evolve independently.
-
-The current agent harness is designed around a simple loop:
+The harness remains:
 
 ```text
 context pack -> decision -> action executor -> deterministic verification -> progress reducer
 ```
 
-The product intent is that Ayati should feel continuous without requiring the
-user to manage sessions or context windows. Daily session Git preserves
-conversation/runtime continuity. Durable work lives in one independent normal
-Git repository per task, while personal facts and preferences remain in
-personal memory.
+Ayati should feel continuous without requiring users to manage sessions,
+context windows, or internal work lists. Every accepted message or system event
+creates one run. Conversation and observational work can finish unbound;
+durable work binds that same run to one workstream and request.
 
-Current packages:
+Durable work is represented by two separate concepts:
 
-- `ayati-main`: long-running agent daemon, backend runtime, WebSocket server, HTTP upload/artifact API, memory, tools, plugins, providers, and event processing.
-- `ayati-cli`: Ink/React terminal client that connects to the daemon over WebSocket.
-- `ayati-git-context`: independent local Git-and-SQLite context service that
-  owns sessions, task repositories, run journals, locks, and finalization.
+- A workstream is compact long-lived context: objective, requests, progress,
+  blockers, next action, and resource relationships.
+- A resource is the real thing being read or changed: a file, directory,
+  document, media item, URL, dataset, database, repository, or external object.
+
+Workstream repositories are context-only Git histories. Deliverables remain in
+the user-visible workspace or at the path the user selected. Ayati does not
+initialize Git for ordinary output unless the user asks for it.
 
 Primary value:
 
-- A local-first autonomous agent daemon with composable capabilities.
-- A stable backend loop that can use different model providers.
-- Default daily git context for task/work continuity, with one normal `T-*`
-  repository per durable task, explicit request files, task state, references,
-  verified outcomes, and commit metadata.
-- One-run execution: every accepted message or system event atomically creates
-  one run. The run can remain unbound for conversation and observation or gain
-  one immutable task/request binding for durable task work.
-- Autonomous durable-work routing: the agent receives a compact explained mix
-  of exact, relevant, unfinished, starred, recent, and frequent workstreams;
-  it can search/open the full catalog and create or select durable work without
-  asking the user to manage sessions or task lists. Ambiguous mutation
-  ownership still produces one focused question.
-- Safe in-place work: an empty directory or clean Git root inside configured
-  trust boundaries can become the task's stable working directory. Non-Git
-  content requires an explicit reviewed baseline; dirty Git is never adopted.
-- Long-lived task semantics: later features, lessons, analyses, and
-  improvements normally become requests in the existing task.
-- Personal and episodic memory for personalization and recall.
-- Structured context packs that keep recent conversation, selected git
-  task context, task assets, hot evidence, and personal memory available to the
-  decision model.
-- Broad computer-access tools for local workspace work, files, documents, datasets, Python, SQLite, reminders, and recall.
-- Multi-channel user communication, with CLI current and other clients intended.
-- Proactive and event-driven assistance through Pulse, plugins, and system events.
-- Pulse reminders and scheduled system events.
+- A local-first autonomous agent with composable capabilities.
+- One durable run boundary with truthful finalization and restart recovery.
+- Autonomous workstream discovery using exact identity, resource ownership,
+  unfinished work, stars, recency, frequency, and semantic text relevance.
+- Safe mutation through immutable workstream binding plus exact resource
+  scopes and deterministic before/after verification.
+- A resource catalog that lets the agent find resources from workstreams and
+  workstreams from resources.
+- A simple default output location at `<AYATI_ROOT_DIR>/workspace/` when the
+  user does not specify a path.
+- Personal and episodic memory for user facts, preferences, and recalled
+  experience without mixing them into workstream state.
+- Multi-channel communication and proactive system-event handling.
+
+Current packages:
+
+- `ayati-main`: daemon, harness, providers, tools, memory, events, WebSocket,
+  and HTTP APIs.
+- `ayati-cli`: Ink/React terminal client.
+- `ayati-git-context`: local SQLite-and-Git service that owns sessions, runs,
+  workstream context, resources, discovery, mutation journals, and
+  finalization.

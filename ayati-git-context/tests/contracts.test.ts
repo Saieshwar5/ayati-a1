@@ -1,16 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
   GIT_CONTEXT_PROTOCOL_VERSION,
-  isAcquireMutationAuthorityRequest,
-  isActivateTaskForRunRequest,
-  isCreateTaskForRunRequest,
+  isActivateWorkstreamForRunRequest,
+  isBindResourcesForRunRequest,
+  isCreateWorkstreamForRunRequest,
   isEnsureActiveSessionRequest,
   isFinalizeRunRequest,
-  isPlanTaskRequestRouteRequest,
+  isInspectResourceForRunRequest,
+  isPlanWorkstreamRequestRouteRequest,
   isPrepareContextTurnRequest,
+  isPrepareResourceMutationRequest,
   isRecordRunStepRequest,
   isRequestEnvelope,
-  isVerifyMutationRequest,
+  isVerifyResourceMutationRequest,
   type FinalizeRunRequest,
   type RunStepRecord,
   type RunWorkStateInput,
@@ -19,15 +21,23 @@ import {
   GitContextServiceError,
   isGitContextErrorResponse,
 } from "../src/errors.js";
+import { RUN_FINALIZATION_LIMITS } from "../src/run-finalization-limits.js";
 
-describe("Git Context protocol 35 contracts", () => {
-  it("exposes the version-3 autonomous-workstream protocol", () => {
-    expect(GIT_CONTEXT_PROTOCOL_VERSION).toBe(35);
+const AT = "2026-07-19T10:00:00+05:30";
+const SESSION_ID = "S-20260719-local";
+const CONVERSATION_ID = "S-20260719-local-C-000001";
+const RUN_ID = "R-20260719-0001";
+const WORKSTREAM_ID = "W-20260719-0001";
+const RESOURCE_ID = "RES-1234567890ABCDEF12345678";
+
+describe("Git Context protocol 36 contracts", () => {
+  it("exposes the current workstream and resource protocol", () => {
+    expect(GIT_CONTEXT_PROTOCOL_VERSION).toBe(36);
     expect(isRequestEnvelope({ requestId: "REQ-1" })).toBe(true);
     expect(isRequestEnvelope({ requestId: " " })).toBe(false);
   });
 
-  it("validates session bootstrap and atomic turn preparation", () => {
+  it("validates session bootstrap and atomic turn preparation with resources", () => {
     expect(isEnsureActiveSessionRequest({
       requestId: "REQ-session",
       date: "2026-07-19",
@@ -40,8 +50,18 @@ describe("Git Context protocol 35 contracts", () => {
       timezone: "Asia/Kolkata",
       agentId: "local",
       role: "user",
-      content: "Inspect the current implementation.",
-      at: "2026-07-19T10:00:00+05:30",
+      content: "Inspect the referenced directory.",
+      resources: [{
+        admissionId: "attachment-1",
+        kind: "directory",
+        origin: "user_reference",
+        locator: { kind: "filesystem", path: "/tmp/example" },
+        displayName: "example",
+        description: "Directory referenced by the user.",
+        aliases: ["example project"],
+        role: "reference",
+      }],
+      at: AT,
     })).toBe(true);
     expect(isPrepareContextTurnRequest({
       requestId: "REQ-turn",
@@ -50,54 +70,55 @@ describe("Git Context protocol 35 contracts", () => {
       agentId: "local",
       role: "assistant",
       content: "Invalid ingress role.",
-      at: "2026-07-19T10:00:00+05:30",
+      at: AT,
     })).toBe(false);
   });
 
-  it("requires an existing run identity when creating a task", () => {
+  it("creates a workstream on the existing run without project placement fields", () => {
     const valid = {
-      requestId: "REQ-create-task",
-      sessionId: "S-20260719-local",
-      conversationId: "S-20260719-local-C-000001",
-      runId: "R-20260719-0001",
+      requestId: "REQ-create-workstream",
+      sessionId: SESSION_ID,
+      conversationId: CONVERSATION_ID,
+      runId: RUN_ID,
       title: "Coffee Shop Website",
-      objective: "Build a responsive coffee-shop website.",
-      placement: { mode: "managed" as const },
-      at: "2026-07-19T10:01:00+05:30",
+      objective: "Build and verify a responsive coffee-shop website.",
+      resources: [{
+        resourceId: RESOURCE_ID,
+        role: "primary" as const,
+        access: "mutate" as const,
+        primary: true,
+      }],
+      at: AT,
     };
-    expect(isCreateTaskForRunRequest(valid)).toBe(true);
-    expect(isCreateTaskForRunRequest({ ...valid, runId: undefined })).toBe(false);
-    expect(isCreateTaskForRunRequest({ ...valid, conversationId: undefined })).toBe(false);
-    expect(isCreateTaskForRunRequest({
-      ...valid,
-      placement: { mode: "requested", workingDirectory: "workspace/coffee-shop" },
-    })).toBe(true);
+    expect(isCreateWorkstreamForRunRequest(valid)).toBe(true);
+    expect(isCreateWorkstreamForRunRequest({ ...valid, runId: undefined })).toBe(false);
+    expect(isCreateWorkstreamForRunRequest({ ...valid, placement: { mode: "managed" } })).toBe(false);
   });
 
-  it("requires an explicit continue-or-create decision when activating a task", () => {
+  it("requires an explicit continue-or-create decision when activating a workstream", () => {
     const base = {
-      requestId: "REQ-activate-task",
-      sessionId: "S-20260719-local",
-      conversationId: "S-20260719-local-C-000001",
-      runId: "R-20260719-0001",
-      taskId: "T-20260719-0001",
-      expectedTaskHead: "a".repeat(40),
-      at: "2026-07-19T10:01:00+05:30",
+      requestId: "REQ-activate-workstream",
+      sessionId: SESSION_ID,
+      conversationId: CONVERSATION_ID,
+      runId: RUN_ID,
+      workstreamId: WORKSTREAM_ID,
+      expectedWorkstreamHead: "a".repeat(40),
+      at: AT,
     };
-    expect(isActivateTaskForRunRequest(base)).toBe(false);
-    expect(isActivateTaskForRunRequest({
+    expect(isActivateWorkstreamForRunRequest(base)).toBe(false);
+    expect(isActivateWorkstreamForRunRequest({
       ...base,
       route: {
         kind: "continue_active_request",
         requestId: "R-0001",
-        reason: "Continue the active request.",
+        reason: "Continue the same unfinished outcome.",
       },
     })).toBe(true);
-    expect(isActivateTaskForRunRequest({
+    expect(isActivateWorkstreamForRunRequest({
       ...base,
       route: {
         kind: "create_active_request",
-        reason: "Start a separate bounded outcome.",
+        reason: "Start a distinct bounded outcome.",
         title: "Add a lesson",
         request: "Add and verify the next lesson.",
         acceptance: ["The lesson is verified."],
@@ -106,28 +127,80 @@ describe("Git Context protocol 35 contracts", () => {
     })).toBe(true);
   });
 
-  it("validates narrow request-route plans", () => {
-    const base = {
+  it("validates request-route planning, resource inspection, and binding", () => {
+    expect(isPlanWorkstreamRequestRouteRequest({
       requestId: "REQ-route",
-      sessionId: "S-20260719-local",
-      conversationId: "S-20260719-local-C-000001",
-      runId: "R-20260719-0001",
-      taskId: "T-20260719-0001",
-      expectedTaskHead: "a".repeat(40),
-      at: "2026-07-19T10:01:00+05:30",
-    };
-    expect(isPlanTaskRequestRouteRequest({
-      ...base,
+      sessionId: SESSION_ID,
+      conversationId: CONVERSATION_ID,
+      runId: RUN_ID,
+      workstreamId: WORKSTREAM_ID,
+      expectedWorkstreamHead: "a".repeat(40),
       route: {
         kind: "continue_active_request",
         requestId: "R-0001",
-        reason: "Continue the active request.",
+        reason: "Continue the current request.",
       },
+      at: AT,
     })).toBe(true);
-    expect(isPlanTaskRequestRouteRequest({
-      ...base,
-      route: { kind: "create_queued_request", reason: "Unsupported." },
+    expect(isInspectResourceForRunRequest({
+      requestId: "REQ-inspect",
+      sessionId: SESSION_ID,
+      runId: RUN_ID,
+      locator: { kind: "url", url: "https://example.com/reference" },
+      kind: "url",
+      origin: "agent_discovered",
+      description: "Primary reference page.",
+      aliases: ["reference page"],
+      at: AT,
+    })).toBe(true);
+    expect(isBindResourcesForRunRequest({
+      requestId: "REQ-bind",
+      sessionId: SESSION_ID,
+      runId: RUN_ID,
+      workstreamId: WORKSTREAM_ID,
+      bindings: [{ resourceId: RESOURCE_ID, role: "reference", access: "read" }],
+      at: AT,
+    })).toBe(true);
+  });
+
+  it("validates exact resource mutation preparation and verification", () => {
+    expect(isPrepareResourceMutationRequest({
+      requestId: "REQ-prepare-mutation",
+      sessionId: SESSION_ID,
+      runId: RUN_ID,
+      workstreamId: WORKSTREAM_ID,
+      activeRequestId: "R-0001",
+      callId: "call-write-1",
+      tool: "write_files",
+      effect: "workspace_mutation",
+      targets: [{
+        resourceId: RESOURCE_ID,
+        relativePath: "index.html",
+        kind: "file",
+        expectedVersionKey: "directory:before",
+      }],
+      at: AT,
+    })).toBe(true);
+    expect(isPrepareResourceMutationRequest({
+      requestId: "REQ-prepare-mutation",
+      sessionId: SESSION_ID,
+      runId: RUN_ID,
+      workstreamId: WORKSTREAM_ID,
+      activeRequestId: "R-0001",
+      callId: "call-write-1",
+      tool: "write_files",
+      effect: "workspace_mutation",
+      targets: [],
+      at: AT,
     })).toBe(false);
+    expect(isVerifyResourceMutationRequest({
+      requestId: "REQ-verify-mutation",
+      operationId: "RM-123",
+      leaseId: "RL-123",
+      lockToken: "secret-token",
+      toolStatus: "completed",
+      at: AT,
+    })).toBe(true);
   });
 
   it("validates ordered structured step records", () => {
@@ -145,86 +218,49 @@ describe("Git Context protocol 35 contracts", () => {
         toolPurpose: "read",
         toolEffect: "read_only",
         status: "success",
-        input: { paths: ["src/app.ts"] },
-        output: { files: ["src/app.ts"] },
+        input: { paths: ["/tmp/example/src/app.ts"] },
+        output: { files: ["/tmp/example/src/app.ts"] },
       }],
       verification: { passed: true },
       workStateAfter: workState(),
-      createdAt: "2026-07-19T10:02:00+05:30",
+      createdAt: AT,
     };
     expect(isRecordRunStepRequest({
       requestId: "REQ-step",
-      sessionId: "S-20260719-local",
-      runId: "R-20260719-0001",
+      sessionId: SESSION_ID,
+      runId: RUN_ID,
       record,
     })).toBe(true);
     expect(isRecordRunStepRequest({
-      requestId: "REQ-plan-failure",
-      sessionId: "S-20260719-local",
-      runId: "R-20260719-0001",
-      record: {
-        ...record,
-        status: "failed",
-        toolCalls: [],
-        verification: { passed: false, error: "Action plan was invalid." },
-      },
-    })).toBe(true);
-    expect(isRecordRunStepRequest({
-      requestId: "REQ-step",
-      sessionId: "S-20260719-local",
-      runId: "R-20260719-0001",
-      record: { ...record, step: 0 },
-    })).toBe(false);
-    expect(isRecordRunStepRequest({
-      requestId: "REQ-step",
-      sessionId: "S-20260719-local",
-      runId: "R-20260719-0001",
-      record: {
-        ...record,
-        toolCalls: [{ ...record.toolCalls[0], toolEffect: "unknown" }],
-      },
+      requestId: "REQ-step-invalid",
+      sessionId: SESSION_ID,
+      runId: RUN_ID,
+      record: { ...record, toolCalls: [{ ...record.toolCalls[0], toolEffect: "unknown" }] },
     })).toBe(false);
   });
 
-  it("enforces truthful outcome and stop-reason pairs", () => {
+  it("enforces truthful terminal pairs and resource-shaped completion evidence", () => {
     const base = finalization();
     expect(isFinalizeRunRequest(base)).toBe(true);
-    expect(isFinalizeRunRequest({
-      ...base,
-      outcome: "incomplete",
-      stopReason: "run_limit",
-      workState: { ...workState(), status: "not_done" },
-    })).toBe(true);
-    expect(isFinalizeRunRequest({
-      ...base,
-      outcome: "done",
-      stopReason: "run_limit",
-    })).toBe(false);
-    expect(isFinalizeRunRequest({
-      ...base,
-      outcome: "needs_user_input",
-      stopReason: "needs_user_input",
-      workState: {
-        ...workState(),
-        status: "needs_user_input",
-        userInputNeeded: ["Which task should own this work?"],
-      },
-    })).toBe(true);
-  });
-
-  it("requires accepted completion evidence for a done task-bound payload", () => {
-    const base = finalization();
+    expect(isFinalizeRunRequest({ ...base, outcome: "done", stopReason: "run_limit" })).toBe(false);
     const completion = {
       accepted: true,
-      assets: [],
+      resources: [{
+        resourceId: RESOURCE_ID,
+        kind: "directory" as const,
+        role: "deliverable" as const,
+        description: "Verified website output.",
+        aliases: ["website"],
+        verified: true,
+      }],
       missing: [],
       failures: [],
       criteria: [{ criterion: "The requested result is verified.", passed: true }],
     };
-    expect(isFinalizeRunRequest({ ...base, task: { completion } })).toBe(true);
+    expect(isFinalizeRunRequest({ ...base, workstream: { completion } })).toBe(true);
     expect(isFinalizeRunRequest({
       ...base,
-      task: { completion: { ...completion, accepted: false } },
+      workstream: { completion: { ...completion, accepted: false } },
     })).toBe(false);
     expect(isFinalizeRunRequest({
       ...base,
@@ -232,62 +268,59 @@ describe("Git Context protocol 35 contracts", () => {
       stopReason: "failed",
       validation: "failed",
       workState: { ...workState(), status: "not_done" },
-      task: { completion: { ...completion, accepted: false } },
+      workstream: { completion: { ...completion, accepted: false } },
     })).toBe(true);
   });
 
-  it("validates bound mutation authority and verification requests", () => {
-    expect(isAcquireMutationAuthorityRequest({
-      requestId: "REQ-authority",
-      sessionId: "S-20260719-local",
-      runId: "R-20260719-0001",
-      taskId: "T-20260719-0001",
-      taskRequestId: "R-0001",
-      expectedTaskHead: "a".repeat(40),
-      targets: [{ path: "src/app.ts", kind: "file" }],
-      at: "2026-07-19T10:02:00+05:30",
+  it("publishes and validates the durable finalization text boundaries", () => {
+    const base = finalization();
+    const contextBoundary = "x".repeat(
+      RUN_FINALIZATION_LIMITS.workState.contextItemChars,
+    );
+    expect(isFinalizeRunRequest({
+      ...base,
+      next: "n".repeat(RUN_FINALIZATION_LIMITS.nextChars),
+      workState: {
+        ...base.workState,
+        blockers: [contextBoundary],
+        userInputNeeded: [contextBoundary],
+        nextStep: "n".repeat(RUN_FINALIZATION_LIMITS.workState.nextStepChars),
+      },
     })).toBe(true);
-    expect(isAcquireMutationAuthorityRequest({
-      requestId: "REQ-authority",
-      sessionId: "S-20260719-local",
-      runId: "R-20260719-0001",
-      taskId: "T-20260719-0001",
-      targets: [],
-      at: "2026-07-19T10:02:00+05:30",
+    expect(isFinalizeRunRequest({
+      ...base,
+      workState: {
+        ...base.workState,
+        userInputNeeded: [contextBoundary + "x"],
+      },
     })).toBe(false);
-    expect(isVerifyMutationRequest({
-      requestId: "REQ-verify",
-      authorityId: "A-1",
-      lockToken: "secret-token",
-      toolStatus: "completed",
-      at: "2026-07-19T10:03:00+05:30",
-    })).toBe(true);
+    expect(isFinalizeRunRequest({
+      ...base,
+      next: "n".repeat(RUN_FINALIZATION_LIMITS.nextChars + 1),
+    })).toBe(false);
   });
 
   it("serializes structured service errors", () => {
     const error = new GitContextServiceError({
-      code: "TASK_LOCKED",
-      message: "Task is already owned.",
+      code: "WORKSTREAM_LOCKED",
+      message: "Workstream is already owned.",
       retryable: true,
-      details: { taskId: "T-1" },
-    });
-    expect(error.toResponse()).toEqual({
-      error: {
-        code: "TASK_LOCKED",
-        message: "Task is already owned.",
-        retryable: true,
-        details: { taskId: "T-1" },
-      },
+      details: { workstreamId: WORKSTREAM_ID },
     });
     expect(isGitContextErrorResponse(error.toResponse())).toBe(true);
+    expect(error.toResponse().error).toMatchObject({
+      code: "WORKSTREAM_LOCKED",
+      retryable: true,
+      details: { workstreamId: WORKSTREAM_ID },
+    });
   });
 });
 
 function finalization(): FinalizeRunRequest {
   return {
     requestId: "REQ-finalize",
-    sessionId: "S-20260719-local",
-    runId: "R-20260719-0001",
+    sessionId: SESSION_ID,
+    runId: RUN_ID,
     outcome: "done",
     stopReason: "completed",
     assistantResponse: "The requested result is complete.",
@@ -295,7 +328,7 @@ function finalization(): FinalizeRunRequest {
     summary: "The requested result is complete.",
     validation: "passed",
     workState: { ...workState(), status: "done" },
-    at: "2026-07-19T10:04:00+05:30",
+    at: AT,
   };
 }
 

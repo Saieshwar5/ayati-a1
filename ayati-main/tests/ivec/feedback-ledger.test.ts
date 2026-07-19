@@ -178,7 +178,7 @@ describe("AsyncAgentFeedbackLedger", () => {
         outcome: "done",
         stopReason: "completed",
         materialization: { status: "not_requested" },
-        commit: { status: "not_required" },
+        workstreamContextCommit: { status: "not_required" },
       },
     });
     await ledger.flush();
@@ -251,10 +251,12 @@ describe("AsyncAgentFeedbackLedger", () => {
           contextEngine: buildContextEngineFeedbackSummary({
             context: {
               session: {
-                sessionId: "session-1",
+                meta: {
+                  sessionId: "session-1",
+                  resourceCount: 0,
+                },
                 conversationTail: [],
                 activityTail: [],
-                assetCount: 0,
               },
               pendingTurn: {
                 fromSeq: 3,
@@ -262,37 +264,54 @@ describe("AsyncAgentFeedbackLedger", () => {
                 text: "continue upload UI",
                 at: "2026-06-23T10:00:00.000Z",
                 routingStatus: "bound",
-                workId: "W-1",
-                branch: "task/W-1-upload-ui",
+                workstreamId: "W-1",
+                branch: "main",
                 runId: "run-3",
               },
               focus: {
                 status: "active",
-                ref: "refs/heads/task/W-1-upload-ui",
-                workId: "W-1",
+                ref: "refs/heads/main",
+                workstreamId: "W-1",
               },
-              task: {
-                ref: "refs/heads/task/W-1-upload-ui",
-                workId: "W-1",
+              workstream: {
+                contextRepositoryPath: "/ayati/workstreams/W-1",
+                ref: "refs/heads/main",
+                workstreamId: "W-1",
                 title: "Upload UI",
                 objective: "Improve upload UI",
-                status: "open",
-                completed: [],
-                open: ["Improve upload UI"],
+                summary: "Upload UI remains in progress.",
+                workstreamStatus: "in_progress",
+                lifecycleStatus: "active",
+                repositoryHealth: "ready",
                 blockers: [],
-                facts: [],
-                assets: [{ assetId: "asset-1", role: "input", kind: "file", name: "mock.png" }],
-                recentRuns: [],
-                recentCommits: [],
-                recentEvidence: [{
-                  runId: "run-2",
-                  workId: "W-1",
-                  tool: "process_run",
-                  summary: "tests passed",
-                  artifacts: [],
-                  facts: [],
-                  accessModes: ["raw"],
+                resources: [{
+                  resource: {
+                    resourceId: "resource-1",
+                    kind: "file",
+                    origin: "user_reference",
+                    displayName: "mock.png",
+                    description: "Upload UI mockup",
+                    aliases: ["mockup"],
+                    locator: { kind: "filesystem", path: "/ayati/workspace/mock.png" },
+                    version: {
+                      key: "sha256:mock",
+                      observedAt: "2026-06-23T09:00:00.000Z",
+                      exists: true,
+                      kind: "file",
+                      sha256: "mock",
+                    },
+                    availability: "available",
+                    metadataStatus: "enriched",
+                    createdAt: "2026-06-23T09:00:00.000Z",
+                    updatedAt: "2026-06-23T09:00:00.000Z",
+                  },
+                  role: "input",
+                  access: "read",
+                  primary: false,
+                  requestIds: ["R-0001"],
+                  boundAt: "2026-06-23T09:00:00.000Z",
                 }],
+                recentCommits: [],
               },
             },
             routeStatus: "ready",
@@ -311,12 +330,11 @@ describe("AsyncAgentFeedbackLedger", () => {
         pendingTurnStatus?: string;
         routeMode?: string;
         routeSource?: string;
-        taskId?: string;
+        workstreamId?: string;
         branch?: string;
         runId?: string;
         committed?: boolean;
-        taskAssetCount?: number;
-        recentEvidenceCount?: number;
+        resourceCount?: number;
       };
     };
 
@@ -324,12 +342,11 @@ describe("AsyncAgentFeedbackLedger", () => {
       pendingTurnStatus: "bound",
       routeMode: "activated",
       routeSource: "auto",
-      taskId: "W-1",
-      branch: "task/W-1-upload-ui",
+      workstreamId: "W-1",
+      branch: "main",
       runId: "run-3",
       committed: false,
-      taskAssetCount: 1,
-      recentEvidenceCount: 1,
+      resourceCount: 1,
     });
   });
 
@@ -362,7 +379,7 @@ describe("AsyncAgentFeedbackLedger", () => {
           verificationPassed: true,
           warnings: [],
           contextEngine: {
-            taskId: "W-4",
+            workstreamId: "W-4",
             runId: "run-4",
             finalizationStatus: "not_started",
             committed: false,
@@ -382,12 +399,16 @@ describe("AsyncAgentFeedbackLedger", () => {
       data: {
         outcome: "done",
         stopReason: "completed",
-        taskBinding: { taskId: "W-4", taskRequestId: "R-0001" },
+        workstreamBinding: {
+          workstreamId: "W-4",
+          requestId: "R-0001",
+          boundAt: "2026-06-23T09:59:00.000Z",
+        },
         materialization: { status: "not_requested" },
-        commit: {
+        workstreamContextCommit: {
           status: "committed",
-          taskId: "W-4",
-          taskRequestId: "R-0001",
+          workstreamId: "W-4",
+          requestId: "R-0001",
           headBefore: "0000000",
           headAfter: "abc1234",
           commit: "abc1234",
@@ -471,7 +492,7 @@ describe("AsyncAgentFeedbackLedger", () => {
         outcome: "done",
         stopReason: "completed",
         materialization: { status: "not_requested" },
-        commit: { status: "not_required" },
+        workstreamContextCommit: { status: "not_required" },
       },
     });
     await ledger.flush();
@@ -667,9 +688,9 @@ describe("AsyncAgentFeedbackLedger", () => {
       event: "working_set_prepared",
       data: {
         warningCodes: [
-          "task_tools_selected_without_binding",
+          "workstream_tools_selected_without_binding",
           "normal_tool_before_routing",
-          "task_binding_required_for_action",
+          "workstream_binding_required_for_action",
         ],
       },
     });
@@ -680,7 +701,7 @@ describe("AsyncAgentFeedbackLedger", () => {
       stage: "final",
       event: "error",
       data: {
-        message: "Task binding is required before chat tool execution.",
+        message: "A workstream binding is required before this action.",
       },
     });
     await ledger.flush();
@@ -694,9 +715,9 @@ describe("AsyncAgentFeedbackLedger", () => {
     expect(summary.responseKind).toBe("error");
     expect(summary.warnings).toEqual([
       "runtime_error",
-      "task_tools_selected_without_binding",
+      "workstream_tools_selected_without_binding",
       "normal_tool_before_routing",
-      "task_binding_required_for_action",
+      "workstream_binding_required_for_action",
     ]);
 
     const triage = JSON.parse(await readFile(join(tempDir, "feedback", "triage-summary.json"), "utf-8")) as {
@@ -707,8 +728,8 @@ describe("AsyncAgentFeedbackLedger", () => {
     expect(triage.findings?.map((finding) => finding.code)).toEqual([
       "run_not_completed",
       "runtime_error",
-      "task_tools_selected_without_binding",
-      "task_binding_required_for_action",
+      "workstream_tools_selected_without_binding",
+      "workstream_binding_required_for_action",
       "normal_tool_before_routing",
     ]);
   });
@@ -728,7 +749,7 @@ describe("AsyncAgentFeedbackLedger", () => {
       event: "unbound_run_tool_repair_requested",
       data: {
         repair: {
-          code: "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
+          code: "R_UNBOUND_RUN_NEEDS_WORKSTREAM_BINDING",
           blockedTargets: ["write_files"],
         },
       },
@@ -742,7 +763,7 @@ describe("AsyncAgentFeedbackLedger", () => {
       data: {
         repair: {
           code: "R_ASSISTANT_TEXT_TOOL_CALL",
-          blockedTargets: ["git_context_create_task"],
+          blockedTargets: ["git_context_create_workstream"],
         },
       },
     });
@@ -769,7 +790,7 @@ describe("AsyncAgentFeedbackLedger", () => {
     };
     expect(summary.warnings).toEqual([
       "unbound_run_tool_repair_requested",
-      "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
+      "R_UNBOUND_RUN_NEEDS_WORKSTREAM_BINDING",
       "R_ASSISTANT_TEXT_TOOL_CALL",
     ]);
 
@@ -778,7 +799,7 @@ describe("AsyncAgentFeedbackLedger", () => {
     };
     expect(triage.findings?.map((finding) => finding.code)).toEqual([
       "R_ASSISTANT_TEXT_TOOL_CALL",
-      "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
+      "R_UNBOUND_RUN_NEEDS_WORKSTREAM_BINDING",
       "unbound_run_tool_repair_requested",
     ]);
   });
@@ -872,7 +893,7 @@ describe("AsyncAgentFeedbackLedger", () => {
     expect(triage.topRecommendation).toContain("raw feedback log");
   });
 
-  it("keeps a complete task lifecycle in the latest summary", async () => {
+  it("keeps a complete workstream lifecycle in the latest summary", async () => {
     const ledger = new AsyncAgentFeedbackLedger({
       dataDir: tempDir,
       enabled: true,
@@ -880,11 +901,11 @@ describe("AsyncAgentFeedbackLedger", () => {
     });
     const lifecycle = {
       repository: {
-        taskId: "T-20260718-0001",
-        workingDirectory: "/workspace/tasks/T-20260718-0001-site",
+        workstreamId: "W-20260718-0001",
+        contextRepositoryPath: "/ayati/workstreams/W-20260718-0001-site",
         branch: "main",
         selectionMode: "activated",
-        taskCreated: false,
+        workstreamCreated: false,
         headBefore: "a".repeat(40),
       },
       request: {
@@ -895,7 +916,7 @@ describe("AsyncAgentFeedbackLedger", () => {
       },
       run: {
         runId: "RUN-2",
-        taskBound: true,
+        workstreamBound: true,
       },
       finalization: { status: "not_started" },
     } as const;
@@ -906,10 +927,14 @@ describe("AsyncAgentFeedbackLedger", () => {
       stage: "context_engine",
       event: "agent_routed",
       data: {
-        taskId: "T-20260718-0001",
+        workstreamId: "W-20260718-0001",
         runId: "RUN-2",
-        taskLifecycle: lifecycle,
-        contextEngine: { taskId: "T-20260718-0001", runId: "RUN-2", taskLifecycle: lifecycle },
+        workstreamLifecycle: lifecycle,
+        contextEngine: {
+          workstreamId: "W-20260718-0001",
+          runId: "RUN-2",
+          workstreamLifecycle: lifecycle,
+        },
       },
     });
     ledger.record({
@@ -940,15 +965,16 @@ describe("AsyncAgentFeedbackLedger", () => {
       data: {
         outcome: "done",
         stopReason: "completed",
-        taskBinding: {
-          taskId: "T-20260718-0001",
-          taskRequestId: "R-0002",
+        workstreamBinding: {
+          workstreamId: "W-20260718-0001",
+          requestId: "R-0002",
+          boundAt: "2026-07-18T09:59:00.000Z",
         },
         materialization: { status: "not_requested" },
-        commit: {
+        workstreamContextCommit: {
           status: "committed",
-          taskId: "T-20260718-0001",
-          taskRequestId: "R-0002",
+          workstreamId: "W-20260718-0001",
+          requestId: "R-0002",
           commit: "b".repeat(40),
           headBefore: "a".repeat(40),
           headAfter: "b".repeat(40),
@@ -960,15 +986,15 @@ describe("AsyncAgentFeedbackLedger", () => {
     const summary = JSON.parse(
       await readFile(join(tempDir, "feedback", "latest-summary.json"), "utf-8"),
     );
-    expect(summary.contextEngine.taskLifecycle).toMatchObject({
+    expect(summary.contextEngine.workstreamLifecycle).toMatchObject({
       repository: {
-        taskId: "T-20260718-0001",
-        workingDirectory: "/workspace/tasks/T-20260718-0001-site",
+        workstreamId: "W-20260718-0001",
+        contextRepositoryPath: "/ayati/workstreams/W-20260718-0001-site",
         selectionMode: "activated",
         headAfter: "b".repeat(40),
       },
       request: { decision: "create", requestId: "R-0002", created: true },
-      run: { runId: "RUN-2", taskBound: true },
+      run: { runId: "RUN-2", workstreamBound: true },
       finalization: {
         status: "committed",
         outcome: "done",
@@ -983,7 +1009,7 @@ describe("AsyncAgentFeedbackLedger", () => {
     expect(triage.findings).toEqual([expect.objectContaining({ code: "healthy_run" })]);
   });
 
-  it("reduces one-run Git Context events into the task lifecycle summary", async () => {
+  it("reduces one-run Git Context events into the workstream lifecycle summary", async () => {
     const ledger = new AsyncAgentFeedbackLedger({
       dataDir: tempDir,
       enabled: true,
@@ -994,19 +1020,19 @@ describe("AsyncAgentFeedbackLedger", () => {
       seq: 2,
       runId: "RUN-1",
       stage: "git_context_service",
-      event: "run_task_bound",
+      event: "run_workstream_bound",
       data: {
-        taskId: "T-20260718-0001",
+        workstreamId: "W-20260718-0001",
         runId: "RUN-1",
-        selectionMode: "created",
-        workingDirectory: "/tasks/T-20260718-0001-site",
+        mode: "created",
+        contextRepositoryPath: "/ayati/workstreams/W-20260718-0001-site",
         branch: "main",
-        taskHead: "a".repeat(40),
-        taskCreated: true,
-        taskRequestDecision: "initial",
-        taskRequestId: "R-0001",
-        taskRequestStatus: "active",
-        taskRequestCreated: true,
+        workstreamHead: "a".repeat(40),
+        workstreamCreated: true,
+        requestDecision: "initial",
+        requestId: "R-0001",
+        requestStatus: "active",
+        requestCreated: true,
       },
     });
     ledger.record({
@@ -1018,15 +1044,16 @@ describe("AsyncAgentFeedbackLedger", () => {
       data: {
         outcome: "done",
         stopReason: "completed",
-        taskBinding: {
-          taskId: "T-20260718-0001",
-          taskRequestId: "R-0001",
+        workstreamBinding: {
+          workstreamId: "W-20260718-0001",
+          requestId: "R-0001",
+          boundAt: "2026-07-18T09:59:00.000Z",
         },
         materialization: { status: "not_requested" },
-        commit: {
+        workstreamContextCommit: {
           status: "committed",
-          taskId: "T-20260718-0001",
-          taskRequestId: "R-0001",
+          workstreamId: "W-20260718-0001",
+          requestId: "R-0001",
           headBefore: "a".repeat(40),
           headAfter: "b".repeat(40),
           commit: "b".repeat(40),
@@ -1052,10 +1079,10 @@ describe("AsyncAgentFeedbackLedger", () => {
     const summary = JSON.parse(
       await readFile(join(tempDir, "feedback", "latest-summary.json"), "utf8"),
     );
-    expect(summary.contextEngine.taskLifecycle).toMatchObject({
+    expect(summary.contextEngine.workstreamLifecycle).toMatchObject({
       repository: {
-        taskId: "T-20260718-0001",
-        workingDirectory: "/tasks/T-20260718-0001-site",
+        workstreamId: "W-20260718-0001",
+        contextRepositoryPath: "/ayati/workstreams/W-20260718-0001-site",
         headAfter: "b".repeat(40),
       },
       request: {
@@ -1063,7 +1090,7 @@ describe("AsyncAgentFeedbackLedger", () => {
         requestId: "R-0001",
         created: true,
       },
-      run: { runId: "RUN-1", taskBound: true },
+      run: { runId: "RUN-1", workstreamBound: true },
       finalization: {
         status: "committed",
         outcome: "done",
@@ -1080,14 +1107,14 @@ describe("AsyncAgentFeedbackLedger", () => {
       status: "completed",
       responseKind: "reply",
       contextEngine: {
-        taskBound: true,
-        taskLifecycle: {
+        workstreamBound: true,
+        workstreamLifecycle: {
           repository: {
-            taskId: "T-20260718-0001",
-            workingDirectory: "/workspace/tasks/T-20260718-0001-site",
+            workstreamId: "W-20260718-0001",
+            contextRepositoryPath: "/ayati/workstreams/W-20260718-0001-site",
             selectionMode: "activated",
           },
-          run: { runId: "RUN-1", taskBound: true },
+          run: { runId: "RUN-1", workstreamBound: true },
         },
       },
       warnings: [],
@@ -1096,8 +1123,8 @@ describe("AsyncAgentFeedbackLedger", () => {
 
     expect(triage.outcome).toBe("failed");
     expect(triage.findings.map((finding) => finding.code)).toEqual([
-      "v1_request_decision_missing",
-      "v1_task_request_missing",
+      "workstream_request_decision_missing",
+      "workstream_request_missing",
     ]);
   });
 
@@ -1110,11 +1137,11 @@ describe("AsyncAgentFeedbackLedger", () => {
       contextEngine: {
         pendingTurnStatus: "clarifying",
         runId: "RUN-unbound",
-        taskBound: false,
-        taskLifecycle: {
+        workstreamBound: false,
+        workstreamLifecycle: {
           run: {
             runId: "RUN-unbound",
-            taskBound: false,
+            workstreamBound: false,
           },
         },
       },
@@ -1126,18 +1153,18 @@ describe("AsyncAgentFeedbackLedger", () => {
     expect(triage.findings.map((finding) => finding.code)).toEqual(["healthy_run"]);
   });
 
-  it("accepts a completed V1 no-change finalization without a commit", () => {
+  it("reports a failed no-change workstream finalization without requiring a commit", () => {
     const triage = buildFeedbackTriageSummary({
       updatedAt: "2026-07-18T10:00:00.000Z",
       tsMs: 1,
       status: "completed",
       responseKind: "reply",
       contextEngine: {
-        taskBound: true,
-        taskLifecycle: {
+        workstreamBound: true,
+        workstreamLifecycle: {
           repository: {
-            taskId: "T-20260718-0001",
-            workingDirectory: "/tasks/T-20260718-0001-site",
+            workstreamId: "W-20260718-0001",
+            contextRepositoryPath: "/ayati/workstreams/W-20260718-0001-site",
             selectionMode: "activated",
             headAfter: "a".repeat(40),
           },
@@ -1146,7 +1173,7 @@ describe("AsyncAgentFeedbackLedger", () => {
             requestId: "R-0001",
             created: false,
           },
-          run: { runId: "RUN-1", taskBound: true },
+          run: { runId: "RUN-1", workstreamBound: true },
           finalization: {
             status: "no_change",
             outcome: "failed",
@@ -1162,8 +1189,8 @@ describe("AsyncAgentFeedbackLedger", () => {
 
     expect(triage.outcome).toBe("needs_review");
     expect(triage.findings.map((finding) => finding.code)).toEqual([
-      "v1_finalization_validation_failed",
-      "v1_task_outcome_failed",
+      "workstream_finalization_validation_failed",
+      "workstream_outcome_failed",
     ]);
   });
 

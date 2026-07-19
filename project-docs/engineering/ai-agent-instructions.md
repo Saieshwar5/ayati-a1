@@ -28,19 +28,18 @@ Product rules:
 - Do not assume Ayati is CLI-only.
 - Keep core intelligence, memory, tools, provider access, permissions, and background event processing in the daemon.
 - Memory is product-critical because it gives continuity and personalization.
-- Independent task repositories are the durable task-continuity source. New
-  tasks use `T-*` V1 repositories with `.ayati/task.md`, requests, references,
-  and ignored inbox staging; do not hide important dynamic task context only in
-  a large prompt string.
+- Context-only workstream repositories and the resource catalog are the
+  durable-work source. `W-*` repositories contain `workstream.md`, request
+  files, and `resources.json`; never put deliverables in them.
 - Preserve the git-native ownership boundary: the agent may discover/open
-  context, inspect trusted locations, and select/create tasks through the typed
-  Git Context tools, but runtime owns registration, request allocation, task
-  state reduction, finalization, and commits.
-- For V1 activation, explicitly pass `requestDecision.kind="continue"` or
-  `requestDecision.kind="create"`. A candidate or previously active task is
+  context, inspect resources, and select/create workstreams through typed Git
+  Context tools, but runtime owns identity allocation, request reduction,
+  resource verification, finalization, and context commits.
+- For activation, explicitly pass `requestDecision.kind="continue"` or
+  `requestDecision.kind="create"`. A candidate or previously active workstream is
   not mutation authority.
-- Use the selected task repository as its working directory. Do not edit
-  runtime-owned `.ayati/` lifecycle state or commit raw run transcripts.
+- Use real resource locators for work. Do not edit context repositories or
+  runtime-owned `.ayati/` state from general tools.
 - Tool access is high privilege because the daemon can affect the user's computer.
 - Tool results should become verified facts through contracts/assertions whenever deterministic verification is possible.
 - Future communication channels should connect to the daemon instead of duplicating core runtime logic.
@@ -60,6 +59,6 @@ Important source entry points:
 - `ayati-main/src/server/upload-server.ts`
 - `ayati-cli/src/app/app.tsx`
 
-Before changing task continuity, read
-[Task Repositories](architecture/task-repositories.md) and update it when the
+Before changing durable-work continuity, read
+[Workstreams and Resources](architecture/workstreams-and-resources.md) and update it when the
 stable contract changes.

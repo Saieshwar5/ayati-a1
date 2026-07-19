@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import type { TaskAssetRecord } from "../context-engine/index.js";
+import type { ResourceRef, WorkstreamResourceBinding } from "ayati-git-context";
 import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
 import { resolvePreparedAttachmentMode } from "./document-routing.js";
@@ -18,12 +18,12 @@ export interface SessionAttachmentServiceOptions {
   directoryLibrary?: DirectoryLibrary;
 }
 
-type RestoredTaskAssetSource = {
-  source: "task_asset";
-  assetId: string;
+type RestoredWorkstreamResourceSource = {
+  source: "workstream_resource";
+  resourceId: string;
 };
 
-export type RestoredAttachmentContext = RestoredTaskAssetSource & (
+export type RestoredAttachmentContext = RestoredWorkstreamResourceSource & (
   | {
     restored: boolean;
     attachmentKind: "document" | "dataset";
@@ -63,73 +63,73 @@ export class SessionAttachmentService {
     runId: string;
     clientId?: string;
     sessionId?: string;
-    assetId?: string;
+    resourceId?: string;
     reference?: string;
-    taskAssets?: TaskAssetRecord[];
+    workstreamResources?: WorkstreamResourceBinding[];
   }): Promise<RestoredAttachmentContext> {
     const currentRunAttachments = this.preparedAttachmentRegistry.getRunAttachments(input.runId);
     if (!hasExplicitRestoreReference(input) && currentRunAttachments.length > 0) {
       throw new Error("Current run already has attachments. Use the current attachment, or specify the earlier file to restore.");
     }
 
-    const asset = resolveTaskAsset(input.taskAssets ?? [], input);
-    const normalizedKind = asset.kind.toLowerCase();
+    const resource = resolveWorkstreamResource(input.workstreamResources ?? [], input);
+    const normalizedKind = resource.kind.toLowerCase();
     if (normalizedKind === "directory") {
-      return this.restoreDirectoryAsset(asset);
+      return this.restoreDirectoryResource(resource);
     }
     if (normalizedKind === "file") {
-      return this.restoreFileAsset(asset);
+      return this.restoreFileResource(resource);
     }
-    return this.restorePreparedDocumentAsset(input.runId, asset, currentRunAttachments);
+    return this.restorePreparedDocumentResource(input.runId, resource, currentRunAttachments);
   }
 
-  private restoreFileAsset(asset: TaskAssetRecord): RestoredAttachmentContext {
-    const path = requireAssetPath(asset);
+  private restoreFileResource(resource: ResourceRef): RestoredAttachmentContext {
+    const path = requireResourcePath(resource);
     return {
-      source: "task_asset",
-      assetId: asset.assetId,
+      source: "workstream_resource",
+      resourceId: resource.resourceId,
       restored: true,
       attachmentKind: "file",
       path,
-      displayName: asset.name,
-      kind: asset.kind,
+      displayName: resource.displayName,
+      kind: resource.kind,
     };
   }
 
-  private restoreDirectoryAsset(asset: TaskAssetRecord): RestoredAttachmentContext {
-    const path = requireAssetPath(asset);
+  private restoreDirectoryResource(resource: ResourceRef): RestoredAttachmentContext {
+    const path = requireResourcePath(resource);
     return {
-      source: "task_asset",
-      assetId: asset.assetId,
+      source: "workstream_resource",
+      resourceId: resource.resourceId,
       restored: true,
       attachmentKind: "directory",
       path,
-      displayName: asset.name,
+      displayName: resource.displayName,
       kind: "directory",
     };
   }
 
-  private async restorePreparedDocumentAsset(
+  private async restorePreparedDocumentResource(
     runId: string,
-    asset: TaskAssetRecord,
+    resource: ResourceRef,
     currentRunAttachments: PreparedAttachmentRecord[],
   ): Promise<RestoredAttachmentContext> {
     if (!this.documentStore) {
-      throw new Error("Attachment restore requires DocumentStore to prepare git task document assets.");
+      throw new Error("Attachment restore requires DocumentStore to prepare workstream document resources.");
     }
 
-    const path = requireAssetPath(asset);
-    const registered = await this.documentStore.registerAttachments([{ source: "cli", path, name: asset.name }]);
+    const path = requireResourcePath(resource);
+    const registered = await this.documentStore.registerAttachments([{ source: "cli", path, name: resource.displayName }]);
     if (registered.documents.length === 0) {
-      throw new Error(registered.warnings[0] ?? `Unable to register task asset for restore: ${asset.name}`);
+      throw new Error(registered.warnings[0] ?? `Unable to register workstream resource for restore: ${resource.displayName}`);
     }
 
     const manifest = registered.documents[0]!;
     const existing = currentRunAttachments.find((record) => record.summary.documentId === manifest.documentId);
     if (existing) {
       return {
-        source: "task_asset",
-        assetId: asset.assetId,
+        source: "workstream_resource",
+        resourceId: resource.resourceId,
         restored: false,
         attachmentKind: existing.summary.mode === "structured_data" ? "dataset" : "document",
         manifest: existing.manifest,
@@ -144,8 +144,8 @@ export class SessionAttachmentService {
     await persistRestoredAttachmentArtifacts(artifactRoot, this.preparedAttachmentRegistry.getRunAttachments(runId));
 
     return {
-      source: "task_asset",
-      assetId: asset.assetId,
+      source: "workstream_resource",
+      resourceId: resource.resourceId,
       restored: true,
       attachmentKind: record.summary.mode === "structured_data" ? "dataset" : "document",
       manifest: record.manifest,
@@ -173,29 +173,29 @@ export class SessionAttachmentService {
         documentStore: this.documentStore,
       });
     }
-    throw new Error(`Task asset is not a restorable document or dataset: ${manifest.displayName}`);
+    throw new Error(`Workstream resource is not a restorable document or dataset: ${manifest.displayName}`);
   }
 }
 
 function hasExplicitRestoreReference(input: {
-  assetId?: string;
+  resourceId?: string;
   reference?: string;
 }): boolean {
-  return [input.assetId, input.reference].some((value) => typeof value === "string" && value.trim().length > 0);
+  return [input.resourceId, input.reference].some((value) => typeof value === "string" && value.trim().length > 0);
 }
 
-function resolveTaskAsset(
-  assets: TaskAssetRecord[],
-  input: { assetId?: string; reference?: string },
-): TaskAssetRecord {
-  const candidates = assets.filter(isRestorableTaskAsset);
+function resolveWorkstreamResource(
+  bindings: WorkstreamResourceBinding[],
+  input: { resourceId?: string; reference?: string },
+): ResourceRef {
+  const candidates = bindings.map((binding) => binding.resource).filter(isRestorableResource);
   if (candidates.length === 0) {
-    throw new Error("No git task assets are available for attachment restore.");
+    throw new Error("No workstream resources are available for attachment restore.");
   }
 
-  const explicitAssetId = input.assetId?.trim();
-  if (explicitAssetId) {
-    return pickResolvedTaskAsset(candidates.filter((asset) => asset.assetId === explicitAssetId), candidates);
+  const explicitResourceId = input.resourceId?.trim();
+  if (explicitResourceId) {
+    return pickResolvedResource(candidates.filter((resource) => resource.resourceId === explicitResourceId), candidates);
   }
 
   const normalizedReference = input.reference?.trim();
@@ -207,12 +207,12 @@ function resolveTaskAsset(
   }
 
   const loweredReference = normalizedReference.toLowerCase();
-  const matches = candidates.filter((asset) => {
-    const path = asset.path?.trim();
+  const matches = candidates.filter((resource) => {
+    const path = resource.locator.kind === "filesystem" ? resource.locator.path.trim() : undefined;
     const labels = [
-      asset.assetId,
-      asset.sessionAssetId,
-      asset.name,
+      resource.resourceId,
+      resource.displayName,
+      ...resource.aliases,
       path,
       path ? basename(path) : undefined,
     ].filter((value): value is string => Boolean(value && value.trim().length > 0));
@@ -224,54 +224,54 @@ function resolveTaskAsset(
     });
   });
 
-  return pickResolvedTaskAsset(matches, candidates);
+  return pickResolvedResource(matches, candidates);
 }
 
-function pickResolvedTaskAsset(
-  matches: TaskAssetRecord[],
-  allCandidates: TaskAssetRecord[],
-): TaskAssetRecord {
-  const unique = dedupeTaskAssets(matches);
+function pickResolvedResource(
+  matches: ResourceRef[],
+  allCandidates: ResourceRef[],
+): ResourceRef {
+  const unique = dedupeResources(matches);
   if (unique.length === 1) {
     return unique[0]!;
   }
   throw new Error(buildRestoreResolutionError(unique.length > 0 ? unique : allCandidates));
 }
 
-function buildRestoreResolutionError(candidates: TaskAssetRecord[]): string {
-  return `Unable to uniquely resolve the git task asset. Available options: ${candidates.map(candidateReferenceLabel).join(", ")}`;
+function buildRestoreResolutionError(candidates: ResourceRef[]): string {
+  return `Unable to uniquely resolve the workstream resource. Available options: ${candidates.map(candidateReferenceLabel).join(", ")}`;
 }
 
-function candidateReferenceLabel(asset: TaskAssetRecord): string {
-  return `${asset.assetId} (${asset.name}${asset.path ? ` at ${asset.path}` : ""})`;
+function candidateReferenceLabel(resource: ResourceRef): string {
+  const path = resource.locator.kind === "filesystem" ? resource.locator.path : undefined;
+  return `${resource.resourceId} (${resource.displayName}${path ? ` at ${path}` : ""})`;
 }
 
-function dedupeTaskAssets(assets: TaskAssetRecord[]): TaskAssetRecord[] {
+function dedupeResources(resources: ResourceRef[]): ResourceRef[] {
   const seen = new Set<string>();
-  const output: TaskAssetRecord[] = [];
-  for (const asset of assets) {
-    if (seen.has(asset.assetId)) {
+  const output: ResourceRef[] = [];
+  for (const resource of resources) {
+    if (seen.has(resource.resourceId)) {
       continue;
     }
-    seen.add(asset.assetId);
-    output.push(asset);
+    seen.add(resource.resourceId);
+    output.push(resource);
   }
   return output;
 }
 
-function isRestorableTaskAsset(asset: TaskAssetRecord): boolean {
-  const kind = asset.kind.toLowerCase();
+function isRestorableResource(resource: ResourceRef): boolean {
+  const kind = resource.kind.toLowerCase();
   return ["document", "dataset", "file", "directory"].includes(kind)
-    && typeof asset.path === "string"
-    && asset.path.trim().length > 0;
+    && resource.locator.kind === "filesystem"
+    && resource.locator.path.trim().length > 0;
 }
 
-function requireAssetPath(asset: TaskAssetRecord): string {
-  const path = asset.path?.trim();
-  if (!path) {
-    throw new Error(`Git task asset is missing a restorable path: ${asset.name}`);
+function requireResourcePath(resource: ResourceRef): string {
+  if (resource.locator.kind !== "filesystem" || !resource.locator.path.trim()) {
+    throw new Error(`Workstream resource is missing a restorable filesystem path: ${resource.displayName}`);
   }
-  return path;
+  return resource.locator.path.trim();
 }
 
 function buildPreparedInputId(index: number, documentId: string): string {

@@ -12,8 +12,8 @@ Current trust boundaries:
 - Provider and integration credentials are read from environment variables.
 - Git Context uses a local Unix socket. Local transport does not remove the
   need for typed request validation and strict filesystem boundaries.
-- A selected task's canonical working directory is the default authorization
-  root for task-scoped mutation tools.
+- A bound resource's canonical locator and access mode define the authorization
+  boundary for resource-scoped tools.
 
 Security-sensitive capabilities:
 
@@ -24,15 +24,14 @@ Security-sensitive capabilities:
 - Memory read/write and personalization data.
 - File uploads and artifact serving.
 - Webhook/event integrations.
-- Git repository and `.ayati/` lifecycle mutation.
+- Resource mutation and Git Context lifecycle mutation.
 
-The model may discover, inspect, and select a task/request through typed Git
-Context tools, but the runtime owns registration, task creation, request
-allocation, lifecycle-file writes, and Git commits. Requested directories must
-be below configured trust roots and pass clean-Git or explicit-baseline policy.
-Path checks resolve symlinks before verifying that mutation remains inside the
-selected task root. User attachments enter managed storage or ignored inbox
-staging first; they are not trusted for automatic Git commit.
+The model may discover, inspect, and select a workstream/request through typed
+Git Context controls, but runtime owns identity allocation, resource binding,
+mutation journals, lifecycle files, and context commits. Path checks resolve
+symlinks before verifying that mutation remains inside an exact mutable
+resource. User attachments enter immutable managed storage and are never
+trusted for automatic context-Git commit.
 
 Before exposing the daemon beyond local development, review transport auth, CORS, webhook validation, tool policy, filesystem boundaries, memory privacy, artifact access, and secret handling.
 

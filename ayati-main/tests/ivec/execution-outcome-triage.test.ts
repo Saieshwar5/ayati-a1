@@ -13,7 +13,7 @@ describe("execution outcome triage", () => {
         commit: "not_required" as const,
       },
       actionSteps: 0,
-      taskBound: false,
+      workstreamBound: false,
     };
 
     expect(buildExecutionOutcomeFindings(input)).toEqual([]);
@@ -28,9 +28,9 @@ describe("execution outcome triage", () => {
         commit: "not_required",
       },
       actionSteps: 1,
-      taskBound: true,
+      workstreamBound: true,
     })).toEqual([expect.objectContaining({
-      code: "task_commit_state_mismatch",
+      code: "workstream_commit_state_mismatch",
       severity: "error",
     })]);
   });
@@ -43,7 +43,7 @@ describe("execution outcome triage", () => {
         commit: "committed",
       },
       actionSteps: 1,
-      taskBound: true,
+      workstreamBound: true,
     })).toEqual([expect.objectContaining({
       code: "commit_identity_missing",
       severity: "error",
@@ -58,7 +58,7 @@ describe("execution outcome triage", () => {
         commit: "not_required",
       },
       actionSteps: 1,
-      taskBound: true,
+      workstreamBound: true,
     })).toEqual([expect.objectContaining({
       code: "finalized_after_failed_verification",
       severity: "warning",

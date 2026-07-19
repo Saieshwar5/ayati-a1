@@ -2,7 +2,7 @@ import type { SessionInputHandle } from "../../memory/types.js";
 import type {
   AgentLoopDeps,
   AgentLoopResult,
-  AgentTaskSummaryRecord,
+  AgentWorkstreamSummaryRecord,
   LoopState,
   StepSummary,
   WorkState,
@@ -18,10 +18,10 @@ import { repairSignalToFeedbackData } from "./repair-policy.js";
 import { createRepairSignalFromStepSummary } from "./repair-feedback.js";
 import { type AgentStateView } from "./state-view.js";
 import {
-  deriveTaskBindingCapabilityPolicy,
+  deriveWorkstreamBindingCapabilityPolicy,
   isGitContextRoutingToolName,
   summarizeCapabilityTools,
-} from "./task-binding-capability-policy.js";
+} from "./workstream-binding-capability-policy.js";
 import {
   summarizeStep,
   summarizeToolDefinitions,
@@ -63,7 +63,7 @@ export function recordToolWorkingSetFeedback(input: {
   runHandle: AgentLoopDeps["runHandle"];
 }): void {
   const warningCodes = buildToolExposureWarningCodes(input.state, input.selectedTools);
-  const policy = deriveTaskBindingCapabilityPolicy(input.state);
+  const policy = deriveWorkstreamBindingCapabilityPolicy(input.state);
   const toolPolicyAudit = auditToolPolicy({
     policy,
     selectedTools: input.selectedTools,
@@ -77,14 +77,14 @@ export function recordToolWorkingSetFeedback(input: {
     iteration: input.iteration,
     toolContextRunId: input.toolContextRunId,
     runId: input.runHandle.runId,
-    taskBound: policy.taskBound,
+    workstreamBound: policy.workstreamBound,
     pendingTurnStatus: input.state.harnessContext.contextEngine?.pendingTurn?.routingStatus,
     capabilities,
     deterministicLoad: summarizeToolLoadResult(input.deterministicToolLoad),
     visible: summarizeToolDefinitions(input.visibleTools),
     selected: summarizeToolDefinitions(input.selectedTools),
     toolPolicyAudit,
-    normalSelectedTools: normalTaskToolNames(input.selectedTools),
+    normalSelectedTools: normalWorkstreamToolNames(input.selectedTools),
     contextEngine: buildContextEngineFeedbackSummary({
       context: input.state.harnessContext.contextEngine,
     }),
@@ -97,8 +97,8 @@ export function recordToolWorkingSetFeedback(input: {
     toolPolicyAudit,
     ...(warningCodes.length > 0 ? { warningCodes } : {}),
   });
-  if (!policy.taskBound && capabilities.visibleRoutingTools.length > 0) {
-    recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "task_routing_tools_visible", {
+  if (!policy.workstreamBound && capabilities.visibleRoutingTools.length > 0) {
+    recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "workstream_routing_tools_visible", {
       iteration: input.iteration,
       toolContextRunId: input.toolContextRunId,
       visibleRoutingTools: capabilities.visibleRoutingTools,
@@ -156,20 +156,20 @@ export function buildToolExposureWarningCodes(
   selectedTools: ToolDefinition[],
 ): string[] {
   const warningCodes: string[] = [];
-  const policy = deriveTaskBindingCapabilityPolicy(state);
+  const policy = deriveWorkstreamBindingCapabilityPolicy(state);
   const pendingTurnStatus = state.harnessContext.contextEngine?.pendingTurn?.routingStatus;
-  const normalTools = normalTaskToolNames(selectedTools);
+  const normalTools = normalWorkstreamToolNames(selectedTools);
   const unsafeNormalTools = normalTools.filter((tool) => !isObservationalTool(tool));
   if ((pendingTurnStatus === "unbound" || pendingTurnStatus === "clarifying") && unsafeNormalTools.length > 0) {
     warningCodes.push("normal_tool_visible_during_pending_routing", "routing_state_mismatch");
   }
-  if (!policy.taskBound && unsafeNormalTools.length > 0) {
-    warningCodes.push("mutation_tools_selected_without_task_binding");
+  if (!policy.workstreamBound && unsafeNormalTools.length > 0) {
+    warningCodes.push("mutation_tools_selected_without_workstream_binding");
   }
   return uniqueStrings(warningCodes);
 }
 
-export function latestCompletedTaskRoutingToolNames(state: LoopState): string[] {
+export function latestCompletedWorkstreamRoutingToolNames(state: LoopState): string[] {
   const latestStep = state.completedSteps.at(-1);
   return uniqueStrings((latestStep?.toolsUsed ?? []).filter(isGitContextRoutingToolName));
 }
@@ -255,9 +255,9 @@ export function summarizeDecisionInputState(stateView: AgentStateView): Record<s
       ? latestAssistantQuestion.content
       : undefined,
     gitSessionId: readContextSessionId(stateView.context.gitContext?.session),
-    gitWorkId: stateView.context.gitContext?.task?.workId,
-    gitWorkTitle: stateView.context.gitContext?.task?.title,
-    gitOpenWorkCount: stateView.context.gitContext?.task?.open.length ?? 0,
+    gitWorkstreamId: stateView.context.gitContext?.workstream?.workstreamId,
+    gitWorkstreamTitle: stateView.context.gitContext?.workstream?.title,
+    gitWorkstreamStatus: stateView.context.gitContext?.workstream?.workstreamStatus,
     workStatus: stateView.progress?.status,
     blockerCount: stateView.progress?.blockers?.length ?? 0,
     verifiedFactCount: stateView.progress?.verifiedFacts?.length ?? 0,
@@ -287,7 +287,7 @@ export function buildFinalFeedbackWarnings(input: {
   if (
     input.status === "completed"
     && input.totalToolCalls === 0
-    && (input.toolLoadDecisionCount > 0 || input.actionStepCount > 0 || isTaskBound(input.state))
+    && (input.toolLoadDecisionCount > 0 || input.actionStepCount > 0 || isWorkstreamBound(input.state))
   ) {
     warnings.push("completed_without_tool_calls");
   }
@@ -303,30 +303,30 @@ export function buildFinalFeedbackWarnings(input: {
   return warnings;
 }
 
-export function summarizeTaskSummary(taskSummary: AgentTaskSummaryRecord | undefined): Record<string, unknown> | undefined {
-  if (!taskSummary) {
+export function summarizeWorkstreamSummary(workstreamSummary: AgentWorkstreamSummaryRecord | undefined): Record<string, unknown> | undefined {
+  if (!workstreamSummary) {
     return undefined;
   }
   return {
-    runId: taskSummary.runId,
-    runStatus: taskSummary.runStatus,
-    taskStatus: taskSummary.taskStatus,
-    summary: taskSummary.summary,
-    objective: taskSummary.objective,
-    openWorkCount: taskSummary.openWork?.length ?? 0,
-    blockerCount: taskSummary.blockers?.length ?? 0,
-    keyFactCount: taskSummary.keyFacts?.length ?? 0,
-    evidenceCount: taskSummary.evidence?.length ?? 0,
+    runId: workstreamSummary.runId,
+    runStatus: workstreamSummary.runStatus,
+    workstreamStatus: workstreamSummary.workstreamStatus,
+    summary: workstreamSummary.summary,
+    objective: workstreamSummary.objective,
+    openWorkCount: workstreamSummary.openWork?.length ?? 0,
+    blockerCount: workstreamSummary.blockers?.length ?? 0,
+    keyFactCount: workstreamSummary.keyFacts?.length ?? 0,
+    evidenceCount: workstreamSummary.evidence?.length ?? 0,
   };
 }
 
-function normalTaskToolNames(tools: ToolDefinition[]): string[] {
+function normalWorkstreamToolNames(tools: ToolDefinition[]): string[] {
   return tools
     .map((tool) => tool.name)
     .filter((tool) => !isGitContextRoutingToolName(tool));
 }
 
-function isTaskBound(state: LoopState): boolean {
+function isWorkstreamBound(state: LoopState): boolean {
   return state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "bound";
 }
 

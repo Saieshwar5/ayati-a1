@@ -1,7 +1,9 @@
-export const GIT_CONTEXT_PROTOCOL_VERSION = 35;
+import { RUN_FINALIZATION_LIMITS } from "./run-finalization-limits.js";
+
+export const GIT_CONTEXT_PROTOCOL_VERSION = 36;
 
 export type SessionId = string;
-export type TaskId = string;
+export type WorkstreamId = string;
 export type RunId = string;
 export type ConversationId = string;
 
@@ -31,8 +33,8 @@ export type GitContextCapability =
   | "sessions"
   | "conversations"
   | "runs"
-  | "tasks"
-  | "attachments"
+  | "workstreams"
+  | "resources"
   | "mutations"
   | "recovery";
 
@@ -50,77 +52,140 @@ export interface SessionRef {
   status: "open" | "rollover_pending" | "finalizing" | "sealed";
 }
 
-export interface TaskRef {
-  taskId: TaskId;
-  repositoryPath: string;
-  workingPath: string;
+export interface WorkstreamRef {
+  workstreamId: WorkstreamId;
+  contextRepositoryPath: string;
   branch: string;
   head: string;
 }
 
-export type TaskStatus = "initializing" | "active" | "archived";
+export type WorkstreamStatus = "initializing" | "active" | "archived";
 
-export interface TaskCatalogEntry extends TaskRef {
+export interface WorkstreamCatalogEntry extends WorkstreamRef {
   title: string;
   objective: string;
-  status: TaskStatus;
-  placement: "managed" | "requested";
-  trustedRoot?: string;
-  registrationHeadBefore?: string;
+  status: WorkstreamStatus;
   createdSessionId: SessionId;
   createdAt: string;
   updatedAt: string;
 }
 
-export interface MutationTarget {
-  path: string;
-  kind: "file" | "directory";
+export type ResourceId = string;
+
+export type ResourceKind =
+  | "file"
+  | "directory"
+  | "document"
+  | "image"
+  | "audio"
+  | "video"
+  | "dataset"
+  | "database"
+  | "git_repository"
+  | "url"
+  | "external_object";
+
+export type ResourceOrigin =
+  | "user_attachment"
+  | "user_reference"
+  | "agent_created"
+  | "agent_discovered"
+  | "agent_download";
+
+export type ResourceRole =
+  | "input"
+  | "reference"
+  | "primary"
+  | "supporting"
+  | "output"
+  | "deliverable"
+  | "evidence"
+  | "asset";
+
+export type ResourceAvailability =
+  | "available"
+  | "missing"
+  | "changed"
+  | "deleted"
+  | "unverified";
+
+export type ResourceMetadataStatus = "fallback" | "enriched" | "stale";
+
+export type ResourcePublicLocator =
+  | { kind: "filesystem"; path: string }
+  | { kind: "managed_blob"; resourceId: ResourceId }
+  | { kind: "url"; url: string }
+  | { kind: "external"; provider: string; externalId: string; uri?: string };
+
+export interface ResourceVersion {
+  key: string;
+  observedAt: string;
+  exists: boolean;
+  kind: "file" | "directory" | "git" | "url" | "external" | "unversioned";
+  sha256?: string;
+  sizeBytes?: number;
+  modifiedAt?: string;
+  fingerprint?: string;
+  entryCount?: number;
+  head?: string;
+  dirty?: boolean;
+  etag?: string;
+  lastModified?: string;
+  externalVersion?: string;
 }
 
-export interface ResolvedMutationTarget extends MutationTarget {
-  resolvedPath: string;
+export interface ResourceRef {
+  resourceId: ResourceId;
+  kind: ResourceKind;
+  origin: ResourceOrigin;
+  displayName: string;
+  description: string;
+  aliases: string[];
+  locator: ResourcePublicLocator;
+  version: ResourceVersion;
+  availability: ResourceAvailability;
+  metadataStatus: ResourceMetadataStatus;
+  describedVersionKey?: string;
+  mediaType?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
-export type MutationAuthorityStatus =
-  | "active"
-  | "verified"
-  | "recovery_required"
-  | "released";
-
-export interface MutationAuthority {
-  authorityId: string;
-  lockToken: string;
-  sessionId: SessionId;
-  runId: RunId;
-  taskId: TaskId;
-  repositoryPath: string;
-  taskRequestId?: string;
-  branch: string;
-  beforeHead: string;
-  targets: ResolvedMutationTarget[];
-  status: MutationAuthorityStatus;
-  expiresAt: string;
+export interface ResourceAdmission {
+  admissionId: string;
+  kind: ResourceKind;
+  origin: ResourceOrigin;
+  locator: ResourcePublicLocator;
+  displayName: string;
+  description?: string;
+  aliases?: string[];
+  role: "attachment" | "reference";
+  /** Optional caller observation. The service always records its own authoritative observation. */
+  version?: ResourceVersion;
+  mediaType?: string;
 }
 
-export interface TaskBinding {
-  taskId: TaskId;
-  taskRequestId: string;
+export interface WorkstreamResourceBinding {
+  resource: ResourceRef;
+  role: ResourceRole;
+  access: "read" | "mutate";
+  primary: boolean;
+  requestIds: string[];
   boundAt: string;
+  lastUsedAt?: string;
 }
 
-export interface MutationProvenance {
-  created: string[];
-  modified: string[];
-  deleted: string[];
-  renamed: Array<{ from: string; to: string }>;
-  unexpectedPaths: string[];
+export interface WorkstreamBinding {
+  workstreamId: WorkstreamId;
+  requestId: string;
+  boundAt: string;
 }
 
 export interface RunRef {
   runId: RunId;
   sessionId: SessionId;
   conversationId: ConversationId;
-  taskBinding?: TaskBinding;
+  workstreamBinding?: WorkstreamBinding;
 }
 
 export interface AgentRunHandle {
@@ -173,14 +238,14 @@ export interface CommitSummary {
   workSummary?: string;
   outcome?: string;
   validation?: string;
-  taskId?: string;
+  workstreamId?: string;
   requestId?: string;
-  event?: "task_created" | "task_repository_migrated" | "task_bound_run_finalized";
+  event?: "workstream_created" | "workstream_repository_migrated" | "workstream_bound_run_finalized";
   runId?: string;
   sessionId?: string;
-  taskTitle?: string;
-  taskState?: string;
-  taskStatus?: "in_progress" | "done" | "blocked";
+  workstreamTitle?: string;
+  workstreamState?: string;
+  workstreamStatus?: "in_progress" | "done" | "blocked";
   next?: string;
   stateVersion?: number;
   assets?: Array<{
@@ -263,30 +328,12 @@ export interface SessionContextProjection {
   pendingConversationContext: ConversationContext[];
   pendingDigest: string;
   recentCommits: CommitSummary[];
-  attachments?: SessionAttachmentsProjection;
+  resources?: SessionResourcesProjection;
 }
 
-export interface SessionAttachmentRecord {
-  sessionAssetId: string;
-  kind: string;
-  name: string;
-  source: string;
-  status: string;
-  documentId?: string;
-  fileId?: string;
-  directoryId?: string;
-  originalPath?: string;
-  storedPath?: string;
-  sizeBytes?: number;
-  mimeType?: string;
-  checksum?: string;
-  createdAt: string;
-  lastUsedAt?: string;
-}
-
-export interface SessionAttachmentsProjection {
+export interface SessionResourcesProjection {
   count: number;
-  recent: SessionAttachmentRecord[];
+  recent: ResourceRef[];
   updatedAt?: string;
 }
 
@@ -296,20 +343,17 @@ export interface PreviousSessionCarryover {
   summary: string;
 }
 
-export interface TaskContextProjection {
-  task: TaskRef;
-  /** User-facing task directory. May be shown to the model and user. */
-  workingDirectory: string;
+export interface WorkstreamContextProjection {
+  workstream: WorkstreamRef;
   title: string;
   objective: string;
   summary: string;
-  importantPaths: string[];
   recentCommits: CommitSummary[];
   latestOutcome?: string;
   validation?: string;
-  taskStatus?: "in_progress" | "done" | "blocked";
+  workstreamStatus?: "in_progress" | "done" | "blocked";
   next?: string;
-  schemaVersion?: "ayati.task/v1";
+  schemaVersion?: "ayati.workstream/v2";
   lifecycleStatus?: "active" | "paused" | "archived";
   repositoryHealth?: "ready" | "dirty_external";
   currentFocus?: string;
@@ -322,46 +366,37 @@ export interface TaskContextProjection {
     acceptance: string[];
     constraints: string[];
   };
-  importantPathDetails?: Array<{
-    path: string;
-    description?: string;
-    exists: boolean;
-  }>;
-  referencesSummary?: {
-    total: number;
-    available: number;
-    missing: number;
-    changed: number;
-    unchecked: number;
-  };
+  resources?: WorkstreamResourceBinding[];
 }
 
-export type TaskDiscoveryReason =
-  | "exact_task_id"
+export type WorkstreamDiscoveryReason =
+  | "exact_workstream_id"
+  | "exact_resource_id"
   | "exact_title"
-  | "owned_path"
+  | "owned_resource"
   | "direct_continuation"
   | "matching_request"
+  | "resource_match"
   | "text_match"
   | "unfinished_request"
   | "starred"
   | "recent"
   | "frequent";
 
-export type TaskDiscoveryTier = "definite" | "probable" | "candidate";
+export type WorkstreamDiscoveryTier = "definite" | "probable" | "candidate";
 
-export type TaskDiscoveryView =
+export type WorkstreamDiscoveryView =
   | "relevant"
   | "unfinished"
   | "starred"
   | "recent"
   | "frequent";
 
-export interface TaskCandidate {
-  taskId: TaskId;
+export interface WorkstreamCandidate {
+  workstreamId: WorkstreamId;
   title: string;
   objective: string;
-  status: TaskStatus;
+  status: WorkstreamStatus;
   lifecycleStatus?: "active" | "paused" | "archived";
   repositoryHealth?: "ready" | "dirty_external" | "unavailable";
   currentRequest?: {
@@ -370,11 +405,11 @@ export interface TaskCandidate {
     status: "queued" | "active" | "blocked" | "done" | "dropped";
   };
   head: string;
-  workingDirectory: string;
+  primaryResources: ResourceRef[];
   updatedAt: string;
   discovery: {
-    tier: TaskDiscoveryTier;
-    reasons: TaskDiscoveryReason[];
+    tier: WorkstreamDiscoveryTier;
+    reasons: WorkstreamDiscoveryReason[];
   };
   starred: boolean;
   lastOpenedAt?: string;
@@ -415,8 +450,9 @@ export interface ActiveContext {
   contextRevision: string;
   session: SessionContextProjection | null;
   carryover?: PreviousSessionCarryover;
-  activeTask?: TaskContextProjection;
-  taskCandidates?: TaskCandidate[];
+  activeWorkstream?: WorkstreamContextProjection;
+  workstreamCandidates?: WorkstreamCandidate[];
+  ingressResources?: ResourceRef[];
   run?: RunContextProjection;
   readContext?: ReadContextProjection;
   warnings: string[];
@@ -452,6 +488,7 @@ export interface PrepareContextTurnRequest extends GitContextRequestEnvelope {
   agentId: string;
   role: "user" | "system_event";
   content: string;
+  resources?: ResourceAdmission[];
   at: string;
 }
 
@@ -465,31 +502,19 @@ export interface PrepareContextTurnResponse {
   context: ActiveContext;
 }
 
-export type TaskPlacement =
-  | {
-      mode: "managed";
-    }
-  | {
-      mode: "requested";
-      /** Exact user-requested task directory. Relative paths resolve from the configured workspace. */
-      workingDirectory: string;
-      /** Required only after an approved non-Git directory inspection. */
-      registrationApprovalId?: string;
-    };
-
-export interface ListTasksRequest {
+export interface ListWorkstreamsRequest {
   query?: string;
   limit?: number;
 }
 
-export interface ListTasksResponse {
-  tasks: TaskCandidate[];
+export interface ListWorkstreamsResponse {
+  workstreams: WorkstreamCandidate[];
 }
 
-export interface FindTasksRequest {
+export interface FindWorkstreamsRequest {
   query?: string;
   paths?: string[];
-  view?: TaskDiscoveryView;
+  view?: WorkstreamDiscoveryView;
   includeArchived?: boolean;
   limit?: number;
   /** Enables direct-continuation discovery for the current session. */
@@ -498,96 +523,71 @@ export interface FindTasksRequest {
   currentText?: string;
 }
 
-export interface FindTasksResponse {
-  tasks: TaskCandidate[];
+export interface FindWorkstreamsResponse {
+  workstreams: WorkstreamCandidate[];
 }
 
-export interface GetTaskRequest {
-  taskId: TaskId;
+export interface GetWorkstreamRequest {
+  workstreamId: WorkstreamId;
 }
 
-export interface GetTaskResponse {
-  task: TaskCatalogEntry;
-  /** Durable task context. */
-  context?: TaskContextProjection;
+export interface GetWorkstreamResponse {
+  workstream: WorkstreamCatalogEntry;
+  /** Durable workstream context. */
+  context?: WorkstreamContextProjection;
 }
 
-export interface ReadTaskRequest extends GitContextRequestEnvelope {
+export interface ReadWorkstreamRequest extends GitContextRequestEnvelope {
   sessionId: SessionId;
   runId: RunId;
-  taskId: TaskId;
+  workstreamId: WorkstreamId;
   at: string;
 }
 
-export interface ReadTaskResponse extends GetTaskResponse {
+export interface ReadWorkstreamResponse extends GetWorkstreamResponse {
   opened: true;
 }
 
-export interface SetTaskStarRequest extends GitContextRequestEnvelope {
+export interface SetWorkstreamStarRequest extends GitContextRequestEnvelope {
   sessionId: SessionId;
   runId: RunId;
-  taskId: TaskId;
+  workstreamId: WorkstreamId;
   starred: boolean;
   at: string;
 }
 
-export interface SetTaskStarResponse {
-  taskId: TaskId;
+export interface SetWorkstreamStarResponse {
+  workstreamId: WorkstreamId;
   starred: boolean;
   starredAt?: string;
 }
 
-export type TaskLocationKind =
-  | "empty_directory"
-  | "clean_git_repository"
-  | "dirty_git_repository"
-  | "non_git_directory";
-
-export interface InspectTaskLocationRequest extends GitContextRequestEnvelope {
-  sessionId: SessionId;
-  conversationId: ConversationId;
-  runId: RunId;
-  workingDirectory: string;
-  at: string;
-}
-
-export interface InspectTaskLocationResponse {
-  canonicalPath: string;
-  kind: TaskLocationKind;
-  trustedRoot: string;
-  branch?: string;
-  head?: string;
-  changes?: string[];
-  entryCount: number;
-  totalBytes: number;
-  proposedPaths: string[];
-  excludedPaths: string[];
-  warnings: string[];
-  registrationApprovalId?: string;
-  approvalExpiresAt?: string;
-}
-
-export interface SelectTaskForRunInput {
+export interface SelectWorkstreamForRunInput {
   sessionId: SessionId;
   conversationId: ConversationId;
   runId: RunId;
   at: string;
 }
 
-export interface CreateTaskForRunRequest extends GitContextRequestEnvelope, SelectTaskForRunInput {
+export interface CreateWorkstreamForRunRequest extends GitContextRequestEnvelope, SelectWorkstreamForRunInput {
   title: string;
   objective: string;
-  placement: TaskPlacement;
+  resources?: Array<{
+    resourceId: ResourceId;
+    role: ResourceRole;
+    access: "read" | "mutate";
+    primary?: boolean;
+  }>;
 }
 
-export interface ActivateTaskForRunRequest extends GitContextRequestEnvelope, SelectTaskForRunInput {
-  taskId: TaskId;
-  expectedTaskHead?: string;
-  /** Explicitly continue the active request or create a new request in this V1 task. */
-  route: TaskRequestRoute;
+export interface ActivateWorkstreamForRunRequest extends GitContextRequestEnvelope, SelectWorkstreamForRunInput {
+  workstreamId: WorkstreamId;
+  expectedWorkstreamHead?: string;
+  /** Explicitly continue the active request or create a new request in this workstream. */
+  route: WorkstreamRequestRoute;
 }
 
-export type TaskRequestRoute =
+export type WorkstreamRequestRoute =
   | {
       kind: "continue_active_request";
       requestId: string;
@@ -602,135 +602,156 @@ export type TaskRequestRoute =
       constraints: string[];
     };
 
-export type TaskRequestRoutePlanPhase =
+export type WorkstreamRequestRoutePlanPhase =
   | "planned"
-  | "authority_acquired"
   | "committed"
   | "discarded"
   | "recovery_required";
 
-export interface PlanTaskRequestRouteRequest extends GitContextRequestEnvelope {
+export interface PlanWorkstreamRequestRouteRequest extends GitContextRequestEnvelope {
   sessionId: SessionId;
   conversationId: ConversationId;
   runId: RunId;
-  taskId: TaskId;
-  expectedTaskHead: string;
-  route: TaskRequestRoute;
+  workstreamId: WorkstreamId;
+  expectedWorkstreamHead: string;
+  route: WorkstreamRequestRoute;
   at: string;
 }
 
-export interface PlanTaskRequestRouteResponse {
+export interface PlanWorkstreamRequestRouteResponse {
   run: RunRef;
-  taskId: TaskId;
-  taskRequestId: string;
+  workstreamId: WorkstreamId;
+  boundRequestId: string;
   baseHead: string;
-  phase: TaskRequestRoutePlanPhase;
+  phase: WorkstreamRequestRoutePlanPhase;
   requestCreated: boolean;
 }
 
-export interface SelectedTaskForRunResponse {
-  task: TaskCatalogEntry;
+export interface SelectedWorkstreamForRunResponse {
+  workstream: WorkstreamCatalogEntry;
   run: RunRef;
-  context: TaskContextProjection;
-  taskCreated: boolean;
-  taskRequestDecision: "initial" | "continue" | "create";
-  taskRequestStatus: "queued" | "active" | "blocked" | "done" | "dropped";
-  taskRequestCreated: boolean;
+  context: WorkstreamContextProjection;
+  workstreamCreated: boolean;
+  workstreamRequestDecision: "initial" | "continue" | "create";
+  workstreamRequestStatus: "queued" | "active" | "blocked" | "done" | "dropped";
+  workstreamRequestCreated: boolean;
   headBeforeSelection: string;
+  resourceBindings: WorkstreamResourceBinding[];
 }
 
-export interface RecordSessionAttachmentsRequest extends GitContextRequestEnvelope {
+export interface FindResourcesRequest {
+  query?: string;
+  resourceIds?: ResourceId[];
+  locators?: string[];
+  workstreamId?: WorkstreamId;
+  includeMissing?: boolean;
+  limit?: number;
+}
+
+export interface FindResourcesResponse {
+  resources: Array<{
+    resource: ResourceRef;
+    workstreamIds: WorkstreamId[];
+    roles: ResourceRole[];
+    lastUsedAt?: string;
+  }>;
+}
+
+export interface InspectResourceForRunRequest extends GitContextRequestEnvelope {
   sessionId: SessionId;
-  conversationId: ConversationId;
-  attachments: SessionAttachmentRecord[];
+  runId: RunId;
+  locator: ResourcePublicLocator;
+  kind?: ResourceKind;
+  origin: Extract<ResourceOrigin, "user_reference" | "agent_discovered">;
+  displayName?: string;
+  description?: string;
+  aliases?: string[];
   at: string;
 }
 
-export interface RecordSessionAttachmentsResponse {
-  recorded: number;
-  sessionAssetIds: string[];
+export interface InspectResourceForRunResponse {
+  resource: ResourceRef;
+  existing: boolean;
+  mutationEligible: boolean;
+  warnings: string[];
 }
 
-export interface BoundTaskReference {
-  taskId: TaskId;
-  runId: RunId;
-  taskRequestId: string;
-  sessionAssetId: string;
-  referenceId: string;
-  kind: "attachment" | "external_directory";
-  location: string;
-  sha256?: string;
-  availability: "available" | "missing" | "changed" | "unchecked";
-  adoptedPath?: string;
-}
-
-export interface BindTaskAttachmentsRequest extends GitContextRequestEnvelope {
+export interface BindResourcesForRunRequest extends GitContextRequestEnvelope {
   sessionId: SessionId;
-  conversationId: ConversationId;
   runId: RunId;
-  taskId: TaskId;
+  workstreamId: WorkstreamId;
+  bindings: Array<{
+    resourceId: ResourceId;
+    role: ResourceRole;
+    access: "read" | "mutate";
+    primary?: boolean;
+  }>;
   at: string;
 }
 
-export interface BindTaskAttachmentsResponse {
-  taskId: TaskId;
+export interface BindResourcesForRunResponse {
+  workstreamId: WorkstreamId;
   runId: RunId;
-  references: BoundTaskReference[];
+  bindings: WorkstreamResourceBinding[];
 }
 
-export interface AdoptTaskReferenceRequest extends GitContextRequestEnvelope {
-  authorityId: string;
+export type ResourceMutationEffect =
+  | "workspace_mutation"
+  | "external_mutation"
+  | "destructive";
+
+export interface ResourceMutationTarget {
+  resourceId: ResourceId;
+  relativePath?: string;
+  kind: "file" | "directory";
+  expectedVersionKey?: string;
+}
+
+export interface PrepareResourceMutationRequest extends GitContextRequestEnvelope {
+  sessionId: SessionId;
+  runId: RunId;
+  workstreamId: WorkstreamId;
+  activeRequestId: string;
+  callId: string;
+  tool: string;
+  effect: ResourceMutationEffect;
+  targets: ResourceMutationTarget[];
+  at: string;
+}
+
+export interface PrepareResourceMutationResponse {
+  leaseId: string;
+  operationId: string;
   lockToken: string;
-  referenceId: string;
-  destinationPath: string;
-  at: string;
+  targets: Array<ResourceMutationTarget & { resolvedPath?: string }>;
+  expiresAt: string;
 }
 
-export interface AdoptTaskReferenceResponse {
-  taskId: TaskId;
-  runId: RunId;
-  referenceId: string;
-  sourcePath: string;
-  destinationPath: string;
-  sha256: string;
-}
-
-export interface AcquireMutationAuthorityRequest extends GitContextRequestEnvelope {
-  sessionId: SessionId;
-  runId: RunId;
-  taskId: TaskId;
-  /** Required for task-bound runs and must name the active request. */
-  taskRequestId?: string;
-  expectedTaskHead?: string;
-  targets: MutationTarget[];
-  at: string;
-}
-
-export interface AcquireMutationAuthorityResponse {
-  authority: MutationAuthority;
-}
-
-export interface VerifyMutationRequest extends GitContextRequestEnvelope {
-  authorityId: string;
+export interface VerifyResourceMutationRequest extends GitContextRequestEnvelope {
+  operationId: string;
+  leaseId: string;
   lockToken: string;
   toolStatus: "completed" | "failed";
   at: string;
 }
 
-export interface VerifyMutationResponse {
-  authorityId: string;
-  status: MutationAuthorityStatus;
+export interface VerifyResourceMutationResponse {
+  leaseId: string;
+  operationId: string;
+  status: "verified" | "no_change" | "recovery_required";
   verified: boolean;
-  outcome: "verified_changes" | "no_changes" | "unexpected_changes" | "failed_with_changes";
-  provenance: MutationProvenance;
+  events: ResourceEvent[];
 }
 
-export interface TaskCompletionRecord {
+export interface WorkstreamCompletionRecord {
   accepted: boolean;
-  assets: Array<{
-    path: string;
-    kind: "file" | "directory";
+  resources: Array<{
+    resourceId?: ResourceId;
+    locator?: ResourcePublicLocator;
+    kind: ResourceKind;
+    role: Extract<ResourceRole, "output" | "deliverable" | "evidence" | "asset">;
     description: string;
+    aliases: string[];
     verified: boolean;
   }>;
   missing: string[];
@@ -740,6 +761,37 @@ export interface TaskCompletionRecord {
     passed: boolean;
     evidence?: string;
   }>;
+}
+
+export type ResourceEventType =
+  | "registered"
+  | "linked"
+  | "observed"
+  | "created"
+  | "modified"
+  | "moved"
+  | "deleted"
+  | "missing"
+  | "restored"
+  | "downloaded"
+  | "uploaded"
+  | "delivered"
+  | "external_state_changed";
+
+export interface ResourceEvent {
+  eventId: string;
+  resourceId: ResourceId;
+  workstreamId?: WorkstreamId;
+  requestId?: string;
+  runId: RunId;
+  step?: number;
+  callId?: string;
+  type: ResourceEventType;
+  beforeVersion?: ResourceVersion;
+  afterVersion?: ResourceVersion;
+  verification: unknown;
+  summary: string;
+  at: string;
 }
 
 export interface FinalizeRunRequest extends GitContextRequestEnvelope {
@@ -753,8 +805,8 @@ export interface FinalizeRunRequest extends GitContextRequestEnvelope {
   validation: "passed" | "failed" | "not_applicable";
   next?: string;
   workState: RunWorkStateInput;
-  task?: {
-    completion: TaskCompletionRecord;
+  workstream?: {
+    completion: WorkstreamCompletionRecord;
   };
   at: string;
 }
@@ -768,12 +820,18 @@ export interface FinalizeRunResponse {
     runFile?: string;
     stepsFile?: string;
   };
-  commit:
+  resourceEffects: {
+    status: "none" | "verified";
+    events: Array<Pick<ResourceEvent, "eventId" | "resourceId" | "type"> & {
+      afterVersionKey?: string;
+    }>;
+  };
+  workstreamContextCommit:
     | { status: "not_required" }
     | {
         status: "no_change" | "committed";
-        taskId: TaskId;
-        taskRequestId: string;
+        workstreamId: WorkstreamId;
+        requestId: string;
         headBefore: string;
         headAfter: string;
         commit?: string;
@@ -819,97 +877,81 @@ export function isPrepareContextTurnRequest(value: unknown): value is PrepareCon
     && isNonEmptyString(value["agentId"])
     && (value["role"] === "user" || value["role"] === "system_event")
     && isNonEmptyString(value["content"])
+    && (value["resources"] === undefined
+      || (Array.isArray(value["resources"])
+        && value["resources"].length <= 64
+        && value["resources"].every(isResourceAdmission)))
     && isNonEmptyString(value["at"]);
 }
 
-function isCreateTaskInput(value: unknown): value is GitContextRequestEnvelope & Record<string, unknown> {
+function isCreateWorkstreamInput(value: unknown): value is GitContextRequestEnvelope & Record<string, unknown> {
   if (!isRequestEnvelope(value)) {
     return false;
   }
   return isNonEmptyString(value["sessionId"])
     && isBoundedString(value["title"], 120)
     && isBoundedString(value["objective"], 2_000)
-    && isTaskPlacement(value["placement"])
+    && (value["resources"] === undefined
+      || (Array.isArray(value["resources"])
+        && value["resources"].length <= 64
+        && value["resources"].every(isResourceBindingInput)))
+    && value["placement"] === undefined
+    && value["workingDirectory"] === undefined
+    && value["repositoryPath"] === undefined
     && isNonEmptyString(value["at"]);
 }
 
-export function isCreateTaskForRunRequest(value: unknown): value is CreateTaskForRunRequest {
-  return isCreateTaskInput(value)
-    && isTaskForRunSelection(value as unknown as Record<string, unknown>);
+export function isCreateWorkstreamForRunRequest(value: unknown): value is CreateWorkstreamForRunRequest {
+  return isCreateWorkstreamInput(value)
+    && isWorkstreamForRunSelection(value as unknown as Record<string, unknown>);
 }
 
-function isTaskPlacement(value: unknown): value is TaskPlacement {
-  if (!isRecord(value)) {
-    return false;
-  }
-  if (value["mode"] === "managed") {
-    return Object.keys(value).every((key) => key === "mode");
-  }
-  return value["mode"] === "requested"
-    && isBoundedString(value["workingDirectory"], 4_096)
-    && optionalNonEmptyString(value["registrationApprovalId"])
-    && Object.keys(value).every((key) => key === "mode"
-      || key === "workingDirectory"
-      || key === "registrationApprovalId");
-}
-
-export function isReadTaskRequest(value: unknown): value is ReadTaskRequest {
+export function isReadWorkstreamRequest(value: unknown): value is ReadWorkstreamRequest {
   return isRequestEnvelope(value)
     && isNonEmptyString(value["sessionId"])
     && isNonEmptyString(value["runId"])
-    && /^T-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
+    && /^W-\d{8}-\d{4}$/.test(String(value["workstreamId"] ?? ""))
     && isNonEmptyString(value["at"]);
 }
 
-export function isSetTaskStarRequest(value: unknown): value is SetTaskStarRequest {
+export function isSetWorkstreamStarRequest(value: unknown): value is SetWorkstreamStarRequest {
   return isRequestEnvelope(value)
     && isNonEmptyString(value["sessionId"])
     && isNonEmptyString(value["runId"])
-    && /^T-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
+    && /^W-\d{8}-\d{4}$/.test(String(value["workstreamId"] ?? ""))
     && typeof value["starred"] === "boolean"
     && isNonEmptyString(value["at"]);
 }
 
-export function isInspectTaskLocationRequest(
-  value: unknown,
-): value is InspectTaskLocationRequest {
-  return isRequestEnvelope(value)
-    && isNonEmptyString(value["sessionId"])
-    && isNonEmptyString(value["conversationId"])
-    && isNonEmptyString(value["runId"])
-    && isBoundedString(value["workingDirectory"], 4_096)
-    && isNonEmptyString(value["at"]);
-}
-
-export function isActivateTaskForRunRequest(value: unknown): value is ActivateTaskForRunRequest {
+export function isActivateWorkstreamForRunRequest(value: unknown): value is ActivateWorkstreamForRunRequest {
   if (!isRequestEnvelope(value)) {
     return false;
   }
-  const taskId = String(value["taskId"] ?? "");
-  return /^T-\d{8}-\d{4}$/.test(taskId)
-    && (value["expectedTaskHead"] === undefined
-      || /^[a-f0-9]{40}$/.test(String(value["expectedTaskHead"])))
-    && isTaskRequestRoute(value["route"])
-    && isTaskForRunSelection(value);
+  const workstreamId = String(value["workstreamId"] ?? "");
+  return /^W-\d{8}-\d{4}$/.test(workstreamId)
+    && (value["expectedWorkstreamHead"] === undefined
+      || /^[a-f0-9]{40}$/.test(String(value["expectedWorkstreamHead"])))
+    && isWorkstreamRequestRoute(value["route"])
+    && isWorkstreamForRunSelection(value);
 }
 
-export function isPlanTaskRequestRouteRequest(
+export function isPlanWorkstreamRequestRouteRequest(
   value: unknown,
-): value is PlanTaskRequestRouteRequest {
-  if (!isRequestEnvelope(value) || !isTaskRequestRoute(value["route"])) {
+): value is PlanWorkstreamRequestRouteRequest {
+  if (!isRequestEnvelope(value) || !isWorkstreamRequestRoute(value["route"])) {
     return false;
   }
   const common = isNonEmptyString(value["sessionId"])
     && isNonEmptyString(value["conversationId"])
     && isNonEmptyString(value["runId"])
-    && /^T-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
-    && /^[a-f0-9]{40}$/.test(String(value["expectedTaskHead"] ?? ""))
+    && /^W-\d{8}-\d{4}$/.test(String(value["workstreamId"] ?? ""))
+    && /^[a-f0-9]{40}$/.test(String(value["expectedWorkstreamHead"] ?? ""))
     && isNonEmptyString(value["at"]);
   if (!common) return false;
   return true;
 }
 
-function isTaskRequestRoute(value: unknown): value is TaskRequestRoute {
+function isWorkstreamRequestRoute(value: unknown): value is WorkstreamRequestRoute {
   if (!isRecord(value) || !isBoundedString(value["reason"], 500)) return false;
   const route = value;
   if (route["kind"] === "continue_active_request") {
@@ -922,64 +964,62 @@ function isTaskRequestRoute(value: unknown): value is TaskRequestRoute {
     && isBoundedStringArray(route["constraints"], 50, 500);
 }
 
-export function isAcquireMutationAuthorityRequest(
+export function isInspectResourceForRunRequest(
   value: unknown,
-): value is AcquireMutationAuthorityRequest {
-  if (!isRequestEnvelope(value)) {
-    return false;
-  }
-  const taskId = String(value["taskId"] ?? "");
-  return isNonEmptyString(value["sessionId"])
+): value is InspectResourceForRunRequest {
+  return isRequestEnvelope(value)
+    && isNonEmptyString(value["sessionId"])
     && isNonEmptyString(value["runId"])
-    && /^T-\d{8}-\d{4}$/.test(taskId)
-    && /^R-\d{4}$/.test(String(value["taskRequestId"] ?? ""))
-    && /^[a-f0-9]{40}$/.test(String(value["expectedTaskHead"] ?? ""))
+    && isResourceLocator(value["locator"])
+    && (value["kind"] === undefined || isResourceKind(value["kind"]))
+    && (value["origin"] === "user_reference" || value["origin"] === "agent_discovered")
+    && optionalBoundedString(value["displayName"], 500)
+    && optionalBoundedString(value["description"], 2_000)
+    && (value["aliases"] === undefined
+      || isBoundedStringArray(value["aliases"], 32, 500))
+    && isNonEmptyString(value["at"]);
+}
+
+export function isBindResourcesForRunRequest(
+  value: unknown,
+): value is BindResourcesForRunRequest {
+  return isRequestEnvelope(value)
+    && isNonEmptyString(value["sessionId"])
+    && isNonEmptyString(value["runId"])
+    && /^W-\d{8}-\d{4}$/.test(String(value["workstreamId"] ?? ""))
+    && Array.isArray(value["bindings"])
+    && value["bindings"].length > 0
+    && value["bindings"].length <= 64
+    && value["bindings"].every(isResourceBindingInput)
+    && isNonEmptyString(value["at"]);
+}
+
+export function isPrepareResourceMutationRequest(
+  value: unknown,
+): value is PrepareResourceMutationRequest {
+  return isRequestEnvelope(value)
+    && isNonEmptyString(value["sessionId"])
+    && isNonEmptyString(value["runId"])
+    && /^W-\d{8}-\d{4}$/.test(String(value["workstreamId"] ?? ""))
+    && /^R-\d{4}$/.test(String(value["activeRequestId"] ?? ""))
+    && isBoundedString(value["callId"], 200)
+    && isBoundedString(value["tool"], 200)
+    && (value["effect"] === "workspace_mutation"
+      || value["effect"] === "external_mutation"
+      || value["effect"] === "destructive")
     && Array.isArray(value["targets"])
+    && value["targets"].length > 0
     && value["targets"].length <= 64
-    && value["targets"].every(isMutationTarget)
+    && value["targets"].every(isResourceMutationTarget)
     && isNonEmptyString(value["at"]);
 }
 
-export function isRecordSessionAttachmentsRequest(
+export function isVerifyResourceMutationRequest(
   value: unknown,
-): value is RecordSessionAttachmentsRequest {
-  if (!isRequestEnvelope(value)) return false;
-  return isNonEmptyString(value["sessionId"])
-    && isNonEmptyString(value["conversationId"])
-    && Array.isArray(value["attachments"])
-    && value["attachments"].length > 0
-    && value["attachments"].length <= 64
-    && value["attachments"].every(isSessionAttachmentRecord)
-    && isNonEmptyString(value["at"]);
-}
-
-export function isBindTaskAttachmentsRequest(
-  value: unknown,
-): value is BindTaskAttachmentsRequest {
-  if (!isRequestEnvelope(value)) return false;
-  return isNonEmptyString(value["sessionId"])
-    && isNonEmptyString(value["conversationId"])
-    && isNonEmptyString(value["runId"])
-    && /^T-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
-    && isNonEmptyString(value["at"]);
-}
-
-export function isAdoptTaskReferenceRequest(
-  value: unknown,
-): value is AdoptTaskReferenceRequest {
-  if (!isRequestEnvelope(value)) return false;
-  return isNonEmptyString(value["authorityId"])
-    && isNonEmptyString(value["lockToken"])
-    && /^REF-\d{4}$/.test(String(value["referenceId"] ?? ""))
-    && isBoundedString(value["destinationPath"], 1_024)
-    && isNonEmptyString(value["at"]);
-}
-
-export function isVerifyMutationRequest(value: unknown): value is VerifyMutationRequest {
-  if (!isRequestEnvelope(value)) {
-    return false;
-  }
-  return isNonEmptyString(value["authorityId"])
+): value is VerifyResourceMutationRequest {
+  return isRequestEnvelope(value)
+    && isNonEmptyString(value["operationId"])
+    && isNonEmptyString(value["leaseId"])
     && isNonEmptyString(value["lockToken"])
     && (value["toolStatus"] === "completed" || value["toolStatus"] === "failed")
     && isNonEmptyString(value["at"]);
@@ -993,25 +1033,28 @@ export function isFinalizeRunRequest(value: unknown): value is FinalizeRunReques
     || (value["outcome"] === "incomplete"
       && value["stopReason"] === "interrupted"
       && value["assistantResponse"] === "");
-  const task = value["task"];
-  const taskValid = task === undefined
-    || (isRecord(task)
-      && isTaskCompletionRecord(task["completion"])
-      && (value["outcome"] !== "done" || task["completion"].accepted));
+  const workstream = value["workstream"];
+  const workstreamValid = workstream === undefined
+    || (isRecord(workstream)
+      && isWorkstreamCompletionRecord(workstream["completion"])
+      && (value["outcome"] !== "done" || workstream["completion"].accepted));
   return isNonEmptyString(value["sessionId"])
     && isNonEmptyString(value["runId"])
     && isRunOutcome(value["outcome"])
     && isRunStopReason(value["stopReason"])
     && isTruthfulTerminalPair(value["outcome"], value["stopReason"])
     && assistantResponseValid
-    && isBoundedString(value["conversationSummary"], 2_000)
-    && isBoundedString(value["summary"], 2_000)
+    && isBoundedString(
+      value["conversationSummary"],
+      RUN_FINALIZATION_LIMITS.conversationSummaryChars,
+    )
+    && isBoundedString(value["summary"], RUN_FINALIZATION_LIMITS.summaryChars)
     && (value["validation"] === "passed"
       || value["validation"] === "failed"
       || value["validation"] === "not_applicable")
-    && optionalBoundedString(value["next"], 2_000)
+    && optionalBoundedString(value["next"], RUN_FINALIZATION_LIMITS.nextChars)
     && isRunWorkStateInput(value["workState"])
-    && taskValid
+    && workstreamValid
     && isNonEmptyString(value["at"]);
 }
 
@@ -1028,7 +1071,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isTaskForRunSelection(value: Record<string, unknown>): boolean {
+function isWorkstreamForRunSelection(value: Record<string, unknown>): boolean {
   return isNonEmptyString(value["sessionId"])
     && isNonEmptyString(value["conversationId"])
     && isNonEmptyString(value["runId"])
@@ -1051,32 +1094,93 @@ function isBoundedString(value: unknown, maximumLength: number): value is string
   return isNonEmptyString(value) && value.length <= maximumLength;
 }
 
-function isMutationTarget(value: unknown): value is MutationTarget {
+function isResourceAdmission(value: unknown): value is ResourceAdmission {
   return isRecord(value)
-    && isBoundedString(value["path"], 1_024)
-    && (value["kind"] === "file" || value["kind"] === "directory");
+    && isBoundedString(value["admissionId"], 200)
+    && isResourceKind(value["kind"])
+    && isResourceOrigin(value["origin"])
+    && isResourceLocator(value["locator"])
+    && isBoundedString(value["displayName"], 500)
+    && optionalBoundedString(value["description"], 2_000)
+    && (value["aliases"] === undefined || isBoundedStringArray(value["aliases"], 32, 500))
+    && (value["role"] === "attachment" || value["role"] === "reference")
+    && (value["version"] === undefined || isResourceVersion(value["version"]))
+    && optionalBoundedString(value["mediaType"], 200);
 }
 
-function isSessionAttachmentRecord(value: unknown): value is SessionAttachmentRecord {
+function isResourceBindingInput(value: unknown): boolean {
   return isRecord(value)
-    && isBoundedString(value["sessionAssetId"], 200)
-    && isBoundedString(value["kind"], 100)
-    && isBoundedString(value["name"], 512)
-    && isBoundedString(value["source"], 100)
-    && isBoundedString(value["status"], 100)
-    && optionalBoundedString(value["documentId"], 200)
-    && optionalBoundedString(value["fileId"], 200)
-    && optionalBoundedString(value["directoryId"], 200)
-    && optionalBoundedString(value["originalPath"], 4_096)
-    && optionalBoundedString(value["storedPath"], 4_096)
-    && (value["sizeBytes"] === undefined
-      || (typeof value["sizeBytes"] === "number" && Number.isSafeInteger(value["sizeBytes"])
-        && value["sizeBytes"] >= 0))
-    && optionalBoundedString(value["mimeType"], 200)
-    && (value["checksum"] === undefined
-      || /^[a-f0-9]{64}$/.test(String(value["checksum"])))
-    && isNonEmptyString(value["createdAt"])
-    && optionalNonEmptyString(value["lastUsedAt"]);
+    && /^RES-[0-9A-F]{24}$/.test(String(value["resourceId"] ?? ""))
+    && isResourceRole(value["role"])
+    && (value["access"] === "read" || value["access"] === "mutate")
+    && (value["primary"] === undefined || typeof value["primary"] === "boolean");
+}
+
+function isResourceMutationTarget(value: unknown): value is ResourceMutationTarget {
+  return isRecord(value)
+    && /^RES-[0-9A-F]{24}$/.test(String(value["resourceId"] ?? ""))
+    && optionalBoundedString(value["relativePath"], 2_000)
+    && (value["kind"] === "file" || value["kind"] === "directory")
+    && optionalBoundedString(value["expectedVersionKey"], 1_000);
+}
+
+function isResourceKind(value: unknown): value is ResourceKind {
+  return value === "file" || value === "directory" || value === "document"
+    || value === "image" || value === "audio" || value === "video"
+    || value === "dataset" || value === "database" || value === "git_repository"
+    || value === "url" || value === "external_object";
+}
+
+function isResourceOrigin(value: unknown): value is ResourceOrigin {
+  return value === "user_attachment" || value === "user_reference"
+    || value === "agent_created" || value === "agent_discovered"
+    || value === "agent_download";
+}
+
+function isResourceRole(value: unknown): value is ResourceRole {
+  return value === "input" || value === "reference" || value === "primary"
+    || value === "supporting" || value === "output" || value === "deliverable"
+    || value === "evidence" || value === "asset";
+}
+
+function isResourceLocator(value: unknown): value is ResourcePublicLocator {
+  if (!isRecord(value)) return false;
+  if (value["kind"] === "filesystem") return isBoundedString(value["path"], 8_192);
+  if (value["kind"] === "managed_blob") {
+    return /^RES-[0-9A-F]{24}$/.test(String(value["resourceId"] ?? ""));
+  }
+  if (value["kind"] === "url") return isBoundedString(value["url"], 8_192);
+  return value["kind"] === "external"
+    && isBoundedString(value["provider"], 200)
+    && isBoundedString(value["externalId"], 1_000)
+    && optionalBoundedString(value["uri"], 8_192);
+}
+
+function isResourceVersion(value: unknown): value is ResourceVersion {
+  if (!isRecord(value)
+    || !isBoundedString(value["key"], 1_000)
+    || !isNonEmptyString(value["observedAt"])
+    || typeof value["exists"] !== "boolean"
+    || !(value["kind"] === "file" || value["kind"] === "directory"
+      || value["kind"] === "git" || value["kind"] === "url"
+      || value["kind"] === "external" || value["kind"] === "unversioned")) {
+    return false;
+  }
+  return optionalBoundedString(value["sha256"], 100)
+    && optionalNonNegativeInteger(value["sizeBytes"])
+    && optionalNonEmptyString(value["modifiedAt"])
+    && optionalBoundedString(value["fingerprint"], 1_000)
+    && optionalNonNegativeInteger(value["entryCount"])
+    && optionalBoundedString(value["head"], 100)
+    && (value["dirty"] === undefined || typeof value["dirty"] === "boolean")
+    && optionalBoundedString(value["etag"], 1_000)
+    && optionalBoundedString(value["lastModified"], 1_000)
+    && optionalBoundedString(value["externalVersion"], 1_000);
+}
+
+function optionalNonNegativeInteger(value: unknown): boolean {
+  return value === undefined
+    || (typeof value === "number" && Number.isSafeInteger(value) && value >= 0);
 }
 
 function isRunOutcome(value: unknown): value is RunOutcome {
@@ -1171,47 +1275,85 @@ function isRunWorkStateInput(value: unknown): value is RunWorkStateInput {
       && value["status"] !== "done"
       && value["status"] !== "blocked"
       && value["status"] !== "needs_user_input")
-    || typeof value["summary"] !== "string"
-    || !isStringArray(value["openWork"])
-    || !isStringArray(value["blockers"])
-    || !isStringArray(value["facts"])
-    || !isStringArray(value["evidence"])
-    || !isStringArray(value["artifacts"])
-    || (value["nextStep"] !== null && typeof value["nextStep"] !== "string")
-    || !isStringArray(value["userInputNeeded"])) {
+    || !isBoundedString(value["summary"], RUN_FINALIZATION_LIMITS.workState.summaryChars)
+    || !isBoundedStringArray(
+      value["openWork"],
+      RUN_FINALIZATION_LIMITS.workState.maximumItems,
+      RUN_FINALIZATION_LIMITS.workState.contextItemChars,
+    )
+    || !isBoundedStringArray(
+      value["blockers"],
+      RUN_FINALIZATION_LIMITS.workState.maximumItems,
+      RUN_FINALIZATION_LIMITS.workState.contextItemChars,
+    )
+    || !isBoundedStringArray(
+      value["facts"],
+      RUN_FINALIZATION_LIMITS.workState.maximumItems,
+      RUN_FINALIZATION_LIMITS.workState.factChars,
+    )
+    || !isBoundedStringArray(
+      value["evidence"],
+      RUN_FINALIZATION_LIMITS.workState.maximumItems,
+      RUN_FINALIZATION_LIMITS.workState.evidenceChars,
+    )
+    || !isBoundedStringArray(
+      value["artifacts"],
+      RUN_FINALIZATION_LIMITS.workState.maximumItems,
+      RUN_FINALIZATION_LIMITS.workState.artifactChars,
+    )
+    || (value["nextStep"] !== null
+      && !isBoundedString(value["nextStep"], RUN_FINALIZATION_LIMITS.workState.nextStepChars))
+    || !isBoundedStringArray(
+      value["userInputNeeded"],
+      RUN_FINALIZATION_LIMITS.workState.maximumItems,
+      RUN_FINALIZATION_LIMITS.workState.contextItemChars,
+    )) {
     return false;
   }
   return true;
 }
 
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
-}
-
-function isTaskCompletionRecord(value: unknown): value is TaskCompletionRecord {
+function isWorkstreamCompletionRecord(value: unknown): value is WorkstreamCompletionRecord {
   if (!isRecord(value)
     || typeof value["accepted"] !== "boolean"
-    || !Array.isArray(value["assets"])
-    || value["assets"].length > 256
-    || !value["assets"].every(isCompletionAsset)
-    || !isBoundedStringArray(value["missing"], 256, 1_024)
-    || !isBoundedStringArray(value["failures"], 256, 2_000)
+    || !Array.isArray(value["resources"])
+    || value["resources"].length > RUN_FINALIZATION_LIMITS.completion.maximumResources
+    || !value["resources"].every(isCompletionResource)
+    || !isBoundedStringArray(
+      value["missing"],
+      RUN_FINALIZATION_LIMITS.completion.maximumItems,
+      RUN_FINALIZATION_LIMITS.completion.missingChars,
+    )
+    || !isBoundedStringArray(
+      value["failures"],
+      RUN_FINALIZATION_LIMITS.completion.maximumItems,
+      RUN_FINALIZATION_LIMITS.completion.failureChars,
+    )
     || !Array.isArray(value["criteria"])
-    || value["criteria"].length > 256) {
+    || value["criteria"].length > RUN_FINALIZATION_LIMITS.completion.maximumItems) {
     return false;
   }
   return value["criteria"].every((item) => isRecord(item)
-    && isBoundedString(item["criterion"], 1_000)
+    && isBoundedString(item["criterion"], RUN_FINALIZATION_LIMITS.completion.criterionChars)
     && typeof item["passed"] === "boolean"
-    && optionalBoundedString(item["evidence"], 2_000));
+    && optionalBoundedString(item["evidence"], RUN_FINALIZATION_LIMITS.completion.evidenceChars));
 }
 
-function isCompletionAsset(value: unknown): boolean {
+function isCompletionResource(value: unknown): boolean {
   return isRecord(value)
-    && isBoundedString(value["path"], 1_024)
-    && !/[\u0000-\u001f\u007f]/.test(String(value["path"]))
-    && (value["kind"] === "file" || value["kind"] === "directory")
-    && isBoundedString(value["description"], 1_000)
+    && (value["resourceId"] === undefined
+      || /^RES-[0-9A-F]{24}$/.test(String(value["resourceId"])))
+    && (value["locator"] === undefined || isResourceLocator(value["locator"]))
+    && (value["resourceId"] !== undefined || value["locator"] !== undefined)
+    && isResourceKind(value["kind"])
+    && (value["role"] === "output" || value["role"] === "deliverable"
+      || value["role"] === "evidence" || value["role"] === "asset")
+    && isBoundedString(value["description"], RUN_FINALIZATION_LIMITS.completion.descriptionChars)
+    && isBoundedStringArray(
+      value["aliases"],
+      RUN_FINALIZATION_LIMITS.completion.maximumAliases,
+      RUN_FINALIZATION_LIMITS.completion.aliasChars,
+    )
     && typeof value["verified"] === "boolean";
 }
 

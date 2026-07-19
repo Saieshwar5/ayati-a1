@@ -22,7 +22,7 @@ export function buildTimelineCheckpointTurnInput(input: {
   const git = input.stateView.context.git;
   const shedSession = git ? shedSessionContext(git.session) : undefined;
   const sessionWithoutCheckpoint = shedSession
-    ? omitRecentTaskRuns(shedSession)
+    ? omitRecentRunCheckpoints(shedSession)
     : undefined;
   const projectedStateView: AgentStateView = {
     ...input.stateView,
@@ -56,10 +56,10 @@ export function buildTimelineCheckpointTurnInput(input: {
   };
 }
 
-function omitRecentTaskRuns(
+function omitRecentRunCheckpoints(
   session: ReturnType<typeof shedSessionContext>,
 ): ReturnType<typeof shedSessionContext> {
-  const { recentTaskRuns: _recentTaskRuns, ...rest } = session;
+  const { recentRunCheckpoints: _recentRunCheckpoints, ...rest } = session;
   return rest;
 }
 

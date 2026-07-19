@@ -19,7 +19,7 @@ afterEach(async () => {
 });
 
 describe("git-context-feedback-report", () => {
-  it("renders a healthy task lifecycle", async () => {
+  it("renders a healthy workstream lifecycle", async () => {
     const input = join(tempDir, "session.jsonl");
     const commit = "b".repeat(40);
     await writeFile(input, [
@@ -27,17 +27,17 @@ describe("git-context-feedback-report", () => {
         ts: "2026-07-18T10:00:00.000Z",
         tsMs: 1,
         stage: "git_context_service",
-        event: "run_task_bound",
+        event: "run_workstream_bound",
         runId: "RUN-1",
-        taskId: "T-20260718-0001",
+        workstreamId: "W-20260718-0001",
         data: {
           mode: "created",
-          workingDirectory: "/tasks/T-20260718-0001-site",
-          taskCreated: true,
-          taskRequestDecision: "initial",
-          taskRequestId: "R-0001",
-          taskRequestStatus: "active",
-          taskRequestCreated: true,
+          contextRepositoryPath: "/ayati/workstreams/W-20260718-0001-site",
+          workstreamCreated: true,
+          requestDecision: "initial",
+          requestId: "R-0001",
+          requestStatus: "active",
+          requestCreated: true,
         },
       }),
       JSON.stringify({
@@ -46,8 +46,16 @@ describe("git-context-feedback-report", () => {
         stage: "git_context_service",
         event: "run_finalization_started",
         runId: "RUN-1",
-        taskId: "T-20260718-0001",
-        data: { requestedOutcome: "done", validation: "passed" },
+        workstreamId: "W-20260718-0001",
+        data: {
+          workstreamBinding: {
+            workstreamId: "W-20260718-0001",
+            requestId: "R-0001",
+          },
+          contextRepositoryPath: "/ayati/workstreams/W-20260718-0001-site",
+          requestedOutcome: "done",
+          validation: "passed",
+        },
       }),
       JSON.stringify({
         ts: "2026-07-18T10:00:02.000Z",
@@ -55,13 +63,18 @@ describe("git-context-feedback-report", () => {
         stage: "git_context_service",
         event: "run_finalization_completed",
         runId: "RUN-1",
-        taskId: "T-20260718-0001",
+        workstreamId: "W-20260718-0001",
         data: {
           outcome: "done",
-          commit: {
+          workstreamBinding: {
+            workstreamId: "W-20260718-0001",
+            requestId: "R-0001",
+          },
+          contextRepositoryPath: "/ayati/workstreams/W-20260718-0001-site",
+          workstreamContextCommit: {
             status: "committed",
-            taskId: "T-20260718-0001",
-            taskRequestId: "R-0001",
+            workstreamId: "W-20260718-0001",
+            requestId: "R-0001",
             headBefore: "a".repeat(40),
             headAfter: commit,
             commit,
@@ -78,21 +91,21 @@ describe("git-context-feedback-report", () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("PASS — no deterministic lifecycle or outcome findings.");
-    expect(result.stdout).toContain("Task selections: 1");
-    expect(result.stdout).toContain("Task-bound runs: 1");
+    expect(result.stdout).toContain("Workstream selections: 1");
+    expect(result.stdout).toContain("Workstream-bound runs: 1");
     expect(result.stdout).toContain("initial | R-0001 (active)");
     expect(result.stdout).toContain("committed (done, passed)");
   });
 
-  it("reports incomplete task selection data", async () => {
+  it("reports incomplete workstream selection data", async () => {
     const input = join(tempDir, "invalid.jsonl");
     await writeFile(input, `${JSON.stringify({
       ts: "2026-07-18T10:00:00.000Z",
       tsMs: 1,
       stage: "git_context_service",
-      event: "run_task_bound",
+      event: "run_workstream_bound",
       runId: "RUN-1",
-      taskId: "T-20260718-0001",
+      workstreamId: "W-20260718-0001",
       data: {},
     })}\n`, "utf8");
 
@@ -102,7 +115,7 @@ describe("git-context-feedback-report", () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("FAIL — 3 lifecycle/outcome finding(s).");
-    expect(result.stdout).toContain("no stable working directory");
+    expect(result.stdout).toContain("no context repository");
     expect(result.stdout).toContain("no explicit request decision");
     expect(result.stdout).toContain("no request identity");
   });

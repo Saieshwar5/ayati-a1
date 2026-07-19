@@ -21,7 +21,7 @@ import {
   summarizeStep,
 } from "./feedback-summary.js";
 
-const UNBOUND_RUN_TOOL_REPAIR_MESSAGE = "The run is not bound to a task. Before mutation, activate an existing task or create a new task. Ask a short clarification directly if task ownership is unclear.";
+const UNBOUND_RUN_TOOL_REPAIR_MESSAGE = "The run is not bound to a workstream. Before mutation, activate an existing workstream or create a new workstream. Ask a short clarification directly if workstream ownership is unclear.";
 const REPEATED_REPAIR_FAILURE_THRESHOLD = 3;
 
 export function recordUnboundRunToolRepair(input: {
@@ -34,7 +34,7 @@ export function recordUnboundRunToolRepair(input: {
 }): void {
   input.state.consecutiveFailures++;
   const blockedTargets = unboundRunDecisionTargets(input.decision);
-  const repair = createRepairSignal("R_UNBOUND_RUN_NEEDS_TASK_BINDING", {
+  const repair = createRepairSignal("R_UNBOUND_RUN_NEEDS_WORKSTREAM_BINDING", {
     blockedTargets,
     operatorDetails: {
       reason: input.reason,
@@ -161,13 +161,13 @@ export function recordTerminalReplyMutationRepair(input: {
   });
 }
 
-export function createMissingTaskBindingRepairSignal(input: {
+export function createMissingWorkstreamBindingRepairSignal(input: {
   reason: string;
   message: string;
   decision?: AgentDecision;
   pendingTurnStatus?: string;
 }): RepairSignal {
-  return createRepairSignal(missingTaskBindingRepairCode(input.pendingTurnStatus), {
+  return createRepairSignal(missingWorkstreamBindingRepairCode(input.pendingTurnStatus), {
     blockedTargets: input.decision ? unboundRunDecisionTargets(input.decision) : [],
     operatorDetails: {
       reason: input.reason,
@@ -333,14 +333,14 @@ export function recordRepeatedRepairFailure(input: {
   });
 }
 
-function missingTaskBindingRepairCode(pendingTurnStatus: string | undefined): "R_TOOL_REQUIRES_TASK_BINDING" | "R_PENDING_TURN_UNBOUND" | "R_PENDING_TURN_CLARIFYING" {
+function missingWorkstreamBindingRepairCode(pendingTurnStatus: string | undefined): "R_TOOL_REQUIRES_WORKSTREAM_BINDING" | "R_PENDING_TURN_UNBOUND" | "R_PENDING_TURN_CLARIFYING" {
   if (pendingTurnStatus === "unbound") {
     return "R_PENDING_TURN_UNBOUND";
   }
   if (pendingTurnStatus === "clarifying") {
     return "R_PENDING_TURN_CLARIFYING";
   }
-  return "R_TOOL_REQUIRES_TASK_BINDING";
+  return "R_TOOL_REQUIRES_WORKSTREAM_BINDING";
 }
 
 function createStepFailureRepairSignal(input: {

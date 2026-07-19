@@ -35,7 +35,7 @@ export function buildSessionContextSheddingCandidate(input: {
   buildPrompt: (stateView: AgentPromptStateView) => string;
 }): SessionContextSheddingCandidate {
   const session = input.stateView.context.git?.session;
-  const checkpoints = session?.recentTaskRuns ?? [];
+  const checkpoints = session?.recentRunCheckpoints ?? [];
   const latestCheckpoint = checkpoints.at(-1);
   const recentCommits = session?.recentCommits ?? [];
   const latestRecentCommit = recentCommits.at(0);
@@ -80,12 +80,12 @@ export function buildSessionContextSheddingCandidate(input: {
 }
 
 export function shedSessionContext(session: PromptGitSessionContext): PromptGitSessionContext {
-  const latestCheckpoint = session.recentTaskRuns?.at(-1);
+  const latestCheckpoint = session.recentRunCheckpoints?.at(-1);
   const latestRecentCommit = session.recentCommits?.at(0);
   return {
     meta: session.meta,
     ...(latestRecentCommit ? { recentCommits: [latestRecentCommit] } : {}),
-    ...(latestCheckpoint ? { recentTaskRuns: [latestCheckpoint] } : {}),
+    ...(latestCheckpoint ? { recentRunCheckpoints: [latestCheckpoint] } : {}),
     ...(session.attachments ? { attachments: session.attachments } : {}),
     activity: { recent: [] },
   };

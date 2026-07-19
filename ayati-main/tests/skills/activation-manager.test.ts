@@ -84,7 +84,7 @@ describe("SkillActivationManager", () => {
     ]));
   });
 
-  it("auto-activates attachment handling skills for git task assets", async () => {
+  it("auto-activates attachment handling skills for workstream resources", async () => {
     const catalog = new SkillCatalog([
       createSkillBundle(skill("attachments", [tool("attachment_restore")])),
       createSkillBundle(skill("files", [tool("attachment_query")])),
@@ -98,36 +98,54 @@ describe("SkillActivationManager", () => {
       harnessContext: {
         contextEngine: {
           session: {
-            sessionId: "2026-06-17",
+            meta: { sessionId: "2026-06-17", resourceCount: 1 },
             conversationTail: [],
             activityTail: [],
-            assetCount: 1,
           },
           focus: {
             status: "active",
-            ref: "refs/heads/task/T-20260617-0001-policy-review",
-            workId: "T-20260617-0001",
+            ref: "refs/heads/main",
+            workstreamId: "W-20260617-0001",
           },
-          task: {
-            ref: "refs/heads/task/T-20260617-0001-policy-review",
-            workId: "T-20260617-0001",
+          workstream: {
+            contextRepositoryPath: "/ayati/workstreams/W-20260617-0001-policy-review",
+            ref: "refs/heads/main",
+            workstreamId: "W-20260617-0001",
             title: "Policy review",
             objective: "Review policy document",
-            status: "active",
-            completed: [],
-            open: ["Review policy.txt"],
+            summary: "Review policy.txt",
+            workstreamStatus: "in_progress",
+            lifecycleStatus: "active",
+            repositoryHealth: "ready",
             blockers: [],
-            facts: [],
-            assets: [{
-              assetId: "A-20260617-0001",
+            resources: [{
+              resource: {
+                resourceId: `RES-${"A".repeat(24)}`,
+                kind: "document",
+                origin: "user_attachment",
+                displayName: "policy.txt",
+                description: "Policy document under review",
+                aliases: ["policy"],
+                locator: { kind: "managed_blob", resourceId: `RES-${"A".repeat(24)}` },
+                version: {
+                  key: "sha256:policy",
+                  observedAt: "2026-06-17T10:00:00.000Z",
+                  exists: true,
+                  kind: "file",
+                  sha256: "policy",
+                },
+                availability: "available",
+                metadataStatus: "enriched",
+                createdAt: "2026-06-17T10:00:00.000Z",
+                updatedAt: "2026-06-17T10:00:00.000Z",
+              },
               role: "input",
-              kind: "document",
-              name: "policy.txt",
-              path: "policy.txt",
+              access: "read",
+              primary: false,
+              requestIds: ["R-0001"],
+              boundAt: "2026-06-17T10:00:00.000Z",
             }],
-            recentRuns: [],
             recentCommits: [],
-            recentEvidence: [],
           },
         },
       },

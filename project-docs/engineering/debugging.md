@@ -4,33 +4,31 @@ Start with:
 
 ```bash
 git status --short
+pnpm --filter ayati-git-context build
 pnpm --filter ayati-main build
-pnpm --filter ayati-main test
 pnpm --filter ayati-git-context test
+pnpm --filter ayati-main test
 ```
 
-Useful places to inspect:
+Key owners:
 
-- Daemon startup: `ayati-main/src/app/main.ts`
-- WebSocket transport: `ayati-main/src/server/ws-server.ts`
-- HTTP API: `ayati-main/src/server/upload-server.ts`
-- Agent message handling: `ayati-main/src/ivec/index.ts`
-- Agent loop: `ayati-main/src/ivec/agent-loop.ts`
-- Git Context process/client integration:
-  `ayati-main/src/app/git-context-process.ts` and
-  `ayati-main/src/app/git-context-runtime.ts`
-- Git Context protocol/service: `ayati-git-context/src/server.ts` and
-  `ayati-git-context/src/services/sqlite-git-context-service.ts`
-- Tool executor: `ayati-main/src/skills/tool-executor.ts`
-- CLI message flow: `ayati-cli/src/app/app.tsx`
+- daemon/bootstrap: `ayati-main/src/app/main.ts`
+- chat/system turns: `ayati-main/src/app/chat-turn-runtime.ts` and
+  `system-event-runtime.ts`
+- harness: `ayati-main/src/ivec/agent-runner/`
+- resource scopes: `ayati-main/src/app/resource-scoped-tool-executor.ts`
+- Git Context process/runtime: `ayati-main/src/app/git-context-process.ts` and
+  `git-context-runtime.ts`
+- service: `ayati-git-context/src/services/sqlite-git-context-service.ts`
+- workstreams/resources: `ayati-git-context/src/workstreams/`, `src/resources/`,
+  and their focused services
+- WebSocket/HTTP: `ayati-main/src/server/`
 
-If behavior is provider-specific, inspect the adapter under `ayati-main/src/providers`.
+For continuity failures, inspect the feedback trace, SQLite run/binding/resource
+rows, explicit request decision, resource locator/version, context repository
+status and HEAD, and finalization journal. Never repair by placing deliverables
+in the context repository or editing runtime-owned records by hand.
 
-If behavior is channel-specific, inspect the client/transport first, then verify the daemon payload path.
-
-If behavior affects memory, tools, providers, events, or personalization, debug from the daemon side first.
-
-For task-continuity failures, inspect the feedback trace, context SQLite
-lifecycle, selected task id/request decision, repository validation result,
-working tree, and Git HEAD. Do not repair V1 by manually mounting it or editing
-runtime-owned `.ayati/` files.
+Use `pnpm feedback:git-context` for the compact lifecycle report. Keep the
+daemon stopped before archive/reset, catalog rebuild, or direct database
+inspection that requires a consistent snapshot.

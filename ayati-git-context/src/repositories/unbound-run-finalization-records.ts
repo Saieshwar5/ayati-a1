@@ -9,7 +9,7 @@ export type UnboundRunFinalizationPhase =
 
 interface Row {
   run_id: string;
-  request_id: string;
+  operation_request_id: string;
   session_id: string;
   conversation_id: string;
   phase: UnboundRunFinalizationPhase;
@@ -53,7 +53,7 @@ export function insertUnboundRunFinalization(database: ContextDatabase, input: {
 }): UnboundRunFinalizationRecord {
   database.prepare([
     "INSERT INTO unbound_run_finalizations(",
-    "run_id, request_id, session_id, conversation_id, phase, outcome, stop_reason,",
+    "run_id, operation_request_id, session_id, conversation_id, phase, outcome, stop_reason,",
     "materialization_requested,",
     "run_file, steps_file, created_at, updated_at, last_error",
     ") VALUES (?, ?, ?, ?, 'prepared', ?, ?, ?, ?, ?, ?, ?, NULL)",
@@ -106,7 +106,7 @@ export function updateUnboundRunFinalization(database: ContextDatabase, input: {
 
 function select(): string {
   return [
-    "SELECT run_id, request_id, session_id, conversation_id, phase, outcome, stop_reason,",
+    "SELECT run_id, operation_request_id, session_id, conversation_id, phase, outcome, stop_reason,",
     "materialization_requested, run_file, steps_file, created_at, updated_at, last_error",
     "FROM unbound_run_finalizations",
   ].join(" ");
@@ -124,7 +124,7 @@ function requireRecord(
 function record(row: Row): UnboundRunFinalizationRecord {
   return {
     runId: row.run_id,
-    requestId: row.request_id,
+    requestId: row.operation_request_id,
     sessionId: row.session_id,
     conversationId: row.conversation_id,
     phase: row.phase,

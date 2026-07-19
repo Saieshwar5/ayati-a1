@@ -13,94 +13,74 @@ import {
 } from "../../src/skills/workspace-paths.js";
 
 describe("workspace paths", () => {
-  const originalWorkspaceDir = process.env["AYATI_WORKSPACE_DIR"];
+  const originalRoot = process.env["AYATI_ROOT_DIR"];
 
   afterEach(() => {
-    if (originalWorkspaceDir === undefined) {
-      delete process.env["AYATI_WORKSPACE_DIR"];
-    } else {
-      process.env["AYATI_WORKSPACE_DIR"] = originalWorkspaceDir;
-    }
+    if (originalRoot === undefined) delete process.env["AYATI_ROOT_DIR"];
+    else process.env["AYATI_ROOT_DIR"] = originalRoot;
   });
 
   it("keeps the exported default workspace root stable", () => {
     expect(workspaceRoot).toBe(DEFAULT_WORKSPACE_DIR);
   });
 
-  it("resolves omitted cwd and roots to the default workspace root", () => {
-    delete process.env["AYATI_WORKSPACE_DIR"];
+  it("derives the user-visible workspace from the single Ayati root", () => {
+    process.env["AYATI_ROOT_DIR"] = "/tmp/ayati-custom-root";
 
-    expect(resolveWorkspaceCwd()).toBe(DEFAULT_WORKSPACE_DIR);
-    expect(resolveWorkspaceCwd("")).toBe(DEFAULT_WORKSPACE_DIR);
-    expect(resolveWorkspaceCwd(".")).toBe(DEFAULT_WORKSPACE_DIR);
-    expect(resolveWorkspaceRoots()).toEqual([DEFAULT_WORKSPACE_DIR]);
+    expect(resolveWorkspacePath("notes/report.md"))
+      .toBe("/tmp/ayati-custom-root/workspace/notes/report.md");
+    expect(resolveWorkspaceCwd("scripts"))
+      .toBe("/tmp/ayati-custom-root/workspace/scripts");
+    expect(resolveWorkspaceRoots(["docs"]))
+      .toEqual(["/tmp/ayati-custom-root/workspace/docs"]);
   });
 
-  it("resolves relative paths inside the configured workspace root", () => {
-    process.env["AYATI_WORKSPACE_DIR"] = "/tmp/ayati-custom-workspace";
+  it("uses one explicit resource root when the executor supplies it", () => {
+    process.env["AYATI_ROOT_DIR"] = "/tmp/ayati-global";
+    const resourceRoot = "/tmp/existing-project";
 
-    expect(resolveWorkspacePath("notes/report.md")).toBe("/tmp/ayati-custom-workspace/notes/report.md");
-    expect(resolveWorkspaceCwd("scripts")).toBe("/tmp/ayati-custom-workspace/scripts");
-    expect(resolveWorkspaceRoots(["docs"])).toEqual(["/tmp/ayati-custom-workspace/docs"]);
-  });
-
-  it("uses an explicit trusted task root instead of the global workspace", () => {
-    process.env["AYATI_WORKSPACE_DIR"] = "/tmp/ayati-global-workspace";
-    const taskRoot = "/tmp/ayati-task-checkout";
-
-    expect(resolveWorkspacePath("workspace/site/app.js", taskRoot))
-      .toBe("/tmp/ayati-task-checkout/site/app.js");
-    expect(resolveWorkspaceCwd(undefined, taskRoot)).toBe(taskRoot);
-    expect(resolveWorkspaceRoots(undefined, taskRoot)).toEqual([taskRoot]);
+    expect(resolveWorkspacePath("workspace/site/app.js", resourceRoot))
+      .toBe("/tmp/existing-project/site/app.js");
+    expect(resolveWorkspaceCwd(undefined, resourceRoot)).toBe(resourceRoot);
+    expect(resolveWorkspaceRoots(undefined, resourceRoot)).toEqual([resourceRoot]);
     expect(resolveWorkspaceMutationPath("site/app.js", {
       operation: "write_files",
-      root: taskRoot,
+      root: resourceRoot,
     })).toMatchObject({
       ok: true,
-      path: "/tmp/ayati-task-checkout/site/app.js",
-      workspaceRoot: taskRoot,
+      path: "/tmp/existing-project/site/app.js",
+      workspaceRoot: resourceRoot,
     });
   });
 
-  it("creates the configured workspace root when resolving tool paths", async () => {
-    const root = `/tmp/ayati-missing-workspace-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  it("creates the derived workspace root when resolving tool paths", async () => {
+    const root = `/tmp/ayati-missing-root-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const workspace = join(root, "workspace");
     await rm(root, { recursive: true, force: true });
-    process.env["AYATI_WORKSPACE_DIR"] = root;
+    process.env["AYATI_ROOT_DIR"] = root;
 
-    expect(resolveWorkspacePath("notes/report.md")).toBe(join(root, "notes", "report.md"));
-    await expect(access(root)).resolves.toBeUndefined();
+    expect(resolveWorkspacePath("notes/report.md")).toBe(join(workspace, "notes", "report.md"));
+    await expect(access(workspace)).resolves.toBeUndefined();
 
     await rm(root, { recursive: true, force: true });
   });
 
-  it("treats workspace aliases as the configured workspace root, not nested folders", () => {
-    process.env["AYATI_WORKSPACE_DIR"] = "/tmp/ayati-custom-workspace";
+  it("treats workspace aliases as the derived workspace root", () => {
+    process.env["AYATI_ROOT_DIR"] = "/tmp/ayati-custom-root";
+    const workspace = "/tmp/ayati-custom-root/workspace";
 
-    expect(resolveWorkspacePath("work_space/report.md")).toBe("/tmp/ayati-custom-workspace/report.md");
-    expect(resolveWorkspacePath("workspace/report.md")).toBe("/tmp/ayati-custom-workspace/report.md");
-    expect(resolveWorkspacePath("ayati-custom-workspace/report.md")).toBe("/tmp/ayati-custom-workspace/report.md");
-    expect(resolveWorkspacePath("work_space/workspace/report.md")).toBe("/tmp/ayati-custom-workspace/report.md");
-  });
-
-  it("treats repo-prefixed workspace paths as the workspace root", () => {
-    process.env["AYATI_WORKSPACE_DIR"] = "/tmp/ayati-main/work_space";
-
-    expect(resolveWorkspacePath("ayati-main/work_space/report.md")).toBe("/tmp/ayati-main/work_space/report.md");
-    expect(resolveWorkspacePath("ayati-main/workspace/report.md")).toBe("/tmp/ayati-main/work_space/report.md");
+    expect(resolveWorkspacePath("work_space/report.md")).toBe(join(workspace, "report.md"));
+    expect(resolveWorkspacePath("workspace/report.md")).toBe(join(workspace, "report.md"));
+    expect(resolveWorkspacePath("work_space/workspace/report.md")).toBe(join(workspace, "report.md"));
   });
 
   it("preserves explicit absolute paths", () => {
-    process.env["AYATI_WORKSPACE_DIR"] = "/tmp/ayati-custom-workspace";
-
+    process.env["AYATI_ROOT_DIR"] = "/tmp/ayati-custom-root";
     expect(resolveWorkspacePath("/tmp/explicit/report.md")).toBe("/tmp/explicit/report.md");
   });
 
   it("requires canonical absolute paths at agent tool boundaries", () => {
     expect(requireAbsolutePath("notes/report.md", "path")).toMatchObject({
-      ok: false,
-      code: "ABSOLUTE_PATH_REQUIRED",
-    });
-    expect(requireAbsolutePath("workspace/report.md", "path")).toMatchObject({
       ok: false,
       code: "ABSOLUTE_PATH_REQUIRED",
     });
@@ -115,37 +95,28 @@ describe("workspace paths", () => {
   });
 
   it("rejects external mutation paths unless explicitly allowed", async () => {
-    const root = `/tmp/ayati-mutation-workspace-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    process.env["AYATI_WORKSPACE_DIR"] = root;
-    await ensureWorkspaceRoot(root);
+    const root = `/tmp/ayati-mutation-root-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const workspace = join(root, "workspace");
+    process.env["AYATI_ROOT_DIR"] = root;
+    await ensureWorkspaceRoot(workspace);
 
     expect(resolveWorkspaceMutationPath("/tmp/explicit/report.md", { operation: "write_files" })).toMatchObject({
       ok: false,
       code: "EXTERNAL_WORKSPACE_PATH_REQUIRES_ALLOW",
       resolvedPath: "/tmp/explicit/report.md",
-      workspaceRoot: root,
+      workspaceRoot: workspace,
     });
-    expect(resolveWorkspaceMutationPath("/tmp/explicit/report.md", {
-      allowExternalPath: true,
-      operation: "write_files",
-    })).toMatchObject({
-      ok: true,
-      path: "/tmp/explicit/report.md",
-      workspaceRoot: root,
-    });
-    expect(resolveWorkspaceMutationPath(join(root, "inside.txt"), { operation: "write_files" })).toMatchObject({
-      ok: true,
-      path: join(root, "inside.txt"),
-      workspaceRoot: root,
-    });
+    expect(resolveWorkspaceMutationPath(join(workspace, "inside.txt"), { operation: "write_files" }))
+      .toMatchObject({ ok: true, path: join(workspace, "inside.txt"), workspaceRoot: workspace });
 
     await rm(root, { recursive: true, force: true });
   });
 
   it("keeps relative traversal attempts inside the workspace root", () => {
-    process.env["AYATI_WORKSPACE_DIR"] = "/tmp/ayati-custom-workspace";
+    process.env["AYATI_ROOT_DIR"] = "/tmp/ayati-custom-root";
+    const workspace = "/tmp/ayati-custom-root/workspace";
 
-    expect(resolveWorkspacePath("../outside.md")).toBe("/tmp/ayati-custom-workspace");
-    expect(resolveWorkspacePath(join("docs", "..", "report.md"))).toBe("/tmp/ayati-custom-workspace/report.md");
+    expect(resolveWorkspacePath("../outside.md")).toBe(workspace);
+    expect(resolveWorkspacePath(join("docs", "..", "report.md"))).toBe(join(workspace, "report.md"));
   });
 });

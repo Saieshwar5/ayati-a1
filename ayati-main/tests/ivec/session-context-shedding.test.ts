@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ContextSessionTaskRunCheckpoint } from "../../src/context-engine/index.js";
+import type { ContextSessionRunCheckpoint } from "../../src/context-engine/index.js";
 import {
   buildSessionContextSheddingCandidate,
   shedSessionContext,
@@ -10,18 +10,18 @@ describe("session context shedding", () => {
   it("retains only durable session metadata, attachments, and the latest checkpoint", () => {
     const checkpoints = Array.from({ length: 5 }, (_, index) => checkpoint(index + 1));
     const session: NonNullable<AgentStateView["context"]["git"]>["session"] = {
-      meta: { sessionId: "session-1", assetCount: 2 },
+      meta: { sessionId: "session-1", resourceCount: 2 },
       summary: { text: "Large session snapshot.", coveredUntilSeq: 8 },
-      recentTaskRuns: checkpoints,
+      recentRunCheckpoints: checkpoints,
       recentCommits: Array.from({ length: 5 }, (_, index) => sessionCommit(5 - index)),
       attachments: { count: 2, recent: [{ sessionAssetId: "asset-1" }] },
       activity: {
         recent: [{
           seq: 10,
-          type: "run_committed",
+          type: "workstream_context_committed",
           at: "2026-07-10T10:00:00.000Z",
           runId: "run-5",
-          workId: "work-5",
+          workstreamId: "W-5",
           commit: "commit-5",
         }],
       },
@@ -30,7 +30,7 @@ describe("session context shedding", () => {
     expect(shedSessionContext(session)).toEqual({
       meta: session.meta,
       recentCommits: [sessionCommit(5)],
-      recentTaskRuns: [checkpoints[4]],
+      recentRunCheckpoints: [checkpoints[4]],
       attachments: session.attachments,
       activity: { recent: [] },
     });
@@ -56,7 +56,7 @@ describe("session context shedding", () => {
 
     expect(stateView).toEqual(sourceBefore);
     expect(projected.context.git?.session).not.toHaveProperty("summary");
-    expect(projected.context.git?.session.recentTaskRuns?.map((item) => item.checkpointId)).toEqual(["checkpoint-5"]);
+    expect(projected.context.git?.session.recentRunCheckpoints?.map((item) => item.checkpointId)).toEqual(["checkpoint-5"]);
     expect(projected.context.git?.session.recentCommits?.map((item) => item.commit)).toEqual(["commit-5"]);
     expect(JSON.stringify(projected.context)).not.toContain('"runId"');
     expect(projected.context.git?.session.activity.recent).toEqual([]);
@@ -64,7 +64,7 @@ describe("session context shedding", () => {
       stateView.context.git?.session.attachments,
     );
     expect(projected.context.timeline).toEqual(stateView.context.timeline);
-    expect(projected.context.git?.current.task).toEqual(stateView.context.git?.current.task);
+    expect(projected.context.git?.current.workstream).toEqual(stateView.context.git?.current.workstream);
     expect(projected.context.run?.workState).toEqual(stateView.context.run?.workState);
     expect(candidate.receipt).toMatchObject({
       triggered: true,
@@ -85,34 +85,46 @@ function stateWithSession(): AgentStateView {
         kind: "user",
         seq: 11,
         timestamp: "2026-07-10T10:01:00.000Z",
-        content: "Continue the task.",
+        content: "Continue the workstream.",
         current: true,
       }],
       git: {
         session: {
-          meta: { sessionId: "session-1", assetCount: 1 },
+          meta: { sessionId: "session-1", resourceCount: 1 },
           summary: { text: "Session snapshot.", coveredUntilSeq: 8 },
-          recentTaskRuns: Array.from({ length: 5 }, (_, index) => checkpoint(index + 1)),
+          recentRunCheckpoints: Array.from({ length: 5 }, (_, index) => checkpoint(index + 1)),
           recentCommits: Array.from({ length: 5 }, (_, index) => sessionCommit(5 - index)),
           attachments: { count: 1, recent: [] },
           activity: {
             recent: [{
               seq: 10,
-              type: "run_committed",
+              type: "workstream_context_committed",
               at: "2026-07-10T10:00:00.000Z",
               runId: "run-5",
-              workId: "work-5",
+              workstreamId: "W-5",
               commit: "commit-5",
             }],
           },
         },
         current: {
-          focus: { status: "active", ref: "refs/heads/task/work-5", workId: "work-5" },
-          task: {
-            identity: { ref: "refs/heads/task/work-5", title: "Task", objective: "Finish it." },
-            state: { status: "active", completed: [], open: ["Finish it."], blockers: [], facts: [] },
-            assets: [],
-            activity: { recentRuns: [], recentEvidence: [] },
+          focus: { status: "active", ref: "refs/heads/main", workstreamId: "W-5" },
+          workstream: {
+            identity: {
+              ref: "refs/heads/main",
+              workstreamId: "W-5",
+              title: "Learning plan",
+              objective: "Continue learning across days.",
+            },
+            state: {
+              summary: "Learning remains in progress.",
+              workstreamStatus: "in_progress",
+              lifecycleStatus: "active",
+              repositoryHealth: "ready",
+              blockers: [],
+              next: "Continue the next lesson.",
+            },
+            resources: [],
+            activity: { recentCommits: [] },
           },
         },
       },
@@ -126,19 +138,19 @@ function stateWithSession(): AgentStateView {
 function sessionCommit(index: number) {
   return {
     commit: "commit-" + index,
-    subject: "session: task work " + index,
-    summary: "Task work " + index,
+    subject: "session: workstream progress " + index,
+    summary: "Workstream progress " + index,
     runId: "run-" + index,
-    workId: "work-" + index,
+    workstreamId: "W-" + index,
   };
 }
 
-function checkpoint(sequence: number): ContextSessionTaskRunCheckpoint {
+function checkpoint(sequence: number): ContextSessionRunCheckpoint {
   const fromSeq = sequence * 2 - 1;
   return {
     checkpointId: `checkpoint-${sequence}`,
     commit: `commit-${sequence}`,
-    workId: `work-${sequence}`,
+    workstreamId: `W-${sequence}`,
     runId: `run-${sequence}`,
     status: "completed",
     fromSeq,
@@ -146,6 +158,6 @@ function checkpoint(sequence: number): ContextSessionTaskRunCheckpoint {
     sourceHash: String(sequence).repeat(64),
     strategy: "llm",
     at: `2026-07-10T09:0${sequence}:00.000Z`,
-    summary: `Task-bound-run checkpoint ${sequence}.`,
+    summary: `Workstream-bound run checkpoint ${sequence}.`,
   };
 }

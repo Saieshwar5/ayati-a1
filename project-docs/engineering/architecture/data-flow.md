@@ -1,120 +1,76 @@
 # Data Flow
 
-## Daemon Communication
+## Ingress and Run Preparation
 
-1. A client or integration sends a user message or normalized system event to
-   `ayati-main`.
-2. The CLI sends `{ type: "chat", content, attachments? }` over WebSocket.
-   HTTP handles uploads, artifact access, and Pulse endpoints.
-3. The chat runtime serializes turns for the same client/session.
-4. One `prepareContextTurn` request asks Git Context to ensure the daily
-   session, create the conversation segment, append the message or event,
-   create one run and initial WorkState, bind the conversation to that run,
-   and store the idempotency receipt in one transaction. The independent local
-   server owns context SQLite and all Git writes.
-5. The same preparation response returns the run and bounded context
-   projection. Read-only reasoning does not require selecting a task.
-6. `IVecEngine` builds the context pack and runs the stable harness:
+1. A client sends a user message or an integration emits a normalized system
+   event.
+2. The daemon submits one stable preparation request to Git Context.
+3. One transaction ensures the daily session, creates the conversation
+   segment, appends the message, creates one run and initial WorkState, binds
+   the conversation to the run, and stores the idempotency receipt.
+4. The response returns the same message, conversation, and run on replay.
+   Another active run causes the whole competing transaction to roll back.
 
-   ```text
-   context pack -> decision -> action executor -> deterministic verification -> progress reducer
-   ```
+## Decision and Steps
 
-7. The model either replies directly, loads a bounded tool group, selects or
-   creates a task, asks for necessary feedback, or calls one executable tool.
-8. The action executor validates the selected tool and input, executes it, and
-   converts its result into verified facts and evidence.
-9. The progress reducer updates sparse run state, and the complete ordered
-   action record plus resulting WorkState are persisted as one run step.
-10. The daemon finalizes the run and waits for database, materialization, and
-    task-commit acknowledgement before sending the terminal response envelope.
-    Raw run evidence remains in SQLite and optional unbound-run files.
+The daemon enters the stable harness:
 
-Clients remain communication surfaces. They do not own agent intelligence,
-memory policy, task selection, provider choice, or long-running state.
+```text
+context pack -> decision -> action executor -> deterministic verification -> progress reducer
+```
 
-## Task Selection and Mutation
+An unbound run may reply, list, read, search, inspect resources, or route. The
+model can create or activate a workstream; that control binds the existing run
+and returns refreshed context. After binding, the model makes a fresh decision.
 
-Every accepted provider-handled turn begins with one unbound run. The prompt
-projection can show task candidates, but a candidate is not implicit permission
-to mutate it.
+Each executor step persists one structured ordered record containing decision,
+action, tool calls, verification, and resulting WorkState. The same transaction
+updates run step count. The persistence response carries rebuilt reusable read
+context, avoiding a second full active-context fetch.
 
-For durable work the model uses these public tools:
+## Workstream and Resource Flow
 
-- `git_context_create_task`: create and select a new `T-*` repository.
-- `git_context_activate_task`: select an existing repository. The call
-  the call must explicitly pass `requestDecision.kind="continue"` or
-  `requestDecision.kind="create"`.
+Workstream candidates come from deterministic catalog discovery. Exact
+resource ownership and explicit continuation outrank text, unfinished, star,
+recency, and frequency signals.
 
-Successful responses bind the existing run without changing its id and return
-the selected task/request identity, stable working directory, and refreshed
-harness context.
+A selected workstream supplies context and resource bindings. Real operations
+run against resource locators, never the context repository. Before mutation,
+the service admits exact targets and records their versions; after execution,
+it observes the same targets and verifies the effect.
 
-Once selected, task-scoped tools receive the stable task working directory.
-The runtime—not the model—updates `.ayati/`, finalizes the request, and creates
-the task commit. A mutation must never be inferred from a previously active
-task in another session or turn.
+If the user supplied no destination, new output is placed under
+`<AYATI_ROOT_DIR>/workspace/` and cataloged as a resource. User-specified paths
+remain canonical in place.
 
-## Session and Context Flow
+## Finalization
 
-1. A daily session is the operational boundary for accepted turns.
-2. SQLite owns authoritative conversations, runs, steps, WorkState, and
-   finalization journals.
-3. Step-bearing unbound runs may materialize run and step evidence in the
-   session repository; zero-step replies create no run files or Git commit.
-4. Git Context builds a bounded projection containing conversation tail,
-   pending-turn state, task candidates or selection, current request, compact
-   task state, recent activity, and useful evidence pointers.
-5. Personal memory adds stable preferences and facts. Episodic memory can add
-   semantic recall when embeddings are available.
-6. The prompt receives summaries and pointers, not every repository, full Git
-   history, or raw tool output.
+The daemon sends one finalization request and waits for acknowledgement. Git
+Context loads binding from the run, closes the conversation/run, records
+verified resource effects, reduces workstream context when needed, and creates
+at most one context commit. Deliverables are not staged in workstream Git.
 
-SQLite is the operational index and run journal. Git repositories are the
-portable durable record for session conversation and task state. These stores
-have different responsibilities and should not mirror all data into each
-other.
+Only then does the daemon send the terminal response envelope. A failed or
+uncertain finalization produces a failure envelope and retains its recovery
+journal.
 
-## Attachment and Reference Flow
+## Attachments
 
-1. Clients attach paths or uploaded bytes to a message.
-2. The daemon normalizes them into the managed file/directory libraries under
-   `ayati-main/data/`.
-3. Run state carries compact attachment summaries. Tools inspect or query the
-   managed copy.
-4. When an attachment becomes useful durable task context, Git Context copies
-   or records it under `.ayati/inbox/` or `.ayati/references/` according to the
-   task contract.
-5. `.ayati/inbox/` is ignored staging. Curated references are tracked only when
-   they are safe, useful, and reasonably sized.
+Uploads and referenced inputs are admitted as resources before routing.
+Uploaded bytes use immutable managed storage under `.ayati/resources/`;
+referenced resources remain at their source path. Session and workstream
+bindings point to the same resource identity.
 
-The original managed attachment store remains separate from task Git. This
-prevents large or sensitive user inputs from being committed accidentally.
+## Memory
 
-## External Action Flow
-
-Process execution, filesystem, browser, desktop, database, and external HTTP tools are
-high-privilege capabilities. The action executor enforces tool contracts and
-verification before their results affect progress.
-
-For task-scoped external work, the task repository should retain a compact
-outcome or evidence pointer, not an uncontrolled transcript or secret-bearing
-payload. A standardized external computer-use outcome format is still deferred;
-until it exists, final summaries must distinguish verified task changes from
-external side effects.
-
-## Workspace Orchestration
-
-The CLI can provide terminal-window context. `WorkspaceOrchestrator` treats the
-terminal as the protected anchor, reads Hyprland state, persists compact UI
-state under `data/ui/workspace-orchestrator.json`, and applies bounded role-based
-window operations. This UI state is runtime data, not task-repository state.
+SQLite owns authoritative operational records: sessions, messages, runs,
+steps, WorkState, resources, bindings, and journals. Context-only Git provides
+portable workstream continuity. Personal memory stores stable user facts and
+preferences; episodic memory supports semantic recall. These stores are
+complementary and do not mirror all data into each other.
 
 ## System Events
 
-1. Plugins and Pulse normalize events.
-2. `SystemIngressService` queues them in the inbound queue.
-3. `SystemEventWorker` sends them through `IVecEngine.handleSystemEvent`.
-4. `context/system-event-policy.json` controls handling behavior.
-5. The daemon may reply, notify, request approval, schedule follow-up work, or
-   use tools according to policy.
+Plugins and Pulse normalize events through `SystemIngressService` and
+`SystemEventWorker`. System events use the same preparation, action, step, and
+finalization lifecycle as chat turns; only delivery policy differs.

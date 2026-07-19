@@ -5,12 +5,12 @@ export type RepairCode =
   | "R_EMPTY_TOOL_LOAD_SELECTOR"
   | "R_TOOL_INPUT_INVALID"
   | "R_TOOL_INPUT_MISSING_REQUIRED_FIELD"
-  | "R_MUTATION_REQUIRES_TASK_BINDING"
-  | "R_UNBOUND_RUN_NEEDS_TASK_BINDING"
-  | "R_TOOL_REQUIRES_TASK_BINDING"
+  | "R_MUTATION_REQUIRES_WORKSTREAM_BINDING"
+  | "R_UNBOUND_RUN_NEEDS_WORKSTREAM_BINDING"
+  | "R_TOOL_REQUIRES_WORKSTREAM_BINDING"
   | "R_PENDING_TURN_UNBOUND"
   | "R_PENDING_TURN_CLARIFYING"
-  | "R_TASK_FEEDBACK_UNAVAILABLE"
+  | "R_WORKSTREAM_FEEDBACK_UNAVAILABLE"
   | "R_MULTIPLE_NATIVE_TOOL_CALLS"
   | "R_PARSE_FAILED"
   | "R_PROVIDER_EMPTY_RESPONSE"
@@ -90,12 +90,12 @@ export const REPAIR_CODES: readonly RepairCode[] = [
   "R_EMPTY_TOOL_LOAD_SELECTOR",
   "R_TOOL_INPUT_INVALID",
   "R_TOOL_INPUT_MISSING_REQUIRED_FIELD",
-  "R_MUTATION_REQUIRES_TASK_BINDING",
-  "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
-  "R_TOOL_REQUIRES_TASK_BINDING",
+  "R_MUTATION_REQUIRES_WORKSTREAM_BINDING",
+  "R_UNBOUND_RUN_NEEDS_WORKSTREAM_BINDING",
+  "R_TOOL_REQUIRES_WORKSTREAM_BINDING",
   "R_PENDING_TURN_UNBOUND",
   "R_PENDING_TURN_CLARIFYING",
-  "R_TASK_FEEDBACK_UNAVAILABLE",
+  "R_WORKSTREAM_FEEDBACK_UNAVAILABLE",
   "R_MULTIPLE_NATIVE_TOOL_CALLS",
   "R_PARSE_FAILED",
   "R_PROVIDER_EMPTY_RESPONSE",
@@ -175,38 +175,38 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     ],
     modelFacing: true,
   },
-  R_MUTATION_REQUIRES_TASK_BINDING: {
-    code: "R_MUTATION_REQUIRES_TASK_BINDING",
+  R_MUTATION_REQUIRES_WORKSTREAM_BINDING: {
+    code: "R_MUTATION_REQUIRES_WORKSTREAM_BINDING",
     severity: "repairable",
-    source: "runner.task_binding",
-    message: "Mutation requires the current run to be bound to a task.",
+    source: "runner.workstream_binding",
+    message: "Mutation requires the current run to be bound to a workstream.",
     allowedNextActions: [
-      "Call git_context_activate_task or git_context_create_task for the current run.",
+      "Call git_context_activate_workstream or git_context_create_workstream for the current run.",
       "After binding refreshes the context, make a fresh mutation decision.",
       "Do not defer, retain, or replay the rejected mutation call.",
     ],
     modelFacing: true,
   },
-  R_UNBOUND_RUN_NEEDS_TASK_BINDING: {
-    code: "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
+  R_UNBOUND_RUN_NEEDS_WORKSTREAM_BINDING: {
+    code: "R_UNBOUND_RUN_NEEDS_WORKSTREAM_BINDING",
     severity: "repairable",
     source: "runner.guard",
-    message: "No active task exists yet. Normal work tools cannot run before task binding.",
+    message: "No active workstream exists yet. Normal work tools cannot run before workstream binding.",
     allowedNextActions: [
-      "Inspect the task candidates in context and call git_context_activate_task for an exact matching task.",
-      "Call git_context_create_task with title, objective, and reason for distinct new durable work.",
+      "Inspect workstream and resource candidates, then activate an exact matching workstream.",
+      "Call git_context_create_workstream with title, objective, and reason for distinct durable work.",
       "Ask a short clarification directly if the request is unclear.",
     ],
     modelFacing: true,
   },
-  R_TOOL_REQUIRES_TASK_BINDING: {
-    code: "R_TOOL_REQUIRES_TASK_BINDING",
+  R_TOOL_REQUIRES_WORKSTREAM_BINDING: {
+    code: "R_TOOL_REQUIRES_WORKSTREAM_BINDING",
     severity: "error",
     source: "runner.guard",
-    message: "A task-scoped executable action reached the runner before task binding existed.",
+    message: "A workstream-scoped executable action reached the runner before workstream binding existed.",
     allowedNextActions: [
-      "Route the turn to a task before normal tool execution.",
-      "Create or activate the correct task if durable work is required.",
+      "Route the turn to a workstream before normal tool execution.",
+      "Create or activate the correct workstream if durable work is required.",
     ],
     modelFacing: true,
   },
@@ -214,11 +214,11 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     code: "R_PENDING_TURN_UNBOUND",
     severity: "repairable",
     source: "runner.pending_turn",
-    message: "The current pending turn is not bound to a task.",
+    message: "The current pending turn is not bound to a workstream.",
     allowedNextActions: [
       "Use git-context read/search tools if needed.",
-      "Then call git_context_activate_task or git_context_create_task.",
-      "Ask the user directly if task ownership is ambiguous.",
+      "Then call git_context_activate_workstream or git_context_create_workstream.",
+      "Ask the user directly if workstream ownership is ambiguous.",
     ],
     modelFacing: true,
   },
@@ -226,21 +226,21 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     code: "R_PENDING_TURN_CLARIFYING",
     severity: "repairable",
     source: "runner.pending_turn",
-    message: "The current pending turn is waiting for task clarification.",
+    message: "The current pending turn is waiting for workstream clarification.",
     allowedNextActions: [
-      "Ask the user directly which task or target they mean.",
-      "Do not call executable tools until task ownership is resolved.",
+      "Ask the user directly which workstream or target they mean.",
+      "Do not call executable tools until workstream ownership is resolved.",
     ],
     modelFacing: true,
   },
-  R_TASK_FEEDBACK_UNAVAILABLE: {
-    code: "R_TASK_FEEDBACK_UNAVAILABLE",
+  R_WORKSTREAM_FEEDBACK_UNAVAILABLE: {
+    code: "R_WORKSTREAM_FEEDBACK_UNAVAILABLE",
     severity: "repairable",
     source: "decision.tool_protocol",
-    message: "The task feedback tool is not available outside an active task-bound run.",
+    message: "The workstream feedback tool is not available outside an active workstream-bound run.",
     allowedNextActions: [
-      "Use direct assistant text for pre-task questions and final replies.",
-      "Use ask_user_feedback only when it is exposed during an active task-bound run.",
+      "Use direct assistant text for pre-workstream questions and final replies.",
+      "Use ask_user_feedback only when it is exposed during an active workstream-bound run.",
     ],
     modelFacing: true,
   },
@@ -301,7 +301,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     code: "R_NO_PROGRESS",
     severity: "warning",
     source: "runner.progress",
-    message: "The recent steps did not move the task forward.",
+    message: "The recent steps did not move the workstream forward.",
     allowedNextActions: [
       "Change strategy or stop with a clear failure if no useful next action exists.",
     ],
@@ -338,7 +338,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     code: "R_DUPLICATE_READ",
     severity: "repairable",
     source: "runner.read_progress",
-    message: "The selected read repeats context that is already available in this task-bound run.",
+    message: "The selected read repeats context that is already available in this workstream-bound run.",
     allowedNextActions: [
       "Use the existing observations and evidence instead of reading the same target again.",
       "If the user requested a concrete change, call patch_files or write_files next.",
@@ -350,7 +350,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     code: "R_MUTATION_EXPECTED_AFTER_CONTEXT",
     severity: "repairable",
     source: "runner.read_progress",
-    message: "This task-bound run has already gathered enough read context before making a change.",
+    message: "This workstream-bound run has already gathered enough read context before making a change.",
     allowedNextActions: [
       "Use the current observations and evidence to make the requested change.",
       "Call patch_files or write_files next when the user asked to build or update files.",

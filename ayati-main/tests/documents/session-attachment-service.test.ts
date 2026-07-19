@@ -59,7 +59,7 @@ describe("SessionAttachmentService", () => {
     }
   });
 
-  it("restores a document from git task assets without activity memory", async () => {
+  it("restores a document from a bound workstream resource without activity memory", async () => {
     const dataDir = makeTmpDir();
 
     try {
@@ -80,18 +80,37 @@ describe("SessionAttachmentService", () => {
       const restored = await service.restoreAttachmentContext({
         runId: "run-git-assets",
         reference: "policy.txt",
-        taskAssets: [{
-          assetId: "A-20260627-0001",
+        workstreamResources: [{
+          resource: {
+            resourceId: "RES-POLICY",
+            kind: "document",
+            origin: "user_reference",
+            displayName: "policy.txt",
+            description: "Policy document referenced by the user.",
+            aliases: ["renewal policy"],
+            locator: { kind: "filesystem", path: policyPath },
+            version: {
+              key: "sha256:policy",
+              observedAt: "2026-07-19T10:00:00.000Z",
+              exists: true,
+              kind: "file",
+            },
+            availability: "available",
+            metadataStatus: "enriched",
+            createdAt: "2026-07-19T10:00:00.000Z",
+            updatedAt: "2026-07-19T10:00:00.000Z",
+          },
           role: "input",
-          kind: "document",
-          name: "policy.txt",
-          path: policyPath,
+          access: "read",
+          primary: true,
+          requestIds: ["R-0001"],
+          boundAt: "2026-07-19T10:00:00.000Z",
         }],
       });
 
       expect(restored).toMatchObject({
-        source: "task_asset",
-        assetId: "A-20260627-0001",
+        source: "workstream_resource",
+        resourceId: "RES-POLICY",
         restored: true,
         attachmentKind: "document",
       });

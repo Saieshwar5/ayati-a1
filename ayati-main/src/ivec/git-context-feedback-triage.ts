@@ -1,4 +1,4 @@
-import type { FeedbackTaskLifecycle } from "./git-context-feedback-model.js";
+import type { FeedbackWorkstreamLifecycle } from "./git-context-feedback-model.js";
 
 export interface GitContextFeedbackTriageFinding {
   code: string;
@@ -9,9 +9,9 @@ export interface GitContextFeedbackTriageFinding {
 }
 
 export function buildGitContextLifecycleFindings(input: {
-  lifecycle?: FeedbackTaskLifecycle;
+  lifecycle?: FeedbackWorkstreamLifecycle;
   pendingTurnStatus?: string;
-  taskBound?: boolean;
+  workstreamBound?: boolean;
 }): GitContextFeedbackTriageFinding[] {
   const findings: GitContextFeedbackTriageFinding[] = [];
   const repository = input.lifecycle?.repository;
@@ -20,39 +20,39 @@ export function buildGitContextLifecycleFindings(input: {
   const finalization = input.lifecycle?.finalization;
 
   if (repository) {
-    if (repository.selectionMode && !repository.workingDirectory) {
+    if (repository.selectionMode && !repository.contextRepositoryPath) {
       findings.push(finding(
-        "v1_working_directory_missing",
+        "workstream_context_repository_missing",
         "error",
-        "V1 working directory is missing",
-        "The selected V1 task did not expose its canonical stable working directory.",
-        "Preserve workingDirectory from the selected task response through routing feedback.",
+        "Workstream context repository is missing",
+        "The selected workstream did not expose its context-only repository path.",
+        "Preserve contextRepositoryPath from the selected workstream response through routing feedback.",
       ));
     }
     if (repository.selectionMode === "activated"
       && request?.decision !== "continue"
       && request?.decision !== "create") {
       findings.push(finding(
-        "v1_request_decision_missing",
+        "workstream_request_decision_missing",
         "error",
-        "V1 request decision is missing",
-        "An existing task was activated without feedback proving an explicit continue-or-create decision.",
-        "Carry requestDecision and the resolved task request id through the routing result and summary.",
+        "workstream request decision is missing",
+        "An existing workstream was activated without feedback proving an explicit continue-or-create decision.",
+        "Carry requestDecision and the resolved workstream request id through the routing result and summary.",
       ));
     }
     if (repository.selectionMode && !request?.requestId) {
       findings.push(finding(
-        "v1_task_request_missing",
+        "workstream_request_missing",
         "error",
-        "Selected task request is missing",
-        "The task-bound run has no observable resolved task request identity.",
-        "Inspect task-request route planning before mutation authority is acquired.",
+        "Selected workstream request is missing",
+        "The workstream-bound run has no observable resolved workstream request identity.",
+        "Inspect workstream-request route planning before mutation authority is acquired.",
       ));
     }
     if ((request?.decision === "initial" || request?.decision === "create")
       && request.created !== true) {
       findings.push(finding(
-        "v1_request_creation_mismatch",
+        "workstream_request_creation_mismatch",
         "error",
         "Request creation did not match the decision",
         `The '${request.decision}' decision resolved without creating its request.`,
@@ -61,89 +61,89 @@ export function buildGitContextLifecycleFindings(input: {
     }
     if (request?.decision === "continue" && request.created !== false) {
       findings.push(finding(
-        "v1_request_continue_created_request",
+        "workstream_request_continue_created_request",
         "error",
         "Continue decision created a request",
-        "The explicit continue decision unexpectedly allocated a new task request.",
+        "The explicit continue decision unexpectedly allocated a new workstream request.",
         "Verify the exact active request id and request-route reducer.",
       ));
     }
     if (finalization?.status === "committed") {
       if (finalization.commitCreated === undefined) {
         findings.push(finding(
-          "v1_commit_creation_missing",
+          "workstream_commit_creation_missing",
           "error",
           "Commit result is missing",
-          "Completed finalization did not say whether it created a task commit.",
-          "Preserve taskCommitCreated from the finalization response.",
+          "Completed finalization did not say whether it created a workstream commit.",
+          "Preserve workstreamCommitCreated from the finalization response.",
         ));
       }
       if (!finalization.headAfter) {
         findings.push(finding(
-          "v1_final_head_missing",
+          "workstream_final_head_missing",
           "error",
           "Final HEAD is missing",
-          "Completed finalization did not expose the task HEAD after reduction.",
-          "Preserve taskHeadAfter from the finalization response.",
+          "Completed finalization did not expose the workstream HEAD after reduction.",
+          "Preserve workstreamHeadAfter from the finalization response.",
         ));
       }
       if (finalization.commitCreated === true && !finalization.commit) {
         findings.push(finding(
-          "v1_commit_identity_missing",
+          "workstream_commit_identity_missing",
           "error",
           "Commit identity is missing",
-          "Finalization reported a new task commit without exposing its identity.",
+          "Finalization reported a new workstream commit without exposing its identity.",
           "Preserve finalization response identity in the feedback event.",
         ));
       } else if (finalization.commit && finalization.headAfter
         && finalization.commit !== finalization.headAfter) {
         findings.push(finding(
-          "v1_commit_head_mismatch",
+          "workstream_commit_head_mismatch",
           "error",
           "Commit and HEAD disagree",
-          "The reported final task commit is not the reported task HEAD after finalization.",
+          "The reported final workstream commit is not the reported workstream HEAD after finalization.",
           "Inspect finalization acknowledgement and repository validation before reporting success.",
         ));
       }
     }
     if (finalization?.validation === "failed") {
       findings.push(finding(
-        "v1_finalization_validation_failed",
+        "workstream_finalization_validation_failed",
         "warning",
-        "Task finalization validation failed",
-        "The task lifecycle completed, but its requested validation did not pass.",
+        "Workstream finalization validation failed",
+        "The workstream lifecycle completed, but its requested validation did not pass.",
         "Inspect the verified facts and finalization outcome before treating the user goal as complete.",
       ));
     }
     if (finalization?.outcome && finalization.outcome !== "done") {
       findings.push(finding(
-        `v1_task_outcome_${finalization.outcome}`,
+        `workstream_outcome_${finalization.outcome}`,
         "warning",
-        `Task outcome is ${finalization.outcome.replaceAll("_", " ")}`,
-        `The repository lifecycle is consistent, but the task-bound run ended with outcome '${finalization.outcome}'.`,
-        "Use the task card, request state, and final reply to decide whether to continue or request user input.",
+        `Workstream outcome is ${finalization.outcome.replaceAll("_", " ")}`,
+        `The repository lifecycle is consistent, but the workstream-bound run ended with outcome '${finalization.outcome}'.`,
+        "Use the workstream card, request state, and final reply to decide whether to continue or request user input.",
       ));
     }
   }
 
   if (input.pendingTurnStatus === "clarifying"
-    && (input.taskBound === true || run?.taskBound === true)) {
+    && (input.workstreamBound === true || run?.workstreamBound === true)) {
     findings.push(finding(
-      "clarification_with_task_binding",
+      "clarification_with_workstream_binding",
       "warning",
-      "Clarification owns a task binding",
-      "The clarification run bound mutation work to a task before ownership was clear.",
+      "Clarification owns a workstream binding",
+      "The clarification run bound mutation work to a workstream before ownership was clear.",
       "Inspect the explicit routing result and keep the clarification run unbound.",
     ));
   }
 
-  if (input.pendingTurnStatus === "unbound" && (input.taskBound === true || run?.taskBound === true)) {
+  if (input.pendingTurnStatus === "unbound" && (input.workstreamBound === true || run?.workstreamBound === true)) {
     findings.push(finding(
-      "unbound_turn_has_task_binding",
+      "unbound_turn_has_workstream_binding",
       "error",
-      "Unbound turn has task authority",
-      "The run remained unbound while feedback reported a task binding.",
-      "Fix routing state propagation before exposing normal task tools.",
+      "Unbound turn has workstream authority",
+      "The run remained unbound while feedback reported a workstream binding.",
+      "Fix routing state propagation before exposing normal workstream tools.",
     ));
   }
 

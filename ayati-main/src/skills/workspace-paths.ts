@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { DEFAULT_WORKSPACE_DIR, resolveWorkspaceDir } from "../config/runtime-config.js";
+import { DEFAULT_WORKSPACE_DIR, resolveAyatiRootDir } from "../config/runtime-config.js";
 
 export const workspaceRoot = DEFAULT_WORKSPACE_DIR;
 
@@ -93,7 +93,7 @@ export async function canonicalizeAbsolutePath(pathValue: string): Promise<strin
 }
 
 export function getWorkspaceRoot(): string {
-  return resolveWorkspaceDir(process.env["AYATI_WORKSPACE_DIR"]);
+  return join(resolveAyatiRootDir(process.env["AYATI_ROOT_DIR"]), "workspace");
 }
 
 export async function ensureWorkspaceRoot(root?: string): Promise<string> {
@@ -173,7 +173,7 @@ export function resolveWorkspaceMutationPath(
       requestedPath: pathValue,
       resolvedPath,
       workspaceRoot: root,
-      message: `Path rejected for ${operation}: ${resolvedPath} is outside the authorized absolute resource root ${root}. Route the work to a task whose workingDirectory contains the target path before retrying.`,
+      message: `Path rejected for ${operation}: ${resolvedPath} is outside the default Ayati workspace ${root}. Bind the exact resource before retrying an external mutation.`,
     };
   }
 

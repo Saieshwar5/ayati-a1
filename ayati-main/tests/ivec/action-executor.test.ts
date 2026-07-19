@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { executeAgentAction } from "../../src/ivec/agent-runner/action-executor.js";
 import type { AgentAction } from "../../src/ivec/agent-runner/decision.js";
@@ -11,24 +11,26 @@ import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
 
-const originalWorkspaceDir = process.env["AYATI_WORKSPACE_DIR"];
+const originalAyatiRootDir = process.env["AYATI_ROOT_DIR"];
 
 afterEach(() => {
-  if (originalWorkspaceDir === undefined) {
-    delete process.env["AYATI_WORKSPACE_DIR"];
+  if (originalAyatiRootDir === undefined) {
+    delete process.env["AYATI_ROOT_DIR"];
   } else {
-    process.env["AYATI_WORKSPACE_DIR"] = originalWorkspaceDir;
+    process.env["AYATI_ROOT_DIR"] = originalAyatiRootDir;
   }
 });
 
 function makeTmpDir(): string {
-  const path = mkdtempSync(join(tmpdir(), "ayati-action-executor-"));
-  process.env["AYATI_WORKSPACE_DIR"] = path;
-  return path;
+  const root = mkdtempSync(join(tmpdir(), "ayati-action-executor-"));
+  const workspace = join(root, "workspace");
+  mkdirSync(workspace, { recursive: true });
+  process.env["AYATI_ROOT_DIR"] = root;
+  return workspace;
 }
 
 function cleanup(path: string): void {
-  rmSync(path, { recursive: true, force: true });
+  rmSync(dirname(path), { recursive: true, force: true });
 }
 
 function emptyWorkState(): WorkState {

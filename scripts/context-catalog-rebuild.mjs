@@ -5,7 +5,6 @@ import { lstat, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import {
   basename,
-  delimiter,
   dirname,
   isAbsolute,
   join,
@@ -15,12 +14,17 @@ import {
 import { fileURLToPath } from "node:url";
 import {
   ContextDatabase,
-  rebuildTaskCatalog,
+  rebuildWorkstreamCatalog,
 } from "../ayati-git-context/dist/index.js";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const mainRoot = join(repositoryRoot, "ayati-main");
-const confirm = process.argv.slice(2).includes("--confirm");
+const argumentsList = process.argv.slice(2);
+const unknownArguments = argumentsList.filter((argument) => argument !== "--confirm");
+if (unknownArguments.length > 0) {
+  throw new Error(`Unknown catalog rebuild option: ${unknownArguments.join(", ")}`);
+}
+const confirm = argumentsList.includes("--confirm");
 const paths = resolveRuntimePaths(process.env);
 
 validateSafePaths(paths);
@@ -28,7 +32,7 @@ if (confirm) {
   await refuseLiveRuntime(paths);
   if (!await exists(paths.databasePath)) {
     throw new Error(
-      "Catalog rebuild requires an initialized V3 database; start and stop Ayati once first.",
+      "Catalog rebuild requires an initialized V5 database; start and stop Ayati once first.",
     );
   }
 }
@@ -36,9 +40,8 @@ if (confirm) {
 let database;
 try {
   if (confirm) database = await ContextDatabase.open({ path: paths.databasePath });
-  const result = await rebuildTaskCatalog({
-    taskRoot: paths.taskRoot,
-    trustedRoots: paths.trustedRoots,
+  const result = await rebuildWorkstreamCatalog({
+    workstreamRoot: paths.workstreamRoot,
     now: new Date().toISOString(),
     ...(database ? { database } : {}),
     confirm,
@@ -50,55 +53,45 @@ try {
 }
 
 function resolveRuntimePaths(env) {
-  const workspaceRoot = resolveConfiguredPath(
-    env["AYATI_WORKSPACE_DIR"],
-    join(mainRoot, "work_space"),
+  const rootDirectory = resolveConfiguredPath(
+    env["AYATI_ROOT_DIR"],
+    join(mainRoot, "ayati"),
   );
-  const storeDir = resolveConfiguredPath(
-    env["AYATI_GIT_CONTEXT_STORE_DIR"],
-    join(mainRoot, "data", "context-engine"),
-  );
-  const databasePath = resolveConfiguredPath(
-    env["AYATI_GIT_CONTEXT_DATABASE"],
-    join(storeDir, "context.sqlite"),
-  );
-  const socketPath = resolveConfiguredPath(
-    env["AYATI_GIT_CONTEXT_SOCKET"],
-    join(storeDir, "git-context.sock"),
-  );
-  const trustedRoots = [...new Set((env["AYATI_GIT_CONTEXT_TRUSTED_ROOTS"] ?? "")
-    .split(delimiter)
-    .map((entry) => normalizeSpecialPath(entry))
-    .filter(Boolean)
-    .map((entry) => isAbsolute(entry) ? resolve(entry) : resolve(workspaceRoot, entry)))];
+  const stateRoot = join(rootDirectory, ".ayati");
   return {
-    databasePath,
-    socketPath,
-    workspaceRoot,
-    taskRoot: join(workspaceRoot, "tasks"),
-    trustedRoots,
+    rootDirectory,
+    stateRoot,
+    databasePath: resolveConfiguredPath(
+      env["AYATI_GIT_CONTEXT_DATABASE"],
+      join(stateRoot, "context.db"),
+    ),
+    socketPath: resolveConfiguredPath(
+      env["AYATI_GIT_CONTEXT_SOCKET"],
+      join(stateRoot, "git-context.sock"),
+    ),
+    workstreamRoot: join(rootDirectory, "workstreams"),
   };
 }
 
 function renderResult(result, paths, confirmed) {
   const lines = [
+    `ayati-root: ${paths.rootDirectory}`,
     `database: ${paths.databasePath}`,
-    `task-root: ${paths.taskRoot}`,
-    `trusted-roots: ${paths.trustedRoots.length > 0 ? paths.trustedRoots.join(", ") : "(workspace only)"}`,
+    `workstream-root: ${paths.workstreamRoot}`,
     `scanned-directories: ${result.scannedDirectories}`,
-    `valid-task-repositories: ${result.repositories.length}`,
+    `valid-workstream-repositories: ${result.repositories.length}`,
   ];
   for (const repository of result.repositories) {
     lines.push(
-      `valid: ${repository.taskId} ${repository.placement} ${repository.repositoryPath}`,
+      `valid: ${repository.workstreamId} ${repository.contextRepositoryPath} resources=${repository.resources.length}`,
     );
   }
-  lines.push(`invalid-task-repositories: ${result.failures.length}`);
+  lines.push(`invalid-workstream-repositories: ${result.failures.length}`);
   for (const failure of result.failures) {
-    lines.push(`invalid: ${failure.repositoryPath}: ${failure.message}`);
+    lines.push(`invalid: ${failure.contextRepositoryPath}: ${failure.message}`);
   }
   lines.push(confirmed && result.applied
-    ? `Rebuilt ${result.repositories.length} task catalog entr${result.repositories.length === 1 ? "y" : "ies"}.`
+    ? `Rebuilt ${result.repositories.length} workstream catalog entr${result.repositories.length === 1 ? "y" : "ies"}.`
     : "No catalog changes were made. Re-run with --confirm after reviewing this inventory.");
   return lines.join("\n") + "\n";
 }
@@ -117,13 +110,17 @@ function normalizeSpecialPath(value) {
 }
 
 function validateSafePaths(paths) {
-  if (dirname(paths.taskRoot) !== paths.workspaceRoot || basename(paths.taskRoot) !== "tasks") {
-    throw new Error(`Refusing unexpected task root: ${paths.taskRoot}`);
+  if (dirname(paths.stateRoot) !== paths.rootDirectory || basename(paths.stateRoot) !== ".ayati") {
+    throw new Error(`Refusing unexpected state root: ${paths.stateRoot}`);
+  }
+  if (dirname(paths.workstreamRoot) !== paths.rootDirectory
+    || basename(paths.workstreamRoot) !== "workstreams") {
+    throw new Error(`Refusing unexpected workstream root: ${paths.workstreamRoot}`);
   }
   for (const [label, value] of [
+    ["Ayati root", paths.rootDirectory],
     ["database parent", dirname(paths.databasePath)],
-    ["workspace root", paths.workspaceRoot],
-    ...paths.trustedRoots.map((root) => ["trusted root", root]),
+    ["workstream root", paths.workstreamRoot],
   ]) {
     if (isBroadDirectory(value)) throw new Error(`Refusing unsafe ${label}: ${value}`);
   }
@@ -141,7 +138,7 @@ async function refuseLiveRuntime(paths) {
   if (await socketAcceptsConnections(paths.socketPath)) {
     throw new Error(`Refusing to rebuild while the Git Context socket is live: ${paths.socketPath}`);
   }
-  const owner = await readWriterOwner(paths.databasePath + ".writer-lock");
+  const owner = await readWriterOwner(join(paths.databasePath + ".writer-lock", "owner.json"));
   const pid = Number(owner?.pid);
   if (Number.isInteger(pid) && pid > 0 && isProcessAlive(pid)) {
     throw new Error(`Refusing to rebuild while Git Context writer PID ${pid} is live.`);
@@ -151,7 +148,10 @@ async function refuseLiveRuntime(paths) {
 function socketAcceptsConnections(socketPath) {
   return new Promise((resolveConnection) => {
     const socket = createConnection({ path: socketPath });
+    let settled = false;
     const finish = (connected) => {
+      if (settled) return;
+      settled = true;
       socket.destroy();
       resolveConnection(connected);
     };

@@ -17,14 +17,14 @@ afterEach(async () => {
   }));
 });
 
-describe("SQLite Git Context version-3 baseline", () => {
-  it("creates only the clean version-3 schema with durable SQLite settings", async () => {
+describe("SQLite Git Context version-5 baseline", () => {
+  it("creates only the clean version-5 schema with durable SQLite settings", async () => {
     const fixture = await createFixture();
 
-    expect(latestSchemaVersion()).toBe(3);
+    expect(latestSchemaVersion()).toBe(5);
     expect(fixture.database.prepare(
       "SELECT version FROM schema_metadata WHERE singleton = 1",
-    ).get()).toEqual({ version: 3 });
+    ).get()).toEqual({ version: 5 });
     expect((fixture.database.prepare([
       "SELECT name FROM sqlite_schema",
       "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
@@ -32,33 +32,54 @@ describe("SQLite Git Context version-3 baseline", () => {
     ].join(" ")).all() as Array<{ name: string }>).map((row) => row.name)).toEqual([
       "conversation_segments",
       "idempotency_requests",
+      "message_resources",
       "messages",
+      "request_resources",
+      "resource_accesses",
+      "resource_events",
+      "resource_mutation_leases",
+      "resource_mutation_locks",
+      "resource_mutation_operations",
+      "resource_search",
+      "resource_search_config",
+      "resource_search_content",
+      "resource_search_data",
+      "resource_search_docsize",
+      "resource_search_idx",
+      "resources",
       "run_steps",
       "run_work_state",
       "runs",
       "schema_metadata",
-      "session_attachments",
       "sessions",
-      "task_accesses",
-      "task_attachment_bindings",
-      "task_finalizations",
-      "task_mutation_authorities",
-      "task_preferences",
-      "task_registration_inspections",
-      "task_request_route_plans",
-      "task_search",
-      "task_search_config",
-      "task_search_content",
-      "task_search_data",
-      "task_search_docsize",
-      "task_search_idx",
-      "tasks",
       "unbound_run_finalizations",
+      "workstream_accesses",
+      "workstream_finalizations",
+      "workstream_preferences",
+      "workstream_request_route_plans",
+      "workstream_resources",
+      "workstream_search",
+      "workstream_search_config",
+      "workstream_search_content",
+      "workstream_search_data",
+      "workstream_search_docsize",
+      "workstream_search_idx",
+      "workstreams",
     ]);
     expect(fixture.database.prepare("PRAGMA journal_mode").all())
       .toEqual([{ journal_mode: "wal" }]);
     expect(fixture.database.prepare("PRAGMA foreign_keys").all())
       .toEqual([{ foreign_keys: 1 }]);
+    expect((fixture.database.prepare("PRAGMA table_info(workstream_resources)").all() as Array<{
+      name: string;
+      pk: number;
+    }>).filter((column) => column.pk > 0).map((column) => ({
+      name: column.name,
+      pk: column.pk,
+    }))).toEqual([
+      { name: "workstream_id", pk: 1 },
+      { name: "resource_id", pk: 2 },
+    ]);
   });
 
   it("refuses an old or unknown schema without modifying it", async () => {
@@ -70,7 +91,7 @@ describe("SQLite Git Context version-3 baseline", () => {
     old.close();
 
     await expect(ContextDatabase.open({ path: databasePath })).rejects.toThrow(
-      "The configured database uses a pre-V3 or unsupported schema and was not modified.",
+      "The configured database uses a pre-V5 or unsupported schema and was not modified.",
     );
     const unchanged = new DatabaseSync(databasePath);
     expect(unchanged.prepare([
@@ -109,13 +130,13 @@ describe("SQLite Git Context version-3 baseline", () => {
       },
     });
     expect(fixture.database.prepare([
-      "SELECT run_id, status, task_id, task_request_id, step_count",
+      "SELECT run_id, status, workstream_id, bound_request_id, step_count",
       "FROM runs WHERE run_id = ?",
     ].join(" ")).get(prepared.run.runId)).toEqual({
       run_id: prepared.run.runId,
       status: "running",
-      task_id: null,
-      task_request_id: null,
+      workstream_id: null,
+      bound_request_id: null,
       step_count: 0,
     });
     expect(fixture.database.prepare(
@@ -123,7 +144,7 @@ describe("SQLite Git Context version-3 baseline", () => {
     ).get(prepared.conversation.conversationId)).toEqual({ run_id: prepared.run.runId });
   });
 
-  it("enforces all-or-none immutable task binding in SQLite", async () => {
+  it("enforces all-or-none immutable workstream binding in SQLite", async () => {
     const fixture = await createFixture();
     const prepared = await fixture.service.prepareContextTurn({
       requestId: "REQ-sqlite-binding",
@@ -131,32 +152,31 @@ describe("SQLite Git Context version-3 baseline", () => {
       timezone: "Asia/Kolkata",
       agentId: "local",
       role: "user",
-      content: "Create a durable task.",
+      content: "Create a durable workstream.",
       at: "2026-07-19T13:00:00+05:30",
     });
-    const selected = await fixture.service.createTaskForRun({
-      requestId: "REQ-sqlite-create-task",
+    const selected = await fixture.service.createWorkstreamForRun({
+      requestId: "REQ-sqlite-create-workstream",
       sessionId: prepared.session.sessionId,
       conversationId: prepared.conversation.conversationId,
       runId: prepared.run.runId,
       title: "Binding invariant",
-      objective: "Prove immutable all-or-none task binding.",
-      placement: { mode: "managed" },
+      objective: "Prove immutable all-or-none workstream binding.",
       at: "2026-07-19T13:00:01+05:30",
     });
 
     expect(() => fixture.database.prepare([
-      "UPDATE runs SET task_request_id = ? WHERE run_id = ?",
-    ].join(" ")).run("R-9999", prepared.run.runId)).toThrow("run task binding is immutable");
+      "UPDATE runs SET bound_request_id = ? WHERE run_id = ?",
+    ].join(" ")).run("R-9999", prepared.run.runId)).toThrow("run workstream binding is immutable");
     expect(() => fixture.database.prepare([
-      "UPDATE runs SET task_id = NULL, task_request_id = NULL, task_bound_at = NULL",
+      "UPDATE runs SET workstream_id = NULL, bound_request_id = NULL, workstream_bound_at = NULL",
       "WHERE run_id = ?",
-    ].join(" ")).run(prepared.run.runId)).toThrow("run task binding is immutable");
+    ].join(" ")).run(prepared.run.runId)).toThrow("run workstream binding is immutable");
     expect(fixture.database.prepare([
-      "SELECT task_id, task_request_id FROM runs WHERE run_id = ?",
+      "SELECT workstream_id, bound_request_id FROM runs WHERE run_id = ?",
     ].join(" ")).get(prepared.run.runId)).toEqual({
-      task_id: selected.task.taskId,
-      task_request_id: "R-0001",
+      workstream_id: selected.workstream.workstreamId,
+      bound_request_id: "R-0001",
     });
   });
 
@@ -178,8 +198,7 @@ describe("SQLite Git Context version-3 baseline", () => {
     const database = await ContextDatabase.open({ path: databasePath });
     const restarted = new SqliteGitContextService({
       database,
-      dataRoot: join(root, "session-data"),
-      workspaceRoot: join(root, "workspace"),
+      rootDirectory: root,
       now: () => "2026-07-19T13:05:00+05:30",
     });
     services.push(restarted);
@@ -208,14 +227,13 @@ async function createFixture(): Promise<{
   database: ContextDatabase;
   service: SqliteGitContextService;
 }> {
-  const root = await mkdtemp(join(tmpdir(), "ayati-sqlite-v2-"));
+  const root = await mkdtemp(join(tmpdir(), "ayati-sqlite-v4-"));
   roots.push(root);
   const databasePath = join(root, "context.sqlite");
   const database = await ContextDatabase.open({ path: databasePath });
   const service = new SqliteGitContextService({
     database,
-    dataRoot: join(root, "session-data"),
-    workspaceRoot: join(root, "workspace"),
+    rootDirectory: root,
     now: () => "2026-07-19T13:00:00+05:30",
   });
   services.push(service);

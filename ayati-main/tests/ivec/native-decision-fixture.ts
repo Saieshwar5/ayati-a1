@@ -28,9 +28,9 @@ export function nativeDecisionFixture(response: unknown): LlmTurnOutput {
         ...(parsed["workingNotes"] ? { workingNotes: parsed["workingNotes"] } : {}),
       });
     }
-    case "task_completion": {
+    case "workstream_completion": {
       const request = objectRecord(parsed["request"]);
-      return toolTurn("task_completion", {
+      return toolTurn("workstream_completion", {
         summary: request["summary"],
         assets: request["assets"],
         ...(parsed["workingNotes"] ? { workingNotes: parsed["workingNotes"] } : {}),

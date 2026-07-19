@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { delimiter, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startGitContextServerRuntime } from "./server-runtime.js";
 import {
@@ -9,19 +9,12 @@ import {
 } from "./observability.js";
 
 const packageDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const defaultDataRoot = resolve(packageDirectory, "..", "data", "git-context-engine");
-const dataRoot = process.env["AYATI_GIT_CONTEXT_DATA_DIR"]?.trim() || defaultDataRoot;
-const workspaceRoot = process.env["AYATI_GIT_CONTEXT_WORKSPACE_DIR"]?.trim()
-  || join(dataRoot, "workspace");
-const trustedRoots = (process.env["AYATI_GIT_CONTEXT_TRUSTED_ROOTS"] ?? "")
-  .split(delimiter)
-  .map((entry) => entry.trim())
-  .filter(Boolean)
-  .map((entry) => resolve(workspaceRoot, entry));
+const defaultRootDirectory = resolve(packageDirectory, "..", "data", "ayati");
+const rootDirectory = process.env["AYATI_ROOT_DIR"]?.trim() || defaultRootDirectory;
 const databasePath = process.env["AYATI_GIT_CONTEXT_DATABASE"]?.trim()
-  || join(dataRoot, "context.db");
+  || join(rootDirectory, ".ayati", "context.db");
 const socketPath = process.env["AYATI_GIT_CONTEXT_SOCKET"]?.trim()
-  || "/tmp/ayati-git-context.sock";
+  || join(rootDirectory, ".ayati", "git-context.sock");
 const timezone = process.env["AYATI_GIT_CONTEXT_TIMEZONE"]?.trim() || "UTC";
 const agentId = process.env["AYATI_GIT_CONTEXT_AGENT_ID"]?.trim() || "local";
 const parentPid = positiveInteger(process.env["AYATI_GIT_CONTEXT_PARENT_PID"]);
@@ -29,9 +22,7 @@ const observabilitySink = createJsonLineObservabilitySink(process.stdout);
 const observer = new GitContextObserver("git-context-engine", observabilitySink);
 const runtime = await startGitContextServerRuntime({
   databasePath,
-  dataRoot,
-  workspaceRoot,
-  trustedRoots,
+  rootDirectory,
   socketPath,
   timezone,
   agentId,

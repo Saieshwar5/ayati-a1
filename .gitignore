@@ -13,6 +13,7 @@ dist/
 data/
 artifacts/
 ayati-main/work_space/
+ayati-main/ayati/
 *.log
 *.tmp
 coverage/

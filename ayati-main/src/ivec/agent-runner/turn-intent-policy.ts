@@ -4,7 +4,7 @@ const DURABLE_ACTION = /\b(?:build|create|make|write|save|edit|update|change|fix
 const DURABLE_INTENT = /\b(?:i want|we want|i need|we need|let(?:'|’)s|please (?:build|create|make|write|save|edit|update|change|fix|implement|generate|add|remove|delete|move|rename|apply|run|test|set up|setup)|can you (?:build|create|make|write|save|edit|update|change|fix|implement|generate|add|remove|delete|move|rename|apply|run|test|set up|setup))\b/;
 
 /**
- * Conservative gate for omitting task-routing controls. False means the
+ * Conservative gate for omitting workstream-routing controls. False means the
  * normal routing surface remains available; only unmistakable conversation or
  * information requests return true.
  */

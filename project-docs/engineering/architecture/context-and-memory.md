@@ -1,191 +1,127 @@
 # Context and Memory
 
-Ayati uses several context layers because conversation, durable task state,
-runtime evidence, and user memory have different lifecycles. Git is the durable
-continuity layer for sessions and tasks; SQLite is the operational catalog and
-run journal; prompt context is a bounded projection of both.
+Ayati separates operational truth, durable work continuity, user memory, and
+prompt projection.
 
 ## Ownership
 
-The independent `ayati-git-context` server is the only owner of context SQLite
-and Git mutations. `ayati-main` talks to it through `GitContextRuntime` over a
-local Unix socket managed by `ManagedGitContextProcess`.
-
-The daemon owns the agent harness, personal/episodic memory, attachments, tool
-execution, verification, and prompt assembly. The model can express task
-selection intent through public tools but cannot directly edit Git metadata or
-runtime-owned `.ayati/` lifecycle files.
+- Git Context SQLite: sessions, conversations, runs, steps, WorkState,
+  workstreams, requests, resources, bindings, discovery indexes, idempotency,
+  and recovery journals.
+- Workstream Git: compact portable `workstream.md`, request files, and
+  `resources.json` only.
+- Real resource locations: project files, documents, media, URLs, databases,
+  repositories, and external objects.
+- Personal memory: stable facts, preferences, and time-scoped facts about the
+  user.
+- Episodic memory: semantic recall over prior closed experience.
+- Daemon cache: bounded projections only; never authoritative lifecycle state.
 
 ## Session Continuity
 
-A daily session is a normal Git repository. Its durable shape is intentionally small:
+A daily session groups conversation and operational history. It does not own
+durable work. Every accepted message or system event creates one run
+atomically with its message and initial WorkState. Direct replies are valid
+zero-step runs.
 
-```text
-session/meta.json
-conversations/
-```
+Optional session materialization is evidence and debugging support, not the
+source of workstream truth.
 
-Conversation synchronizers write user, assistant, and system records under
-`conversations/`. Session checkpoints commit those records so a later process
-can reconstruct the conversation independently of task repositories.
+## Workstream Continuity
 
-A session is a communication timeline. It does not own task files. Closing or
-rotating a session must not make a task unavailable.
+A workstream is selected only when the current run has clear durable ownership.
+It carries objective, current focus, request state, progress, blockers, next
+action, and resource relationships. Later runs reconstruct continuity from the
+catalog and committed context rather than from a session-global active item.
 
-## Task Continuity
-
-Each durable task is an independent Git repository with a stable working
-directory. New tasks use `T-*` identities and the V1 `.ayati/` contract:
-
-```text
-.ayati/
-  task.md
-  requests/
-  references/
-  inbox/        # ignored staging
-```
-
-The repository contains the real deliverable beside `.ayati/`. `task.md`
-answers what the task is, its current status, what matters now, and the next
-step. Request files record meaningful units of user intent and their outcomes.
-References hold curated durable context; inbox holds untracked user-provided
-material until it is deliberately adopted or discarded.
-
-See [Task Repositories](task-repositories.md) for the complete contract,
-selection semantics, commit ownership, and known gaps.
-
-## Run-First Routing
-
-Every accepted provider-handled turn atomically creates one unbound run.
-Read-only exploration can continue without selecting a task. Durable mutation
-requires an explicit task binding:
-
-- `git_context_find_tasks` and `git_context_read_task` discover and inspect
-  likely durable ownership without binding the run.
-- `git_context_inspect_task_location` checks an existing trusted directory
-  before in-place registration.
-- `git_context_create_task` creates and selects a new V1 task and initial
-  request.
-- `git_context_activate_task` selects an existing task. V1 calls explicitly
-  choose whether to continue its active request or create a new request.
-
-The response returns the unchanged run id, selected task/request identity,
-stable working directory, and refreshed harness context. A run already bound
-to one task/request cannot be rebound or switched.
-
-Pending-turn projections may be `unbound`, `bound`, or `clarifying`. These are
-runtime context states, not durable task branches. If ownership is ambiguous,
-the assistant asks the user a direct question; the answer arrives as a fresh
-turn and can then select a task explicitly.
-
-No session-global active task grants mutation authority. A visible candidate,
-star, recent/frequent signal, or prior selection is useful discovery context
-only.
+Resource identity is part of recall. Exact path/URL/external-object ownership
+can locate a workstream even when its title or user wording changes.
 
 ## Requests and Runs
 
-A task is long-lived; a request is a bounded user intention within that task;
-a run is one compute, audit, and recovery boundary. A learning task may contain many requests over
-months. A website task may be completed once and later receive redesign,
-maintenance, or feature requests without becoming a new task.
+Requests bound a concrete intention inside one long-lived workstream. At most
+one request is active. Activating an existing workstream explicitly continues
+that request or creates a separate request.
 
-For V1 task work:
+A run may begin unbound, perform observation, and later bind to one
+workstream/request without changing its run id. Binding is immutable. The next
+user answer or event creates a new run.
 
-1. Git Context allocates or continues the request and binds the run.
-2. Task-scoped tools operate in the stable repository working directory.
-3. Verification determines which facts and outputs are trustworthy.
-4. Runtime finalization updates the request outcome and task card.
-5. One task commit records the verified repository result.
+## Prompt Projection
 
-SQLite retains detailed run lifecycle and raw evidence. The task repository
-keeps compact durable outcomes. Large transcripts and raw tool output do not
-belong in Git by default.
+The prompt receives a bounded projection, not raw database rows or internal
+paths.
 
-## Prompt Context Projection
+- `context.session`: recent conversation, compact summary/checkpoints,
+  attachments, and relevant activity.
+- `context.git.candidates`: explained workstream candidates.
+- `context.git.current`: selected workstream/request and public resource
+  locators when bound.
+- `context.git.ingressResources`: resources admitted for the current turn.
+- `context.readContext`: reusable inventory, discovery, evidence, and action
+  entries derived from persisted run steps.
+- `context.run`: WorkState, ordered current-run tool calls, and context pressure.
+- `context.personal`: selected personal and episodic memory.
+- `context.tools`: current capability surface.
+- `context.harness`: compact repair information.
 
-The context pack is a bounded, machine-readable view prepared for the current
-decision. Depending on the turn it can include:
+Run ids, storage paths, context-repository paths, runtime mode names, routing
+counters, and deferred mutation state are not model-facing prompt data.
 
-- recent conversation tail;
-- pending-turn and optional task-binding state;
-- task candidates or the explicitly selected task;
-- active request and compact task card;
-- recent Git activity and useful evidence pointers;
-- current-run attachments;
-- loaded tool groups and available follow-up groups;
-- sparse work state and verification facts;
-- stable personal facts and relevant episodic recall.
+## Reusable Read Context
 
-It should not include every task repository, every old conversation, full Git
-logs, or unrestricted raw outputs. Search and read operations retrieve deeper
-context only when needed.
+```text
+readContext = {
+  revision,
+  afterCommitRunId?,
+  inventory,
+  discovery,
+  evidence,
+  actions
+}
+```
 
-The prompt projection groups context into areas such as
-`timeline`, `git`, `tools`, `harness`, `run`, and `personal`. These are prompt
-organization boundaries, not separate sources of durable truth.
+Entries are rebuilt from authoritative structured run steps. Current-run tool
+calls are not duplicated in reusable context. A newly created
+workstream-context commit resets the reusable window; no-change, failed,
+unbound, and skipped finalizations do not.
 
-## Active Run Context
+## Resources and Attachments
 
-The harness keeps a sparse in-memory state for the active run. It contains only
-information needed for the next decision: goal, plan, selected task/request,
-attachments, executed actions, verified facts, blockers, and next step.
+Attachments are admitted before routing. Uploaded bytes use immutable managed
+storage and a public managed-blob identity. Referenced resources stay at their
+canonical path. Both can remain session-only or be bound to a workstream.
 
-Tool working sets are also run-scoped. The hidden catalog can be searched and
-bounded groups can be loaded, but the prompt should not expose every tool
-schema at once.
+Descriptions and aliases make resources searchable without parsing every file
+on every turn. Version observations detect changed, missing, or deleted
+resources; they do not turn SQLite into a content backup.
 
-Ayati no longer depends on harness-local `data/runs/<runId>/` state trees.
-Operational run records live in Git Context SQLite and feedback traces; durable
-task outcomes live in the task repository.
+## WorkState
 
-## Attachments and Task References
-
-Attachments first enter the managed file/directory library. This gives tools a
-stable, controlled copy without committing user data. When an item is relevant
-to a task, it can be staged in `.ayati/inbox/` and then deliberately handled:
-
-- promote a small, safe, durable source into `.ayati/references/`;
-- extract a compact note or pointer into a tracked reference;
-- move real deliverable content into the project tree; or
-- leave sensitive, large, generated, or temporary input untracked.
-
-The agent must never assume that every attachment belongs in Git.
+WorkState is the sparse current-run progress projection: status, summary, open
+work, blockers, verified facts, evidence, and optional user-input need. The
+progress reducer updates it only from deterministic execution/verification.
+Workstream finalization reduces durable continuity from the final WorkState and
+accepted completion evidence.
 
 ## Personal and Episodic Memory
 
-`PersonalMemoryStore` contains stable user facts and preferences used across
-tasks. `PersonalMemorySnapshotCache` prepares a bounded prompt snapshot.
-Personal memory must not become a substitute for task state.
+Personal memory is independent from workstreams. A preference may influence
+many workstreams without belonging to any one of them. Episodic recall supplies
+relevant prior experience but does not grant resource access or mutation
+authority.
 
-Episodic memory indexes closed-session material when embeddings are available.
-It helps recall past events semantically, but Git remains the inspectable source
-for exact session and task history.
+## Context Pressure
 
-## Context Pressure and Compaction
+Token admission is deterministic and measured. The runtime trims lower-value
+reusable/context-history material before exact current input, current
+workstream/request/resource ownership, recent steps, and WorkState. If safe
+admission is still impossible, the run finalizes as
+`incomplete/context_limit`; it does not silently discard ownership facts.
 
-When context grows, preserve durable facts and pointers before prose. Prefer:
+## Recovery
 
-1. current user intent and safety constraints;
-2. selected task/request and task card;
-3. verified facts, blockers, and next step;
-4. relevant attachments and references;
-5. recent conversation needed for coherence;
-6. older narrative that can be retrieved later.
-
-Compaction must not silently change task ownership, request choice, verification
-status, or the distinction between task Git and external side effects.
-
-## Recovery Model
-
-After restart, the system should be able to:
-
-1. open the daily session repository and recover conversation continuity;
-2. query the catalog for task candidates;
-3. inspect a selected task repository directly;
-4. read `.ayati/task.md`, the active request, references, and Git history;
-5. continue or create a request explicitly; and
-6. resume work in the same stable working directory.
-
-Catalog rebuild from repositories is not fully implemented yet. Until it is,
-both the Git repositories and context SQLite data must be backed up as runtime
-state.
+Startup closes an abandoned safe run as `incomplete/interrupted`. Journaled
+finalizations and resource operations resume idempotently. Verified dirty
+resource state is preserved and unresolved recovery blocks another run in the
+same session.

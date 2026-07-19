@@ -28,7 +28,7 @@ export type DailySessionRolloverAction =
 export class DailySessionRolloverService {
   constructor(private readonly options: {
     database: ContextDatabase;
-    dataRoot: string;
+    stateRoot: string;
     sessionRegistry: SessionRegistryCache;
     conversationCache: ConversationHotCache;
     events: GitContextServiceObservability;
@@ -108,7 +108,7 @@ export class DailySessionRolloverService {
       data: {
         activeDate: pending.date,
         requestedDate: input.date,
-        reason: "waiting_for_task_bound_run_commit",
+        reason: "waiting_for_workstream_bound_run_commit",
       },
     });
     return { session: this.options.sessionRegistry.toRef(pending), created: false };
@@ -126,7 +126,7 @@ export class DailySessionRolloverService {
         date: input.date,
         timezone: input.timezone,
         agentId: existing.agentId,
-        repositoryPath: join(this.options.dataRoot, "sessions", sessionId),
+        repositoryPath: join(this.options.stateRoot, "sessions", sessionId),
         previousSessionId: existing.sessionId,
         createdAt: input.at,
       });

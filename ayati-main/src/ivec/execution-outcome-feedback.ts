@@ -16,7 +16,7 @@ export interface FeedbackExecutionEvidence {
   actionSteps?: number;
   verificationPassed?: boolean;
   verificationFailed?: boolean;
-  taskBound?: boolean;
+  workstreamBound?: boolean;
   finalizationStatus?: "not_started" | "started" | "not_required" | "no_change" | "committed" | "failed";
   commitStatus?: "not_required" | "no_change" | "committed";
   committed?: boolean;
@@ -36,7 +36,7 @@ export function deriveFeedbackExecutionOutcome(
         ? "failed"
         : "passed",
     finalization,
-    commit: deriveCommit(evidence, evidence.taskBound === true, finalization),
+    commit: deriveCommit(evidence, evidence.workstreamBound === true, finalization),
   };
 }
 
@@ -68,7 +68,7 @@ function deriveFinalization(
 
 function deriveCommit(
   evidence: FeedbackExecutionEvidence,
-  taskRun: boolean,
+  workstreamBound: boolean,
   finalization: FeedbackFinalizationOutcome,
 ): FeedbackCommitOutcome {
   const commitIdentity = nonEmptyString(evidence.commitIdentity);
@@ -77,7 +77,7 @@ function deriveCommit(
   if (evidence.commitStatus === "committed") {
     return commitIdentity ? "committed" : "failed";
   }
-  if (!taskRun) {
+  if (!workstreamBound) {
     if (evidence.committed === true) return commitIdentity ? "committed" : "failed";
     return finalization === "failed" ? "failed" : "not_required";
   }

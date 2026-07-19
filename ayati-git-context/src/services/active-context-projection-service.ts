@@ -3,10 +3,11 @@ import type {
   CommitSummary,
   RunContextProjection,
   SessionRef,
-  TaskContextProjection,
+  WorkstreamContextProjection,
 } from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
 import type { SessionRecord } from "../repositories/session-records.js";
+import { readRunResources } from "../repositories/resource-records.js";
 import { ActiveContextCache, activeContextRevision } from "./active-context-cache.js";
 import type { ActiveContextDataCache } from "./active-context-data-cache.js";
 import type { ConversationHotCache } from "./conversation-hot-cache.js";
@@ -28,10 +29,10 @@ export class ActiveContextProjectionService {
     events: GitContextServiceObservability;
     loadSessionSummary: (session: SessionRef) => Promise<SessionSummary>;
     loadActiveRun: (sessionId: string) => RunContextProjection | undefined;
-    loadActiveTask: (
+    loadActiveWorkstream: (
       sessionId: string,
       run: RunContextProjection,
-    ) => Promise<TaskContextProjection | undefined>;
+    ) => Promise<WorkstreamContextProjection | undefined>;
   }) {}
 
   unavailable(): ActiveContext {
@@ -40,7 +41,7 @@ export class ActiveContextProjectionService {
         head: null,
         status: "unavailable",
         conversations: [],
-        taskCandidates: [],
+        workstreamCandidates: [],
       }).revision,
       session: null,
       warnings: [],
@@ -60,21 +61,23 @@ export class ActiveContextProjectionService {
       .reverse()
       .flatMap((conversation) => [...conversation.messages].reverse())
       .find((message) => message.role !== "assistant");
-    const taskCandidates = await this.options.contextDataCache.taskCandidates({
+    const workstreamCandidates = await this.options.contextDataCache.workstreamCandidates({
       limit: 20,
       sessionId: session.sessionId,
       ...(latestInput ? { currentText: latestInput.content } : {}),
     });
     const readContext = this.options.contextDataCache.readContext(session.sessionId);
-    const attachments = this.options.contextDataCache.attachments(session.sessionId);
+    const resources = this.options.contextDataCache.resources(session.sessionId);
+    const ingressResources = run ? readRunResources(this.options.database, run.run.runId) : [];
     const { revision, pendingDigest } = activeContextRevision({
       head: session.head,
       status: session.status,
       conversations,
       readContext,
-      ...(attachments ? { attachments } : {}),
+      ...(resources ? { resources } : {}),
       ...(run ? { run } : {}),
-      taskCandidates,
+      ...(ingressResources.length > 0 ? { ingressResources } : {}),
+      workstreamCandidates,
     });
     const cached = this.options.contextCache.get(session.sessionId, revision);
     if (cached) {
@@ -84,8 +87,8 @@ export class ActiveContextProjectionService {
 
     const previousRevision = this.options.contextCache.latestRevision(session.sessionId);
     this.options.events.cacheMiss(session.sessionId, revision, previousRevision);
-    const activeTask = run
-      ? await this.options.loadActiveTask(session.sessionId, run)
+    const activeWorkstream = run
+      ? await this.options.loadActiveWorkstream(session.sessionId, run)
       : undefined;
     const context: ActiveContext = {
       contextRevision: revision,
@@ -99,12 +102,13 @@ export class ActiveContextProjectionService {
         pendingConversationContext: conversations,
         pendingDigest,
         recentCommits: sessionSummary.recentCommits,
-        ...(attachments ? { attachments } : {}),
+        ...(resources ? { resources } : {}),
       },
       ...(run ? { run } : {}),
-      ...(activeTask ? { activeTask } : {}),
+      ...(ingressResources.length > 0 ? { ingressResources } : {}),
+      ...(activeWorkstream ? { activeWorkstream } : {}),
       readContext,
-      taskCandidates,
+      workstreamCandidates,
       warnings: [],
     };
     this.options.contextCache.set(session.sessionId, revision, context);

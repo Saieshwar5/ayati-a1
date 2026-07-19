@@ -139,10 +139,11 @@ function createReadyChatContextRuntime(): GitContextRuntime {
       persistence: {
         database: "saved",
         materialization: "not_requested",
-        git: "not_required",
+        git: "not_committed",
       },
       materialization: { status: "not_requested" },
-      commit: { status: "not_required" },
+      resourceEffects: { status: "none", events: [] },
+      workstreamContextCommit: { status: "not_required" },
     })),
     recordRunStep: vi.fn().mockResolvedValue(prepared.context),
     recordSessionAttachments: vi.fn().mockResolvedValue(null),
@@ -169,7 +170,7 @@ function readyGitContextPreparedTurn(): GitContextPreparedTurn {
     },
     context: {
       session: {
-        meta: { sessionId: "S-20260627-local", assetCount: 0 },
+        meta: { sessionId: "S-20260627-local", resourceCount: 0 },
         conversationTail: [],
         activityTail: [],
       },

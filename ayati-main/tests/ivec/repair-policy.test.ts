@@ -31,7 +31,7 @@ describe("repair policy", () => {
   });
 
   it("creates a repair signal with catalog defaults and compact detail fields", () => {
-    const signal = createRepairSignal("R_UNBOUND_RUN_NEEDS_TASK_BINDING", {
+    const signal = createRepairSignal("R_UNBOUND_RUN_NEEDS_WORKSTREAM_BINDING", {
       blockedTargets: [" write_files ", "write_files", "", " process_run  "],
       operatorDetails: {
         seq: 31,
@@ -40,10 +40,10 @@ describe("repair policy", () => {
     });
 
     expect(signal).toMatchObject({
-      code: "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
+      code: "R_UNBOUND_RUN_NEEDS_WORKSTREAM_BINDING",
       severity: "repairable",
       source: "runner.guard",
-      message: "No active task exists yet. Normal work tools cannot run before task binding.",
+      message: "No active workstream exists yet. Normal work tools cannot run before workstream binding.",
       blockedTargets: ["write_files", "process_run"],
       missingFields: [],
       invalidFields: [],
@@ -54,8 +54,8 @@ describe("repair policy", () => {
       },
     });
     expect(signal.allowedNextActions).toEqual([
-      "Inspect the task candidates in context and call git_context_activate_task for an exact matching task.",
-      "Call git_context_create_task with title, objective, and reason for distinct new durable work.",
+      "Inspect workstream and resource candidates, then activate an exact matching workstream.",
+      "Call git_context_create_workstream with title, objective, and reason for distinct durable work.",
       "Ask a short clarification directly if the request is unclear.",
     ]);
   });
@@ -64,24 +64,24 @@ describe("repair policy", () => {
     const signal = createRepairSignal("R_TOOL_INPUT_MISSING_REQUIRED_FIELD", {
       severity: "error",
       source: "decision.input_schema.native",
-      message: "Missing required fields for git_context_create_task.",
+      message: "Missing required fields for git_context_create_workstream.",
       missingFields: ["title", "objective", "createReason"],
-      allowedNextActions: ["Call git_context_create_task again with title, objective, and createReason."],
+      allowedNextActions: ["Call git_context_create_workstream again with title, objective, and createReason."],
     });
 
     expect(signal).toMatchObject({
       code: "R_TOOL_INPUT_MISSING_REQUIRED_FIELD",
       severity: "error",
       source: "decision.input_schema.native",
-      message: "Missing required fields for git_context_create_task.",
+      message: "Missing required fields for git_context_create_workstream.",
       missingFields: ["title", "objective", "createReason"],
-      allowedNextActions: ["Call git_context_create_task again with title, objective, and createReason."],
+      allowedNextActions: ["Call git_context_create_workstream again with title, objective, and createReason."],
     });
   });
 
   it("formats a compact model-facing prompt card", () => {
     const signal = createRepairSignal("R_TOOL_INPUT_MISSING_REQUIRED_FIELD", {
-      blockedTargets: ["git_context_create_task"],
+      blockedTargets: ["git_context_create_workstream"],
       missingFields: ["title", "objective", "createReason"],
       operatorDetails: {
         attempt: 1,
@@ -92,7 +92,7 @@ describe("repair policy", () => {
     expect(repairSignalToPromptCard(signal)).toEqual({
       code: "R_TOOL_INPUT_MISSING_REQUIRED_FIELD",
       message: "The selected tool input is missing required fields.",
-      blockedTargets: ["git_context_create_task"],
+      blockedTargets: ["git_context_create_workstream"],
       missingFields: ["title", "objective", "createReason"],
       allowedNextActions: ["Call the selected tool again with the missing required fields."],
     });
@@ -106,10 +106,10 @@ describe("repair policy", () => {
 
   it("keeps operator details in feedback data", () => {
     const signal = createRepairSignal("R_ASSISTANT_TEXT_TOOL_CALL", {
-      blockedTargets: ["git_context_create_task"],
+      blockedTargets: ["git_context_create_workstream"],
       operatorDetails: {
         attempt: 1,
-        toolName: "git_context_create_task",
+        toolName: "git_context_create_workstream",
         inputKeys: ["taskCompletion"],
       },
     });
@@ -121,7 +121,7 @@ describe("repair policy", () => {
         source: "decision.assistant_text",
         message: "The assistant response looked like a tool call written as text.",
         modelFacing: true,
-        blockedTargets: ["git_context_create_task"],
+        blockedTargets: ["git_context_create_workstream"],
         missingFields: [],
         invalidFields: [],
         allowedNextActions: [
@@ -131,7 +131,7 @@ describe("repair policy", () => {
         ],
         operatorDetails: {
           attempt: 1,
-          toolName: "git_context_create_task",
+          toolName: "git_context_create_workstream",
           inputKeys: ["taskCompletion"],
         },
       },

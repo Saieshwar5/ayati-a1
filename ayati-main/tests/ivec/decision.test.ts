@@ -62,7 +62,7 @@ describe("callAgentDecision", () => {
       ],
       outcome: "done",
       validation: "passed",
-      workId: "T-20260714-0001",
+      workstreamId: "W-20260714-0001",
       runId: "R-20260714-0004",
     };
 
@@ -79,7 +79,7 @@ describe("callAgentDecision", () => {
           }],
           git: {
             session: {
-              meta: { sessionId: "S-20260714-local", assetCount: 0 },
+              meta: { sessionId: "S-20260714-local", resourceCount: 0 },
               recentCommits: [recentCommit],
               activity: { recent: [] },
             },
@@ -130,17 +130,16 @@ describe("callAgentDecision", () => {
     expect(systemPrompt).toContain("Prefer progress over discussion for actionable requests.");
     expect(systemPrompt).toContain("Use direct assistant text only for pure conversation");
     expect(systemPrompt).toContain("Do not use a final reply to promise future work.");
-    expect(systemPrompt).toContain("Call the selected tool directly");
-    expect(systemPrompt).toContain("ask_user_feedback is available only during an active task-bound run");
-    expect(systemPrompt).toContain("Do not use ask_user_feedback for casual conversation");
-    expect(systemPrompt).toContain("There is no session-global active task");
-    expect(systemPrompt).toContain("A task is a long-lived workstream");
-    expect(systemPrompt).toContain("A separate feature, lesson, analysis, or independently completable improvement normally becomes a new request");
-    expect(systemPrompt).toContain("Completing a request does not archive its task");
-    expect(systemPrompt).toContain("Exact resource ownership is stronger evidence than title similarity");
+    expect(systemPrompt).toContain("Call the selected native tool directly");
+    expect(systemPrompt).toContain("ask_user_feedback is available only in an active workstream-bound run");
+    expect(systemPrompt).toContain("Do not use feedback controls for casual conversation");
+    expect(systemPrompt).toContain("There is no session-global active workstream");
+    expect(systemPrompt).toContain("A workstream is durable context for a long-lived subject");
+    expect(systemPrompt).toContain("A later feature, lesson, analysis, or improvement normally becomes a new request");
+    expect(systemPrompt).toContain("Exact workstream identity, exact resource identity, and explicit continuation are strongest");
     expect(systemPrompt).toContain("If ownership is ambiguous, ask one short clarification question");
-    expect(systemPrompt).toContain("Normal mutation tools require the current run to be explicitly task-bound");
-    expect(systemPrompt).toContain("Do not tell the user that tools are missing.");
+    expect(systemPrompt).toContain("Persistent mutation requires one immutable workstream/request binding");
+    expect(systemPrompt).toContain("Use decision_load_tools when a needed tool is absent");
     expect(systemPrompt).not.toContain("decision_act");
   });
 
@@ -157,32 +156,28 @@ describe("callAgentDecision", () => {
 
     const messages = generateTurn.mock.calls[0]?.[0]?.messages ?? [];
     const systemPrompt = messages.find((message) => message.role === "system")?.content ?? "";
-    expect(systemPrompt).toContain("Use only the current grouped paths");
-    expect(systemPrompt).toContain("context.git.current.task");
-    expect(systemPrompt).toContain("context.git.session.attachments");
-    expect(systemPrompt).toContain("Use context.git.session.summary as compressed older history");
+    expect(systemPrompt).toContain("Treat State view.context as the bounded context pack");
+    expect(systemPrompt).toContain("context.git.current.workstream");
+    expect(systemPrompt).toContain("context.git.session.resources");
+    expect(systemPrompt).toContain("Use context.git.session.summary as compressed history");
     expect(systemPrompt).toContain("context.timeline as exact recent history");
-    expect(systemPrompt).toContain("exact later items override an older checkpoint or summary");
-    expect(systemPrompt).toContain("Do not infer details omitted from a summary");
+    expect(systemPrompt).toContain("exact later items override older checkpoints or summaries");
+    expect(systemPrompt).toContain("Do not infer details omitted from summaries");
     expect(systemPrompt).not.toContain("context.run.status");
     expect(systemPrompt).toContain("context.run.workState");
     expect(systemPrompt).toContain("context.run.toolCalls");
-    expect(systemPrompt).toContain("outputPreview");
-    expect(systemPrompt).toContain("stepRef");
-    expect(systemPrompt).toContain("evidenceRef");
-    expect(systemPrompt).toContain("use a narrow read");
-    expect(systemPrompt).toContain("When context.run.contextPressure is present");
-    expect(systemPrompt).toContain("follow its recommended mode");
-    expect(systemPrompt).toContain("Do not rewrite or summarize runtime-owned timeline");
+    expect(systemPrompt).toContain("Read a narrow persisted step");
+    expect(systemPrompt).toContain("Under context pressure, use smaller verifiable steps");
+    expect(systemPrompt).toContain("never rewrite runtime-owned context yourself");
     expect(systemPrompt).not.toContain("context.scratch");
     expect(systemPrompt).not.toContain("context.run.progress");
     expect(systemPrompt).not.toContain("context.run.feedback");
-    expect(systemPrompt).toContain("context.harness.feedback");
+    expect(systemPrompt).toContain("context.harness for deterministic feedback");
     expect(systemPrompt).not.toContain("context.run.readContext.latest");
     expect(systemPrompt).not.toContain("context.run.observations.latest");
     expect(systemPrompt).not.toContain("context.run.trace");
-    expect(systemPrompt).toContain("context.tools.active");
-    expect(systemPrompt).toContain("context.personal.memorySnapshot");
+    expect(systemPrompt).toContain("context.tools for tool state");
+    expect(systemPrompt).toContain("context.personal for long-lived user memory");
     expect(systemPrompt).not.toContain("context.gitContext");
     expect(systemPrompt).not.toContain("State view.progress");
     expect(systemPrompt).not.toContain("State view.workingFeedback");
@@ -209,7 +204,7 @@ describe("callAgentDecision", () => {
             session: {
               meta: {
                 sessionId: "S-20260627-local",
-                assetCount: 0,
+                resourceCount: 0,
               },
               summary: {
                 text: "Session summary.",
@@ -226,7 +221,7 @@ describe("callAgentDecision", () => {
             session: {
               meta: {
                 sessionId: "S-20260627-local",
-                assetCount: 0,
+                resourceCount: 0,
               },
               conversationTail: [],
               conversationMarkdownTail: "# Conversation\n\nlegacy",
@@ -438,7 +433,7 @@ describe("callAgentDecision", () => {
             kind: "user",
             seq: 1,
             timestamp: "2026-07-10T00:00:00.000Z",
-            content: "Continue the task",
+            content: "Continue the workstream",
             current: true,
           }],
           run: { toolCalls },
@@ -494,7 +489,7 @@ describe("callAgentDecision", () => {
       countInputTokens,
       generateTurn,
     };
-    const task = protectedTaskContext();
+    const workstream = protectedWorkstreamContext();
     const workState = {
       status: "not_done" as const,
       blockers: ["Keep the protected state intact."],
@@ -507,17 +502,17 @@ describe("callAgentDecision", () => {
           kind: "user",
           seq: 1,
           timestamp: "2026-07-10T00:00:00.000Z",
-          content: "Continue the task",
+          content: "Continue the workstream",
           current: true,
         }],
         git: {
           session: {
-            meta: { sessionId: "session-1", assetCount: 0 },
+            meta: { sessionId: "session-1", resourceCount: 0 },
             activity: { recent: [] },
           },
           current: {
-            focus: { status: "active", ref: "refs/heads/task/T-1", workId: "T-1" },
-            task,
+            focus: { status: "active", ref: "refs/heads/main", workstreamId: "W-1" },
+            workstream,
           },
         },
         run: { workState, toolCalls: largeToolCalls(50_000) },
@@ -557,10 +552,10 @@ describe("callAgentDecision", () => {
     if (typeof sentUserPrompt !== "string") throw new Error("Expected a user prompt.");
     const sentState = parsePromptStateView(sentUserPrompt);
     const sentContext = sentState["context"] as {
-      git: { current: { task: unknown } };
+      git: { current: { workstream: unknown } };
       run: { workState: unknown; toolCalls: Array<{ mode: string }> };
     };
-    expect(sentContext.git.current.task).toEqual(task);
+    expect(sentContext.git.current.workstream).toEqual(workstream);
     expect(sentContext.run.workState).toEqual(workState);
     expect(sentContext.run.toolCalls.slice(0, 4).some((call) => call.mode !== "full")).toBe(true);
     expect(sentContext.run.toolCalls.slice(-6).every((call) => call.mode === "full")).toBe(true);
@@ -574,7 +569,7 @@ describe("callAgentDecision", () => {
     const countInputTokens = vi.fn(async (turnInput: LlmTurnInput) => {
       const state = promptStateFromTurn(turnInput);
       const session = (state["context"] as {
-        git: { session: { summary?: unknown; recentTaskRuns?: unknown[] } };
+        git: { session: { summary?: unknown; recentRunCheckpoints?: unknown[] } };
       }).git.session;
       return {
         provider: "fake-provider",
@@ -594,7 +589,7 @@ describe("callAgentDecision", () => {
     };
     const workState = {
       status: "not_done" as const,
-      openWork: ["Continue the protected task."],
+      openWork: ["Continue the protected workstream."],
       nextStep: "Take the next small step.",
     };
     const stateView = contextPressureState({
@@ -643,27 +638,27 @@ describe("callAgentDecision", () => {
       git: {
         session: {
           summary?: unknown;
-          recentTaskRuns?: Array<{ checkpointId: string }>;
+          recentRunCheckpoints?: Array<{ checkpointId: string }>;
           attachments?: unknown;
           activity: { recent: unknown[] };
         };
-        current: { task: unknown };
+        current: { workstream: unknown };
       };
       run: { workState: unknown };
     };
     expect(sentContext.git.session).not.toHaveProperty("summary");
-    expect(sentContext.git.session.recentTaskRuns?.map((item) => item.checkpointId)).toEqual(["checkpoint-5"]);
+    expect(sentContext.git.session.recentRunCheckpoints?.map((item) => item.checkpointId)).toEqual(["checkpoint-5"]);
     expect(JSON.stringify(sentContext)).not.toContain('"runId"');
     expect(sentContext.git.session.activity.recent).toEqual([]);
     expect(sentContext.git.session.attachments).toEqual(
       stateView.context.git?.session.attachments,
     );
     expect(sentContext.timeline).toEqual(stateView.context.timeline);
-    expect(sentContext.git.current.task).toEqual(protectedTaskContext());
+    expect(sentContext.git.current.workstream).toEqual(protectedWorkstreamContext());
     expect(sentContext.run.workState).toEqual(workState);
   });
 
-  it("combines the latest task-bound-run checkpoint with the old timeline prefix", async () => {
+  it("combines the latest workstream-bound run checkpoint with the old timeline prefix", async () => {
     const generateTurn = vi.fn(async (turnInput: LlmTurnInput): Promise<LlmTurnOutput> => {
       if (turnInput.responseFormat?.type === "json_schema") {
         return { type: "assistant", content: JSON.stringify(validTimelineCheckpointSummary(9)) };
@@ -704,7 +699,7 @@ describe("callAgentDecision", () => {
     };
     const workState = {
       status: "not_done" as const,
-      verifiedFacts: ["The protected task is active."],
+      verifiedFacts: ["The protected workstream is active."],
       nextStep: "Continue after recovery.",
     };
     const timeline = pressureTimelineAfterCheckpoint();
@@ -736,7 +731,7 @@ describe("callAgentDecision", () => {
     const checkpointInput = generateTurn.mock.calls.find((call) => call[0].responseFormat)?.[0];
     const checkpointSource = checkpointInput?.messages.find((message) => message.role === "user")?.content;
     if (typeof checkpointSource !== "string") throw new Error("Expected checkpoint source.");
-    expect(checkpointSource).toContain('"previousTaskBoundRunCheckpoint"');
+    expect(checkpointSource).toContain('"previousWorkstreamBoundRunCheckpoint"');
     expect(checkpointSource).not.toContain('"runId"');
     expect(checkpointSource).toContain('"seq": 11');
 
@@ -746,17 +741,17 @@ describe("callAgentDecision", () => {
     const sentContext = sentState["context"] as {
       timeline: Array<{ kind: string; seq: number; current?: true }>;
       git: {
-        session: { summary?: unknown; recentTaskRuns?: unknown; activity: { recent: unknown[] } };
-        current: { task: unknown };
+        session: { summary?: unknown; recentRunCheckpoints?: unknown; activity: { recent: unknown[] } };
+        current: { workstream: unknown };
       };
       run: { workState: unknown };
     };
     expect(sentContext.timeline[0]).toMatchObject({ kind: "checkpoint", seq: 11 });
     expect(sentContext.timeline.at(-1)).toEqual(timeline.at(-1));
     expect(sentContext.git.session).not.toHaveProperty("summary");
-    expect(sentContext.git.session).not.toHaveProperty("recentTaskRuns");
+    expect(sentContext.git.session).not.toHaveProperty("recentRunCheckpoints");
     expect(sentContext.git.session.activity.recent).toEqual([]);
-    expect(sentContext.git.current.task).toEqual(protectedTaskContext());
+    expect(sentContext.git.current.workstream).toEqual(protectedWorkstreamContext());
     expect(sentContext.run.workState).toEqual(workState);
   });
 
@@ -999,10 +994,10 @@ describe("callAgentDecision", () => {
       context: {
         timeline: pressureTimeline(),
         git: {
-          session: { meta: { sessionId: "session-1", assetCount: 0 }, activity: { recent: [] } },
+          session: { meta: { sessionId: "session-1", resourceCount: 0 }, activity: { recent: [] } },
           current: {
-            focus: { status: "active", ref: "refs/heads/task/T-1", workId: "T-1" },
-            task: protectedTaskContext(),
+            focus: { status: "active", ref: "refs/heads/main", workstreamId: "W-1" },
+            workstream: protectedWorkstreamContext(),
           },
         },
         run: {
@@ -1056,7 +1051,7 @@ describe("callAgentDecision", () => {
     const sentState = parsePromptStateView(finalUserPrompt);
     const sentContext = sentState["context"] as {
       timeline: Array<{ kind: string; current?: true; content?: string }>;
-      git: { current: { task: unknown } };
+      git: { current: { workstream: unknown } };
       run: {
         workState: unknown;
         toolCalls: Array<{ mode: string }>;
@@ -1069,7 +1064,7 @@ describe("callAgentDecision", () => {
       content: pressureTimeline().at(-1)?.content,
       current: true,
     });
-    expect(sentContext.git.current.task).toEqual(protectedTaskContext());
+    expect(sentContext.git.current.workstream).toEqual(protectedWorkstreamContext());
     expect(sentContext.run.workState).toEqual(workState);
     expect(sentContext.run.toolCalls.slice(0, 4).some((call) => call.mode !== "full")).toBe(true);
     expect(sentContext.run.toolCalls.slice(-6).every((call) => call.mode === "full")).toBe(true);
@@ -1213,7 +1208,7 @@ describe("callAgentDecision", () => {
             session: {
               meta: {
                 sessionId: "S-20260627-local",
-                assetCount: 0,
+                resourceCount: 0,
               },
               summary: {
                 text: "Session summary.",
@@ -1254,7 +1249,7 @@ describe("callAgentDecision", () => {
               },
               activityTail: [],
               recentCommits: [],
-              assetCount: 0,
+              resourceCount: 0,
             },
             focus: { status: "none" },
           },
@@ -1310,7 +1305,7 @@ describe("callAgentDecision", () => {
           session: {
             meta: {
               sessionId: "S-20260627-local",
-              assetCount: 0,
+              resourceCount: 0,
             },
             summary: {
               text: "Session summary.",
@@ -1411,11 +1406,11 @@ describe("callAgentDecision", () => {
 
   it("repairs tool-call JSON returned as assistant text", async () => {
     const fakeToolJson = JSON.stringify({
-      tool: "git_context_create_task",
+      tool: "git_context_create_workstream",
       arguments: {
         taskCompletion: {
           intent: "not_completion",
-          reason: "Create task for user request to create Linux commands file",
+          reason: "Create a workstream for the user's Linux commands file",
         },
       },
     });
@@ -1425,16 +1420,16 @@ describe("callAgentDecision", () => {
         mode: "single",
         calls: [{
           id: "call_1",
-          tool: "git_context_create_task",
+          tool: "git_context_create_workstream",
           input: {
             title: "Linux commands file",
             objective: "Create a text file with 10 Linux commands.",
             reason: "The user requested durable file creation.",
           },
           dependsOn: [],
-          purpose: "Create and activate the task for the requested Linux commands file.",
+          purpose: "Create and activate the workstream for the requested Linux commands file.",
         }],
-        allowedTools: ["git_context_create_task"],
+        allowedTools: ["git_context_create_workstream"],
       },
     };
     const feedback = createFeedbackLedger();
@@ -1446,7 +1441,7 @@ describe("callAgentDecision", () => {
     const decision = await callAgentDecision({
       provider,
       stateView: createStateView(),
-      toolDefinitions: [createTool("git_context_create_task")],
+      toolDefinitions: [createTool("git_context_create_workstream")],
       feedbackLedger: feedback.ledger,
       feedbackContext: {
         clientId: "local",
@@ -1459,20 +1454,20 @@ describe("callAgentDecision", () => {
     expect(generateTurn).toHaveBeenCalledTimes(2);
     const repairPrompt = generateTurn.mock.calls[1]?.[0]?.messages.at(-1)?.content ?? "";
     expect(repairPrompt).toContain("Repair code: R_ASSISTANT_TEXT_TOOL_CALL");
-    expect(repairPrompt).toContain("Blocked targets: git_context_create_task");
+    expect(repairPrompt).toContain("Blocked targets: git_context_create_workstream");
     expect(repairPrompt).toContain("Do not write tool-call JSON in assistant text");
     expect(feedback.events.some((event) => event.event === "direct_reply")).toBe(false);
     expect(feedback.events.find((event) => event.event === "assistant_text_tool_call")?.data).toMatchObject({
-      toolName: "git_context_create_task",
-      selectedTools: ["git_context_create_task"],
+      toolName: "git_context_create_workstream",
+      selectedTools: ["git_context_create_workstream"],
       repair: {
         code: "R_ASSISTANT_TEXT_TOOL_CALL",
-        blockedTargets: ["git_context_create_task"],
+        blockedTargets: ["git_context_create_workstream"],
         operatorDetails: {
           attempt: 1,
-          toolName: "git_context_create_task",
+          toolName: "git_context_create_workstream",
           inputKeys: ["taskCompletion"],
-          selectedTools: ["git_context_create_task"],
+          selectedTools: ["git_context_create_workstream"],
         },
       },
     });
@@ -1554,11 +1549,11 @@ describe("callAgentDecision", () => {
 
   it("returns a failed reply after repeated assistant-text tool calls", async () => {
     const fakeToolJson = JSON.stringify({
-      tool: "git_context_create_task",
+      tool: "git_context_create_workstream",
       arguments: {
         taskCompletion: {
           intent: "not_completion",
-          reason: "Create task for user request",
+          reason: "Create a workstream for the user request",
         },
       },
     });
@@ -1567,7 +1562,7 @@ describe("callAgentDecision", () => {
     const decision = await callAgentDecision({
       provider,
       stateView: createStateView(),
-      toolDefinitions: [createTool("git_context_create_task")],
+      toolDefinitions: [createTool("git_context_create_workstream")],
     });
 
     expect(generateTurn).toHaveBeenCalledTimes(3);
@@ -1648,11 +1643,11 @@ describe("callAgentDecision", () => {
 
     expect(decision.kind).toBe("load_tools");
     const repairPrompt = generateTurn.mock.calls[1]?.[0]?.messages.at(-1)?.content ?? "";
-    expect(repairPrompt).toContain("Repair code: R_MUTATION_REQUIRES_TASK_BINDING");
+    expect(repairPrompt).toContain("Repair code: R_MUTATION_REQUIRES_WORKSTREAM_BINDING");
     expect(repairPrompt).toContain("Blocked targets: process_run");
     expect(feedback.events.find((event) => event.event === "protocol_violation")?.data).toMatchObject({
       repair: {
-        code: "R_MUTATION_REQUIRES_TASK_BINDING",
+        code: "R_MUTATION_REQUIRES_WORKSTREAM_BINDING",
         blockedTargets: ["process_run"],
       },
     });
@@ -1955,7 +1950,7 @@ describe("callAgentDecision", () => {
     });
   });
 
-  it("exposes task feedback only when enabled", async () => {
+  it("exposes workstream feedback only when enabled", async () => {
     const { provider, generateTurn } = createProvider([
       JSON.stringify({ kind: "ask_user", question: "Which path?", reason: "Need a target path." }),
     ], { jsonSchema: true });
@@ -1964,7 +1959,7 @@ describe("callAgentDecision", () => {
       provider,
       stateView: createStateView(),
       toolDefinitions: [],
-      taskFeedbackToolAvailable: true,
+      workstreamFeedbackToolAvailable: true,
     });
 
     expect(generateTurn.mock.calls[0]?.[0]?.tools.map((tool: { name: string }) => tool.name)).toEqual([
@@ -2060,15 +2055,21 @@ describe("callAgentDecision", () => {
     });
   });
 
-  it("exposes and parses task_completion only when enabled", async () => {
+  it("exposes and parses workstream_completion only when enabled", async () => {
     const { provider, generateTurn } = createNativeToolProvider([{
       type: "tool_calls",
       calls: [{
         id: "complete_1",
-        name: "task_completion",
+        name: "workstream_completion",
         input: {
           summary: "Created the requested website files.",
-          assets: [{ path: "index.html", kind: "file", description: "Main website page" }],
+          resources: [{
+            resourceId: `RES-${"A".repeat(24)}`,
+            path: "index.html",
+            kind: "file",
+            description: "Main website page",
+            aliases: ["homepage"],
+          }],
         },
       }],
     }]);
@@ -2077,23 +2078,29 @@ describe("callAgentDecision", () => {
       provider,
       stateView: createStateView(),
       toolDefinitions: [],
-      taskCompletionAvailable: true,
+      workstreamCompletionAvailable: true,
     });
 
-    const taskCompletionTool = generateTurn.mock.calls[0]?.[0]?.tools
-      ?.find((tool) => tool.name === "task_completion");
-    expect(taskCompletionTool).toBeDefined();
-    expect(JSON.stringify(taskCompletionTool?.inputSchema)).toContain(
-      "Portable path relative to the active task repository root.",
+    const workstreamCompletionTool = generateTurn.mock.calls[0]?.[0]?.tools
+      ?.find((tool) => tool.name === "workstream_completion");
+    expect(workstreamCompletionTool).toBeDefined();
+    expect(JSON.stringify(workstreamCompletionTool?.inputSchema)).toContain(
+      "Portable path relative to that resource's filesystem root.",
     );
-    expect(JSON.stringify(taskCompletionTool?.inputSchema)).not.toContain(
+    expect(JSON.stringify(workstreamCompletionTool?.inputSchema)).not.toContain(
       "Canonical absolute path of the completed file or directory.",
     );
     expect(decision).toEqual({
-      kind: "task_completion",
+      kind: "workstream_completion",
       request: {
         summary: "Created the requested website files.",
-        assets: [{ path: "index.html", kind: "file", description: "Main website page" }],
+        resources: [{
+          resourceId: `RES-${"A".repeat(24)}`,
+          path: "index.html",
+          kind: "file",
+          description: "Main website page",
+          aliases: ["homepage"],
+        }],
       },
       workingNotes: undefined,
     });
@@ -2378,24 +2385,24 @@ function contextPressureState(input: {
       timeline: input.timeline,
       git: {
         session: {
-          meta: { sessionId: "session-1", assetCount: 1 },
+          meta: { sessionId: "session-1", resourceCount: 1 },
           summary: { text: "Structured session snapshot.", coveredUntilSeq: 8 },
-          recentTaskRuns: Array.from({ length: 5 }, (_, index) => taskRunCheckpoint(index + 1)),
+          recentRunCheckpoints: Array.from({ length: 5 }, (_, index) => runCheckpoint(index + 1)),
           attachments: { count: 1, recent: [] },
           activity: {
             recent: [{
               seq: 10,
-              type: "run_committed",
+              type: "workstream_context_committed",
               at: "2026-07-10T10:00:00.000Z",
               runId: "run-5",
-              workId: "work-5",
+              workstreamId: "W-5",
               commit: "commit-5",
             }],
           },
         },
         current: {
-          focus: { status: "active", ref: "refs/heads/task/T-1", workId: "T-1" },
-          task: protectedTaskContext(),
+          focus: { status: "active", ref: "refs/heads/main", workstreamId: "W-1" },
+          workstream: protectedWorkstreamContext(),
         },
       },
       ...(input.workState ? { run: { workState: input.workState } } : {}),
@@ -2403,12 +2410,12 @@ function contextPressureState(input: {
   });
 }
 
-function taskRunCheckpoint(sequence: number) {
+function runCheckpoint(sequence: number) {
   const fromSeq = sequence * 2 - 1;
   return {
     checkpointId: `checkpoint-${sequence}`,
     commit: `commit-${sequence}`,
-    workId: `work-${sequence}`,
+    workstreamId: `W-${sequence}`,
     runId: `run-${sequence}`,
     status: "completed" as const,
     fromSeq,
@@ -2417,8 +2424,8 @@ function taskRunCheckpoint(sequence: number) {
     strategy: "llm" as const,
     at: `2026-07-10T09:0${sequence}:00.000Z`,
     summary: sequence === 5
-      ? `Task-bound-run checkpoint ${sequence}: ${"x".repeat(300_000)}`
-      : `Task-bound-run checkpoint ${sequence}.`,
+      ? `Workstream-bound run checkpoint ${sequence}: ${"x".repeat(300_000)}`
+      : `Workstream-bound run checkpoint ${sequence}.`,
   };
 }
 
@@ -2453,26 +2460,33 @@ function validTimelineCheckpointSummary(seq = 1) {
   };
 }
 
-function protectedTaskContext() {
+function protectedWorkstreamContext() {
   return {
     identity: {
-      ref: "refs/heads/task/T-1",
-      title: "Protected task",
-      objective: "Preserve task context during tool projection.",
-      workId: "T-1",
+      ref: "refs/heads/main",
+      workstreamId: "W-1",
+      title: "Protected workstream",
+      objective: "Preserve workstream context during tool projection.",
     },
     state: {
-      status: "active",
-      completed: ["Measured the candidate."],
-      open: ["Enforce the tool projection."],
+      summary: "The context candidate was measured.",
+      workstreamStatus: "in_progress",
+      lifecycleStatus: "active",
+      repositoryHealth: "ready",
       blockers: [],
-      facts: [{ text: "Task state is protected." }],
       next: "Measure the final request.",
+      currentRequest: {
+        id: "R-0001",
+        title: "Enforce tool projection",
+        status: "active",
+        request: "Enforce the tool projection.",
+        acceptance: ["The final request fits."],
+        constraints: [],
+      },
     },
-    assets: [{ path: "src/context.ts", kind: "file" }],
+    resources: [],
     activity: {
-      recentRuns: [],
-      recentEvidence: [],
+      recentCommits: [],
     },
   };
 }

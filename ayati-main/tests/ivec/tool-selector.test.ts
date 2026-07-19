@@ -133,13 +133,13 @@ describe("selectToolsForDecision", () => {
     const selected = selectToolsForDecision(current, [
       tool("process_run", 100),
       tool("write_files", 100),
-      tool("git_context_activate_task", 1),
-      tool("git_context_create_task", 1),
+      tool("git_context_activate_workstream", 1),
+      tool("git_context_create_workstream", 1),
     ], 12);
 
     expect(selected.map((entry) => entry.name)).toEqual([
-      "git_context_activate_task",
-      "git_context_create_task",
+      "git_context_activate_workstream",
+      "git_context_create_workstream",
     ]);
   });
 
@@ -152,14 +152,14 @@ describe("selectToolsForDecision", () => {
     const selected = selectToolsForDecision(current, [
       tool("process_run", 100),
       tool("write_files", 100),
-      tool("git_context_activate_task", 1),
-      tool("git_context_create_task", 1),
+      tool("git_context_activate_workstream", 1),
+      tool("git_context_create_workstream", 1),
     ], 12);
 
     const selectedNames = selected.map((entry) => entry.name);
     expect(selectedNames).toEqual([
-      "git_context_activate_task",
-      "git_context_create_task",
+      "git_context_activate_workstream",
+      "git_context_create_workstream",
     ]);
     expect(selectedNames).not.toContain("process_run");
     expect(selectedNames).not.toContain("write_files");
@@ -177,7 +177,7 @@ describe("selectToolsForDecision", () => {
       tool("read_files", 90),
       tool("search_in_files", 80),
       tool("document_query", 70),
-      tool("git_context_create_task", 1),
+      tool("git_context_create_workstream", 1),
     ], 3);
 
     const selectedNames = selected.map((entry) => entry.name);
@@ -201,16 +201,16 @@ describe("selectToolsForDecision", () => {
       tool("process_run", 70),
       tool("search_in_files", 60),
       tool("git_context_list_tasks", 1),
-      tool("git_context_search_tasks", 1),
-      tool("git_context_activate_task", 1),
-      tool("git_context_create_task", 1),
+      tool("git_context_find_workstreams", 1),
+      tool("git_context_activate_workstream", 1),
+      tool("git_context_create_workstream", 1),
     ], 3);
 
     const selectedNames = selected.map((entry) => entry.name);
     expect(selectedNames).toEqual([
       "search_in_files",
-      "git_context_activate_task",
-      "git_context_create_task",
+      "git_context_activate_workstream",
+      "git_context_create_workstream",
     ]);
     expect(selectedNames).not.toContain("write_files");
     expect(selectedNames).not.toContain("create_directory");
@@ -229,15 +229,15 @@ describe("selectToolsForDecision", () => {
       tool("patch_files", 90),
       tool("read_files", 80),
       tool("git_context_list_tasks", 1),
-      tool("git_context_search_tasks", 1),
-      tool("git_context_activate_task", 1),
-      tool("git_context_create_task", 1),
+      tool("git_context_find_workstreams", 1),
+      tool("git_context_activate_workstream", 1),
+      tool("git_context_create_workstream", 1),
     ], 2);
 
     const selectedNames = selected.map((entry) => entry.name);
     expect(selectedNames).toEqual([
-      "git_context_activate_task",
-      "git_context_create_task",
+      "git_context_activate_workstream",
+      "git_context_create_workstream",
     ]);
     expect(selectedNames).not.toContain("write_files");
     expect(selectedNames).not.toContain("patch_files");
@@ -252,7 +252,7 @@ describe("selectToolsForDecision", () => {
 
     expect(selectToolsForDecision(current, [
       tool("git_context_list_tasks", 1),
-      tool("git_context_create_task", 1),
+      tool("git_context_create_workstream", 1),
       tool("process_run", 100),
     ], 12)).toEqual([]);
   });

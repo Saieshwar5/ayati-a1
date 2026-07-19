@@ -5,10 +5,10 @@ Major backend services and stores:
 - `IVecEngine`: coordinates user messages, system events, context building, provider calls, tool execution, replies, and notifications.
 - `ManagedGitContextProcess`: starts, health-checks, and stops the independent
   local Git Context server with the daemon.
-- `GitContextRuntime`: typed daemon-side adapter for session, task, request,
+- `GitContextRuntime`: typed daemon-side adapter for session, workstream, request,
   run, and context-projection operations.
 - `SqliteGitContextService`: server-side owner of the context catalog, session
-  lifecycle, task selection, request lifecycle, run journal, and Git
+  lifecycle, workstream/resource selection, request lifecycle, run journal, and Git
   finalization coordination.
 - `PersonalMemoryStore`: canonical user memory storage for personalization.
 - `PersonalMemorySnapshotCache`: prompt-ready personal memory snapshots.
@@ -31,12 +31,12 @@ Daemon-specific responsibilities:
 
 - Keep the Git Context server and runtime state available across client
   sessions.
-- Keep task lifecycle mutations deterministic: the agent may express routing
-  intent, but the Git Context service owns request allocation, task state
-  updates, finalization, and commits.
+- Keep durable lifecycle mutations deterministic: the agent may express
+  routing intent, but Git Context owns request allocation, resource journals,
+  workstream reduction, finalization, and context commits.
 - Accept inputs from multiple future communication channels.
 - Use the tool executor as the computer-access layer.
 - Process background events even when no CLI is actively connected.
 - Keep client transports thin and focused on input/output.
 
-See [Task Repositories](task-repositories.md) for the durable task contract.
+See [Workstreams and Resources](workstreams-and-resources.md).

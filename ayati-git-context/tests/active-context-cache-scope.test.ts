@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,7 +23,7 @@ describe("active context cache scope", () => {
     roots.push(root);
     const database = await ContextDatabase.open({ path: join(root, "context.db") });
     let readLoads = 0;
-    let attachmentLoads = 0;
+    let resourceLoads = 0;
     let candidateLoads = 0;
     const cache = new ActiveContextDataCache({
       database,
@@ -38,49 +37,49 @@ describe("active context cache scope", () => {
           actions: [],
         };
       },
-      loadAttachments: () => {
-        attachmentLoads += 1;
+      loadResources: () => {
+        resourceLoads += 1;
         return undefined;
       },
-      loadTaskCandidates: async () => {
+      loadWorkstreamCandidates: async () => {
         candidateLoads += 1;
         return [];
       },
-      taskCandidateMaxAgeMs: 300_000,
+      workstreamCandidateMaxAgeMs: 300_000,
       now: () => "2026-07-12T09:00:00+05:30",
     });
 
     expect(cache.readContext("S-one")).toMatchObject({ revision: "read-1" });
     expect(cache.readContext("S-one")).toMatchObject({ revision: "read-1" });
-    expect(cache.attachments("S-one")).toBeUndefined();
-    expect(cache.attachments("S-one")).toBeUndefined();
+    expect(cache.resources("S-one")).toBeUndefined();
+    expect(cache.resources("S-one")).toBeUndefined();
     const candidateInput = {
       limit: 20,
       sessionId: "S-one",
-      currentText: "Continue the cache task.",
+      currentText: "Continue the cache workstream.",
     };
-    await cache.taskCandidates(candidateInput);
-    await cache.taskCandidates(candidateInput);
-    expect({ readLoads, attachmentLoads, candidateLoads }).toEqual({
+    await cache.workstreamCandidates(candidateInput);
+    await cache.workstreamCandidates(candidateInput);
+    expect({ readLoads, resourceLoads, candidateLoads }).toEqual({
       readLoads: 1,
-      attachmentLoads: 1,
+      resourceLoads: 1,
       candidateLoads: 1,
     });
-    await cache.taskCandidates({
+    await cache.workstreamCandidates({
       ...candidateInput,
       currentText: "Open a different workstream.",
     });
     expect(candidateLoads).toBe(2);
 
     cache.invalidateReadContext("S-one");
-    cache.invalidateAttachments("S-one");
-    cache.invalidateTaskCandidates();
+    cache.invalidateResources("S-one");
+    cache.invalidateWorkstreamCandidates();
     cache.readContext("S-one");
-    cache.attachments("S-one");
-    await cache.taskCandidates(candidateInput);
-    expect({ readLoads, attachmentLoads, candidateLoads }).toEqual({
+    cache.resources("S-one");
+    await cache.workstreamCandidates(candidateInput);
+    expect({ readLoads, resourceLoads, candidateLoads }).toEqual({
       readLoads: 2,
-      attachmentLoads: 2,
+      resourceLoads: 2,
       candidateLoads: 3,
     });
     database.close();
@@ -134,66 +133,65 @@ describe("active context cache scope", () => {
     );
   });
 
-  it("refreshes cached attachment and task-candidate projections after their owners change", async () => {
+  it("refreshes cached resource and workstream-candidate projections after their owners change", async () => {
     const fixture = await createFixture(() => "2026-07-12T09:00:00+05:30");
+    const retainedDirectory = join(fixture.root, "retained");
+    const retainedPath = join(retainedDirectory, "notes.txt");
+    const content = "important notes\n";
+    await mkdir(retainedDirectory, { recursive: true });
+    await writeFile(retainedPath, content);
+    const session = await ensureSession(
+      fixture.service,
+      "REQ-resource-session",
+      "2026-07-12",
+      "2026-07-12T09:00:00+05:30",
+    );
+    const initial = await fixture.service.getActiveContext({ sessionId: session.session.sessionId });
+    expect(initial.session?.resources).toMatchObject({ count: 0, recent: [] });
+    expect(initial.workstreamCandidates).toEqual([]);
+
     const prepared = await fixture.service.prepareContextTurn({
       requestId: "REQ-turn",
       date: "2026-07-12",
       timezone: "Asia/Kolkata",
       agentId: "local",
       role: "user",
-      content: "Retain a document and create a task.",
+      content: "Retain a document and create a workstream.",
+      resources: [{
+        admissionId: "notes-upload",
+        kind: "document",
+        origin: "user_attachment",
+        locator: { kind: "filesystem", path: retainedPath },
+        displayName: "notes.txt",
+        description: "Notes for the scoped cache workstream.",
+        aliases: ["cache notes"],
+        role: "attachment",
+      }],
       at: "2026-07-12T09:01:00+05:30",
     });
-    const initial = await fixture.service.getActiveContext({
-      sessionId: prepared.session.sessionId,
-    });
-    expect(initial.session?.attachments).toBeUndefined();
-    expect(initial.taskCandidates).toEqual([]);
-
-    const retainedDirectory = join(fixture.root, "retained");
-    const retainedPath = join(retainedDirectory, "notes.txt");
-    const content = "important notes\n";
-    await mkdir(retainedDirectory, { recursive: true });
-    await writeFile(retainedPath, content);
-    await fixture.service.recordSessionAttachments({
-      requestId: "REQ-attachment",
-      sessionId: prepared.session.sessionId,
-      conversationId: prepared.conversation.conversationId,
-      attachments: [{
-        sessionAssetId: "SA-notes",
-        kind: "file",
-        name: "notes.txt",
-        source: "user_upload",
-        status: "ready",
-        storedPath: retainedPath,
-        sizeBytes: Buffer.byteLength(content),
-        checksum: createHash("sha256").update(content).digest("hex"),
-        createdAt: "2026-07-12T09:02:00+05:30",
-      }],
-      at: "2026-07-12T09:02:00+05:30",
-    });
-    const task = await fixture.service.createTaskForRun({
-      requestId: "REQ-task",
+    const resource = prepared.context.ingressResources?.[0];
+    if (!resource) throw new Error("Expected admitted resource.");
+    const workstream = await fixture.service.createWorkstreamForRun({
+      requestId: "REQ-workstream",
       sessionId: prepared.session.sessionId,
       conversationId: prepared.conversation.conversationId,
       runId: prepared.run.runId,
       expectedHead: prepared.session.head ?? undefined,
-      title: "Scoped Cache Task",
-      objective: "Prove that shared task candidates refresh deterministically.",
-      placement: { mode: "managed" },
+      title: "Scoped Cache Workstream",
+      objective: "Prove that shared workstream candidates refresh deterministically.",
+      resources: [{ resourceId: resource.resourceId, role: "primary", access: "read", primary: true }],
       at: "2026-07-12T09:03:00+05:30",
     });
 
     const refreshed = await fixture.service.getActiveContext({
       sessionId: prepared.session.sessionId,
     });
-    expect(refreshed.session?.attachments).toMatchObject({
+    expect(refreshed.session?.resources).toMatchObject({
       count: 1,
-      recent: [{ sessionAssetId: "SA-notes" }],
+      recent: [{ resourceId: resource.resourceId }],
     });
-    expect(refreshed.taskCandidates).toContainEqual(
-      expect.objectContaining({ taskId: task.task.taskId }),
+    expect(refreshed.workstreamCandidates).toContainEqual(
+      expect.objectContaining({ workstreamId: workstream.workstream.workstreamId }),
     );
   });
 
@@ -262,7 +260,7 @@ async function createFixture(now: () => string): Promise<{
   const events: GitContextObservabilityEvent[] = [];
   const service = new SqliteGitContextService({
     database,
-    dataRoot: root,
+    rootDirectory: root,
     now,
     observer: new GitContextObserver("git-context-engine", (event) => events.push(event)),
     rolloverCheckIntervalMs: 0,

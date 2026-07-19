@@ -4,21 +4,19 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { createConnection, type AddressInfo } from "node:net";
 import { dirname } from "node:path";
 import {
-  isAcquireMutationAuthorityRequest,
-  isActivateTaskForRunRequest,
-  isAdoptTaskReferenceRequest,
-  isBindTaskAttachmentsRequest,
-  isCreateTaskForRunRequest,
+  isActivateWorkstreamForRunRequest,
+  isBindResourcesForRunRequest,
+  isCreateWorkstreamForRunRequest,
   isEnsureActiveSessionRequest,
   isFinalizeRunRequest,
-  isInspectTaskLocationRequest,
-  isReadTaskRequest,
-  isSetTaskStarRequest,
-  isPlanTaskRequestRouteRequest,
+  isInspectResourceForRunRequest,
+  isReadWorkstreamRequest,
+  isSetWorkstreamStarRequest,
+  isPlanWorkstreamRequestRouteRequest,
   isPrepareContextTurnRequest,
   isRecordRunStepRequest,
-  isRecordSessionAttachmentsRequest,
-  isVerifyMutationRequest,
+  isPrepareResourceMutationRequest,
+  isVerifyResourceMutationRequest,
 } from "./contracts.js";
 import {
   GitContextServiceError,
@@ -176,54 +174,40 @@ export class GitContextHttpServer {
         return;
       }
 
-      const sessionAttachmentsMatch = url.pathname.match(/^\/sessions\/([^/]+)\/attachments$/);
-      if (method === "POST" && sessionAttachmentsMatch) {
-        const body = await readJsonBody(request, this.maxBodyBytes);
-        if (!isRecordSessionAttachmentsRequest(body)) {
-          throw invalidRequest("Invalid record-session-attachments request.");
-        }
-        const sessionId = decodePathComponent(sessionAttachmentsMatch[1] ?? "");
-        if (body.sessionId !== sessionId) {
-          throw invalidRequest("Session ID in request path and body must match.");
-        }
-        sendJson(response, 200, await this.service.recordSessionAttachments(body));
-        return;
-      }
-
-      if (method === "GET" && url.pathname === "/tasks") {
+      if (method === "GET" && url.pathname === "/workstreams") {
         const query = url.searchParams.get("query")?.trim();
         const limitText = url.searchParams.get("limit")?.trim();
         const limit = limitText ? Number(limitText) : undefined;
         if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 100)) {
-          throw invalidRequest("Task list limit must be between 1 and 100.");
+          throw invalidRequest("Workstream list limit must be between 1 and 100.");
         }
-        sendJson(response, 200, await this.service.listTasks({
+        sendJson(response, 200, await this.service.listWorkstreams({
           ...(query ? { query } : {}),
           ...(limit ? { limit } : {}),
         }));
         return;
       }
 
-      if (method === "GET" && url.pathname === "/tasks/find") {
+      if (method === "GET" && url.pathname === "/workstreams/find") {
         const query = url.searchParams.get("query")?.trim();
         const paths = url.searchParams.getAll("path").map((path) => path.trim()).filter(Boolean);
         const view = url.searchParams.get("view")?.trim();
         const allowedViews = new Set(["relevant", "unfinished", "starred", "recent", "frequent"]);
         if (view && !allowedViews.has(view)) {
-          throw invalidRequest("Unknown task discovery view.");
+          throw invalidRequest("Unknown workstream discovery view.");
         }
         const limitText = url.searchParams.get("limit")?.trim();
         const limit = limitText ? Number(limitText) : undefined;
         if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 50)) {
-          throw invalidRequest("Task discovery limit must be between 1 and 50.");
+          throw invalidRequest("Workstream discovery limit must be between 1 and 50.");
         }
         if (paths.length > 20 || paths.some((path) => path.length > 4_096)) {
-          throw invalidRequest("Task discovery accepts at most 20 bounded paths.");
+          throw invalidRequest("Workstream discovery accepts at most 20 bounded paths.");
         }
         const sessionId = url.searchParams.get("sessionId")?.trim();
         const currentText = url.searchParams.get("currentText")?.trim();
         const includeArchived = url.searchParams.get("includeArchived") === "true";
-        sendJson(response, 200, await this.service.findTasks({
+        sendJson(response, 200, await this.service.findWorkstreams({
           ...(query ? { query } : {}),
           ...(paths.length > 0 ? { paths } : {}),
           ...(view ? { view: view as "relevant" | "unfinished" | "starred" | "recent" | "frequent" } : {}),
@@ -235,145 +219,154 @@ export class GitContextHttpServer {
         return;
       }
 
-      const createTaskMatch = url.pathname.match(/^\/runs\/([^/]+)\/tasks\/create$/);
-      if (method === "POST" && createTaskMatch) {
+      const createWorkstreamMatch = url.pathname.match(/^\/runs\/([^/]+)\/workstreams\/create$/);
+      if (method === "POST" && createWorkstreamMatch) {
         const body = await readJsonBody(request, this.maxBodyBytes);
-        if (!isCreateTaskForRunRequest(body)) {
-          throw invalidRequest("Invalid create-task-for-run request.");
+        if (!isCreateWorkstreamForRunRequest(body)) {
+          throw invalidRequest("Invalid create-workstream-for-run request.");
         }
-        const runId = decodePathComponent(createTaskMatch[1] ?? "");
+        const runId = decodePathComponent(createWorkstreamMatch[1] ?? "");
         if (body.runId !== runId) {
           throw invalidRequest("Run ID in request path and body must match.");
         }
-        sendJson(response, 200, await this.service.createTaskForRun(body));
+        sendJson(response, 200, await this.service.createWorkstreamForRun(body));
         return;
       }
 
-      const inspectTaskLocationMatch = url.pathname.match(
-        /^\/runs\/([^/]+)\/task-location\/inspect$/,
-      );
-      if (method === "POST" && inspectTaskLocationMatch) {
+      const activateWorkstreamMatch = url.pathname.match(/^\/runs\/([^/]+)\/workstreams\/activate$/);
+      if (method === "POST" && activateWorkstreamMatch) {
         const body = await readJsonBody(request, this.maxBodyBytes);
-        if (!isInspectTaskLocationRequest(body)) {
-          throw invalidRequest("Invalid inspect-task-location request.");
+        if (!isActivateWorkstreamForRunRequest(body)) {
+          throw invalidRequest("Invalid activate-workstream-for-run request.");
         }
-        const runId = decodePathComponent(inspectTaskLocationMatch[1] ?? "");
+        const runId = decodePathComponent(activateWorkstreamMatch[1] ?? "");
         if (body.runId !== runId) {
           throw invalidRequest("Run ID in request path and body must match.");
         }
-        sendJson(response, 200, await this.service.inspectTaskLocation(body));
+        sendJson(response, 200, await this.service.activateWorkstreamForRun(body));
         return;
       }
 
-      const activateTaskMatch = url.pathname.match(/^\/runs\/([^/]+)\/tasks\/activate$/);
-      if (method === "POST" && activateTaskMatch) {
-        const body = await readJsonBody(request, this.maxBodyBytes);
-        if (!isActivateTaskForRunRequest(body)) {
-          throw invalidRequest("Invalid activate-task-for-run request.");
-        }
-        const runId = decodePathComponent(activateTaskMatch[1] ?? "");
-        if (body.runId !== runId) {
-          throw invalidRequest("Run ID in request path and body must match.");
-        }
-        sendJson(response, 200, await this.service.activateTaskForRun(body));
-        return;
-      }
-
-      const requestRouteMatch = url.pathname.match(/^\/runs\/([^/]+)\/task-request-route$/);
+      const requestRouteMatch = url.pathname.match(/^\/runs\/([^/]+)\/workstream-request-route$/);
       if (method === "POST" && requestRouteMatch) {
         const body = await readJsonBody(request, this.maxBodyBytes);
-        if (!isPlanTaskRequestRouteRequest(body)) {
-          throw invalidRequest("Invalid task-request-route request.");
+        if (!isPlanWorkstreamRequestRouteRequest(body)) {
+          throw invalidRequest("Invalid workstream-request-route request.");
         }
         const runId = decodePathComponent(requestRouteMatch[1] ?? "");
         if (body.runId !== runId) {
           throw invalidRequest("Run ID in request path and body must match.");
         }
-        sendJson(response, 200, await this.service.planTaskRequestRoute(body));
+        sendJson(response, 200, await this.service.planWorkstreamRequestRoute(body));
         return;
       }
 
-      const taskMatch = url.pathname.match(/^\/tasks\/([^/]+)$/);
-      if (method === "GET" && taskMatch) {
-        const taskId = decodePathComponent(taskMatch[1] ?? "");
-        sendJson(response, 200, await this.service.getTask({ taskId }));
+      const workstreamMatch = url.pathname.match(/^\/workstreams\/([^/]+)$/);
+      if (method === "GET" && workstreamMatch) {
+        const workstreamId = decodePathComponent(workstreamMatch[1] ?? "");
+        sendJson(response, 200, await this.service.getWorkstream({ workstreamId }));
         return;
       }
 
-      const taskOpenMatch = url.pathname.match(/^\/tasks\/([^/]+)\/open$/);
-      if (method === "POST" && taskOpenMatch) {
+      const workstreamOpenMatch = url.pathname.match(/^\/workstreams\/([^/]+)\/open$/);
+      if (method === "POST" && workstreamOpenMatch) {
         const body = await readJsonBody(request, this.maxBodyBytes);
-        if (!isReadTaskRequest(body)) {
-          throw invalidRequest("Invalid read-task request.");
+        if (!isReadWorkstreamRequest(body)) {
+          throw invalidRequest("Invalid read-workstream request.");
         }
-        const taskId = decodePathComponent(taskOpenMatch[1] ?? "");
-        if (body.taskId !== taskId) {
-          throw invalidRequest("Task ID in request path and body must match.");
+        const workstreamId = decodePathComponent(workstreamOpenMatch[1] ?? "");
+        if (body.workstreamId !== workstreamId) {
+          throw invalidRequest("Workstream ID in request path and body must match.");
         }
-        sendJson(response, 200, await this.service.readTask(body));
+        sendJson(response, 200, await this.service.readWorkstream(body));
         return;
       }
 
-      const taskStarMatch = url.pathname.match(/^\/tasks\/([^/]+)\/star$/);
-      if (method === "POST" && taskStarMatch) {
+      const workstreamStarMatch = url.pathname.match(/^\/workstreams\/([^/]+)\/star$/);
+      if (method === "POST" && workstreamStarMatch) {
         const body = await readJsonBody(request, this.maxBodyBytes);
-        if (!isSetTaskStarRequest(body)) {
-          throw invalidRequest("Invalid set-task-star request.");
+        if (!isSetWorkstreamStarRequest(body)) {
+          throw invalidRequest("Invalid set-workstream-star request.");
         }
-        const taskId = decodePathComponent(taskStarMatch[1] ?? "");
-        if (body.taskId !== taskId) {
-          throw invalidRequest("Task ID in request path and body must match.");
+        const workstreamId = decodePathComponent(workstreamStarMatch[1] ?? "");
+        if (body.workstreamId !== workstreamId) {
+          throw invalidRequest("Workstream ID in request path and body must match.");
         }
-        sendJson(response, 200, await this.service.setTaskStar(body));
+        sendJson(response, 200, await this.service.setWorkstreamStar(body));
         return;
       }
 
-      const mutationAuthorityMatch = url.pathname.match(
-        /^\/runs\/([^/]+)\/tasks\/([^/]+)\/mutation-authority$/,
+      if (method === "GET" && url.pathname === "/resources/find") {
+        const query = url.searchParams.get("query")?.trim();
+        const resourceIds = url.searchParams.getAll("resourceId").map((value) => value.trim()).filter(Boolean);
+        const locators = url.searchParams.getAll("locator").map((value) => value.trim()).filter(Boolean);
+        const workstreamId = url.searchParams.get("workstreamId")?.trim();
+        const includeMissing = url.searchParams.get("includeMissing") === "true";
+        const limitText = url.searchParams.get("limit")?.trim();
+        const limit = limitText ? Number(limitText) : undefined;
+        if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 100)) {
+          throw invalidRequest("Resource search limit must be between 1 and 100.");
+        }
+        sendJson(response, 200, await this.service.findResources({
+          ...(query ? { query } : {}),
+          ...(resourceIds.length > 0 ? { resourceIds } : {}),
+          ...(locators.length > 0 ? { locators } : {}),
+          ...(workstreamId ? { workstreamId } : {}),
+          ...(includeMissing ? { includeMissing: true } : {}),
+          ...(limit ? { limit } : {}),
+        }));
+        return;
+      }
+
+      const inspectResourceMatch = url.pathname.match(/^\/runs\/([^/]+)\/resources\/inspect$/);
+      if (method === "POST" && inspectResourceMatch) {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isInspectResourceForRunRequest(body)) {
+          throw invalidRequest("Invalid inspect-resource request.");
+        }
+        const runId = decodePathComponent(inspectResourceMatch[1] ?? "");
+        if (body.runId !== runId) throw invalidRequest("Run ID in path and body must match.");
+        sendJson(response, 200, await this.service.inspectResourceForRun(body));
+        return;
+      }
+
+      const bindResourcesMatch = url.pathname.match(/^\/runs\/([^/]+)\/resources\/bind$/);
+      if (method === "POST" && bindResourcesMatch) {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isBindResourcesForRunRequest(body)) {
+          throw invalidRequest("Invalid bind-resources request.");
+        }
+        const runId = decodePathComponent(bindResourcesMatch[1] ?? "");
+        if (body.runId !== runId) throw invalidRequest("Run ID in path and body must match.");
+        sendJson(response, 200, await this.service.bindResourcesForRun(body));
+        return;
+      }
+
+      const prepareMutationMatch = url.pathname.match(/^\/runs\/([^/]+)\/resource-mutations\/prepare$/);
+      if (method === "POST" && prepareMutationMatch) {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isPrepareResourceMutationRequest(body)) {
+          throw invalidRequest("Invalid prepare-resource-mutation request.");
+        }
+        const runId = decodePathComponent(prepareMutationMatch[1] ?? "");
+        if (body.runId !== runId) throw invalidRequest("Run ID in path and body must match.");
+        sendJson(response, 200, await this.service.prepareResourceMutation(body));
+        return;
+      }
+
+      const verifyResourceMutationMatch = url.pathname.match(
+        /^\/resource-mutations\/([^/]+)\/verify$/,
       );
-      if (method === "POST" && mutationAuthorityMatch) {
+      if (method === "POST" && verifyResourceMutationMatch) {
         const body = await readJsonBody(request, this.maxBodyBytes);
-        if (!isAcquireMutationAuthorityRequest(body)) {
-          throw invalidRequest("Invalid mutation-authority request.");
+        if (!isVerifyResourceMutationRequest(body)) {
+          throw invalidRequest("Invalid verify-resource-mutation request.");
         }
-        const runId = decodePathComponent(mutationAuthorityMatch[1] ?? "");
-        const taskId = decodePathComponent(mutationAuthorityMatch[2] ?? "");
-        if (body.runId !== runId || body.taskId !== taskId) {
-          throw invalidRequest("Run and task IDs in request path and body must match.");
+        const operationId = decodePathComponent(verifyResourceMutationMatch[1] ?? "");
+        if (body.operationId !== operationId) {
+          throw invalidRequest("Mutation operation ID in path and body must match.");
         }
-        sendJson(response, 200, await this.service.acquireMutationAuthority(body));
-        return;
-      }
-
-      const verifyMutationMatch = url.pathname.match(
-        /^\/mutation-authorities\/([^/]+)\/verify$/,
-      );
-      if (method === "POST" && verifyMutationMatch) {
-        const body = await readJsonBody(request, this.maxBodyBytes);
-        if (!isVerifyMutationRequest(body)) {
-          throw invalidRequest("Invalid verify-mutation request.");
-        }
-        const authorityId = decodePathComponent(verifyMutationMatch[1] ?? "");
-        if (body.authorityId !== authorityId) {
-          throw invalidRequest("Authority ID in request path and body must match.");
-        }
-        sendJson(response, 200, await this.service.verifyMutation(body));
-        return;
-      }
-
-      const adoptReferenceMatch = url.pathname.match(
-        /^\/mutation-authorities\/([^/]+)\/adopt-reference$/,
-      );
-      if (method === "POST" && adoptReferenceMatch) {
-        const body = await readJsonBody(request, this.maxBodyBytes);
-        if (!isAdoptTaskReferenceRequest(body)) {
-          throw invalidRequest("Invalid adopt-task-reference request.");
-        }
-        const authorityId = decodePathComponent(adoptReferenceMatch[1] ?? "");
-        if (body.authorityId !== authorityId) {
-          throw invalidRequest("Authority ID in request path and body must match.");
-        }
-        sendJson(response, 200, await this.service.adoptTaskReference(body));
+        sendJson(response, 200, await this.service.verifyResourceMutation(body));
         return;
       }
 
@@ -388,20 +381,6 @@ export class GitContextHttpServer {
           throw invalidRequest("Run ID in request path and body must match.");
         }
         sendJson(response, 200, await this.service.recordRunStep(body));
-        return;
-      }
-
-      const taskAttachmentsMatch = url.pathname.match(/^\/runs\/([^/]+)\/task-attachments$/);
-      if (method === "POST" && taskAttachmentsMatch) {
-        const body = await readJsonBody(request, this.maxBodyBytes);
-        if (!isBindTaskAttachmentsRequest(body)) {
-          throw invalidRequest("Invalid bind-task-attachments request.");
-        }
-        const runId = decodePathComponent(taskAttachmentsMatch[1] ?? "");
-        if (body.runId !== runId) {
-          throw invalidRequest("Run ID in request path and body must match.");
-        }
-        sendJson(response, 200, await this.service.bindTaskAttachments(body));
         return;
       }
 
@@ -421,14 +400,13 @@ export class GitContextHttpServer {
 
       const knownPath = isKnownPath(url.pathname)
         || Boolean(runStepMatch)
-        || Boolean(taskMatch)
-        || Boolean(mutationAuthorityMatch)
-        || Boolean(verifyMutationMatch)
-        || Boolean(sessionAttachmentsMatch)
-        || Boolean(taskAttachmentsMatch)
-        || Boolean(adoptReferenceMatch)
-        || Boolean(createTaskMatch)
-        || Boolean(activateTaskMatch)
+        || Boolean(workstreamMatch)
+        || Boolean(inspectResourceMatch)
+        || Boolean(bindResourcesMatch)
+        || Boolean(prepareMutationMatch)
+        || Boolean(verifyResourceMutationMatch)
+        || Boolean(createWorkstreamMatch)
+        || Boolean(activateWorkstreamMatch)
         || Boolean(finalizeRunMatch);
       throw new GitContextServiceError({
         code: knownPath ? "METHOD_NOT_ALLOWED" : "NOT_FOUND",
@@ -478,14 +456,14 @@ function requestCorrelation(request: IncomingMessage): {
   sessionId?: string;
   conversationId?: string;
   runId?: string;
-  taskId?: string;
+  workstreamId?: string;
 } {
   return {
     ...headerValue(request, "x-ayati-request-id", "requestId"),
     ...headerValue(request, "x-ayati-session-id", "sessionId"),
     ...headerValue(request, "x-ayati-conversation-id", "conversationId"),
     ...headerValue(request, "x-ayati-run-id", "runId"),
-    ...headerValue(request, "x-ayati-task-id", "taskId"),
+    ...headerValue(request, "x-ayati-workstream-id", "workstreamId"),
   };
 }
 
@@ -503,17 +481,17 @@ function requestOperation(method: string, pathname: string): string {
   if (method === "GET" && pathname === "/context/active") return "get_active_context";
   if (pathname === "/context/turns/prepare") return "prepare_context_turn";
   if (pathname === "/sessions/ensure-active") return "ensure_active_session";
-  if (/\/sessions\/[^/]+\/attachments$/.test(pathname)) return "record_session_attachments";
-  if (/\/task-attachments$/.test(pathname)) return "bind_task_attachments";
-  if (/\/adopt-reference$/.test(pathname)) return "adopt_task_reference";
-  if (/\/tasks\/create$/.test(pathname)) return "create_task_for_run";
-  if (/\/tasks\/activate$/.test(pathname)) return "activate_task_for_run";
+  if (pathname === "/resources/find") return "find_resources";
+  if (/\/resources\/inspect$/.test(pathname)) return "inspect_resource_for_run";
+  if (/\/resources\/bind$/.test(pathname)) return "bind_resources_for_run";
+  if (/\/resource-mutations\/prepare$/.test(pathname)) return "prepare_resource_mutation";
+  if (/\/workstreams\/create$/.test(pathname)) return "create_workstream_for_run";
+  if (/\/workstreams\/activate$/.test(pathname)) return "activate_workstream_for_run";
   if (/\/steps$/.test(pathname)) return "record_run_step";
   if (/\/finalize$/.test(pathname)) return "finalize_run";
-  if (/\/verify$/.test(pathname)) return "verify_mutation";
-  if (/mutation-authority$/.test(pathname)) return "acquire_mutation_authority";
-  if (method === "GET" && pathname === "/tasks") return "list_tasks";
-  if (pathname.startsWith("/tasks/")) return "get_task";
+  if (/\/resource-mutations\/[^/]+\/verify$/.test(pathname)) return "verify_resource_mutation";
+  if (method === "GET" && pathname === "/workstreams") return "list_workstreams";
+  if (pathname.startsWith("/workstreams/")) return "get_workstream";
   return "unknown";
 }
 
@@ -522,7 +500,8 @@ function isKnownPath(pathname: string): boolean {
     || pathname === "/context/active"
     || pathname === "/context/turns/prepare"
     || pathname === "/sessions/ensure-active"
-    || pathname === "/tasks";
+    || pathname === "/workstreams"
+    || pathname === "/resources/find";
 }
 
 async function readJsonBody(request: IncomingMessage, maxBodyBytes: number): Promise<unknown> {
@@ -604,7 +583,7 @@ function errorStatusCode(code: GitContextErrorCode): number {
     case "INVALID_REQUEST":
       return 400;
     case "NOT_FOUND":
-    case "TASK_NOT_FOUND":
+    case "WORKSTREAM_NOT_FOUND":
       return 404;
     case "METHOD_NOT_ALLOWED":
       return 405;
@@ -613,9 +592,9 @@ function errorStatusCode(code: GitContextErrorCode): number {
     case "SESSION_HEAD_MISMATCH":
     case "IDEMPOTENCY_CONFLICT":
     case "RUN_ALREADY_ACTIVE":
-    case "TASK_LOCKED":
-    case "TASK_CHECKOUT_DIRTY":
-    case "TASK_HEAD_MISMATCH":
+    case "WORKSTREAM_LOCKED":
+    case "WORKSTREAM_CHECKOUT_DIRTY":
+    case "WORKSTREAM_HEAD_MISMATCH":
     case "RUN_ALREADY_FINALIZED":
     case "GIT_CONFLICT":
       return 409;

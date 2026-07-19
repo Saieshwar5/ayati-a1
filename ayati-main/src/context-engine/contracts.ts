@@ -1,3 +1,9 @@
+import type {
+  ResourceRef,
+  WorkstreamCandidate,
+  WorkstreamResourceBinding,
+} from "ayati-git-context";
+
 export type ContextConversationRole = "user" | "assistant" | "system";
 
 export interface ContextConversationRecord {
@@ -21,23 +27,23 @@ export type ContextSessionActivityRecord =
     }
   | {
       seq: number;
-      type: "asset_registered";
+      type: "resource_registered";
       at: string;
-      assetId: string;
+      resourceId: string;
     }
   | {
       seq: number;
       type: "run_started";
       at: string;
       runId: string;
-      workId: string;
+      workstreamId?: string;
     }
   | {
       seq: number;
-      type: "run_committed";
+      type: "workstream_context_committed";
       at: string;
       runId: string;
-      workId: string;
+      workstreamId: string;
       commit: string;
     }
   | {
@@ -54,12 +60,12 @@ export type ContextFocus =
   | {
       status: "active";
       ref: string;
-      workId: string;
+      workstreamId: string;
     }
   | {
       status: "missing";
       ref: string;
-      workId?: string;
+      workstreamId?: string;
       reason: string;
     }
   | {
@@ -68,66 +74,7 @@ export type ContextFocus =
       reason: string;
     };
 
-export type TaskAssetRole = "input" | "output" | "generated" | "reference";
-
-export interface TaskAssetRecord {
-  assetId: string;
-  role: TaskAssetRole;
-  kind: string;
-  name: string;
-  description?: string;
-  sessionAssetId?: string;
-  path?: string;
-}
-
-export interface ContextTaskArtifactIdentity {
-  name: string;
-  type: string;
-  description: string;
-  aliases: string[];
-}
-
-export interface ContextTaskArtifactRecord {
-  artifactId: string;
-  source: "user_attachment" | "agent_workspace";
-  kind: string;
-  path: string;
-  originalName?: string;
-  mimeType?: string;
-  role: string;
-  identity: ContextTaskArtifactIdentity;
-  status: string;
-  reason?: string;
-  createdByRunId?: string;
-  lastTouchedRunId?: string;
-  sourceRunId?: string;
-  sourceTurnSeq?: number;
-  confidence: string;
-}
-
-export interface ContextTaskFact {
-  text: string;
-  source: string;
-}
-
-export interface ContextTaskRunSummary {
-  schemaVersion: 1;
-  runId: string;
-  workId: string;
-  status: "completed" | "incomplete" | "failed" | "blocked" | "needs_user_input";
-  stopReason?: string;
-  summary: string;
-  next?: string;
-  firstBlocker?: string;
-  blockerCount?: number;
-  changedFileCount?: number;
-  changedFilesPreview?: string[];
-  toolCallCount?: number;
-  completed: string[];
-  open: string[];
-  actions: string[];
-  createdAt: string;
-}
+export type ContextResourceRecord = WorkstreamResourceBinding;
 
 export interface ContextCommitSummary {
   commit: string;
@@ -135,7 +82,7 @@ export interface ContextCommitSummary {
   summary?: string;
   conversationSummary?: string;
   workSummary?: string;
-  assets?: Array<{
+  resources?: Array<{
     path: string;
     description: string;
   }>;
@@ -144,27 +91,9 @@ export interface ContextCommitSummary {
   event?: string;
   status?: string;
   at?: string;
-  workId?: string;
+  workstreamId?: string;
   runId?: string;
   branch?: string;
-}
-
-export interface ContextTaskEvidenceSummary {
-  runId: string;
-  workId: string;
-  step?: number;
-  actionId?: string;
-  tool: string;
-  status?: string;
-  summary: string;
-  evidenceRef?: string;
-  artifacts: string[];
-  facts: string[];
-  accessModes: string[];
-  outputSize?: number;
-  lineCount?: number;
-  truncated?: boolean;
-  source?: Record<string, unknown>;
 }
 
 export interface ContextPendingWrite {
@@ -184,7 +113,7 @@ export interface ContextPendingTurn {
   text: string;
   at: string;
   routingStatus: "unbound" | "bound" | "clarifying";
-  workId?: string;
+  workstreamId?: string;
   branch?: string;
   runId?: string;
 }
@@ -195,10 +124,10 @@ export interface ContextSessionSummary {
   coveredUntilSeq?: number;
 }
 
-export interface ContextSessionTaskRunCheckpoint {
+export interface ContextSessionRunCheckpoint {
   checkpointId: string;
   commit: string;
-  workId: string;
+  workstreamId: string;
   runId: string;
   status: "completed" | "incomplete" | "failed" | "blocked" | "needs_user_input";
   fromSeq: number;
@@ -250,7 +179,7 @@ export interface ContextSessionMeta {
   createdAt?: string;
   repoKind?: "daily_session";
   agentId?: string;
-  assetCount: number;
+  resourceCount: number;
 }
 
 export interface ContextReadEntry {
@@ -283,7 +212,7 @@ export interface ContextEngineMachineContext {
     conversationTail: ContextConversationRecord[];
     conversationMarkdownTail?: string;
     summary?: ContextSessionSummary;
-    recentTaskRuns?: ContextSessionTaskRunCheckpoint[];
+    recentRunCheckpoints?: ContextSessionRunCheckpoint[];
     attachments?: ContextSessionAttachments;
     activityTail: ContextSessionActivityRecord[];
     recentCommits?: ContextCommitSummary[];
@@ -293,58 +222,30 @@ export interface ContextEngineMachineContext {
   pendingTurn?: ContextPendingTurn;
   focus: ContextFocus;
   readContext?: ContextReadContext;
-  taskCandidates?: Array<{
-    taskId: string;
+  workstreamCandidates?: WorkstreamCandidate[];
+  ingressResources?: ResourceRef[];
+  workstream?: {
+    contextRepositoryPath: string;
+    ref: string;
+    workstreamId: string;
     title: string;
     objective: string;
-    status: "initializing" | "active" | "archived";
-    lifecycleStatus?: "active" | "paused" | "archived";
-    repositoryHealth?: "ready" | "dirty_external" | "unavailable";
+    summary: string;
+    workstreamStatus: "in_progress" | "done" | "blocked";
+    lifecycleStatus: "active" | "paused" | "archived";
+    repositoryHealth: "ready" | "dirty_external";
+    currentFocus?: string;
+    blockers: string[];
+    next?: string;
     currentRequest?: {
       id: string;
       title: string;
       status: "queued" | "active" | "blocked" | "done" | "dropped";
+      request: string;
+      acceptance: string[];
+      constraints: string[];
     };
-    head: string;
-    workingDirectory: string;
-    updatedAt: string;
-    discovery: {
-      tier: "definite" | "probable" | "candidate";
-      reasons: Array<
-        | "exact_task_id"
-        | "exact_title"
-        | "owned_path"
-        | "direct_continuation"
-        | "matching_request"
-        | "text_match"
-        | "unfinished_request"
-        | "starred"
-        | "recent"
-        | "frequent"
-      >;
-    };
-    starred: boolean;
-    lastOpenedAt?: string;
-    boundRunsLast30Days: number;
-  }>;
-  task?: {
-    /** Stable user-facing directory where task files are edited. */
-    workingDirectory?: string;
-    ref: string;
-    workId: string;
-    title: string;
-    objective: string;
-    status: string;
-    completed: string[];
-    open: string[];
-    blockers: string[];
-    facts: ContextTaskFact[];
-    next?: string;
-    conversationMarkdownTail?: string;
-    assets: TaskAssetRecord[];
-    artifacts?: ContextTaskArtifactRecord[];
-    recentRuns: ContextTaskRunSummary[];
+    resources: ContextResourceRecord[];
     recentCommits: ContextCommitSummary[];
-    recentEvidence: ContextTaskEvidenceSummary[];
   };
 }

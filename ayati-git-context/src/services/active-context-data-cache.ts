@@ -1,20 +1,20 @@
 import { createHash } from "node:crypto";
 import type {
   ReadContextProjection,
-  SessionAttachmentsProjection,
-  TaskCandidate,
+  SessionResourcesProjection,
+  WorkstreamCandidate,
 } from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
 
-export const DEFAULT_TASK_CANDIDATE_CACHE_INTERVAL_MS = 5 * 60_000;
+export const DEFAULT_WORKSTREAM_CANDIDATE_CACHE_INTERVAL_MS = 5 * 60_000;
 
-interface TaskCandidateCacheEntry {
+interface WorkstreamCandidateCacheEntry {
   catalogRevision: string;
   loadedAtMs: number;
-  candidates: TaskCandidate[];
+  candidates: WorkstreamCandidate[];
 }
 
-export interface TaskCandidateLoadInput {
+export interface WorkstreamCandidateLoadInput {
   limit: number;
   sessionId?: string;
   currentText?: string;
@@ -22,18 +22,18 @@ export interface TaskCandidateLoadInput {
 
 export class ActiveContextDataCache {
   private readonly readContextBySession = new Map<string, ReadContextProjection>();
-  private readonly attachmentsBySession = new Map<
+  private readonly resourcesBySession = new Map<
     string,
-    SessionAttachmentsProjection | null
+    SessionResourcesProjection | null
   >();
-  private readonly taskCandidatesByKey = new Map<string, TaskCandidateCacheEntry>();
+  private readonly workstreamCandidatesByKey = new Map<string, WorkstreamCandidateCacheEntry>();
 
   constructor(private readonly options: {
     database: ContextDatabase;
     loadReadContext: (sessionId: string) => ReadContextProjection;
-    loadAttachments: (sessionId: string) => SessionAttachmentsProjection | undefined;
-    loadTaskCandidates: (input: TaskCandidateLoadInput) => Promise<TaskCandidate[]>;
-    taskCandidateMaxAgeMs: number;
+    loadResources: (sessionId: string) => SessionResourcesProjection | undefined;
+    loadWorkstreamCandidates: (input: WorkstreamCandidateLoadInput) => Promise<WorkstreamCandidate[]>;
+    workstreamCandidateMaxAgeMs: number;
     now: () => string;
   }) {}
 
@@ -45,18 +45,18 @@ export class ActiveContextDataCache {
     return loaded;
   }
 
-  attachments(sessionId: string): SessionAttachmentsProjection | undefined {
-    const cached = this.attachmentsBySession.get(sessionId);
+  resources(sessionId: string): SessionResourcesProjection | undefined {
+    const cached = this.resourcesBySession.get(sessionId);
     if (cached !== undefined) return cached ?? undefined;
-    const loaded = this.options.loadAttachments(sessionId);
-    this.attachmentsBySession.set(sessionId, loaded ?? null);
+    const loaded = this.options.loadResources(sessionId);
+    this.resourcesBySession.set(sessionId, loaded ?? null);
     return loaded;
   }
 
-  async taskCandidates(input: TaskCandidateLoadInput): Promise<TaskCandidate[]> {
-    const catalogRevision = taskCatalogRevision(this.options.database);
-    const key = taskCandidateKey(input);
-    const cached = this.taskCandidatesByKey.get(key);
+  async workstreamCandidates(input: WorkstreamCandidateLoadInput): Promise<WorkstreamCandidate[]> {
+    const catalogRevision = workstreamCatalogRevision(this.options.database);
+    const key = workstreamCandidateKey(input);
+    const cached = this.workstreamCandidatesByKey.get(key);
     const ageMs = cached
       ? timestampMilliseconds(this.options.now()) - cached.loadedAtMs
       : undefined;
@@ -64,11 +64,11 @@ export class ActiveContextDataCache {
       && cached.catalogRevision === catalogRevision
       && ageMs !== undefined
       && ageMs >= 0
-      && ageMs <= this.options.taskCandidateMaxAgeMs) {
+      && ageMs <= this.options.workstreamCandidateMaxAgeMs) {
       return cached.candidates;
     }
-    const candidates = await this.options.loadTaskCandidates(input);
-    this.taskCandidatesByKey.set(key, {
+    const candidates = await this.options.loadWorkstreamCandidates(input);
+    this.workstreamCandidatesByKey.set(key, {
       catalogRevision,
       loadedAtMs: timestampMilliseconds(this.options.now()),
       candidates,
@@ -80,40 +80,47 @@ export class ActiveContextDataCache {
     this.readContextBySession.delete(sessionId);
   }
 
-  invalidateAttachments(sessionId: string): void {
-    this.attachmentsBySession.delete(sessionId);
+  invalidateResources(sessionId: string): void {
+    this.resourcesBySession.delete(sessionId);
   }
 
-  invalidateTaskCandidates(): void {
-    this.taskCandidatesByKey.clear();
+  invalidateWorkstreamCandidates(): void {
+    this.workstreamCandidatesByKey.clear();
   }
 
   clear(): void {
     this.readContextBySession.clear();
-    this.attachmentsBySession.clear();
-    this.taskCandidatesByKey.clear();
+    this.resourcesBySession.clear();
+    this.workstreamCandidatesByKey.clear();
   }
 }
 
-function taskCatalogRevision(database: ContextDatabase): string {
+function workstreamCatalogRevision(database: ContextDatabase): string {
   const rows = database.prepare([
-    "SELECT task_id, repository_path, branch, head_sha, title_cache, objective_cache,",
+    "SELECT workstream_id, repository_path, branch, head_sha, title_cache, objective_cache,",
     "status, lifecycle_status, repository_health, current_request_id,",
     "current_request_title, current_request_status, updated_at",
-    "FROM tasks ORDER BY task_id",
+    "FROM workstreams ORDER BY workstream_id",
   ].join(" ")).all() as unknown[];
   const preferences = database.prepare([
-    "SELECT task_id, starred, starred_at, updated_at",
-    "FROM task_preferences ORDER BY task_id",
+    "SELECT workstream_id, starred, starred_at, updated_at",
+    "FROM workstream_preferences ORDER BY workstream_id",
   ].join(" ")).all() as unknown[];
   const accesses = database.prepare([
-    "SELECT task_id, run_id, access_kind, accessed_at",
-    "FROM task_accesses ORDER BY task_id, run_id, access_kind",
+    "SELECT workstream_id, run_id, access_kind, accessed_at",
+    "FROM workstream_accesses ORDER BY workstream_id, run_id, access_kind",
   ].join(" ")).all() as unknown[];
-  return hash(JSON.stringify({ rows, preferences, accesses }));
+  const resourceBindings = database.prepare([
+    "SELECT wr.workstream_id, wr.resource_id, wr.role, wr.access, wr.is_primary, wr.last_used_at,",
+    "r.display_name, r.description, r.aliases_json, r.locator_key, r.current_version_key,",
+    "r.availability, r.updated_at FROM workstream_resources wr",
+    "JOIN resources r ON r.resource_id = wr.resource_id",
+    "ORDER BY wr.workstream_id, wr.resource_id, wr.role",
+  ].join(" ")).all() as unknown[];
+  return hash(JSON.stringify({ rows, preferences, accesses, resourceBindings }));
 }
 
-function taskCandidateKey(input: TaskCandidateLoadInput): string {
+function workstreamCandidateKey(input: WorkstreamCandidateLoadInput): string {
   return String(input.limit) + ":" + hash(JSON.stringify({
     sessionId: input.sessionId ?? null,
     currentText: input.currentText ?? null,

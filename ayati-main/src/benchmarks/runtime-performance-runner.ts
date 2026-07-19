@@ -11,6 +11,7 @@ import type { LoopState } from "../ivec/types.js";
 import type { ContextEngineMachineContext } from "../context-engine/index.js";
 import { createToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition, ToolResult } from "../skills/types.js";
+import { TOOL_TAXONOMY } from "../skills/tool-taxonomy.js";
 import { PersonalMemoryStore } from "../memory/personal/personal-memory-store.js";
 import { DEFAULT_MEMORY_POLICY } from "../memory/personal/memory-policy.js";
 import type { MemoryProposal } from "../memory/personal/types.js";
@@ -255,10 +256,15 @@ async function runContextToolSelectionCase(config: RuntimeScaleConfig): Promise<
   const startedAt = performance.now();
   const state = buildLoopStateFixture(config.stateExchanges);
   const tools = buildToolFixture(config.toolCount);
-  const executor = createToolExecutor(tools.slice(0, Math.max(1, Math.floor(config.toolCount / 2))));
+  const initialToolCount = Math.max(1, Math.floor(tools.length / 2));
+  const executor = createToolExecutor(tools.slice(0, initialToolCount));
+  const mountedGroupSize = Math.max(1, Math.ceil((tools.length - initialToolCount) / 4));
+  let mountedGroups = 0;
   for (let group = 0; group < 4; group++) {
-    const start = Math.floor(config.toolCount / 2) + (group * 25);
-    const mounted = tools.slice(start, start + 25);
+    const start = initialToolCount + (group * mountedGroupSize);
+    const mounted = tools.slice(start, start + mountedGroupSize);
+    if (mounted.length === 0) continue;
+    mountedGroups += 1;
     executor.mount?.(`bench:group:${group}`, mounted, {
       scope: "run",
       runId: state.runId,
@@ -270,8 +276,9 @@ async function runContextToolSelectionCase(config: RuntimeScaleConfig): Promise<
 
   const fixture = {
     stateExchanges: config.stateExchanges,
-    toolCount: config.toolCount,
-    mountedGroups: 4,
+    configuredToolCount: config.toolCount,
+    toolCount: tools.length,
+    mountedGroups,
   };
   const operations = [
     await measureOperation("build_state_view", async () => {
@@ -824,7 +831,7 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
         status: "success",
         mode: "summary",
         retention: "while_relevant",
-        content: `Observation ${index} about git task assets and project artifacts.`,
+        content: `Observation ${index} about workstream resources and project artifacts.`,
         hasMore: false,
       })),
     },
@@ -838,7 +845,7 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
         step: 1,
         outcome: "success",
         summary: "Located benchmark targets.",
-        newFacts: ["Git task asset retrieval is a target."],
+        newFacts: ["Workstream resource retrieval is a target."],
         artifacts: [],
         toolsUsed: ["search_in_files"],
         toolSuccessCount: 1,
@@ -865,7 +872,7 @@ function buildGitContextFixture(count: number, timestamp: string): ContextEngine
     session: {
       meta: {
         sessionId: "2026-06-17",
-        assetCount: 1,
+        resourceCount: 1,
       },
       conversationTail: Array.from({ length: count }, (_, index) => ([
         {
@@ -886,57 +893,58 @@ function buildGitContextFixture(count: number, timestamp: string): ContextEngine
     focus: {
       status: "active",
       ref: "refs/heads/main",
-      workId: "T-20260617-0001",
+      workstreamId: "W-20260617-0001",
     },
-    task: {
+    workstream: {
+      contextRepositoryPath: "/tmp/ayati/workstreams/W-20260617-0001",
       ref: "refs/heads/main",
-      workId: "T-20260617-0001",
+      workstreamId: "W-20260617-0001",
       title: "Runtime performance analysis",
       objective: "Measure non-LLM runtime performance paths.",
-      status: "active",
-      completed: ["Located benchmark targets."],
-      open: ["Measure memory retrieval", "Measure filesystem scan"],
+      summary: "Located benchmark targets; measurement remains open.",
+      workstreamStatus: "in_progress",
+      lifecycleStatus: "active",
+      repositoryHealth: "ready",
+      currentFocus: "Measure non-LLM runtime paths.",
       blockers: [],
-      facts: [{ text: "Benchmark uses deterministic local fixtures.", source: "fixture" }],
       next: "Run non-LLM performance measurements.",
-      assets: [{
-        assetId: "A-20260617-0001",
+      resources: [{
+        resource: {
+          resourceId: "RES-0123456789ABCDEF01234567",
+          kind: "document",
+          origin: "agent_created",
+          displayName: "runtime-performance.md",
+          description: "Runtime performance benchmark report.",
+          aliases: ["performance report"],
+          locator: { kind: "filesystem", path: "/tmp/ayati/workspace/reports/runtime-performance.md" },
+          version: {
+            key: "missing",
+            observedAt: timestamp,
+            exists: false,
+            kind: "file",
+          },
+          availability: "missing",
+          metadataStatus: "fallback",
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
         role: "reference",
-        kind: "document",
-        name: "runtime-performance.md",
-        path: "reports/runtime-performance.md",
-      }],
-      recentRuns: [{
-        schemaVersion: 1,
-        runId: "R-20260617-0001",
-        workId: "T-20260617-0001",
-        status: "completed",
-        summary: "Located benchmark targets.",
-        completed: ["Located benchmark targets."],
-        open: ["Measure memory retrieval", "Measure filesystem scan"],
-        actions: ["action-0001"],
-        createdAt: timestamp,
+        access: "read",
+        primary: true,
+        requestIds: ["REQ-20260617-0001"],
+        boundAt: timestamp,
       }],
       recentCommits: [],
-      recentEvidence: [],
     },
   };
 }
 
 function buildToolFixture(count: number): ToolDefinition[] {
-  return Array.from({ length: count }, (_, index) => {
-    const domain = index % 5 === 0
-      ? "filesystem"
-      : index % 5 === 1
-        ? "documents"
-        : index % 5 === 2
-          ? "memory"
-          : index % 5 === 3
-            ? "database"
-            : "general";
+  return Object.values(TOOL_TAXONOMY).slice(0, count).map((taxonomy, index) => {
+    const role = taxonomy.roles[0] ?? "general";
     return {
-      name: `bench_tool_${index}`,
-      description: `Benchmark tool ${index} for ${domain} runtime performance project artifact analysis.`,
+      name: taxonomy.name,
+      description: `Benchmark definition for ${taxonomy.name} and ${role} runtime performance analysis.`,
       inputSchema: {
         type: "object",
         required: ["value"],
@@ -945,21 +953,21 @@ function buildToolFixture(count: number): ToolDefinition[] {
         },
       },
       annotations: {
-        domain,
-        readOnly: true,
-        mutatesWorkspace: false,
-        mutatesExternalWorld: false,
-        destructive: false,
-        idempotent: true,
-        retrySafe: true,
-        longRunning: false,
+        domain: "general",
+        readOnly: taxonomy.effect === "read_only",
+        mutatesWorkspace: taxonomy.effect === "workspace_mutation",
+        mutatesExternalWorld: taxonomy.effect === "external_mutation" || taxonomy.effect === "destructive",
+        destructive: taxonomy.effect === "destructive",
+        idempotent: taxonomy.effect === "read_only",
+        retrySafe: taxonomy.effect === "read_only",
+        longRunning: taxonomy.lifetime === "background",
       },
       selectionHints: {
-        domain,
-        tags: ["runtime", "performance", domain],
-        aliases: [`bench-${domain}-${index}`],
-        examples: [`analyze ${domain} benchmark`],
-        priority: index % 17 === 0 ? 5 : 0,
+        domain: role,
+        tags: ["runtime", "performance", role],
+        aliases: [`bench-${role}-${index}`],
+        examples: [`analyze ${role} benchmark`],
+        priority: taxonomy.loadPriority + (index % 17 === 0 ? 5 : 0),
       },
       async execute(): Promise<ToolResult> {
         return { ok: true, output: "ok" };

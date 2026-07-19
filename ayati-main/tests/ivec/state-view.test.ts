@@ -16,7 +16,7 @@ function createGitContext(overrides: Partial<ContextEngineMachineContext> = {}):
     session: {
       meta: {
         sessionId: "2026-06-27",
-        assetCount: 0,
+        resourceCount: 1,
       },
       conversationTail: [],
       activityTail: [],
@@ -28,54 +28,61 @@ function createGitContext(overrides: Partial<ContextEngineMachineContext> = {}):
     },
     focus: {
       status: "active",
-      ref: "refs/heads/task/T-20260627-0001-analyze-invoice",
-      workId: "T-20260627-0001",
+      ref: "refs/heads/main",
+      workstreamId: "W-20260627-0001",
     },
-    task: {
-      ref: "refs/heads/task/T-20260627-0001-analyze-invoice",
-      workId: "T-20260627-0001",
+    workstream: {
+      contextRepositoryPath: "/ayati/workstreams/W-20260627-0001",
+      ref: "refs/heads/main",
+      workstreamId: "W-20260627-0001",
       title: "Analyze invoice",
       objective: "Analyze invoice",
-      status: "active",
-      completed: ["Read invoice"],
-      open: ["Summarize invoice"],
+      summary: "The invoice was read and still needs a summary.",
+      workstreamStatus: "in_progress",
+      lifecycleStatus: "active",
+      repositoryHealth: "ready",
       blockers: [],
-      facts: [{ text: "Invoice has three line items.", source: "ev-001" }],
       next: "Summarize invoice",
-      assets: [{
-        assetId: "A-20260627-0001",
+      currentRequest: {
+        id: "R-0001",
+        title: "Summarize invoice",
+        status: "active",
+        request: "Summarize the invoice.",
+        acceptance: ["The summary covers all three line items."],
+        constraints: [],
+      },
+      resources: [{
+        resource: {
+          resourceId: "RES-INVOICE",
+          kind: "document",
+          origin: "user_attachment",
+          displayName: "invoice.pdf",
+          description: "Invoice supplied by the user.",
+          aliases: ["invoice"],
+          locator: { kind: "filesystem", path: "/home/user/invoice.pdf" },
+          version: {
+            key: "sha256:invoice",
+            observedAt: "2026-06-27T10:00:00.000Z",
+            exists: true,
+            kind: "file",
+          },
+          availability: "available",
+          metadataStatus: "enriched",
+          createdAt: "2026-06-27T10:00:00.000Z",
+          updatedAt: "2026-06-27T10:00:00.000Z",
+        },
         role: "input",
-        kind: "document",
-        name: "invoice.pdf",
-        path: "uploads/invoice.pdf",
-      }],
-      recentRuns: [{
-        schemaVersion: 1,
-        runId: "R-20260627-0001",
-        workId: "T-20260627-0001",
-        status: "completed",
-        summary: "Read invoice.",
-        completed: ["Read invoice"],
-        open: ["Summarize invoice"],
-        actions: ["action-0001"],
-        createdAt: "2026-06-27T10:00:00.000Z",
+        access: "read",
+        primary: true,
+        requestIds: ["R-0001"],
+        boundAt: "2026-06-27T10:00:00.000Z",
       }],
       recentCommits: [{
         commit: "def456",
-        subject: "ayati: commit run",
-        event: "run_committed",
-        workId: "T-20260627-0001",
-      }],
-      recentEvidence: [{
+        subject: "ayati: update workstream context",
+        event: "workstream_context_committed",
         runId: "R-20260627-0001",
-        workId: "T-20260627-0001",
-        step: 1,
-        tool: "read_files",
-        status: "completed",
-        summary: "Read invoice input.",
-        artifacts: ["uploads/invoice.pdf"],
-        facts: ["Invoice has three line items."],
-        accessModes: ["summary"],
+        workstreamId: "W-20260627-0001",
       }],
     },
     ...overrides,
@@ -169,7 +176,7 @@ describe("buildAgentStateView", () => {
     expect(view.context.run?.toolCalls?.[0]).not.toHaveProperty("output");
   });
 
-  it("exposes git context as the durable task source", () => {
+  it("exposes workstream context and public resources as the durable source", () => {
     const state = createLoopState({
       harnessContext: createHarnessContext({
         contextEngine: createGitContext(),
@@ -177,55 +184,52 @@ describe("buildAgentStateView", () => {
     });
 
     const context = buildAgentStateView(state).context;
-    expect(context.gitContext?.task).toMatchObject({
-      workId: "T-20260627-0001",
-      open: ["Summarize invoice"],
-      facts: [{ text: "Invoice has three line items.", source: "ev-001" }],
+    expect(context.gitContext?.workstream).toMatchObject({
+      workstreamId: "W-20260627-0001",
+      contextRepositoryPath: "/ayati/workstreams/W-20260627-0001",
+      next: "Summarize invoice",
     });
-    expect(context.git?.current.task).toMatchObject({
+    expect(context.git?.current.workstream).toMatchObject({
       identity: {
-        workId: "T-20260627-0001",
+        workstreamId: "W-20260627-0001",
         title: "Analyze invoice",
       },
       state: {
-        open: ["Summarize invoice"],
-        facts: [{ text: "Invoice has three line items.", source: "ev-001" }],
+        summary: "The invoice was read and still needs a summary.",
+        next: "Summarize invoice",
+        currentRequest: { id: "R-0001", status: "active" },
       },
-      activity: {
-        recentRuns: [{
-          summary: "Read invoice.",
-        }],
-        recentEvidence: [{
-          summary: "Read invoice input.",
-        }],
-      },
+      resources: [expect.objectContaining({
+        resource: expect.objectContaining({
+          resourceId: "RES-INVOICE",
+          locator: { kind: "filesystem", path: "/home/user/invoice.pdf" },
+        }),
+      })],
+      activity: { recentCommits: [expect.objectContaining({ commit: "def456" })] },
     });
     expect(context.git?.session).toMatchObject({
       meta: {
         sessionId: "2026-06-27",
-        assetCount: 0,
+        resourceCount: 1,
       },
       activity: {
         recent: [],
       },
     });
     expect(context.git?.session).not.toHaveProperty("sessionId");
-    expect(context.git?.session).not.toHaveProperty("assetCount");
+    expect(context.git?.session).not.toHaveProperty("resourceCount");
     expect(context.git?.session.recentCommits).toHaveLength(1);
     expect(context.git?.session).not.toHaveProperty("conversationTail");
     expect(context.git?.session).not.toHaveProperty("conversationMarkdownTail");
     expect(context.git?.session).not.toHaveProperty("summary");
     expect(context.git?.current).not.toHaveProperty("session");
-    expect(context.git?.current.task).not.toHaveProperty("conversationMarkdownTail");
-    expect(context.git?.current.task).not.toHaveProperty("recentCommits");
-    expect(context.git?.current.task).not.toHaveProperty("recentRuns");
-    expect(context.git?.current.task).not.toHaveProperty("recentEvidence");
-    expect(context.git?.current.task?.activity.recentRuns[0]).not.toHaveProperty("runId");
-    expect(context.git?.current.task?.activity.recentEvidence[0]).not.toHaveProperty("runId");
+    expect(context.git?.current.workstream).not.toHaveProperty("contextRepositoryPath");
+    expect(context.git?.current.workstream).not.toHaveProperty("recentCommits");
+    expect(context.git?.current.workstream?.activity.recentCommits[0]).not.toHaveProperty("runId");
     expect(context.gitContext?.session.recentCommits).toHaveLength(1);
-    expect(context.gitContext?.task?.recentCommits).toHaveLength(1);
+    expect(context.gitContext?.workstream?.recentCommits).toHaveLength(1);
     expect(context).not.toHaveProperty("continuity");
-    expect(context).not.toHaveProperty("taskThreadContext");
+    expect(context).not.toHaveProperty("workstreamThreadContext");
     expect(context).not.toHaveProperty("sessionWork");
   });
 
@@ -255,7 +259,7 @@ describe("buildAgentStateView", () => {
     expect(context.git?.session.summary).not.toHaveProperty("conversationTail");
   });
 
-  it("projects recent task-bound-run checkpoints separately from the exact timeline", () => {
+  it("projects recent workstream-bound run checkpoints separately from the exact timeline", () => {
     const gitContext = createGitContext();
     const state = createLoopState({
       currentSeq: 7,
@@ -270,10 +274,10 @@ describe("buildAgentStateView", () => {
               at: "2026-06-27T10:07:00.000Z",
               text: "Continue with the next step.",
             }],
-            recentTaskRuns: [{
-              checkpointId: `task-bound-run-checkpoint-${"a".repeat(64)}`,
+            recentRunCheckpoints: [{
+              checkpointId: `workstream-bound-run-checkpoint-${"a".repeat(64)}`,
               commit: "checkpoint-commit",
-              workId: "T-20260627-0001",
+              workstreamId: "W-20260627-0001",
               runId: "R-20260627-0001",
               status: "completed",
               fromSeq: 1,
@@ -305,11 +309,11 @@ describe("buildAgentStateView", () => {
       content: "Continue with the next step.",
       current: true,
     }]);
-    expect(context.git?.session.recentTaskRuns).toMatchObject([{
+    expect(context.git?.session.recentRunCheckpoints).toMatchObject([{
       fromSeq: 1,
       toSeq: 6,
     }]);
-    expect(context.git?.session.recentTaskRuns?.[0]).not.toHaveProperty("runId");
+    expect(context.git?.session.recentRunCheckpoints?.[0]).not.toHaveProperty("runId");
     expect(context.git?.session).not.toHaveProperty("projection");
   });
 
@@ -332,7 +336,7 @@ describe("buildAgentStateView", () => {
       severity: "warning",
       source: "tool_validation",
       message: expect.stringContaining("pending turn is unbound"),
-      retryHint: expect.stringContaining("git_context_activate_task"),
+      retryHint: expect.stringContaining("activate or create the correct workstream"),
     });
   });
 
@@ -364,15 +368,15 @@ describe("buildAgentStateView", () => {
       failureHistory: [{
         step: 1,
         failureType: "validation_error",
-        reason: "No active task exists. Create and activate the first task before using work tools.",
+        reason: "No workstream owns this run. Select durable ownership before mutation.",
         blockedTargets: ["write_files"],
-        repairCode: "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
+        repairCode: "R_UNBOUND_RUN_NEEDS_WORKSTREAM_BINDING",
         repair: {
-          code: "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
-          message: "No active task exists yet. Normal work tools cannot run before task creation.",
+          code: "R_UNBOUND_RUN_NEEDS_WORKSTREAM_BINDING",
+          message: "No active workstream exists yet. Normal work tools cannot run before workstream binding.",
           blockedTargets: ["write_files"],
           allowedNextActions: [
-            "Call git_context_create_task with title, objective, and createReason \"no_active_task\".",
+            "Create or activate the correct workstream, then make a fresh mutation decision.",
           ],
         },
       }],
@@ -382,23 +386,23 @@ describe("buildAgentStateView", () => {
     expect(stateView.workingFeedback?.latest[0]).toMatchObject({
       severity: "error",
       source: "tool_validation",
-      code: "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
-      message: "No active task exists yet. Normal work tools cannot run before task creation.",
-      retryHint: "Call git_context_create_task with title, objective, and createReason \"no_active_task\".",
+      code: "R_UNBOUND_RUN_NEEDS_WORKSTREAM_BINDING",
+      message: "No active workstream exists yet. Normal work tools cannot run before workstream binding.",
+      retryHint: "Create or activate the correct workstream, then make a fresh mutation decision.",
       repair: {
-        code: "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
+        code: "R_UNBOUND_RUN_NEEDS_WORKSTREAM_BINDING",
         blockedTargets: ["write_files"],
       },
     });
     expect(stateView.context.run ?? {}).not.toHaveProperty("feedback");
     expect(stateView.context.harness?.feedback?.latest[0]).toMatchObject({
-      code: "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
+      code: "R_UNBOUND_RUN_NEEDS_WORKSTREAM_BINDING",
       repair: {
-        code: "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
+        code: "R_UNBOUND_RUN_NEEDS_WORKSTREAM_BINDING",
       },
     });
     expect(stateView.trace?.recentFailures?.[0]).toMatchObject({
-      code: "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
+      code: "R_UNBOUND_RUN_NEEDS_WORKSTREAM_BINDING",
       blockedTargets: ["write_files"],
     });
     expect(stateView.context.run ?? {}).not.toHaveProperty("trace");
@@ -413,7 +417,7 @@ describe("buildAgentStateView", () => {
           session: {
             meta: {
               sessionId: "2026-06-27",
-              assetCount: 0,
+              resourceCount: 0,
             },
             activityTail: [],
             conversationTail: [
@@ -465,7 +469,7 @@ describe("buildAgentStateView", () => {
       harnessContext: createHarnessContext({
         contextEngine: createGitContext({
           session: {
-            meta: { sessionId: "S-1", assetCount: 0 },
+            meta: { sessionId: "S-1", resourceCount: 0 },
             activityTail: [],
             conversationTail: [
               message(1, "S-1-M-000001", "user", "Explain a Git commit."),
@@ -500,7 +504,7 @@ describe("buildAgentStateView", () => {
       harnessContext: createHarnessContext({
         contextEngine: createGitContext({
           session: {
-            meta: { sessionId: "S-1", assetCount: 0 },
+            meta: { sessionId: "S-1", resourceCount: 0 },
             activityTail: [],
             conversationTail: [
               message(1, "S-1-M-000001", "user", "Continue."),
@@ -534,7 +538,7 @@ describe("buildAgentStateView", () => {
       harnessContext: createHarnessContext({
         contextEngine: createGitContext({
           session: {
-            meta: { sessionId: "2026-06-27", assetCount: 0 },
+            meta: { sessionId: "2026-06-27", resourceCount: 0 },
             activityTail: [],
             conversationTail,
           },
@@ -556,14 +560,14 @@ describe("buildAgentStateView", () => {
   it("falls back to the current input when git conversation is unavailable", () => {
     const state = createLoopState({
       currentSeq: 7,
-      userMessage: "start a new task",
+      userMessage: "start new durable work",
     });
 
     expect(buildAgentStateView(state).context.timeline).toEqual([{
       kind: "user",
       seq: 7,
       timestamp: "1970-01-01T00:00:00.000Z",
-      content: "start a new task",
+      content: "start new durable work",
       current: true,
     }]);
   });
@@ -617,7 +621,7 @@ describe("buildAgentStateView", () => {
           focus: {
             status: "none",
           },
-          task: undefined,
+          workstream: undefined,
         }),
       }),
     });
@@ -995,6 +999,7 @@ describe("buildAgentStateView", () => {
         alreadyActive: [],
         evicted: [],
         missing: ["patch_files"],
+        unavailable: [],
         message: "Loaded read_files; patch_files was unavailable.",
       },
       attachedDocuments: [{
@@ -1102,13 +1107,16 @@ describe("buildAgentStateView", () => {
       managedDirectories: [{ id: "dir-1", name: "workspace", status: "ready" }],
       warnings: ["Skipped one unsupported attachment."],
     });
-    expect(stateView.context.git?.current.task?.assets).toEqual([{
-      assetId: "A-20260627-0001",
-      role: "input",
-      kind: "document",
-      name: "invoice.pdf",
-      path: "uploads/invoice.pdf",
-    }]);
+    expect(stateView.context.git?.current.workstream?.resources).toEqual([
+      expect.objectContaining({
+        role: "input",
+        resource: expect.objectContaining({
+          resourceId: "RES-INVOICE",
+          displayName: "invoice.pdf",
+          locator: { kind: "filesystem", path: "/home/user/invoice.pdf" },
+        }),
+      }),
+    ]);
     expect(stateView.systemEvent).toMatchObject({
       source: "calendar",
       eventName: "meeting.started",

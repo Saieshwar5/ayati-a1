@@ -147,17 +147,17 @@ export function readConversation(
 export function readConversationBinding(
   database: ContextDatabase,
   conversationId: string,
-): { runId?: string; taskId?: string } | undefined {
+): { runId?: string; workstreamId?: string } | undefined {
   const row = database.prepare([
-    "SELECT run_id, task_id FROM conversation_segments WHERE conversation_id = ?",
+    "SELECT run_id, workstream_id FROM conversation_segments WHERE conversation_id = ?",
   ].join(" ")).get(conversationId) as {
     run_id: string | null;
-    task_id: string | null;
+    workstream_id: string | null;
   } | undefined;
   return row
     ? {
         ...(row.run_id ? { runId: row.run_id } : {}),
-        ...(row.task_id ? { taskId: row.task_id } : {}),
+        ...(row.workstream_id ? { workstreamId: row.workstream_id } : {}),
       }
     : undefined;
 }
@@ -189,7 +189,7 @@ export function closeRunConversationWithAssistant(database: ContextDatabase, inp
   sessionId: string;
   conversationId: string;
   runId: string;
-  taskId?: string;
+  workstreamId?: string;
   content: string;
   at: string;
 }): ConversationRef {
@@ -210,7 +210,7 @@ export function closeRunConversationWithAssistant(database: ContextDatabase, inp
     input.sessionId, sessionSequence, segmentSequence, input.content, input.at,
   );
   const filePath = "conversations/" + pad(Number(row.sequence), 6)
-    + (input.taskId ? "-task-" + input.taskId : "-unbound") + ".md";
+    + (input.workstreamId ? "-workstream-" + input.workstreamId : "-unbound") + ".md";
   return closeRunConversation(database, input, row, filePath);
 }
 
@@ -218,12 +218,12 @@ export function closeRunConversationWithoutAssistant(database: ContextDatabase, 
   sessionId: string;
   conversationId: string;
   runId: string;
-  taskId?: string;
+  workstreamId?: string;
   at: string;
 }): ConversationRef {
   const row = requireRunConversation(database, input);
   const filePath = "conversations/" + pad(Number(row.sequence), 6)
-    + (input.taskId ? "-task-" + input.taskId : "-unbound") + ".md";
+    + (input.workstreamId ? "-workstream-" + input.workstreamId : "-unbound") + ".md";
   return closeRunConversation(database, input, row, filePath);
 }
 
@@ -231,16 +231,16 @@ function requireRunConversation(database: ContextDatabase, input: {
   sessionId: string;
   conversationId: string;
   runId: string;
-  taskId?: string;
+  workstreamId?: string;
 }): ConversationRow {
   const row = database.prepare([
-    "SELECT conversation_id, session_id, sequence, file_path, status, task_id",
+    "SELECT conversation_id, session_id, sequence, file_path, status, workstream_id",
     "FROM conversation_segments",
     "WHERE conversation_id = ? AND session_id = ? AND run_id = ?",
   ].join(" ")).get(
     input.conversationId, input.sessionId, input.runId,
-  ) as (ConversationRow & { task_id: string | null }) | undefined;
-  if (!row || row.status !== "active" || (row.task_id ?? undefined) !== input.taskId) {
+  ) as (ConversationRow & { workstream_id: string | null }) | undefined;
+  if (!row || row.status !== "active" || (row.workstream_id ?? undefined) !== input.workstreamId) {
     throw new GitContextServiceError({
       code: "CONVERSATION_NOT_ACTIVE",
       message: "Run finalization requires its matching active conversation.",
@@ -315,7 +315,7 @@ function createConversationForNewInput(
   const filePath = "conversations/" + pad(sequence, 6) + ".pending.md";
   database.prepare([
     "INSERT INTO conversation_segments(",
-    "conversation_id, session_id, sequence, file_path, task_id, run_id, status,",
+    "conversation_id, session_id, sequence, file_path, workstream_id, run_id, status,",
     "content_hash, committed_sha, started_at, closed_at",
     ") VALUES (?, ?, ?, ?, ?, ?, 'active', NULL, NULL, ?, NULL)",
   ].join(" ")).run(

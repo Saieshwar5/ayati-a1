@@ -181,8 +181,8 @@ describe("Git Context runtime cache", () => {
     ]));
   });
 
-  it("preserves a newly bound task while patching the next step", async () => {
-    const fixture = serviceFixture({ stepTaskBound: true });
+  it("preserves a newly bound workstream while patching the next step", async () => {
+    const fixture = serviceFixture({ stepWorkstreamBound: true });
     const runtime = createGitContextRuntime({
       service: fixture.service,
       timezone: "UTC",
@@ -206,21 +206,21 @@ describe("Git Context runtime cache", () => {
         status: "completed",
         startedAt: "2026-07-19T10:00:01.000Z",
         completedAt: "2026-07-19T10:00:02.000Z",
-        summary: "Task was bound.",
+        summary: "Workstream was bound.",
         decision: { kind: "act" },
         action: { calls: 1 },
         toolCalls: [{
-          callId: "bind-task",
-          tool: "git_context_create_task",
-          purpose: "Bind this run to the requested task",
+          callId: "bind-workstream",
+          tool: "git_context_create_workstream",
+          purpose: "Bind this run to the requested workstream",
           status: "success",
-          input: { title: "Task" },
-          output: { runId: "RUN-1", taskId: "T-1" },
+          input: { title: "Workstream" },
+          output: { runId: "RUN-1", workstreamId: "W-1" },
         }],
         verification: { passed: true },
         workStateAfter: {
           status: "not_done",
-          summary: "Task was bound.",
+          summary: "Workstream was bound.",
           openWork: ["Create the requested file."],
           blockers: [],
           verifiedFacts: [],
@@ -232,9 +232,12 @@ describe("Git Context runtime cache", () => {
     });
 
     expect(projection).toMatchObject({
-      focus: { status: "active", workId: "T-1" },
-      pendingTurn: { routingStatus: "bound", runId: "RUN-1", workId: "T-1" },
-      task: { workId: "T-1", workingDirectory: "/workspace/T-1" },
+      focus: { status: "active", workstreamId: "W-1" },
+      pendingTurn: { routingStatus: "bound", runId: "RUN-1", workstreamId: "W-1" },
+      workstream: {
+        workstreamId: "W-1",
+        contextRepositoryPath: "/ayati/workstreams/W-1",
+      },
     });
     expect(turn.context).toBe(projection);
     expect(await runtime.buildActiveContext("S-1")).toBe(projection);
@@ -242,7 +245,7 @@ describe("Git Context runtime cache", () => {
   });
 
   it("waits for finalization and emits truthful commit acknowledgement", async () => {
-    const fixture = serviceFixture({ taskBound: true });
+    const fixture = serviceFixture({ workstreamBound: true });
     const events: GitContextObservabilityEvent[] = [];
     const runtime = createGitContextRuntime({
       service: fixture.service,
@@ -252,7 +255,7 @@ describe("Git Context runtime cache", () => {
     });
     const turn = await runtime.prepareUserTurn({
       clientId: "local",
-      userMessage: "Finish the task.",
+      userMessage: "Finish the workstream request.",
       at: "2026-07-19T10:00:00.000Z",
     });
 
@@ -260,49 +263,91 @@ describe("Git Context runtime cache", () => {
       turn,
       outcome: "done",
       stopReason: "completed",
-      assistantResponse: "Finished the task.",
-      conversationSummary: "Finished the task.",
-      summary: "Finished and verified the task.",
+      assistantResponse: "Finished the workstream request.",
+      conversationSummary: "Finished the workstream request.",
+      summary: "Finished and verified the workstream request.",
       validation: "passed",
       workState: {
         status: "done",
-        summary: "Finished and verified the task.",
+        summary: "Finished and verified the workstream request.",
         openWork: [],
         blockers: [],
         verifiedFacts: [],
         evidence: [],
       },
-      taskCompletion: {
+      workstreamCompletion: {
         accepted: true,
-        assets: [],
+        resources: [],
         missing: [],
         failures: [],
-        criteria: [{ criterion: "Finish the task", passed: true }],
+        criteria: [{ criterion: "Finish the workstream request", passed: true }],
       },
       at: "2026-07-19T10:01:00.000Z",
     });
 
-    expect(response?.commit.status).toBe("committed");
+    expect(response?.workstreamContextCommit.status).toBe("committed");
     expect(fixture.finalizeRun).toHaveBeenCalledWith(expect.objectContaining({
       requestId: "RUN-1:finalize",
       sessionId: "S-1",
       runId: "RUN-1",
-      task: { completion: expect.objectContaining({ accepted: true }) },
+      workstream: { completion: expect.objectContaining({ accepted: true }) },
     }));
     expect(events.map((event) => event.event)).toEqual(expect.arrayContaining([
       "run_finalization_started",
       "run_finalization_completed",
-      "task_commit_created",
+      "workstream_context_commit_created",
     ]));
     expect(events.find((event) => event.event === "run_finalization_completed")?.data).toMatchObject({
       outcome: "done",
-      commit: { status: "committed", commit: "b".repeat(40) },
+      workstreamContextCommit: { status: "committed", commit: "b".repeat(40) },
     });
+  });
+
+  it("defensively compacts WorkState before calling the durable service", async () => {
+    const fixture = serviceFixture();
+    const runtime = createGitContextRuntime({
+      service: fixture.service,
+      timezone: "UTC",
+      agentId: "local",
+    });
+    const turn = await runtime.prepareUserTurn({
+      clientId: "local",
+      userMessage: "Continue after choosing a resource.",
+      at: "2026-07-19T10:00:00.000Z",
+    });
+    const question = "Which resource should Ayati use? " + "detail ".repeat(100);
+
+    await runtime.finalizeRun({
+      turn,
+      outcome: "needs_user_input",
+      stopReason: "needs_user_input",
+      assistantResponse: question,
+      conversationSummary: "Waiting for one resource choice.",
+      summary: "Waiting for one resource choice.",
+      validation: "not_applicable",
+      workState: {
+        status: "needs_user_input",
+        summary: "Waiting for one resource choice.",
+        openWork: [],
+        blockers: [],
+        verifiedFacts: [],
+        evidence: [],
+        nextStep: question,
+        userInputNeeded: question,
+      },
+      at: "2026-07-19T10:01:00.000Z",
+    });
+
+    const request = fixture.finalizeRun.mock.calls[0]?.[0];
+    expect(request?.assistantResponse).toBe(question);
+    expect(request?.workState.userInputNeeded[0]).not.toBe(question);
+    expect(request?.workState.userInputNeeded[0]?.length).toBeLessThanOrEqual(500);
+    expect(request?.workState.nextStep?.length).toBeLessThanOrEqual(1_000);
   });
 });
 
-function serviceFixture(options: { taskBound?: boolean; stepTaskBound?: boolean } = {}) {
-  const context = activeContext(options.taskBound === true);
+function serviceFixture(options: { workstreamBound?: boolean; stepWorkstreamBound?: boolean } = {}) {
+  const context = activeContext(options.workstreamBound === true);
   const prepareContextTurn = vi.fn(async () => ({
     session: context.session!.session,
     sessionCreated: false,
@@ -318,7 +363,7 @@ function serviceFixture(options: { taskBound?: boolean; stepTaskBound?: boolean 
   }));
   const getActiveContext = vi.fn(async () => context);
   const recordRunStep = vi.fn(async (): Promise<RecordRunStepResponse> => ({
-    run: runProjection(options.stepTaskBound ?? options.taskBound === true, 1),
+    run: runProjection(options.stepWorkstreamBound ?? options.workstreamBound === true, 1),
     readContext: {
       revision: "read-1",
       inventory: [],
@@ -341,7 +386,7 @@ function serviceFixture(options: { taskBound?: boolean; stepTaskBound?: boolean 
   }));
   const finalizeRun = vi.fn(async (): Promise<FinalizeRunResponse> => ({
     run: {
-      ...runProjection(options.taskBound === true, 0).run,
+      ...runProjection(options.workstreamBound === true, 0).run,
       status: "done",
       stopReason: "completed",
       completedAt: "2026-07-19T10:01:00.000Z",
@@ -360,11 +405,12 @@ function serviceFixture(options: { taskBound?: boolean; stepTaskBound?: boolean 
       runFile: "runs/RUN-1/run.json",
       stepsFile: "runs/RUN-1/steps.jsonl",
     },
-    commit: options.taskBound
+    resourceEffects: { status: "none", events: [] },
+    workstreamContextCommit: options.workstreamBound
       ? {
           status: "committed",
-          taskId: "T-1",
-          taskRequestId: "REQ-1",
+          workstreamId: "W-1",
+          requestId: "R-0001",
           headBefore: "a".repeat(40),
           headAfter: "b".repeat(40),
           commit: "b".repeat(40),
@@ -380,8 +426,8 @@ function serviceFixture(options: { taskBound?: boolean; stepTaskBound?: boolean 
   return { service, prepareContextTurn, getActiveContext, recordRunStep, finalizeRun };
 }
 
-function activeContext(taskBound: boolean): ActiveContext {
-  const run = runProjection(taskBound, 0);
+function activeContext(workstreamBound: boolean): ActiveContext {
+  const run = runProjection(workstreamBound, 0);
   return {
     contextRevision: "revision-1",
     session: {
@@ -425,38 +471,49 @@ function activeContext(taskBound: boolean): ActiveContext {
       recentCommits: [],
     },
     run,
-    ...(taskBound ? {
-      activeTask: {
-        task: {
-          taskId: "T-1",
-          repositoryPath: "/tasks/T-1",
-          workingPath: "/workspace/T-1",
+    ...(workstreamBound ? {
+      activeWorkstream: {
+        workstream: {
+          workstreamId: "W-1",
+          contextRepositoryPath: "/ayati/workstreams/W-1",
           branch: "main",
           head: "a".repeat(40),
         },
-        workingDirectory: "/workspace/T-1",
-        title: "Task",
-        objective: "Finish the task",
-        summary: "Task in progress",
-        importantPaths: [],
+        title: "Workstream",
+        objective: "Finish the durable request",
+        summary: "Workstream request in progress",
+        workstreamStatus: "in_progress" as const,
+        lifecycleStatus: "active" as const,
+        repositoryHealth: "ready" as const,
+        blockers: [],
+        currentRequest: {
+          id: "R-0001",
+          title: "Finish the request",
+          status: "active" as const,
+          request: "Finish the durable request.",
+          acceptance: ["The outcome is verified."],
+          constraints: [],
+        },
+        resources: [],
         recentCommits: [],
       },
     } : {}),
-    taskCandidates: [],
+    workstreamCandidates: [],
+    ingressResources: [],
     warnings: [],
   };
 }
 
-function runProjection(taskBound: boolean, afterStep: number): RunContextProjection {
+function runProjection(workstreamBound: boolean, afterStep: number): RunContextProjection {
   return {
     run: {
       runId: "RUN-1",
       sessionId: "S-1",
       conversationId: "C-1",
-      ...(taskBound ? {
-        taskBinding: {
-          taskId: "T-1",
-          taskRequestId: "REQ-1",
+      ...(workstreamBound ? {
+        workstreamBinding: {
+          workstreamId: "W-1",
+          requestId: "R-0001",
           boundAt: "2026-07-19T10:00:00.500Z",
         },
       } : {}),

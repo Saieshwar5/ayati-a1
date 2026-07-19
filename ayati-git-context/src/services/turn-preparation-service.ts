@@ -18,6 +18,7 @@ export class TurnPreparationService {
 
   prepare(input: PrepareContextTurnRequest, options: {
     ensureSession: () => EnsureActiveSessionResponse;
+    admitResources?: (input: { messageId: string; runId: string }) => void;
   }): ReturnType<typeof beginRecoverableIdempotent<PreparedContextTurnReceipt>> {
     return beginRecoverableIdempotent<PreparedContextTurnReceipt>({
       database: this.database,
@@ -39,6 +40,10 @@ export class TurnPreparationService {
           trigger: input.role,
           workState: initialWorkState(),
           at: input.at,
+        });
+        options.admitResources?.({
+          messageId: appended.message.messageId,
+          runId: run.runId,
         });
         return createPreparedContextTurnReceipt({
           sessionId: ensured.session.sessionId,

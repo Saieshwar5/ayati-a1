@@ -1,6 +1,6 @@
 # Environment Variables
 
-Provider keys:
+## Providers
 
 ```env
 OPENAI_API_KEY=
@@ -9,36 +9,45 @@ ANTHROPIC_API_KEY=
 FIREWORKS_API_KEY=
 ```
 
-Model selection:
+Chat, embedding, image, and context-window model settings live in
+`ayati-main/data/runtime/llm-config.json`. OpenAI embeddings and image
+generation require `OPENAI_API_KEY`.
 
-- Chat, embedding, and image generation model choices live in `ayati-main/data/runtime/llm-config.json`.
-- Optional chat-model context overrides live in the same file under
-  `modelContextLimits`, keyed as `<provider>:<model>`. Each override declares
-  `contextWindowTokens` and may declare `maxInputTokens` and
-  `outputReserveTokens`, `recoveryTargetTokens`, `softInputTokens`, and
-  `hardInputTokens`. Ayati accepts 128K and larger context windows. The default
-  128K pressure thresholds are 60K recovery, 70K soft, and 100K hard.
-- Embeddings currently support the OpenAI provider and use `OPENAI_API_KEY`.
-- Image generation currently supports the OpenAI provider and uses `OPENAI_API_KEY`.
+## Ayati Root
 
-Example context override:
-
-```json
-{
-  "modelContextLimits": {
-    "anthropic:claude-large-context": {
-      "contextWindowTokens": 200000,
-      "maxInputTokens": 180000,
-      "outputReserveTokens": 12000,
-      "recoveryTargetTokens": 90000,
-      "softInputTokens": 110000,
-      "hardInputTokens": 150000
-    }
-  }
-}
+```env
+AYATI_ROOT_DIR=
 ```
 
-HTTP API:
+This is the single filesystem root for managed work:
+
+- `<root>/workspace/`: default visible output when the user gives no path;
+- `<root>/workstreams/`: context-only `W-*` repositories;
+- `<root>/.ayati/`: SQLite, sessions, immutable managed resources, and socket.
+
+When unset, the backend uses `ayati-main/ayati`. Model-facing tool calls still
+use canonical absolute resource paths.
+
+## Git Context
+
+```env
+AYATI_GIT_CONTEXT_DATABASE=
+AYATI_GIT_CONTEXT_SOCKET=
+AYATI_GIT_CONTEXT_MANAGED=true
+AYATI_GIT_CONTEXT_START_TIMEOUT_MS=10000
+AYATI_GIT_CONTEXT_STOP_TIMEOUT_MS=10000
+AYATI_GIT_CONTEXT_REQUEST_TIMEOUT_MS=30000
+AYATI_GIT_CONTEXT_TIMEZONE=Asia/Kolkata
+AYATI_GIT_CONTEXT_AGENT_ID=local
+```
+
+Database and socket defaults are `<root>/.ayati/context.db` and
+`<root>/.ayati/git-context.sock`. The daemon normally manages one compatible
+local child process. Set `AYATI_GIT_CONTEXT_MANAGED=false` only when another
+supervisor owns that socket. Parent-PID and root values passed to the child are
+internal process inputs.
+
+## HTTP and Uploads
 
 ```env
 AYATI_HTTP_HOST=127.0.0.1
@@ -48,124 +57,33 @@ AYATI_HTTP_API_TOKEN=
 AYATI_UPLOAD_MAX_BYTES=26214400
 ```
 
-Document vectors:
+## Documents and Python
 
 ```env
 AYATI_DOCUMENT_VECTOR_ENABLED=true
 AYATI_DOCUMENT_EMBED_BATCH_SIZE=32
 AYATI_DOCUMENT_VECTOR_MIN_CHUNKS=40
-```
-
-Document extraction:
-
-```env
 TIKA_BIN=tika
 TIKA_JAR_PATH=
 PANDOC_BIN=pandoc
 PDFTOTEXT_BIN=pdftotext
-```
-
-Python tool:
-
-```env
 AYATI_PYTHON_INTERPRETER=
 ```
 
-Workspace defaults:
+Other `AYATI_PYTHON_*` variables are runtime-owned child-process inputs, not
+normal operator configuration.
+
+## Harness and Feedback
 
 ```env
-AYATI_WORKSPACE_DIR=
-```
-
-`AYATI_WORKSPACE_DIR` sets the default directory for generated files, scratch
-work, filesystem tools, process cwd, and other ad-hoc agent work when the user
-does not specify a directory. When unset, Ayati uses `ayati-main/work_space`.
-Ayati resolves this configuration value at startup. Model tool calls use the
-resulting canonical absolute root and must pass absolute host filesystem paths,
-for example `/home/user/project/report.md`. Relative paths, `workspace/...`,
-`work_space/...`, and `~/...` are not valid model tool resource addresses.
-
-Git context:
-
-```env
-AYATI_GIT_CONTEXT_STORE_DIR=
-AYATI_GIT_CONTEXT_DATABASE=
-AYATI_GIT_CONTEXT_DATA_ROOT=
-AYATI_GIT_CONTEXT_SOCKET=
-AYATI_GIT_CONTEXT_MANAGED=true
-AYATI_GIT_CONTEXT_START_TIMEOUT_MS=10000
-AYATI_GIT_CONTEXT_STOP_TIMEOUT_MS=10000
-AYATI_GIT_CONTEXT_REQUEST_TIMEOUT_MS=30000
-AYATI_GIT_CONTEXT_TIMEZONE=Asia/Kolkata
-AYATI_GIT_CONTEXT_AGENT_ID=local
-AYATI_GIT_CONTEXT_TRUSTED_ROOTS=
-```
-
-Daily Git context is always on. By default, the daemon starts one independent
-`ayati-git-context` child process and communicates with it through HTTP/JSON on
-a local Unix socket. That process is the sole owner of context SQLite and Git
-writes. The daemon waits for protocol-compatible readiness before accepting
-work, stops the child during normal shutdown, and can restart it once after an
-observed crash. Set `AYATI_GIT_CONTEXT_MANAGED=false` only when an externally
-supervised compatible server already owns the configured socket.
-
-`AYATI_GIT_CONTEXT_STORE_DIR` overrides the context-engine storage directory.
-When unset, Ayati uses `ayati-main/data/context-engine`. Relative paths resolve
-from the backend package root. This startup configuration compatibility is
-internal; it does not make relative paths valid in agent tool calls.
-
-`AYATI_GIT_CONTEXT_DATABASE` and `AYATI_GIT_CONTEXT_SOCKET` override the
-SQLite database and Unix-socket paths. Their defaults are `context.sqlite` and
-`git-context.sock` inside the store directory. `AYATI_GIT_CONTEXT_DATA_ROOT`
-overrides the Git repository root; its default is `.ayati-context` inside the
-configured workspace. The three timeout values bound service readiness,
-graceful shutdown, and each HTTP request.
-
-`AYATI_GIT_CONTEXT_TIMEZONE` controls daily session dating for git context.
-
-`AYATI_GIT_CONTEXT_AGENT_ID` controls the agent id used in daily session ids.
-
-`AYATI_GIT_CONTEXT_TRUSTED_ROOTS` is an optional platform-path-delimited list
-of parent directories in which Ayati may register an existing task directory.
-The configured workspace is always an implicit trust boundary. A trusted root
-does not authorize mutation by itself: the directory must pass registration,
-the current run must bind to the resulting task/request, and mutation still
-requires verified authority. Filesystem root and the user's home directory are
-refused as overly broad trust roots.
-
-The configured data root contains session repositories. Managed task
-repositories live under `<workspace>/tasks/`. Changing these paths relocates
-runtime state. Registered repositories remain at their requested paths. These
-settings do not by themselves make arbitrary data safe to commit.
-
-Agent harness:
-
-```env
-AYATI_AGENT_MAX_SELECTED_TOOLS=12
-```
-
-`AYATI_AGENT_MAX_SELECTED_TOOLS` bounds how many selected executable tool
-schemas are shown to the decision model for one decision. Required routing and
-Git recovery tools consume slots inside this total. After enforced context
-pressure, later decisions use the smaller of this value and ten. Native harness
-control tools are separate from this executable-tool limit.
-
-Feedback tracing:
-
-```env
+AYATI_AGENT_MAX_SELECTED_TOOLS=15
 AYATI_TEST_AGENT=1
 AYATI_FEEDBACK_TRACE=1
 AYATI_FEEDBACK_FULL=
+AYATI_AGENT_TRACE=
+AYATI_AGENT_TRACE_PROMPTS=
 ```
 
-Use `pnpm dev:main:feedback` or `pnpm start:main:feedback` to enable feedback
-tracing for local agent development. Feedback traces are disabled unless both
-`AYATI_TEST_AGENT` and `AYATI_FEEDBACK_TRACE` are truthy. By default, large
-payloads are compacted; set `AYATI_FEEDBACK_FULL=1` only when raw payload detail
-is needed for debugging.
-
-Git Context Engine, HTTP, supervisor, and harness lifecycle events use the same
-feedback trace. They include correlation identifiers, cache revisions,
-persistence acknowledgements, durations, and outcomes without requiring a
-separate environment flag. Run `pnpm feedback:git-context` to inspect the
-latest recorded context lifecycle.
+Feedback files are written only when both test-agent and feedback-trace flags
+are truthy. Full payload tracing and prompt tracing can contain sensitive data;
+enable them only for deliberate local debugging.

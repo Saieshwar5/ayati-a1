@@ -1,702 +1,285 @@
 # Agent Harness
 
-Ayati uses a single decision-action-reducer harness. The old multi-stage
-controller stack is removed, and executable tools are exposed directly through
-native provider tool calling.
-
-Current loop:
+Ayati uses one stable harness:
 
 ```text
 context pack -> decision -> action executor -> deterministic verification -> progress reducer
 ```
 
-Primary code paths:
+Do not introduce controller stages, graph frameworks, harness-version
+switches, or a second execution loop.
 
-- `ayati-main/src/ivec/agent-loop.ts`: thin entry wrapper that resolves loop config and calls the runner.
-- `ayati-main/src/ivec/agent-runner/runner.ts`: loop orchestration, run persistence, local completion, feedback recording, and failure history.
-- `ayati-main/src/ivec/agent-runner/state-view.ts`: structured state view sent to the decision model, including compact working feedback.
-- `ayati-main/src/ivec/agent-runner/context-pack.ts`: bounded decision context pack.
-- `ayati-main/src/ivec/agent-runner/tool-catalog.ts`: hidden tool index, groups, aliases, and deterministic follow-up metadata.
-- `ayati-main/src/ivec/agent-runner/tool-working-set.ts`: run-scoped visible tool schema cap, loading, and deactivation.
-- `ayati-main/src/ivec/agent-runner/decision.ts`: model-facing native tool surface and decision prompt.
-- `ayati-main/src/ivec/agent-runner/repair-policy.ts`: stable repair-code catalog and formatting helpers for model-facing repair prompts and operator feedback.
-- `ayati-main/src/ivec/agent-runner/action-executor.ts`: validates and executes internal action records.
-- `ayati-main/src/ivec/verification-contracts/progress-reducer.ts`: reduces verified facts into current-run `workState`.
+## One Run
 
-## Design Principle
-
-Executable tool inputs must be generated under the executable tool's own native
-schema. Do not hide executable calls inside a generic wrapper with an untyped
-`input` object.
-
-This means the model does not call a generic `decision_act` tool. It either
-answers directly with assistant text for terminal replies, calls a small
-control tool, or calls one selected executable tool directly.
-
-## Native Tool Surface
-
-Each decision call exposes two classes of native provider tools:
+Every accepted user message or system event atomically creates exactly one
+run. A run is the compute, audit, idempotency, finalization, and recovery
+boundary. Direct replies are valid zero-step runs.
 
 ```text
-control tools:
-  decision_load_tools({ query?, toolNames?, groups? })
-  ask_user_feedback({ question, reason }) only during an active task-bound run
-
-selected executable tools:
-  write_files({ files, createDirs? })
-  patch_files({ files: [{ path, patches: [{ kind: "replace_lines", startLine, endLine: "EOF" }] }] })
-  read_files({ files: [{ path, ... }] })
-  process_run({ executable, args, ... })
-  ...
+message/event
+-> prepare message + conversation + run + WorkState
+-> build context
+-> decide / act / verify / reduce / persist step (zero or more)
+-> finalize
+-> send terminal acknowledgement
 ```
 
-The selected executable tool list is bounded by the current working set. For
-example, when `write_files` is selected, the provider receives the real
-`write_files.inputSchema`, including its required `files` field. The provider
-can then enforce the actual executable schema instead of only enforcing a
-generic action wrapper.
+A run can remain unbound for conversation and observation or gain one immutable
+workstream/request binding. Its id never changes. A completed run cannot switch
+or reopen; the next accepted input creates a new run.
 
-Executable schemas retain their tool-owned input fields and add one harness
-metadata field: a required, bounded `purpose` sentence explaining why the call
-is needed now. The runtime removes `purpose` before validating or executing the
-tool-owned input. It preserves the original sentence on full and compacted
-tool-call records, but does not copy individual call purposes into WorkState.
-Purpose records intent; deterministic output and verification record what
-actually happened.
+## Binding Is Not Mutation Authority
 
-WorkState contains only current run status, progress summary, open work,
-blockers, verified facts, evidence, artifact paths, next step, and required
-user input. Compacted tool input/output remains in `context.run.toolCalls`;
-it is not copied into WorkState through a secondary task-note cache. Verified
-completion asset descriptions are carried directly into persisted task assets.
+Workstream binding establishes durable ownership. Resource access establishes
+what may be read or changed. Exact resource-mutation preparation and
+verification establish authority for one mutation operation.
 
-Individual tool calls perform only their concrete operation and do not predict whole-task completion. During an
-active task-bound run, the separate `task_completion({ summary, assets })` control
-asks the runtime to verify that the requested work is complete. The runtime
-checks declared file/directory assets, accumulated verified tool evidence, and
-unresolved failures before it deterministically updates `WorkState`.
+An unbound run may use list, read, search, and permitted control capabilities.
+A bound run receives workstream feedback/completion controls and resource-
+scoped task capabilities. Mutation without binding fails closed with a stable
+repair code.
 
-The provider call allows direct assistant text for normal terminal replies and
-disables parallel provider tool calls where supported. When a native tool call
-is needed, the model must call exactly one tool. A model response can be:
+Routing controls disappear after successful binding. Clearly conversational
+input suppresses routing controls. A recent or active workstream is context,
+not implicit authority.
 
-- direct assistant text: terminal user-facing answer.
-- `decision_load_tools`: request missing tools for a later decision.
-- `ask_user_feedback`: pause an active task-bound run for required user feedback
-  when progress is genuinely blocked and no safe default exists.
-- `task_completion`: request independent deterministic completion verification
-  for an active task-bound run after normal tool work appears complete.
-- a selected executable tool: concrete work to run through the action executor.
+## Native Decision Surface
 
-Unknown native tools, multiple native tool calls, missing executable tools,
-task feedback outside an active task-bound run, and invalid tool inputs are rejected
-deterministically and repaired when possible.
+The model can:
 
-Every accepted provider-handled chat turn and system event atomically creates
-exactly one run with initial WorkState. Direct replies are valid zero-step
-runs. Observational list/read/search tools may execute while the run is
-unbound. Tools with mutation effects require the same run to gain an explicit
-task/request binding. Unknown taxonomy fails closed.
+- return normal assistant text;
+- call `decision_load_tools`;
+- call one selected executable tool;
+- call `ask_user_feedback` during an active bound run;
+- call `workstream_completion` after normal work is verified.
 
-The model-facing routing surface is intentionally small:
+Executable tools retain their own native schemas. Harness-only controls are
+not persisted as fake executable calls. Successful and failed workstream
+routing calls are real control steps because they change durable context.
 
-- `git_context_create_task` creates and selects a new V1 `T-*` repository with
-  its initial request.
-- `git_context_activate_task` selects an existing repository. V1 calls must
-  explicitly pass `requestDecision.kind="continue"` or
-  `requestDecision.kind="create"`.
+The model must not write tool-call JSON as assistant text or embed completion
+metadata inside unrelated tool inputs. Stable repair signals are fed into a
+fresh decision.
 
-Task candidates and recent task context help the model decide, but do not grant
-mutation authority. If ownership is ambiguous, the assistant asks the user a
-direct clarification question. The answer is a fresh turn and makes its own
-selection decision.
+## Workstream Routing
 
-Routing tools are controls, not ordinary domain work. After selection succeeds,
-the run id remains unchanged and its task binding cannot be switched. The
-runner refreshes context using the returned task/request identity and stable
-working directory, then asks the model for a fresh decision. Rejected mutation
-calls are never deferred or replayed.
+The public controls are:
 
-Representative flows are:
+- `git_context_find_workstreams`
+- `git_context_read_workstream`
+- `git_context_create_workstream`
+- `git_context_activate_workstream`
+- `git_context_set_workstream_star`
+- `git_context_inspect_resource`
+- `git_context_bind_resources`
 
-```text
-new durable work -> git_context_create_task -> normal work tool -> final reply
-observational question -> read_files -> final reply as an unbound run
-continue current request -> git_context_activate_task(requestDecision.kind=continue) -> work -> final reply
-new request in known task -> git_context_activate_task(requestDecision.kind=create) -> work -> final reply
-ambiguous ownership -> direct clarification reply -> fresh answer turn -> explicit selection
-```
+Creating or activating uses the current `sessionId`, `conversationId`, and
+`runId`. Existing workstreams require an explicit continue-or-create request
+decision. The response returns the unchanged run id, request facts,
+context-repository facts, resource bindings, and refreshed harness context.
 
-There is no model-facing `update_work_state` control. Verified executable
-steps update WorkState through the deterministic progress reducer. A successful
-terminal reply finalizes an unbound-run WorkState as `done`, uses the reply as
-its bounded summary, and clears open work, blockers, next step, and required
-user input. Task-bound runs remain stricter: only accepted `task_completion`
-verification can mark their WorkState `done`.
+After binding, the runner refreshes its state and asks the model for a new
+decision. A stale mutation call is rejected as
+`R_MUTATION_REQUIRES_WORKSTREAM_BINDING`; it is never stored for replay.
 
-`maxIterations` is the normal work-decision budget. When a task-bound run consumes
-that budget, the runner reserves one completion-only decision followed by one
-final-response-only decision. The completion-only surface exposes only
-`task_completion`; normal tools, tool loading, feedback controls, and direct
-final replies are unavailable. Accepted verification produces `done`; rejected
-verification preserves verified partial assets and unfinished WorkState before
-the final response reports what remains. These two reserved decisions do not
-reduce the normal work budget.
+## Context Pack
 
-Every terminal run is sealed; later continuation always allocates a new run id.
-A task-bound read-only run with no task-state change needs no commit, while
-verified mutation creates at most one final commit. Run/context capacity
-exhaustion persists as
-`run.status=incomplete` with `stopReason=run_limit` or `context_limit`, while
-the durable task remains `in_progress` with its verified progress, assets,
-open work, and next step. Only a genuine permanent blocker maps both the run
-and task to `blocked`.
+Prompt context is structured and bounded:
 
-Clarification is not a deferred task selection. Once the assistant asks the
-question and the unbound run finalizes, that run is sealed. The user's answer
-starts a fresh run and must establish its own task binding before mutation.
+- exact current input and recent session conversation;
+- explained workstream candidates and ingress resources;
+- selected workstream, request, and public resource locators when bound;
+- personal/episodic recall;
+- reusable `inventory`, `discovery`, `evidence`, and `actions` context;
+- `context.run = { workState, toolCalls, contextPressure }`;
+- selected tool schemas and compact repair feedback.
 
-Task selection can happen only while the unbound run is active. Run lifecycle
-and raw evidence remain in Git Context SQLite and optional session evidence; V1
-task finalization writes compact request/task outcomes and one commit to the
-independent task repository. The runtime must not copy the raw run transcript
-into task Git.
+Do not expose context-repository paths, database paths, run storage paths,
+runtime mode names, routing counters, duplicate top-level run state, or
+deferred mutation.
 
-The model must not directly commit runs, edit `.ayati/` lifecycle state, mount
-repositories, or use low-level branch/create operations during normal turns.
+Current-run calls are not duplicated in reusable read context. Reusable entries
+derive from persisted structured steps and reset only after a newly created
+workstream-context commit.
 
-## Internal Decision Shape
+## Tool Loading and Visibility
 
-The decision layer normalizes native tool calls into the existing internal
-`AgentDecision` union:
+Tools have one purpose (`list`, `read`, `search`, `control`, `mutation`) and
+one runtime effect (`read_only`, `workspace_mutation`, `context_mutation`,
+`external_mutation`, `destructive`). Unknown taxonomy fails closed.
 
-```text
-direct text         -> { kind: "reply", ... }
-decision_load_tools -> { kind: "load_tools", ... }
-ask_user_feedback   -> { kind: "ask_user", ... }
-write_files(...)    -> { kind: "act", action: single call to write_files }
-read_files(...)      -> { kind: "act", action: single call to read_files }
-```
-
-The action executor still receives `AgentAction` records. This preserves the
-existing execution, verification, artifact, memory, and progress-reducer code
-while removing the model-facing nested action wrapper.
-
-`decision_load_tools` must include at least one non-empty selector:
-
-- `groups`: exact group names from the compact loading map, such as
-  `file:read`, `file:write`, or `process:command`
-- `toolNames`: exact tool names when already known
-- `query`: search text when the model is unsure which hidden tool should load
-
-`reason` is intentionally not part of `decision_load_tools`. The loader does
-not infer selectors from explanation text.
-
-## Decision Prompt Layout
-
-The decision prompt is split to preserve provider prompt-cache reuse:
-
-```text
-system:
-  stable decision-component role
-  stable harness and native tool-use rules
-  stable control tool shapes
-  truncated runtime system context, when present
-
-user:
-  compact selected executable tool-name list
-  compact hidden tool loading map with loadable groups and representative tool names
-  State view JSON
-
-native tools:
-  authoritative executable names, descriptions, and input schemas
-```
-
-Stable decision rules live in the system message so repeated decisions share a
-cache-friendly prefix. Dynamic state remains in the user message. Do not move
-run ids, tool observations, current input, personal memory snapshots, git
-context, or working feedback ahead of the stable decision
-contract.
-
-Critical decision rules and control tool shapes must not be placed inside the
-truncatable runtime system-context block. If runtime system context is too
-large, only that runtime block may be truncated.
-
-## Context Budget Measurement
-
-Every decision request is measured after the system messages, dynamic state,
-repair history, and native tool schemas have been assembled. Measurement uses
-the fast local estimator for normal requests and asks the provider to count the
-same final request when corrected local usage reaches the configured soft limit
-and provider counting is available.
-
-The default 128K profile has three explicit policy thresholds:
-
-```text
-recovery target: 60K
-soft input limit: 70K
-hard input limit: 100K
-```
-
-Ayati supports context profiles of 128K tokens and larger. The default profile
-also reserves 8K for output. Larger profiles derive the same proportions unless
-the runtime LLM configuration provides explicit thresholds. Below the soft
-limit, this layer does not transform context.
-
-Tool-context projection has a runtime policy with two modes:
-
-- `enforce` is the runtime default. Ayati applies the ordered recovery stages
-  after the candidate reaches the soft limit, rebuilds the complete request,
-  and measures every candidate sent to the provider.
-- `shadow` measures the complete candidate and records the deterministic
-  tool-context alternative, but sends the unchanged candidate. It remains
-  available for diagnostics and comparison.
-
-The request admitted to the provider is rejected before generation when it
-exceeds the hard input limit. In enforcement mode the unmodified candidate may
-exceed that limit because it is an internal compilation input, not a provider
-request. Exact provider counts may use the full hard limit. Local or inexact
-counts use a conservative admission limit at 95% of the hard limit.
-
-Budget reports record the model/profile source, local and provider counts,
-input capacity, all three thresholds, admission result, pressure ratio and
-overflow status. A context-compilation receipt records candidate and final
-tokens, mode, transformations, target recovery, and final admission. Candidate
-and final reports are separate so a successful projection cannot hide that the
-original request crossed a limit. The run-scoped pressure state counts at most
-one soft breach per runner iteration, so repair attempts do not artificially
-advance future pressure modes. Reports are emitted once per distinct decision
-or repair attempt, not once per transport retry.
-
-A deterministic pressure controller evaluates only the first decision attempt
-of each runner iteration. Applied mode and any recommended next mode remain
-separate in the compact run-pressure signal. Repair attempts do not count as
-new pressure iterations, and shadow-only observations never advance enforced
-runtime state.
-
-Enforced recovery is ordered and stops as soon as the remeasured request is
-below the soft limit:
-
-1. Deterministically compact eligible older tool-call inputs and outputs while
-   keeping the latest six calls, pinned failures, and unrecoverable calls full.
-2. Remove the session summary, older four task-bound-run checkpoint bodies, and
-   duplicate recent session activity. Keep session metadata, attachments, the
-   newest task-bound-run checkpoint, the exact timeline, durable task state, and run
-   work state.
-3. Generate one structured continuity checkpoint from the newest task-bound-run
-   checkpoint plus the minimum eligible old prefix of the exact timeline. Keep
-   at least four recent events, the current input, and the assistant question
-   that the current input answers exact.
-4. If no eligible semantic source exists, generation or validation fails, or
-   the compiled result remains at or above the soft limit, end only the current
-   run with `context_limit`. Preserve the active task as in progress so a later
-   run can continue it.
-
-Timeline checkpoint planning is deterministic before any summarizer is called.
-It selects the newest task-bound-run checkpoint and at least one eligible event from
-the older contiguous timeline prefix, then adds only as much old timeline as
-needed for estimated recovery. It keeps at least four recent events exact,
-protects the current input and latest assistant question awaiting
-interpretation, and hashes both sources for cache identity. The checkpoint
-contract retains sequence references for requests, constraints, decisions,
-corrections, facts, unresolved questions, and external references.
-
-When deterministic tool compaction and session shedding still leave the request
-at or above the soft limit, the compiler asks the active provider for a strict
-structured summary of only the newest task-bound-run checkpoint and selected timeline
-prefix. It sends no tools, task state, work state, tool history, personal
-memory, or unrelated session context. Runtime code supplies the trusted
-coverage range and source hash, validates every referenced sequence, and
-enforces the planned checkpoint token budget. Providers may enforce JSON
-Schema, downgrade to JSON-object mode, or rely on prompt-only JSON; local
-parsing and semantic validation always run.
-
-Generation allows one repair. Successes and failures are cached for the run by
-prompt version, provider/model, source hash, checkpoint budget, and generator
-input capacity. A failed source is not retried on every decision. Failure does
-not discard or persistently rewrite either source; it ends the current run
-without sending an over-soft-limit normal decision. Successful compilation
-measures the full candidate, deterministic intermediate stages, and final
-checkpointed request separately.
-
-Current-run tool-call storage and prompt projection are separate. Below the
-soft limit, all prompt-eligible tool calls are sent in full; there is no fixed
-six-call or 30K-character history cap. At the soft limit, a deterministic
-shadow planner protects the latest six calls, failures, and calls without a
-recovery reference, then proposes previews or summaries for only as many older
-calls as needed to reach the recovery target. Reference-only conversion is
-reserved for a later pressure mode. Plans are recorded in optimization
-metrics and the feedback ledger. With `enforce`, the same plan is applied to a
-new prompt projection; the source tool-call records, durable task context, and
-run work state remain unchanged.
-
-Shadow planning uses registered deterministic projectors for filesystem reads,
-filesystem search/listing, filesystem mutations, process calls, test/build
-commands, and Git-context operations, with a conservative generic fallback.
-Projector metadata is captured
-while the structured tool result is available, bounded to exclude duplicate
-file contents, and never included in the normal full prompt. The planner builds
-the complete alternative decision request through the normal prompt serializer
-and measures it with the same corrected local estimator as the real request.
-Receipts record the projector id and per-call estimates plus whole-request
-projected tokens and savings. After an enforced projection, the next state view
-receives a compact pressure signal with the active mode, number of compacted
-calls, and whether the recovery target was reached. This tells the agent to
-work in smaller, recoverable steps without replacing the stable decision
-contract. The signal may include a recommended later mode and deterministic
-escalation reason. It is runtime-owned; the decision model must not rewrite or
-summarize protected context on its own.
-
-## Tool Visibility
-
-The runtime keeps a hidden catalog and run-scoped working set, then selects at
-most `maxSelectedTools` executable schemas for one decision, currently 15 by
-default. Required routing and Git recovery tools consume slots inside that
-total instead of being appended outside it. Native harness controls such as
-`decision_load_tools`, `task_completion`, and `ask_user_feedback` are a small
-separate surface and do not consume executable-tool slots.
-
-Native provider tools are the only callable schema authority. The textual user
-prompt groups selected executable names under `read`, `search`, `control`, or
-`mutation`; it does not duplicate input or output schemas, effects, annotations,
-or selection hints. Authoritative executable input schemas are sent unchanged
-through native tool calling. Output contracts,
-annotations, taxonomy, and selection hints remain runtime-owned.
-
-After a run encounters enforced context pressure, later decisions cap the
-selected executable surface at ten tools, or the smaller configured limit.
-The hidden working set is not destructively reduced; the selector rescans it
-for the best tools on every decision, and `decision_load_tools` can rotate
-missing capabilities. A required `git_context_read_run_step` schema is pinned
-inside the pressure cap when persisted step refs are available.
-
-The normal hidden catalog prompt summary lists smaller purpose-built loadable
-groups and representative tool names so the model can request 1-3 groups
-together. After pressure it collapses to a short loading instruction; free-text
-`decision_load_tools` queries remain available without repeating the complete
-group and skill map.
-
-Tool groups should stay small and purpose-built. Examples include:
-
-- `file:inspect`: path metadata before reading or editing.
-- `file:find`: directory and content discovery.
-- `file:read`: file reads, batched reads, and content search.
-- `file:write`: file creation and edits.
-- `process:command`: focused project executable execution only.
-- `git-context:*`: task/session context retrieval and routing.
-
-Before each decision, the runner deterministically prepares likely tools from
-the current input, attachments, git task context, work state, evidence refs, and
-recent failures. If the model needs a missing capability, it calls
-`decision_load_tools` with exact tool names, groups, or a search query. Tool
-execution can also deterministically load likely next tools, for example
-`find_files` loading `read_files` and `patch_files`. Some tools deactivate
-automatically after success or after one step.
-
-Tool loading is deterministic at the boundary. A request to create or build a
-website, app, file, or project should prepare file create/write/read tools, not
-process tools by default. Process tools should load for explicit run/test/install/start or
-command-execution intent. This keeps the model from using a process transcript as
-the primary way to create simple files.
-
-Tool lifecycle is also part of the taxonomy. Read and write tools should remain
-available across the active run when they are useful for ongoing work.
-Narrow routing, discovery, or repair-only tools may expire after success, after
-one decision, or when their mode no longer applies. Runtime policy can remove
-unsafe or irrelevant tools without relying on the model to unload them.
-
-Tool loading has explicit outcomes:
-
-- `loaded`: new tools were mounted for the current run
-- `already_active`: requested tools were already visible
-- `partial`: some selectors matched and some did not
-- `no_match`: selectors were valid but matched no tools
-- `invalid_request`: no non-empty selector was provided
-- `failed`: an internal load failure occurred
-- `not_needed`: deterministic follow-up loading had nothing to add
-
-The latest load outcome is stored in transient run state and appears in the next
-decision prompt under `context.tools.lastLoad`.
-It includes requested selectors, loaded tools, already-active tools, evictions,
-missing selectors, status, and a short message. Historical load outcomes are
-not accumulated in prompt context.
-
-If a load request fails or matches the wrong thing, repair should show the model
-the available loading vocabulary: valid groups, representative tools, matched
-selectors, missing selectors, and a short recovery message. The repair should
-help the model make a better `decision_load_tools` call instead of forcing a new
-classification step.
-
-Capability feedback is operator-facing and compact. The runner records
-`tools.working_set_prepared` with derived binding/routing capability facts and
-`tools.routing_tools_deactivated` after successful binding, so live logs
-explain why routing, observational, or task-scoped tools were visible.
-
-The working set is cleared at task finalization. Decisions use native control
-tools plus selected native executable tools; assistant text is reserved for a
-terminal reply.
-
-## State View And Working Feedback
-
-The decision model receives a compact `State view` each iteration. The model
-prompt is projected to a deduplicated grouped payload:
-
-- `context.timeline`: every exact conversation record after the latest valid
-  task-bound-run checkpoint, ending with the exact current input. Before the first
-  task-bound-run checkpoint it contains the complete session conversation. The agent
-  context pack does not apply another event-count or per-message character cap.
-- `context.git.session`: session metadata, optional compressed session summary,
-  the latest five task-bound-run checkpoints, up to ten recent session attachment
-  metadata records, and recent session activity.
-- `context.git.current`: focus, pending-turn routing state, and selected task
-  context when a task is resolved.
-- `context.tools`: active tool names and the latest tool-load result.
-- `context.run`: only current WorkState, ordered tool-call memory, and context
-  pressure for this run. It does not expose run ids, storage paths, binding
-  modes, routing counters, or deferred mutation state.
-- `context.harness`: harness repair feedback for the current decision.
-- `context.personal`: long-lived user memory snapshot when present.
-
-The internal aliases `context.gitContext`, top-level `progress`,
-`workingFeedback`, `toolLoad`, `observations`, `trace`, `attachments`, and
-`systemEvent` may still exist for compatibility inside the runtime state view.
-They should not be treated as canonical model-facing paths. Trace and
-system-event metadata should not be placed under `context.run`.
-
-Working feedback is model-facing. Feedback ledger events are operator-facing.
-Both should describe the same harness reality:
-
-- what native tools were visible
-- which tool the model selected
-- whether the input satisfied the executable schema
-- what failed and how the model should recover
-
-Repair feedback uses stable `R_*` repair codes instead of one-off prompt
-strings. The same repair signal can be projected three ways:
-
-- a compact model-facing repair prompt in `context.harness.feedback`
-- operator-facing feedback event data under `repair.code`
-- feedback-ledger warning and triage summaries
-
-Current repair codes cover implemented deterministic repairs only:
-
-- `R_ASSISTANT_TEXT_TOOL_CALL`
-- `R_TOOL_NOT_SELECTED`
-- `R_LOAD_TOOLS_USED_AS_ACTION`
-- `R_EMPTY_TOOL_LOAD_SELECTOR`
-- `R_TOOL_INPUT_INVALID`
-- `R_TOOL_INPUT_MISSING_REQUIRED_FIELD`
-- `R_MUTATION_REQUIRES_TASK_BINDING`
-- `R_UNBOUND_RUN_NEEDS_TASK_BINDING`
-- `R_TOOL_REQUIRES_TASK_BINDING`
-- `R_PENDING_TURN_UNBOUND`
-- `R_PENDING_TURN_CLARIFYING`
-- `R_TASK_FEEDBACK_UNAVAILABLE`
-- `R_MULTIPLE_NATIVE_TOOL_CALLS`
-- `R_PARSE_FAILED`
-- `R_PROVIDER_EMPTY_RESPONSE`
-- `R_VERIFICATION_FAILED`
-- `R_NO_PROGRESS`
-- `R_REPEATED_REPAIR_FAILURE`
-
-Do not add future repair codes to the catalog until a harness guard, decision
-validator, feedback projection, and focused tests use them.
-
-The decision model does not receive the internal run path, generated goal
-contract, empty progress scaffolding, or old activity/task-thread shelves. Open
-task continuation stays inside the existing decision stage through
-`context.git.current.task`: it gives the model enough structured state to
-continue the selected task repository, use task assets, start new work, or ask the
-user when runtime task resolution is ambiguous.
-
-If tool output is truncated, chunked, or evidence-only, the model should use
-normal domain tools with narrower input instead of repeating broad reads or
-commands.
-Prompt-facing ordered tool output for the current run is carried by
-`context.run.toolCalls`, including tool input, compact output,
-errors, artifacts, and evidence refs. Read-heavy tool results use the same
-channel. Raw read output remains in run evidence and tool records; task state
-should retain only useful facts, summaries, files, evidence refs, and run
-metadata.
-
-Reusable verified tool context is projected separately at
-`context.git.current.readContext`. It retains the current contract boundary
-(`revision` and optional `afterCommitRunId`) and organizes full reusable entries
-as `inventory`, `discovery`, `evidence`, and `actions`. The first supported
-mapping is list tools to inventory, search tools to discovery, inspect/read
-tools to evidence, and focused filesystem mutations to actions. Raw
-`run_steps` remain authoritative. Successful verified mutations invalidate
-overlapping observational entries, and a successful task commit starts a fresh
-projection; a failed or skipped commit does not. Current-run tool-call history
-uses entry keys as references instead of duplicating the projected full output.
-
-The model should prefer `inspect_paths` before large or unfamiliar reads. A
-direct `read_files` or `read_files` call is still allowed, but filesystem read
-tools can return advisory feedback when metadata would have been safer first,
-for example when paths are broad, output is truncated, or the file shape is
-unknown. This advisory is a repair hint, not a hard block.
-
-## Feedback Triage
-
-The feedback ledger writes compact operator-facing summaries under
-`feedback/latest-summary.json` and `feedback/triage-summary.json` when feedback
-tracing is enabled. The latest summary preserves the raw run signals:
-
-- final status and response kind
-- iteration, tool-load, action-step, and tool-call counts
-- verification and verified-fact flags
-- compact git-context routing and finalization state, including pending-turn
-  status, route source, route mode, task id, branch/ref, run id, commit, and
-  committed/skipped/failed finalization status
-- warning signals such as protocol repair, failed actions, repeated tool loads,
-  or completed work without tool calls
-
-When feedback event data contains `repair.code`, the ledger indexes that stable
-code as a warning signal. Triage then reports the repair class directly, for
-example provider empty responses, missing task routing before normal tools,
-verification failures, no-progress decisions, or repeated identical repair
-loops.
-
-The triage summary converts those signals into a small review outcome:
-
-- `healthy`: no warning or error findings were recorded for the latest run
-- `needs_review`: the run completed but produced warning-level signals
-- `failed`: the run ended with a non-completed status, runtime error, or failed
-  action signal
-
-This triage file is not model-facing context. It exists to make benchmark and
-live-feedback data actionable for developers by turning raw trace facts into
-concrete improvement categories.
+The working set is small, run-scoped, and derived from input, binding,
+resources, previous decisions, deterministic follow-up hints, and pressure.
+Loading a tool does not authorize its effect. Resource-scoped validation still
+runs at execution time.
 
 ## Action Execution
 
-The model-facing executable step is one native executable tool call. Internally,
-Ayati adapts that call into a single-call `AgentAction` so existing executor and
-verification behavior remains stable.
+One decision may contain one call or an explicitly safe read-only parallel
+batch. The action executor:
 
-The action executor rejects invalid internal action records before any tool
-runs. It validates:
+1. validates action and input schemas;
+2. resolves capability and resource policy;
+3. prepares exact mutation observations when needed;
+4. executes the call;
+5. normalizes the result;
+6. runs deterministic tool contracts and assertions;
+7. verifies resource effects;
+8. extracts grounded facts and artifacts.
 
-- selected-tool membership and allowed tool membership
-- non-empty unique call ids
-- mode-specific call counts
-- dependencies, including earlier-call-only dependencies for sequential mode
-- exact planned-call coverage after execution
-- deny-by-default parallel safety for legacy or local recovery actions
-- tool input through the selected tool's actual schema
+Parallel mutation is denied by default. Process, Python, database, and
+filesystem calls must declare paths/targets needed for resource authorization.
 
-Parallel execution is intentionally narrow and should remain a local executor
-concern. Model-facing provider calls should remain one native tool call per
-decision. The harness can continue the loop for follow-up calls after observing
-the result.
+## Deterministic Verification
 
-Tool execution records:
+Tool transport success is not proof of outcome. Contracts validate output
+shape, status, counts, hashes, path existence, process exits, database effects,
+and other tool-specific facts. Resource mutations additionally compare
+authoritative pre/post observations.
 
-- tool name
-- input
-- output/error
-- structured result
-- operation status
-- artifacts
-- verified facts
-- assertion results
+Only verified facts and evidence reach the progress reducer. Failed validation
+keeps the work incomplete even when the underlying tool returned success.
 
-## Verification
+## WorkState and Progress
 
-The default verification path is deterministic:
+WorkState is the sparse current-run aggregate:
 
-1. Tool input is validated against the executable tool schema.
-2. Tool executes.
-3. Tool result contracts and assertions run through the tool executor.
-4. The action executor applies execution gates before reducing progress:
-   all-failed executions and empty action output fail with validation skipped.
-5. Required contract assertion failures fail the step.
-6. Known deterministic tool outputs can pass through deterministic success gates
-   when their output shape proves the requested operation succeeded.
-7. Evidence, artifacts, and verified facts are extracted.
-8. Progress reducer updates `workState`.
+- status;
+- compact summary;
+- open work;
+- blockers;
+- verified facts;
+- evidence;
+- optional user-input need.
 
-Use semantic or LLM verification only for work that cannot be proven with tool
-contracts, assertions, file checks, process exits, database state, or artifacts.
+The reducer is deterministic. Tool calls do not predict whole-workstream
+completion and do not directly edit durable workstream context.
 
-Successful tool transport alone is not proof of completed work. Tools without
-deterministic gates or contract-backed verification can execute successfully,
-but their validation status remains skipped unless another verifier proves the
-result. This keeps `workState` grounded in machine-checkable evidence.
+## Step Persistence
 
-## Feedback Ledger
+Every executor step is persisted through `recordRunStep` as one versioned
+record containing:
 
-Feedback events are written for debugging and operator inspection. The decision
-stage records:
+- contiguous step number and status;
+- summary, decision, and action;
+- complete ordered tool calls with purpose, effect, status, input, output or
+  hash, and error;
+- deterministic verification;
+- WorkState after the step.
 
-- `prompt_summary`: selected tools, visible tool count, working feedback count,
-  work status, and compact input state.
-- `native_tool_surface`: control tools, selected executable tools, required
-  fields, and total native tool count.
-- `raw_response`: native tool call summary and raw normalized response.
-- `parsed`: normalized `AgentDecision`.
-- protocol or input-schema violations and repair requests.
+The same transaction updates WorkState and run step count. Replay of the same
+run/step is idempotent; gaps, duplicates with different content, terminal-run
+steps, unknown effects, and unbound mutations are rejected.
 
-The action stage records starts, completions, individual tool results,
-artifacts, and failures. Final feedback records the summary used by
-`latest-summary.json`.
-
-The runner also records read/search progress signals for active task-bound runs.
-These signals help detect loops where the model keeps selecting observational
-tools after enough context is available for a requested write or edit. The
-guard should prefer a useful next action: write/edit when the requested work is concrete,
-ask a specific clarification question when required information is missing, or
-stop with a blocked state when progress cannot be made.
-
-Context-engine feedback events are operator-facing observability, not
-model-facing control. They record `run_started`, `run_task_bound`,
-`run_step_persisted`, `run_finalization_started`,
-`run_finalization_completed`, `run_finalization_failed`, and
-`task_commit_created`. Developer agents should use those events to follow run
-outcome, stop reason, optional task/request binding, materialization, commit,
-and evidence pointers when debugging Ayati behavior.
+The response includes the updated run projection and reusable read context so
+the daemon can patch its cache without a full context request.
 
 ## Completion
 
-The runner can mark work complete when:
+`workstream_completion({ summary, resources })` is available only when bound.
+Each declared output identifies a bound resource and a portable relative path,
+kind, description, and aliases. Deterministic completion policy checks resource
+access, containment, existence, verified evidence, and unresolved failures.
 
-- `workState.status` is already `done`, or
-- a deterministic local action succeeded and no user input is needed.
+A bound `done` outcome requires accepted completion evidence. Incomplete,
+failed, blocked, and needs-user-input outcomes still carry an unaccepted
+completion record for truthful durable reduction.
 
-Completion does not mean the deterministic verifier writes a tool transcript to
-the user. Verified local work sets `workState.status` to `done`, keeps evidence
-and contract details internal, and produces a user-facing completion reply from
-verified state. The final reply should answer naturally using user-visible
-results such as paths, changed files, command findings, or next steps, without
-mentioning harness internals.
+The final user response is separate from the completion control. It may stream,
+but the terminal envelope waits for finalization.
 
-## Failure Handling
+## Outcome Mapping
 
-Failures are stored in `failureHistory` and compacted into
-`context.harness.feedback`.
-The local failure policy can retry deterministic recoveries, such as retrying
-file writes with `createDirs=true` when a parent directory is missing.
+```text
+normal direct reply            -> done / completed
+accepted completion            -> done / completed
+focused clarification          -> needs_user_input / needs_user_input
+proven blocker                 -> blocked / blocked
+unrecoverable provider/tool    -> failed / failed
+iteration budget               -> incomplete / run_limit
+context admission budget       -> incomplete / context_limit
+safe crash recovery            -> incomplete / interrupted
+```
 
-Repeated identical validation failures should stop with a clear reason instead
-of running endless repair loops.
+## Finalization
 
-Repeated repair stopping is based on the repair signature: repair code plus
-blocked targets and missing or invalid fields. After the same signature repeats
-too many times, the runner records `R_REPEATED_REPAIR_FAILURE` and fails cleanly
-instead of asking the model to retry the same broken move again.
+One runtime coordinator serves chat and system events. It submits one
+`finalizeRun` request containing outcome, stop reason, canonical assistant
+response, summaries, validation, WorkState, and optional workstream completion.
+The service loads binding from the run.
 
-Future work should use `strategyReviewFailureThreshold` for a targeted
-strategy-review model call only after repeated unclassified failures.
+Finalization returns independent operational facts:
+
+- conversation/run persistence;
+- optional unbound evidence materialization;
+- verified resource effects;
+- optional workstream-context commit (`not_required`, `no_change`, or
+  `committed`).
+
+Deliverables are never staged in context Git. Finalization reduces only
+workstream/request/resource metadata and creates at most one context commit.
+
+Response ordering is strict:
+
+1. stream model text deltas if supported;
+2. finalize;
+3. await durable acknowledgement;
+4. send terminal envelope with truthful context-commit state;
+5. accept client render acknowledgement.
+
+Finalization failure produces a failure terminal state and preserves recovery
+data. It must never report `committed` optimistically.
+
+## Context Pressure
+
+Admission uses configured model limits and deterministic token measurement.
+Pressure trims older summaries, reusable entries, and lower-value history
+before exact current input, current ownership/resources, WorkState, and recent
+steps. If safe context still does not fit, finalize with
+`incomplete/context_limit`.
+
+## Feedback and Triage
+
+Feedback tracing is opt-in. The ledger records compact decision, action,
+verification, routing, persistence, resource, finalization, and transport
+events. Operator summaries expose run outcome, stop reason, binding, request
+decision, context repository, resource count, HEADs, materialization,
+verification, and context-commit state.
+
+Core lifecycle events include:
+
+- `run_started`
+- `run_workstream_bound`
+- `run_step_persisted`
+- `resource_mutation_prepared`
+- `resource_mutation_verified`
+- `run_finalization_started`
+- `run_finalization_completed`
+- `run_finalization_failed`
+- `workstream_context_commit_created`
+
+Zero-step unbound and read-only unbound runs are healthy. A verified mutation
+without corresponding verified resource effects or truthful finalization is a
+failure/recovery condition.
+
+## Failure and Recovery
+
+Repairs are bounded. Repeated provider empties, invalid native responses,
+failed verification, no progress, or routing failures end with truthful status
+instead of infinite loops.
+
+Startup resumes journaled operations idempotently. It never discards verified
+dirty resource changes. Unsafe ambiguity moves the run to
+`recovery_required` and blocks the session until resolved.
 
 ## Do Not Reintroduce
 
-Do not re-add these removed concepts:
-
-- model-facing `decision_act` for executable work
-- generic nested executable input objects
-- separate `understand`, `direct`, or `reeval` stages
-- controller prompt files
-- context scout controller path
-- read-run-state controller directives
-- inline skill activation directives
-- V1/V2 harness switches
+- session-run versus work-run classes;
+- lazy or secondary run creation;
+- implicit ownership from recent work;
+- project files inside workstream context Git;
+- mutation authority inferred from binding alone;
+- deferred mutation storage/replay;
+- model-owned Git commits or workstream context writes;
+- compatibility aliases for removed lifecycle APIs;
+- background successful acknowledgement before finalization.

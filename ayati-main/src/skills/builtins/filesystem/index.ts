@@ -15,7 +15,7 @@ const FS_PROMPT_BLOCK = [
   "Use them directly for safe, structured file and directory operations.",
   "Prefer creating scratch files, generated output, and ad-hoc work inside the active absolute resource root.",
   "Use absolute paths for every host filesystem path in tool calls.",
-  "The active task workingDirectory is the authorized root; keep task tool paths inside it.",
+  "During workstream work, each call must stay inside one exact bound filesystem resource; use its absolute locator path.",
   "Relative paths are valid inside generated content such as imports and HTML links, but not for tool resource addressing.",
   "Prefer find_files and search_in_files for discovery tasks.",
   "Use list_directory only when folder listing is explicitly needed.",

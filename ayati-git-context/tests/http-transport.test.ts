@@ -1,12 +1,10 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   GIT_CONTEXT_PROTOCOL_VERSION,
-  type AcquireMutationAuthorityRequest,
-  type AcquireMutationAuthorityResponse,
 } from "../src/contracts.js";
 import { ContractOnlyGitContextService } from "../src/contract-only-service.js";
 import { GitContextClient } from "../src/client.js";
@@ -34,7 +32,7 @@ afterEach(async () => {
   }));
 });
 
-describe("Git Context protocol 35 HTTP transport", () => {
+describe("Git Context protocol 36 HTTP transport", () => {
   it("round-trips atomic preparation, one step, and one finalization over TCP", async () => {
     const service = await createService();
     const { client } = await startTcpServer(service);
@@ -43,7 +41,7 @@ describe("Git Context protocol 35 HTTP transport", () => {
       service: "ayati-git-context",
       protocolVersion: GIT_CONTEXT_PROTOCOL_VERSION,
       ready: true,
-      capabilities: expect.arrayContaining(["runs", "tasks", "mutations", "recovery"]),
+      capabilities: expect.arrayContaining(["runs", "workstreams", "mutations", "recovery"]),
     });
     const prepared = await client.prepareContextTurn({
       requestId: "REQ-http-prepare",
@@ -112,48 +110,48 @@ describe("Git Context protocol 35 HTTP transport", () => {
       run: { status: "done", stopReason: "completed", stepCount: 1 },
       conversation: { status: "closed" },
       materialization: { status: "materialized" },
-      commit: { status: "not_required" },
+      resourceEffects: { status: "none", events: [] },
+      workstreamContextCommit: { status: "not_required" },
     });
   });
 
-  it("round-trips same-run task creation without allocating another run", async () => {
+  it("round-trips same-run workstream creation without allocating another run", async () => {
     const service = await createService();
     const { client } = await startTcpServer(service);
     const prepared = await client.prepareContextTurn({
-      requestId: "REQ-http-task-prepare",
+      requestId: "REQ-http-workstream-prepare",
       date: "2026-07-19",
       timezone: "Asia/Kolkata",
       agentId: "local",
       role: "user",
-      content: "Create one durable task.",
+      content: "Create one durable workstream.",
       at: "2026-07-19T12:00:00+05:30",
     });
 
-    const selected = await client.createTaskForRun({
-      requestId: "REQ-http-task-create",
+    const selected = await client.createWorkstreamForRun({
+      requestId: "REQ-http-workstream-create",
       sessionId: prepared.session.sessionId,
       conversationId: prepared.conversation.conversationId,
       runId: prepared.run.runId,
-      title: "HTTP task",
-      objective: "Prove task binding over the protocol boundary.",
-      placement: { mode: "managed" },
+      title: "HTTP workstream",
+      objective: "Prove workstream binding over the protocol boundary.",
       at: "2026-07-19T12:00:01+05:30",
     });
 
     expect(selected).toMatchObject({
       run: {
         runId: prepared.run.runId,
-        taskBinding: {
-          taskId: selected.task.taskId,
-          taskRequestId: "R-0001",
+        workstreamBinding: {
+          workstreamId: selected.workstream.workstreamId,
+          requestId: "R-0001",
         },
       },
-      taskCreated: true,
-      taskRequestDecision: "initial",
+      workstreamCreated: true,
+      workstreamRequestDecision: "initial",
     });
   });
 
-  it("round-trips trusted location inspection without binding the run", async () => {
+  it("round-trips filesystem resource inspection without binding the run", async () => {
     const root = await mkdtemp(join(tmpdir(), "ayati-http-location-"));
     roots.push(root);
     const workspaceRoot = join(root, "workspace");
@@ -162,8 +160,7 @@ describe("Git Context protocol 35 HTTP transport", () => {
     const database = await ContextDatabase.open({ path: join(root, "context.sqlite") });
     const service = new SqliteGitContextService({
       database,
-      dataRoot: join(root, "session-data"),
-      workspaceRoot,
+      rootDirectory: root,
       now: () => "2026-07-19T12:00:00+05:30",
     });
     services.push(service);
@@ -178,22 +175,30 @@ describe("Git Context protocol 35 HTTP transport", () => {
       at: "2026-07-19T12:00:00+05:30",
     });
 
-    const inspected = await client.inspectTaskLocation({
-      requestId: "REQ-http-location-inspect",
+    const inspected = await client.inspectResourceForRun({
+      requestId: "REQ-http-resource-inspect",
       sessionId: prepared.session.sessionId,
-      conversationId: prepared.conversation.conversationId,
       runId: prepared.run.runId,
-      workingDirectory: directory,
+      locator: { kind: "filesystem", path: directory },
+      kind: "directory",
+      origin: "user_reference",
+      displayName: "existing-work",
+      description: "Existing user work referenced for this turn.",
+      aliases: ["existing project"],
       at: "2026-07-19T12:00:01+05:30",
     });
 
     expect(inspected).toMatchObject({
-      canonicalPath: directory,
-      trustedRoot: workspaceRoot,
-      kind: "empty_directory",
+      existing: false,
+      mutationEligible: true,
+      resource: {
+        kind: "directory",
+        locator: { kind: "filesystem", path: directory },
+        availability: "available",
+      },
     });
     expect((await client.getActiveContext({ sessionId: prepared.session.sessionId }))
-      .run?.run.taskBinding).toBeUndefined();
+      .run?.run.workstreamBinding).toBeUndefined();
   });
 
   it("propagates request, session, and run correlation into transport events", async () => {
@@ -220,16 +225,16 @@ describe("Git Context protocol 35 HTTP transport", () => {
         version: 1,
         step: 1,
         status: "failed",
-        summary: "Routing did not find a task.",
+        summary: "Routing did not find a workstream.",
         toolCalls: [{
           callId: "call-route",
-          tool: "git_context_activate_task",
-          purpose: "Route to an existing task.",
+          tool: "git_context_activate_workstream",
+          purpose: "Route to an existing workstream.",
           toolPurpose: "control",
           toolEffect: "context_mutation",
           status: "failed",
-          input: { taskId: "T-missing" },
-          error: { code: "TASK_NOT_FOUND" },
+          input: { workstreamId: "W-missing" },
+          error: { code: "WORKSTREAM_NOT_FOUND" },
         }],
         verification: { passed: false },
         workStateAfter: workState(),
@@ -271,24 +276,84 @@ describe("Git Context protocol 35 HTTP transport", () => {
     });
   });
 
-  it("accepts zero-target task-bound authority through the HTTP boundary", async () => {
-    const { client } = await startTcpServer(new ZeroTargetAuthorityService());
-    await expect(client.acquireMutationAuthority({
-      requestId: "REQ-zero-target-authority",
-      sessionId: "S-20260719-local",
-      runId: "R-20260719-0001",
-      taskId: "T-20260719-0001",
-      taskRequestId: "R-0001",
-      expectedTaskHead: "a".repeat(40),
-      targets: [],
+  it("round-trips exact resource mutation preparation and verification", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ayati-http-mutation-"));
+    roots.push(root);
+    const resourceRoot = join(root, "real-output");
+    await mkdir(resourceRoot);
+    const database = await ContextDatabase.open({ path: join(root, "context.sqlite") });
+    const service = new SqliteGitContextService({
+      database,
+      rootDirectory: root,
+      now: () => "2026-07-19T12:00:00+05:30",
+    });
+    services.push(service);
+    const { client } = await startTcpServer(service);
+    const prepared = await client.prepareContextTurn({
+      requestId: "REQ-http-mutation-prepare",
+      date: "2026-07-19",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      role: "user",
+      content: "Create one verified output file.",
       at: "2026-07-19T12:00:00+05:30",
+    });
+    const inspected = await client.inspectResourceForRun({
+      requestId: "REQ-http-mutation-inspect",
+      sessionId: prepared.session.sessionId,
+      runId: prepared.run.runId,
+      locator: { kind: "filesystem", path: resourceRoot },
+      kind: "directory",
+      origin: "user_reference",
+      at: "2026-07-19T12:00:01+05:30",
+    });
+    const selected = await client.createWorkstreamForRun({
+      requestId: "REQ-http-mutation-create",
+      sessionId: prepared.session.sessionId,
+      conversationId: prepared.conversation.conversationId,
+      runId: prepared.run.runId,
+      title: "HTTP Mutation",
+      objective: "Verify a resource mutation across the transport boundary.",
+      resources: [{
+        resourceId: inspected.resource.resourceId,
+        role: "primary",
+        access: "mutate",
+        primary: true,
+      }],
+      at: "2026-07-19T12:00:02+05:30",
+    });
+    const binding = selected.run.workstreamBinding;
+    if (!binding) throw new Error("Expected workstream binding.");
+    const mutation = await client.prepareResourceMutation({
+      requestId: "REQ-http-mutation-authorize",
+      sessionId: prepared.session.sessionId,
+      runId: prepared.run.runId,
+      workstreamId: binding.workstreamId,
+      activeRequestId: binding.requestId,
+      callId: "call-http-write",
+      tool: "write_files",
+      effect: "workspace_mutation",
+      targets: [{
+        resourceId: inspected.resource.resourceId,
+        relativePath: "output.txt",
+        kind: "file",
+        expectedVersionKey: inspected.resource.version.key,
+      }],
+      at: "2026-07-19T12:00:03+05:30",
+    });
+    await writeFile(join(resourceRoot, "output.txt"), "verified output\n");
+
+    await expect(client.verifyResourceMutation({
+      requestId: "REQ-http-mutation-verify",
+      operationId: mutation.operationId,
+      leaseId: mutation.leaseId,
+      lockToken: mutation.lockToken,
+      toolStatus: "completed",
+      at: "2026-07-19T12:00:04+05:30",
     })).resolves.toMatchObject({
-      authority: {
-        runId: "R-20260719-0001",
-        taskId: "T-20260719-0001",
-        taskRequestId: "R-0001",
-        targets: [],
-      },
+      status: "verified",
+      verified: true,
+      events: [{ resourceId: inspected.resource.resourceId, type: "modified" }],
     });
   });
 
@@ -320,37 +385,13 @@ describe("Git Context protocol 35 HTTP transport", () => {
   });
 });
 
-class ZeroTargetAuthorityService extends ContractOnlyGitContextService {
-  override async acquireMutationAuthority(
-    input: AcquireMutationAuthorityRequest,
-  ): Promise<AcquireMutationAuthorityResponse> {
-    return {
-      authority: {
-        authorityId: input.runId + "-M-0001",
-        lockToken: "test-token",
-        sessionId: input.sessionId,
-        runId: input.runId,
-        taskId: input.taskId,
-        taskRequestId: input.taskRequestId,
-        repositoryPath: "/tmp/tasks/" + input.taskId,
-        branch: "main",
-        beforeHead: input.expectedTaskHead ?? "a".repeat(40),
-        targets: [],
-        status: "active",
-        expiresAt: "2026-07-19T12:15:00+05:30",
-      },
-    };
-  }
-}
-
 async function createService(): Promise<SqliteGitContextService> {
   const root = await mkdtemp(join(tmpdir(), "ayati-http-transport-"));
   roots.push(root);
   const database = await ContextDatabase.open({ path: join(root, "context.sqlite") });
   const service = new SqliteGitContextService({
     database,
-    dataRoot: join(root, "session-data"),
-    workspaceRoot: join(root, "workspace"),
+    rootDirectory: root,
     now: () => "2026-07-19T12:00:00+05:30",
   });
   services.push(service);

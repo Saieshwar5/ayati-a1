@@ -58,7 +58,7 @@ export class UnboundRunFinalizationService {
     const run = readRunEvidence(this.database, input.runId);
     if (!run
       || run.sessionId !== input.sessionId
-      || run.taskBinding
+      || run.workstreamBinding
       || (!existing && run.status !== "running")) {
       throw new GitContextServiceError({
         code: "RUN_NOT_ACTIVE",
@@ -269,6 +269,7 @@ function response(
           ...(record.stepsFile ? { stepsFile: record.stepsFile } : {}),
         }
       : { status: "not_requested" },
-    commit: { status: "not_required" },
+    resourceEffects: { status: "none", events: [] },
+    workstreamContextCommit: { status: "not_required" },
   };
 }

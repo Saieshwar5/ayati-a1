@@ -1,42 +1,40 @@
 import type {
   ActiveContext,
-  AdoptTaskReferenceRequest,
-  AdoptTaskReferenceResponse,
-  AcquireMutationAuthorityRequest,
-  AcquireMutationAuthorityResponse,
-  ActivateTaskForRunRequest,
-  BindTaskAttachmentsRequest,
-  BindTaskAttachmentsResponse,
-  CreateTaskForRunRequest,
+  ActivateWorkstreamForRunRequest,
+  BindResourcesForRunRequest,
+  BindResourcesForRunResponse,
+  CreateWorkstreamForRunRequest,
   EnsureActiveSessionRequest,
   EnsureActiveSessionResponse,
   FinalizeRunRequest,
   FinalizeRunResponse,
-  FindTasksRequest,
-  FindTasksResponse,
+  FindWorkstreamsRequest,
+  FindWorkstreamsResponse,
+  FindResourcesRequest,
+  FindResourcesResponse,
   GetActiveContextRequest,
-  GetTaskRequest,
-  GetTaskResponse,
+  GetWorkstreamRequest,
+  GetWorkstreamResponse,
   HealthResponse,
-  InspectTaskLocationRequest,
-  InspectTaskLocationResponse,
-  ListTasksRequest,
-  ListTasksResponse,
-  PlanTaskRequestRouteRequest,
-  PlanTaskRequestRouteResponse,
+  InspectResourceForRunRequest,
+  InspectResourceForRunResponse,
+  ListWorkstreamsRequest,
+  ListWorkstreamsResponse,
+  PlanWorkstreamRequestRouteRequest,
+  PlanWorkstreamRequestRouteResponse,
   PrepareContextTurnRequest,
   PrepareContextTurnResponse,
-  ReadTaskRequest,
-  ReadTaskResponse,
+  ReadWorkstreamRequest,
+  ReadWorkstreamResponse,
   RecordRunStepRequest,
   RecordRunStepResponse,
-  RecordSessionAttachmentsRequest,
-  RecordSessionAttachmentsResponse,
-  SelectedTaskForRunResponse,
-  SetTaskStarRequest,
-  SetTaskStarResponse,
-  VerifyMutationRequest,
-  VerifyMutationResponse,
+  PrepareResourceMutationRequest,
+  PrepareResourceMutationResponse,
+  SelectedWorkstreamForRunResponse,
+  SetWorkstreamStarRequest,
+  SetWorkstreamStarResponse,
+  VerifyResourceMutationRequest,
+  VerifyResourceMutationResponse,
 } from "./contracts.js";
 
 export interface GitContextService {
@@ -44,30 +42,25 @@ export interface GitContextService {
   getActiveContext(input: GetActiveContextRequest): Promise<ActiveContext>;
   prepareContextTurn(input: PrepareContextTurnRequest): Promise<PrepareContextTurnResponse>;
   ensureActiveSession(input: EnsureActiveSessionRequest): Promise<EnsureActiveSessionResponse>;
-  createTaskForRun(input: CreateTaskForRunRequest): Promise<SelectedTaskForRunResponse>;
-  activateTaskForRun(input: ActivateTaskForRunRequest): Promise<SelectedTaskForRunResponse>;
-  planTaskRequestRoute(
-    input: PlanTaskRequestRouteRequest,
-  ): Promise<PlanTaskRequestRouteResponse>;
-  listTasks(input: ListTasksRequest): Promise<ListTasksResponse>;
-  findTasks(input: FindTasksRequest): Promise<FindTasksResponse>;
-  inspectTaskLocation(input: InspectTaskLocationRequest): Promise<InspectTaskLocationResponse>;
-  getTask(input: GetTaskRequest): Promise<GetTaskResponse>;
-  readTask(input: ReadTaskRequest): Promise<ReadTaskResponse>;
-  setTaskStar(input: SetTaskStarRequest): Promise<SetTaskStarResponse>;
-  recordSessionAttachments(
-    input: RecordSessionAttachmentsRequest,
-  ): Promise<RecordSessionAttachmentsResponse>;
-  bindTaskAttachments(
-    input: BindTaskAttachmentsRequest,
-  ): Promise<BindTaskAttachmentsResponse>;
-  adoptTaskReference(
-    input: AdoptTaskReferenceRequest,
-  ): Promise<AdoptTaskReferenceResponse>;
-  acquireMutationAuthority(
-    input: AcquireMutationAuthorityRequest,
-  ): Promise<AcquireMutationAuthorityResponse>;
-  verifyMutation(input: VerifyMutationRequest): Promise<VerifyMutationResponse>;
+  createWorkstreamForRun(input: CreateWorkstreamForRunRequest): Promise<SelectedWorkstreamForRunResponse>;
+  activateWorkstreamForRun(input: ActivateWorkstreamForRunRequest): Promise<SelectedWorkstreamForRunResponse>;
+  planWorkstreamRequestRoute(
+    input: PlanWorkstreamRequestRouteRequest,
+  ): Promise<PlanWorkstreamRequestRouteResponse>;
+  listWorkstreams(input: ListWorkstreamsRequest): Promise<ListWorkstreamsResponse>;
+  findWorkstreams(input: FindWorkstreamsRequest): Promise<FindWorkstreamsResponse>;
+  getWorkstream(input: GetWorkstreamRequest): Promise<GetWorkstreamResponse>;
+  readWorkstream(input: ReadWorkstreamRequest): Promise<ReadWorkstreamResponse>;
+  setWorkstreamStar(input: SetWorkstreamStarRequest): Promise<SetWorkstreamStarResponse>;
+  findResources(input: FindResourcesRequest): Promise<FindResourcesResponse>;
+  inspectResourceForRun(input: InspectResourceForRunRequest): Promise<InspectResourceForRunResponse>;
+  bindResourcesForRun(input: BindResourcesForRunRequest): Promise<BindResourcesForRunResponse>;
+  prepareResourceMutation(
+    input: PrepareResourceMutationRequest,
+  ): Promise<PrepareResourceMutationResponse>;
+  verifyResourceMutation(
+    input: VerifyResourceMutationRequest,
+  ): Promise<VerifyResourceMutationResponse>;
   finalizeRun(input: FinalizeRunRequest): Promise<FinalizeRunResponse>;
   recordRunStep(input: RecordRunStepRequest): Promise<RecordRunStepResponse>;
 }

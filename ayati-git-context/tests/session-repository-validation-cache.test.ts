@@ -98,7 +98,7 @@ describe("session repository validation cache", () => {
     const firstDatabase = await ContextDatabase.open({ path: databasePath });
     const firstService = new SqliteGitContextService({
       database: firstDatabase,
-      dataRoot: root,
+      rootDirectory: root,
       now: () => "2026-07-12T09:00:00+05:30",
       rolloverCheckIntervalMs: 0,
     });
@@ -114,7 +114,7 @@ describe("session repository validation cache", () => {
     const secondDatabase = await ContextDatabase.open({ path: databasePath });
     const secondService = new SqliteGitContextService({
       database: secondDatabase,
-      dataRoot: root,
+      rootDirectory: root,
       now: () => "2026-07-12T09:01:00+05:30",
       observer: new GitContextObserver("git-context-engine", (event) => events.push(event)),
       rolloverCheckIntervalMs: 0,
@@ -145,7 +145,7 @@ async function createFixture(options: { now?: () => string } = {}): Promise<{
   const now = options.now ?? (() => "2026-07-12T09:00:00+05:30");
   const service = new SqliteGitContextService({
     database,
-    dataRoot: root,
+    rootDirectory: root,
     now,
     observer: new GitContextObserver("git-context-engine", (event) => events.push(event)),
     rolloverCheckIntervalMs: 0,

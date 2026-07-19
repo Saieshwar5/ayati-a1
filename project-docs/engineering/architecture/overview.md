@@ -1,58 +1,70 @@
 # Architecture Overview
 
-Ayati is a TypeScript ESM monorepo using pnpm workspaces.
-
-Architecture mental model:
+Ayati is a TypeScript ESM pnpm monorepo.
 
 ```text
-user channels -> agent daemon -> memory/context/tools/providers -> actions/replies
+user channels -> persistent daemon -> context/memory/tools/providers -> actions/replies
 ```
 
-`ayati-main` is the persistent agent daemon. It should own agent intelligence, memory, runtime state, provider access, tools, plugins, and background events. `ayati-cli` is one client that talks to the daemon. Future clients should connect to the daemon instead of duplicating agent logic.
+`ayati-main` owns agent intelligence, the harness, provider access, tools,
+plugins, and event handling. `ayati-cli` is a client. `ayati-git-context` is an
+independent local service and the only owner of context SQLite and context Git
+writes.
 
 Main runtime flow:
 
-1. A user communicates through a client or an integration produces a system event.
-2. `ayati-main` receives the message/event through WebSocket, HTTP/Pulse ingress, or plugin adapters.
-3. The backend sends conversation and context lifecycle requests through the
-   typed Git Context client to an independently managed local server over a
-   Unix socket. The server alone owns context SQLite and Git writes.
-4. The context server returns active session, explained durable-work
-   candidates, optional selected task, and run context. New work uses a
-   managed repository or a safely registered trusted directory. Selecting an
-   existing V1 task requires an explicit request decision; no session-global
-   active task silently owns a mutation.
-5. `IVecEngine` builds static decision context and enters the decision-action-reducer runner.
-6. The decision model returns direct assistant text for normal terminal
-   replies, or chooses exactly one native tool call for tool loading,
-   task-bound-run feedback, or selected executable work. Tool loading uses the
-   taxonomy and working-set policy so file creation, process commands, reads,
-   routing, and repair capabilities are prepared deterministically.
-7. Executable tool calls run through the shared action executor and are verified
-   through tool contracts, assertions, and local failure policy.
-8. Verified facts update WorkState. Runtime-owned finalization closes the run;
-   task-bound work commits the verified deliverable, request outcome, task
-   card, and references at most once. SQLite retains the run journal.
-9. Only after finalization is acknowledged are terminal replies, feedback, or
-   notifications sent through the originating transport.
+1. A client sends a message or an integration produces a system event.
+2. The daemon sends one atomic preparation request to Git Context. The service
+   ensures the daily session, creates a conversation segment and message,
+   creates one run with initial WorkState, and returns active context.
+3. Active context contains explained workstream candidates, ingress resources,
+   optional bound workstream context, reusable read context, and current-run
+   state.
+4. The decision model may reply directly, inspect/read/search, load tools, or
+   bind the existing run using a workstream routing control.
+5. After binding, the daemon refreshes context and asks for a fresh decision.
+   Mutation tools receive only exact mutable resources; no call is deferred or
+   replayed.
+6. The shared action executor runs calls. Deterministic verification and the
+   progress reducer update WorkState. One structured run-step record persists
+   the ordered tool calls and verification result.
+7. One finalization request closes the run and conversation, verifies resource
+   effects, and optionally commits reduced context in the `W-*` repository.
+8. Only after durable acknowledgement does the originating transport receive
+   the terminal response envelope.
 
-Current agent harness:
+The harness remains:
 
 ```text
 context pack -> decision -> action executor -> deterministic verification -> progress reducer
 ```
+
+Managed filesystem topology:
+
+```text
+<AYATI_ROOT_DIR>/
+  workspace/       default visible output
+  workstreams/     context-only Git repositories
+  .ayati/          database, sessions, managed resources, socket
+```
+
+Workstream Git never contains deliverables. The resource catalog points to real
+files, directories, URLs, databases, repositories, and external objects. A
+resource may live inside the default workspace or anywhere explicitly selected
+by the user.
 
 Important entry points:
 
 - `ayati-main/src/index.ts`
 - `ayati-main/src/app/main.ts`
 - `ayati-main/src/ivec/index.ts`
-- `ayati-cli/src/index.tsx`
-- `ayati-cli/src/app/app.tsx`
-- `ayati-main/src/app/git-context-process.ts`
+- `ayati-main/src/app/git-context-runtime.ts`
+- `ayati-main/src/app/resource-scoped-tool-executor.ts`
 - `ayati-git-context/src/server-main.ts`
+- `ayati-git-context/src/services/sqlite-git-context-service.ts`
+- `ayati-cli/src/index.tsx`
 
-Default local ports:
+Default endpoints:
 
 - WebSocket chat: `ws://localhost:8080`
 - HTTP upload/artifact/Pulse API: `http://127.0.0.1:8081`

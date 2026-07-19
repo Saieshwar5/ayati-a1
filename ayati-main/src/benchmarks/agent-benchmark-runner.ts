@@ -59,7 +59,7 @@ interface BenchmarkCaseResult {
   runPath: string;
   workspacePath?: string;
   status: string;
-  taskBound: boolean;
+  workstreamBound: boolean;
   totalIterations: number;
   totalToolCalls: number;
   llmCalls: number;
@@ -348,7 +348,7 @@ function directReplyBasicCase(): BenchmarkCase {
         budgets: { maxLlmCalls: 1, maxToolCalls: 0, maxTotalTokens: 1_000 },
         checks: async ({ result }) => [
           check("completed", result.status === "completed", result.status),
-          check("unbound run", !result.taskSummary, result.outcome),
+          check("unbound run", !result.workstreamSummary, result.outcome),
           check("one iteration", result.totalIterations === 1, String(result.totalIterations)),
           check("no tools", result.totalToolCalls === 0, String(result.totalToolCalls)),
           check("answers directly", result.content.includes("persistent AI agent daemon"), result.content),
@@ -410,7 +410,7 @@ function codeSearchContextPackCase(): BenchmarkCase {
         budgets: { maxLlmCalls: 2, maxToolCalls: 1, maxTotalTokens: 4_000 },
         checks: async ({ result, metrics }) => [
           check("completed", result.status === "completed", result.status),
-          check("unbound observational run", !result.taskSummary, result.outcome),
+          check("unbound observational run", !result.workstreamSummary, result.outcome),
           check("one tool call", result.totalToolCalls === 1, String(result.totalToolCalls)),
           check("search tool succeeded", readMetricNumber(metrics, ["stages", "tool:search_in_files", "failures"]) === 0),
           check("mentions context-pack path", result.content.includes("context-pack.ts"), result.content),
@@ -480,7 +480,7 @@ function smallFileEditCase(): BenchmarkCase {
           const content = await readFile(targetPath, "utf-8");
           return [
             check("completed", result.status === "completed", result.status),
-            check("task-bound run", Boolean(result.taskSummary), result.outcome),
+            check("workstream-bound run", Boolean(result.workstreamSummary), result.outcome),
             check("one tool call", result.totalToolCalls === 1, String(result.totalToolCalls)),
             check("file edited", content === "status: ready\n", content),
             check("no internal final wording", !containsInternalHarnessWords(result.content), result.content),
@@ -1153,7 +1153,7 @@ function largeContextUpdateRelevantDocCase(): BenchmarkCase {
         title: "Find and update the relevant doc in a noisy workspace",
         tier: "context_heavy",
         category: "context",
-        userMessage: `Find where the docs describe context pack limits in ${workspacePath} and update the note to mention git task assets are capped in the model-facing pack.`,
+        userMessage: `Find where the docs describe context pack limits in ${workspacePath} and update the note to mention workstream resources are capped in the model-facing pack.`,
         workspacePath,
         snapshotWorkspace: true,
         providerResponses: [
@@ -1186,18 +1186,18 @@ function largeContextUpdateRelevantDocCase(): BenchmarkCase {
                         content: [
                           "# Context Pack Limits",
                           "",
-                          "The context pack keeps timeline, git task context, and personal memory bounded.",
+                          "The context pack keeps timeline, workstream/resource context, and personal memory bounded.",
                           "",
                           "- timeline contains chronological session events ending with the current input.",
-                          "- gitContext.task contains compact task state, assets, recent runs, and facts.",
-                          "- git task assets are capped in the model-facing pack.",
+                          "- context.git.current contains compact workstream/request state and public resources.",
+                          "- workstream resources are capped in the model-facing pack.",
                           "",
                         ].join("\n"),
                         baseSha256: await hashFile(targetPath),
                       }],
                     },
                     dependsOn: ["read_context_doc"],
-                    purpose: "Add git task asset cap note",
+                    purpose: "Add workstream resource cap note",
                   },
                 ],
                 allowedTools: ["search_in_files", "read_files", "write_files"],
@@ -1209,7 +1209,7 @@ function largeContextUpdateRelevantDocCase(): BenchmarkCase {
             decision: {
               kind: "reply",
               status: "completed",
-              message: "Updated docs/runtime/context-pack.md to mention that git task assets are capped in the model-facing pack.",
+              message: "Updated docs/runtime/context-pack.md to mention that workstream resources are capped in the model-facing pack.",
             },
             usage: { inputTokens: 3500, outputTokens: 45, totalTokens: 3545 },
           },
@@ -1221,7 +1221,7 @@ function largeContextUpdateRelevantDocCase(): BenchmarkCase {
           const readCalls = readMetricNumber(metrics, ["stages", "tool:read_files", "calls"]);
           return [
             check("completed", result.status === "completed", result.status),
-            check("correct doc updated", content.includes("git task assets are capped in the model-facing pack"), content),
+            check("correct doc updated", content.includes("workstream resources are capped in the model-facing pack"), content),
             check("search used", readMetricNumber(metrics, ["stages", "tool:search_in_files", "calls"]) === 1),
             check("read calls under budget", readCalls <= 1, String(readCalls)),
             check("final answer names doc", result.content.includes("docs/runtime/context-pack.md"), result.content),
@@ -1366,7 +1366,7 @@ function followupContinuePreviousFileEditCase(): BenchmarkCase {
         runPath: second.runPath,
         workspacePath,
         status: second.status,
-        taskBound: second.taskBound,
+        workstreamBound: second.workstreamBound,
         totalIterations: first.totalIterations + second.totalIterations,
         totalToolCalls: first.totalToolCalls + second.totalToolCalls,
         llmCalls: first.llmCalls + second.llmCalls,
@@ -1750,7 +1750,7 @@ function buildSyntheticCaseResult(input: {
     runPath: input.outputDir,
     ...(input.workspacePath ? { workspacePath: input.workspacePath } : {}),
     status: input.status,
-    taskBound: true,
+    workstreamBound: true,
     totalIterations: 0,
     totalToolCalls: 0,
     llmCalls: 0,
@@ -1836,7 +1836,7 @@ async function runCase(input: RunCaseInput): Promise<BenchmarkCaseResult> {
     runPath: result.runPath,
     ...(input.workspacePath ? { workspacePath: input.workspacePath } : {}),
     status: result.status,
-    taskBound: Boolean(result.taskSummary),
+    workstreamBound: Boolean(result.workstreamSummary),
     totalIterations: result.totalIterations,
     totalToolCalls: result.totalToolCalls,
     llmCalls,
@@ -2156,10 +2156,10 @@ async function createLargeContextFixture(): Promise<string> {
   await writeFile(join(root, "docs", "runtime", "context-pack.md"), [
     "# Context Pack Limits",
     "",
-    "The context pack keeps timeline, git task context, and personal memory bounded.",
+    "The context pack keeps timeline, workstream/resource context, and personal memory bounded.",
     "",
     "- timeline contains chronological session events ending with the current input.",
-    "- gitContext.task contains compact task state, assets, recent runs, and facts.",
+    "- context.git.current contains compact workstream/request state and public resources.",
     "",
   ].join("\n"), "utf-8");
   await writeFile(join(root, "docs", "runtime", "verification.md"), "# Verification\n\nDeterministic verification checks tool-owned contracts.\n", "utf-8");
@@ -2500,7 +2500,7 @@ function renderHumanReview(summary: BenchmarkRunSummary): string {
       `Tier: ${result.tier}`,
       `Category: ${result.category}`,
       `Status: ${result.status}`,
-      `Task binding: ${result.taskBound ? "task-bound" : "unbound"}`,
+      `Workstream binding: ${result.workstreamBound ? "workstream-bound" : "unbound"}`,
       `Latency: ${result.latencyMs}ms`,
       `Iterations: ${result.totalIterations}`,
       `LLM calls: ${result.llmCalls}`,

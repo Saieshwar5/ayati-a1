@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ActiveContext } from "ayati-git-context";
+import type { ActiveContext, ResourceRef } from "ayati-git-context";
 import { buildContextEngineProjection } from "../../src/context-engine/index.js";
 import {
   projectAgentPromptContext,
@@ -8,180 +8,144 @@ import {
 import { buildPromptToolCallsForRun } from "../../src/ivec/agent-runner/run-tool-call-context.js";
 
 describe("context engine projection", () => {
-  it("exposes one authoritative task working directory", () => {
-    const workingDirectory = "/workspace/aurora-coffee-site";
-    const projection = buildContextEngineProjection(activeTaskContext(workingDirectory));
+  it("projects native workstream state and exact resource bindings", () => {
+    const active = activeWorkstreamContext();
+    const projection = buildContextEngineProjection(active);
 
-    expect(projection.task?.workingDirectory).toBe(workingDirectory);
-
-    const promptContext = projectAgentPromptContext({
-      context: { timeline: [], gitContext: projection },
+    expect(projection).not.toHaveProperty("task");
+    expect(projection).not.toHaveProperty("taskCandidates");
+    expect(projection.workstream).toMatchObject({
+      workstreamId: "W-20260714-0001",
+      workstreamStatus: "in_progress",
+      currentRequest: { id: "REQ-1", status: "active" },
     });
-    const prompt = projectAgentStateViewForPrompt({ context: promptContext });
-    expect(prompt.context.git?.current.task).toBeDefined();
-    expect(prompt.context.git?.current.task?.identity.workingDirectory).toBe(workingDirectory);
-    expect(prompt.context.git?.current.task?.assets).toEqual([
-      expect.objectContaining({ path: "/workspace/aurora-coffee-site/index.html" }),
+    expect(projection.workstream?.resources).toEqual([
+      expect.objectContaining({
+        resource: expect.objectContaining({
+          resourceId: "RES-0123456789ABCDEF01234567",
+          locator: { kind: "filesystem", path: "/workspace/aurora-coffee-site" },
+        }),
+        access: "mutate",
+        primary: true,
+      }),
     ]);
   });
 
-  it("preserves recent session commits in the provider-facing prompt", () => {
-    const active = activeTaskContext("/internal/session/tasks/T-20260714-0001");
-    if (!active.session) throw new Error("Expected a session fixture.");
-    active.session.recentCommits = [{
-      commit: "d".repeat(40),
-      subject: "session: created aurora coffee website",
-      committedAt: "2026-07-14T10:30:00.000Z",
-      conversationSummary: "The user requested an Aurora Coffee website.",
-      workSummary: "Created and validated the responsive website.",
-      assets: [
-        { path: "aurora-coffee-site/index.html", description: "Main website page" },
-        { path: "aurora-coffee-site/styles.css", description: "Responsive styling" },
-      ],
-      outcome: "done",
-      validation: "passed",
-      taskId: "T-20260714-0001",
-      runId: "R-20260714-0004",
+  it("keeps workstream candidates and resource discovery reasons unchanged", () => {
+    const active = activeWorkstreamContext();
+    active.workstreamCandidates = [{
+      workstreamId: "W-20260714-0002",
+      title: "Machine learning course",
+      objective: "Learn machine learning in bounded lessons.",
+      status: "active",
+      lifecycleStatus: "active",
+      repositoryHealth: "ready",
+      currentRequest: { id: "REQ-3", title: "Learn evaluation", status: "active" },
+      head: "e".repeat(40),
+      primaryResources: [resource("/workspace/learning/model-evaluation.md")],
+      updatedAt: "2026-07-14T11:00:00.000Z",
+      discovery: { tier: "definite", reasons: ["exact_resource_id", "owned_resource"] },
+      starred: true,
+      boundRunsLast30Days: 4,
     }];
 
     const projection = buildContextEngineProjection(active);
-    const promptContext = projectAgentPromptContext({
-      context: { timeline: [], gitContext: projection },
+
+    expect(projection.workstreamCandidates?.[0]).toMatchObject({
+      workstreamId: "W-20260714-0002",
+      discovery: { reasons: ["exact_resource_id", "owned_resource"] },
+      starred: true,
     });
-    const prompt = projectAgentStateViewForPrompt({ context: promptContext });
-
-    expect(prompt.context.git?.session.recentCommits).toEqual([{
-      commit: "d".repeat(40),
-      subject: "session: created aurora coffee website",
-      conversationSummary: "The user requested an Aurora Coffee website.",
-      workSummary: "Created and validated the responsive website.",
-      assets: [
-        { path: "/internal/session/tasks/T-20260714-0001/aurora-coffee-site/index.html", description: "Main website page" },
-        { path: "/internal/session/tasks/T-20260714-0001/aurora-coffee-site/styles.css", description: "Responsive styling" },
-      ],
-      outcome: "done",
-      validation: "passed",
-      at: "2026-07-14T10:30:00.000Z",
-      workId: "T-20260714-0001",
-    }]);
-    expect(prompt.context.git?.session.recentCommits?.[0]).not.toHaveProperty("runId");
   });
 
-  it("preserves compact V1 lifecycle and request state for routing", () => {
-    const active = activeTaskContext("/workspace/aurora-coffee-site");
-    active.taskCandidates = [{
-      taskId: "T-20260714-0002",
-      title: "Machine learning course",
-      objective: "Learn machine learning in bounded lessons.",
-      status: "active",
-      lifecycleStatus: "active",
-      repositoryHealth: "ready",
-      currentRequest: {
-        id: "R-0003",
-        title: "Learn model evaluation",
-        status: "active",
-      },
-      head: "e".repeat(40),
-      workingDirectory: "/workspace/tasks/T-20260714-0002-machine-learning-course",
-      updatedAt: "2026-07-14T11:00:00.000Z",
-    }];
-
-    const projection = buildContextEngineProjection(active);
-
-    expect(projection.taskCandidates).toEqual([{
-      taskId: "T-20260714-0002",
-      title: "Machine learning course",
-      objective: "Learn machine learning in bounded lessons.",
-      status: "active",
-      lifecycleStatus: "active",
-      repositoryHealth: "ready",
-      currentRequest: {
-        id: "R-0003",
-        title: "Learn model evaluation",
-        status: "active",
-      },
-      head: "e".repeat(40),
-      workingDirectory: "/workspace/tasks/T-20260714-0002-machine-learning-course",
-      updatedAt: "2026-07-14T11:00:00.000Z",
-    }]);
-  });
-
-  it("omits run identities and internal storage paths from provider-facing context", () => {
-    const active = activeTaskContext("/workspace/aurora-coffee-site");
-    if (!active.session) throw new Error("Expected a session fixture.");
-    active.session.attachments = {
-      count: 1,
-      recent: [{
-        sessionAssetId: "SA-1",
-        kind: "document",
-        name: "brief.md",
-        source: "upload",
-        status: "ready",
-        originalPath: "/workspace/brief.md",
-        storedPath: "/internal/session-data/SA-1/brief.md",
-        createdAt: "2026-07-14T10:00:00.000Z",
-      }],
-    };
+  it("exposes public resource locators while hiding run and storage identities from prompts", () => {
+    const active = activeWorkstreamContext();
     active.readContext = {
       revision: "read-1",
-      afterCommitRunId: "R-previous",
+      afterCommitRunId: "RUN-previous",
       inventory: [],
       discovery: [],
       evidence: [{
         key: "evidence:read_files:brief.md",
-        runId: "R-1",
+        runId: "RUN-1",
         step: 1,
         callId: "read-brief",
         tool: "read_files",
         purpose: "Read the brief.",
-        resources: ["brief.md"],
-        input: { path: "brief.md" },
+        resources: ["RES-0123456789ABCDEF01234567"],
+        input: { path: "/workspace/aurora-coffee-site/brief.md" },
         output: "brief",
         verification: { passed: true },
         createdAt: "2026-07-14T10:00:02.000Z",
       }],
       actions: [],
     };
-
     const projection = buildContextEngineProjection(active);
     const toolCalls = buildPromptToolCallsForRun([{
       step: 1,
       callId: "read-brief",
       tool: "read_files",
       purpose: "Read the brief.",
-      input: { path: "brief.md" },
+      input: { path: "/workspace/aurora-coffee-site/brief.md" },
       status: "success",
       output: "brief",
-      stepRef: { runId: "R-1", step: 1, callId: "read-brief" },
+      stepRef: { runId: "RUN-1", step: 1, callId: "read-brief" },
     }]);
-    const promptContext = projectAgentPromptContext({
-      context: { timeline: [], gitContext: projection },
-      run: { toolCalls },
+    const prompt = projectAgentStateViewForPrompt({
+      context: projectAgentPromptContext({
+        context: { timeline: [], gitContext: projection },
+        run: { toolCalls },
+      }),
     });
-    const prompt = projectAgentStateViewForPrompt({ context: promptContext });
 
+    expect(prompt.context.git?.current.workstream?.resources[0]?.resource.locator).toEqual({
+      kind: "filesystem",
+      path: "/workspace/aurora-coffee-site",
+    });
+    expect(prompt.context.git?.current.workstream?.identity.workstreamId).toBe("W-20260714-0001");
+    expect(prompt.context.git?.current.workstream).not.toHaveProperty("contextRepositoryPath");
     expect(prompt.context.git?.current.pendingTurn).not.toHaveProperty("runId");
     expect(prompt.context.git?.current.readContext).not.toHaveProperty("afterCommitRunId");
-    expect(prompt.context.git?.current.readContext?.evidence[0]).not.toHaveProperty("runId");
-    expect(prompt.context.run?.toolCalls?.[0]?.stepRef).toEqual({
-      step: 1,
-      callId: "read-brief",
-    });
-    expect(prompt.context.git?.session.attachments).toMatchObject({
-      recent: [{ originalPath: "/workspace/brief.md" }],
-    });
+    expect(prompt.context.run?.toolCalls?.[0]?.stepRef).toEqual({ step: 1, callId: "read-brief" });
     expect(JSON.stringify(prompt.context)).not.toContain('"runId"');
-    expect(JSON.stringify(prompt.context)).not.toContain("/internal/session-data/");
+    expect(JSON.stringify(prompt.context)).not.toContain("/internal/workstreams/");
+  });
+
+  it("does not reinterpret relative context-commit paths as deliverable paths", () => {
+    const active = activeWorkstreamContext();
+    if (!active.session) throw new Error("Expected a session fixture.");
+    active.session.recentCommits = [{
+      commit: "d".repeat(40),
+      subject: "workstream: update context",
+      committedAt: "2026-07-14T10:30:00.000Z",
+      assets: [{ path: "index.html", description: "Relative legacy metadata" }],
+      workstreamId: "W-20260714-0001",
+      runId: "RUN-1",
+    }];
+
+    const prompt = projectAgentStateViewForPrompt({
+      context: projectAgentPromptContext({
+        context: { timeline: [], gitContext: buildContextEngineProjection(active) },
+      }),
+    });
+
+    expect(prompt.context.git?.session.recentCommits?.[0]).toMatchObject({
+      commit: "d".repeat(40),
+      workstreamId: "W-20260714-0001",
+    });
+    expect(prompt.context.git?.session.recentCommits?.[0]).not.toHaveProperty("resources");
+    expect(prompt.context.git?.session.recentCommits?.[0]).not.toHaveProperty("runId");
   });
 });
 
-function activeTaskContext(workingDirectory: string): ActiveContext {
+function activeWorkstreamContext(): ActiveContext {
+  const boundResource = resource("/workspace/aurora-coffee-site");
   return {
     contextRevision: "revision-1",
     session: {
       session: {
         sessionId: "S-20260714-local",
-        repositoryPath: "/session",
+        repositoryPath: "/internal/sessions/2026-07-14",
         head: "a".repeat(40),
         date: "2026-07-14",
         timezone: "UTC",
@@ -208,30 +172,50 @@ function activeTaskContext(workingDirectory: string): ActiveContext {
       }],
       pendingDigest: "digest",
       recentCommits: [],
+      resources: { count: 1, recent: [boundResource] },
     },
-    activeTask: {
-      task: {
-        taskId: "T-20260714-0001",
-        repositoryPath: workingDirectory,
-        workingPath: workingDirectory,
+    activeWorkstream: {
+      workstream: {
+        workstreamId: "W-20260714-0001",
+        contextRepositoryPath: "/internal/workstreams/W-20260714-0001",
         branch: "main",
         head: "c".repeat(40),
       },
-      workingDirectory,
       title: "Aurora Coffee website",
-      objective: "Build the website.",
-      summary: "Task started.",
-      importantPaths: ["index.html"],
+      objective: "Build and maintain the website.",
+      summary: "Homepage implementation is in progress.",
       recentCommits: [],
+      workstreamStatus: "in_progress",
+      lifecycleStatus: "active",
+      repositoryHealth: "ready",
+      currentFocus: "Build the homepage.",
+      blockers: [],
+      next: "Verify responsive styling.",
+      currentRequest: {
+        id: "REQ-1",
+        title: "Build homepage",
+        status: "active",
+        request: "Create the Aurora Coffee homepage.",
+        acceptance: ["Responsive homepage exists."],
+        constraints: [],
+      },
+      resources: [{
+        resource: boundResource,
+        role: "primary",
+        access: "mutate",
+        primary: true,
+        requestIds: ["REQ-1"],
+        boundAt: "2026-07-14T10:00:01.000Z",
+      }],
     },
     run: {
       run: {
-        runId: "R-1",
+        runId: "RUN-1",
         sessionId: "S-20260714-local",
         conversationId: "C-1",
-        taskBinding: {
-          taskId: "T-20260714-0001",
-          taskRequestId: "REQ-1",
+        workstreamBinding: {
+          workstreamId: "W-20260714-0001",
+          requestId: "REQ-1",
           boundAt: "2026-07-14T10:00:01.000Z",
         },
         status: "running",
@@ -240,11 +224,11 @@ function activeTaskContext(workingDirectory: string): ActiveContext {
         stepCount: 0,
       },
       workState: {
-        runId: "R-1",
+        runId: "RUN-1",
         revision: 0,
         afterStep: 0,
         status: "not_done",
-        summary: "Task started.",
+        summary: "Homepage implementation is in progress.",
         openWork: [],
         blockers: [],
         facts: [],
@@ -257,5 +241,27 @@ function activeTaskContext(workingDirectory: string): ActiveContext {
       steps: [],
     },
     warnings: [],
+  };
+}
+
+function resource(path: string): ResourceRef {
+  return {
+    resourceId: "RES-0123456789ABCDEF01234567",
+    kind: path.endsWith(".md") ? "document" : "directory",
+    origin: "agent_created",
+    displayName: path.split("/").pop() ?? path,
+    description: "Primary Aurora Coffee website resource.",
+    aliases: ["aurora site"],
+    locator: { kind: "filesystem", path },
+    version: {
+      key: "version-1",
+      observedAt: "2026-07-14T10:00:00.000Z",
+      exists: true,
+      kind: path.endsWith(".md") ? "file" : "directory",
+    },
+    availability: "available",
+    metadataStatus: "enriched",
+    createdAt: "2026-07-14T10:00:00.000Z",
+    updatedAt: "2026-07-14T10:00:00.000Z",
   };
 }

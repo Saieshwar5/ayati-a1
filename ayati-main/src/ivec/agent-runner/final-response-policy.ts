@@ -3,8 +3,9 @@ import type { LoopState, StepSummary } from "../types.js";
 import type { AgentDecision } from "./decision.js";
 import { isObservationalTool } from "../../skills/tool-taxonomy.js";
 import { isGitContextReadOnlyToolName } from "../../skills/builtins/git-context/tool-policy.js";
-import { isGitContextRoutingToolName } from "./task-binding-capability-policy.js";
-import { stepUsesFileMutationTool } from "./task-routing-policy.js";
+import { isGitContextRoutingToolName } from "./workstream-binding-capability-policy.js";
+import { stepUsesFileMutationTool } from "./workstream-routing-policy.js";
+import { getWorkspaceRoot } from "../../skills/workspace-paths.js";
 
 export function canMarkTerminalReplyDone(state: LoopState): boolean {
   return state.workState.status === "not_done"
@@ -18,7 +19,7 @@ export function shouldRejectTerminalReplyForUnresolvedMutation(
   state: LoopState,
   decision: Extract<AgentDecision, { kind: "reply" }>,
 ): { reason: string; failedStep?: StepSummary } | null {
-  if (decision.status !== "completed" || !isTaskBound(state) || !isFileMutationRequest(state.userMessage)) {
+  if (decision.status !== "completed" || !isWorkstreamBound(state) || !isFileMutationRequest(state.userMessage)) {
     return null;
   }
   const failedStep = latestFileMutationStep(state.completedSteps, "failed");
@@ -35,7 +36,7 @@ export function shouldRejectTerminalReplyForUnresolvedMutation(
   };
 }
 
-function isTaskBound(state: LoopState): boolean {
+function isWorkstreamBound(state: LoopState): boolean {
   return state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "bound";
 }
 
@@ -61,10 +62,10 @@ export function canFinalizeFromWorkState(state: LoopState): boolean {
 export function isUsableFinalResponseMessage(message: string): boolean {
   const trimmed = message.trim();
   if (!trimmed) return false;
-  if (["task_completion", "decision_load_tools", "ask_user_feedback"].includes(trimmed)) {
+  if (["workstream_completion", "decision_load_tools", "ask_user_feedback"].includes(trimmed)) {
     return false;
   }
-  if (/\b(?:task_completion|decision_load_tools|ask_user_feedback)\b/i.test(trimmed)) {
+  if (/\b(?:workstream_completion|decision_load_tools|ask_user_feedback)\b/i.test(trimmed)) {
     return false;
   }
   if (/<tool_call>|tool use displayed to the user as a native function call/i.test(trimmed)) {
@@ -79,7 +80,7 @@ export function isUsableFinalResponseMessage(message: string): boolean {
       return true;
     }
     const value = parsed as Record<string, unknown>;
-    return !["act", "load_tools", "task_completion", "ask_user", "reply"].includes(String(value["kind"] ?? ""));
+    return !["act", "load_tools", "workstream_completion", "ask_user", "reply"].includes(String(value["kind"] ?? ""));
   } catch {
     return true;
   }
@@ -87,7 +88,7 @@ export function isUsableFinalResponseMessage(message: string): boolean {
 
 export function buildBlockedWorkStateReply(state: LoopState): string {
   const blocker = state.workState.blockers?.find((item) => item.trim().length > 0);
-  return blocker ? `I couldn't complete the task. ${blocker}` : "I couldn't complete the task.";
+  return blocker ? `I couldn't complete the workstream. ${blocker}` : "I couldn't complete the workstream.";
 }
 
 export function buildVerifiedCompletionReply(state: LoopState, step?: StepSummary): string {
@@ -107,15 +108,15 @@ export function buildVerifiedCompletionReply(state: LoopState, step?: StepSummar
   if (summary && !looksLikeInternalCompletionText(summary)) {
     return summary;
   }
-  return "Done. I completed the task.";
+  return "Done. I completed the workstream.";
 }
 
 export function buildFailureReply(state: LoopState): string {
   const latest = state.failureHistory[state.failureHistory.length - 1];
   if (!latest) {
-    return "I couldn't complete the task.";
+    return "I couldn't complete the workstream.";
   }
-  return `I couldn't complete the task. Latest failure: ${latest.reason}`;
+  return `I couldn't complete the workstream. Latest failure: ${latest.reason}`;
 }
 
 export function isDurableStepArtifact(artifact: string): boolean {
@@ -166,11 +167,7 @@ function displayArtifactPath(path: string): string {
   if (!isAbsolute(trimmed)) {
     return trimmed;
   }
-  const workspaceDir = process.env["AYATI_WORKSPACE_DIR"];
-  if (!workspaceDir) {
-    return trimmed;
-  }
-  const workspaceRoot = resolve(workspaceDir);
+  const workspaceRoot = resolve(getWorkspaceRoot());
   const relative = trimmed.startsWith(`${workspaceRoot}/`)
     ? trimmed.slice(workspaceRoot.length + 1)
     : trimmed;

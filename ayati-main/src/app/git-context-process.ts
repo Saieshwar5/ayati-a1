@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
-import { delimiter, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   GIT_CONTEXT_PROTOCOL_VERSION,
   GitContextClient,
@@ -8,46 +8,44 @@ import {
   GitContextServiceError,
   isGitContextObservabilityEvent,
   type ActiveContext,
-  type AdoptTaskReferenceRequest,
-  type AdoptTaskReferenceResponse,
-  type ActivateTaskForRunRequest,
-  type AcquireMutationAuthorityRequest,
-  type AcquireMutationAuthorityResponse,
-  type BindTaskAttachmentsRequest,
-  type BindTaskAttachmentsResponse,
-  type CreateTaskForRunRequest,
+  type ActivateWorkstreamForRunRequest,
+  type BindResourcesForRunRequest,
+  type BindResourcesForRunResponse,
+  type CreateWorkstreamForRunRequest,
   type EnsureActiveSessionRequest,
   type EnsureActiveSessionResponse,
   type FinalizeRunRequest,
   type FinalizeRunResponse,
-  type FindTasksRequest,
-  type FindTasksResponse,
+  type FindResourcesRequest,
+  type FindResourcesResponse,
+  type FindWorkstreamsRequest,
+  type FindWorkstreamsResponse,
   type GetActiveContextRequest,
-  type GetTaskRequest,
-  type GetTaskResponse,
+  type GetWorkstreamRequest,
+  type GetWorkstreamResponse,
   type GitContextService,
   type GitContextObservabilityEvent,
   type GitContextObservabilitySink,
   type HealthResponse,
-  type InspectTaskLocationRequest,
-  type InspectTaskLocationResponse,
-  type ListTasksRequest,
-  type ListTasksResponse,
-  type PlanTaskRequestRouteRequest,
-  type PlanTaskRequestRouteResponse,
+  type InspectResourceForRunRequest,
+  type InspectResourceForRunResponse,
+  type ListWorkstreamsRequest,
+  type ListWorkstreamsResponse,
+  type PlanWorkstreamRequestRouteRequest,
+  type PlanWorkstreamRequestRouteResponse,
+  type PrepareResourceMutationRequest,
+  type PrepareResourceMutationResponse,
   type PrepareContextTurnRequest,
   type PrepareContextTurnResponse,
-  type ReadTaskRequest,
-  type ReadTaskResponse,
+  type ReadWorkstreamRequest,
+  type ReadWorkstreamResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
-  type RecordSessionAttachmentsRequest,
-  type RecordSessionAttachmentsResponse,
-  type SelectedTaskForRunResponse,
-  type SetTaskStarRequest,
-  type SetTaskStarResponse,
-  type VerifyMutationRequest,
-  type VerifyMutationResponse,
+  type SelectedWorkstreamForRunResponse,
+  type SetWorkstreamStarRequest,
+  type SetWorkstreamStarResponse,
+  type VerifyResourceMutationRequest,
+  type VerifyResourceMutationResponse,
 } from "ayati-git-context";
 import { devLog, devWarn } from "../shared/index.js";
 import type { GitContextRuntimeConfig } from "../config/runtime-config.js";
@@ -150,74 +148,70 @@ export class ManagedGitContextProcess implements GitContextService {
     return await this.invoke((client) => client.ensureActiveSession(input));
   }
 
-  async createTaskForRun(input: CreateTaskForRunRequest): Promise<SelectedTaskForRunResponse> {
-    return await this.invoke((client) => client.createTaskForRun(input));
+  async createWorkstreamForRun(
+    input: CreateWorkstreamForRunRequest,
+  ): Promise<SelectedWorkstreamForRunResponse> {
+    return await this.invoke((client) => client.createWorkstreamForRun(input));
   }
 
-  async activateTaskForRun(
-    input: ActivateTaskForRunRequest,
-  ): Promise<SelectedTaskForRunResponse> {
-    return await this.invoke((client) => client.activateTaskForRun(input));
+  async activateWorkstreamForRun(
+    input: ActivateWorkstreamForRunRequest,
+  ): Promise<SelectedWorkstreamForRunResponse> {
+    return await this.invoke((client) => client.activateWorkstreamForRun(input));
   }
 
-  async planTaskRequestRoute(
-    input: PlanTaskRequestRouteRequest,
-  ): Promise<PlanTaskRequestRouteResponse> {
-    return await this.invoke((client) => client.planTaskRequestRoute(input));
+  async planWorkstreamRequestRoute(
+    input: PlanWorkstreamRequestRouteRequest,
+  ): Promise<PlanWorkstreamRequestRouteResponse> {
+    return await this.invoke((client) => client.planWorkstreamRequestRoute(input));
   }
 
-  async listTasks(input: ListTasksRequest): Promise<ListTasksResponse> {
-    return await this.invoke((client) => client.listTasks(input));
+  async listWorkstreams(input: ListWorkstreamsRequest): Promise<ListWorkstreamsResponse> {
+    return await this.invoke((client) => client.listWorkstreams(input));
   }
 
-  async findTasks(input: FindTasksRequest): Promise<FindTasksResponse> {
-    return await this.invoke((client) => client.findTasks(input));
+  async findWorkstreams(input: FindWorkstreamsRequest): Promise<FindWorkstreamsResponse> {
+    return await this.invoke((client) => client.findWorkstreams(input));
   }
 
-  async inspectTaskLocation(
-    input: InspectTaskLocationRequest,
-  ): Promise<InspectTaskLocationResponse> {
-    return await this.invoke((client) => client.inspectTaskLocation(input));
+  async getWorkstream(input: GetWorkstreamRequest): Promise<GetWorkstreamResponse> {
+    return await this.invoke((client) => client.getWorkstream(input));
   }
 
-  async getTask(input: GetTaskRequest): Promise<GetTaskResponse> {
-    return await this.invoke((client) => client.getTask(input));
+  async readWorkstream(input: ReadWorkstreamRequest): Promise<ReadWorkstreamResponse> {
+    return await this.invoke((client) => client.readWorkstream(input));
   }
 
-  async readTask(input: ReadTaskRequest): Promise<ReadTaskResponse> {
-    return await this.invoke((client) => client.readTask(input));
+  async setWorkstreamStar(input: SetWorkstreamStarRequest): Promise<SetWorkstreamStarResponse> {
+    return await this.invoke((client) => client.setWorkstreamStar(input));
   }
 
-  async setTaskStar(input: SetTaskStarRequest): Promise<SetTaskStarResponse> {
-    return await this.invoke((client) => client.setTaskStar(input));
+  async findResources(input: FindResourcesRequest): Promise<FindResourcesResponse> {
+    return await this.invoke((client) => client.findResources(input));
   }
 
-  async recordSessionAttachments(
-    input: RecordSessionAttachmentsRequest,
-  ): Promise<RecordSessionAttachmentsResponse> {
-    return await this.invoke((client) => client.recordSessionAttachments(input));
+  async inspectResourceForRun(
+    input: InspectResourceForRunRequest,
+  ): Promise<InspectResourceForRunResponse> {
+    return await this.invoke((client) => client.inspectResourceForRun(input));
   }
 
-  async bindTaskAttachments(
-    input: BindTaskAttachmentsRequest,
-  ): Promise<BindTaskAttachmentsResponse> {
-    return await this.invoke((client) => client.bindTaskAttachments(input));
+  async bindResourcesForRun(
+    input: BindResourcesForRunRequest,
+  ): Promise<BindResourcesForRunResponse> {
+    return await this.invoke((client) => client.bindResourcesForRun(input));
   }
 
-  async adoptTaskReference(
-    input: AdoptTaskReferenceRequest,
-  ): Promise<AdoptTaskReferenceResponse> {
-    return await this.invoke((client) => client.adoptTaskReference(input));
+  async prepareResourceMutation(
+    input: PrepareResourceMutationRequest,
+  ): Promise<PrepareResourceMutationResponse> {
+    return await this.invoke((client) => client.prepareResourceMutation(input));
   }
 
-  async acquireMutationAuthority(
-    input: AcquireMutationAuthorityRequest,
-  ): Promise<AcquireMutationAuthorityResponse> {
-    return await this.invoke((client) => client.acquireMutationAuthority(input));
-  }
-
-  async verifyMutation(input: VerifyMutationRequest): Promise<VerifyMutationResponse> {
-    return await this.invoke((client) => client.verifyMutation(input));
+  async verifyResourceMutation(
+    input: VerifyResourceMutationRequest,
+  ): Promise<VerifyResourceMutationResponse> {
+    return await this.invoke((client) => client.verifyResourceMutation(input));
   }
 
   async finalizeRun(input: FinalizeRunRequest): Promise<FinalizeRunResponse> {
@@ -254,10 +248,8 @@ export class ManagedGitContextProcess implements GitContextService {
       env: {
         ...process.env,
         ...this.options.environment,
+        AYATI_ROOT_DIR: this.options.rootDirectory,
         AYATI_GIT_CONTEXT_DATABASE: this.options.databasePath,
-        AYATI_GIT_CONTEXT_DATA_DIR: this.options.dataRoot,
-        AYATI_GIT_CONTEXT_WORKSPACE_DIR: this.options.workspaceRoot,
-        AYATI_GIT_CONTEXT_TRUSTED_ROOTS: (this.options.trustedRoots ?? []).join(delimiter),
         AYATI_GIT_CONTEXT_SOCKET: this.options.socketPath,
         AYATI_GIT_CONTEXT_TIMEZONE: this.options.timezone,
         AYATI_GIT_CONTEXT_AGENT_ID: this.options.agentId,

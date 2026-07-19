@@ -38,7 +38,7 @@ import type {
   GitContextPreparedTurn,
   GitContextRuntime,
 } from "./git-context-runtime.js";
-import { finalizeAgentRun, isTaskBoundRun } from "./run-finalization-coordinator.js";
+import { finalizeAgentRun, isWorkstreamBoundRun } from "./run-finalization-coordinator.js";
 
 export interface CreateSystemEventRuntimeOptions {
   onReply?: (clientId: string, data: unknown) => void;
@@ -323,7 +323,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     prepared: GitContextPreparedTurn,
     result: AgentLoopResult,
   ): Promise<FinalizeRunResponse> {
-    const taskBound = isTaskBoundRun(prepared, result);
+    const workstreamBound = isWorkstreamBoundRun(prepared, result);
     this.feedbackLedger?.record({
       clientId,
       sessionId: prepared.sessionId,
@@ -334,7 +334,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       data: {
         outcome: result.outcome,
         stopReason: result.stopReason,
-        taskBound,
+        workstreamBound,
       },
     });
     const finalized = await finalizeAgentRun({
@@ -354,9 +354,10 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       data: {
         outcome: finalized.run.status,
         stopReason: finalized.run.stopReason,
-        taskBinding: finalized.run.taskBinding,
+        workstreamBinding: finalized.run.workstreamBinding,
         materialization: finalized.materialization,
-        commit: finalized.commit,
+        resourceEffects: finalized.resourceEffects,
+        workstreamContextCommit: finalized.workstreamContextCommit,
       },
     });
     return finalized;
@@ -435,7 +436,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
   ): void {
     const terminal = {
       runId: runHandle.runId,
-      commitStatus: finalized?.commit.status ?? "failed",
+      commitStatus: finalized?.workstreamContextCommit.status ?? "failed",
     };
     switch (result.type) {
       case "reply":

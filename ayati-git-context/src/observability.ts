@@ -22,7 +22,7 @@ export interface GitContextObservabilityEvent {
   sessionId?: string;
   conversationId?: string;
   runId?: string;
-  taskId?: string;
+  workstreamId?: string;
   seq?: number;
   step?: number;
   durationMs?: number;

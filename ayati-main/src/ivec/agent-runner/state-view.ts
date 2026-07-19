@@ -31,6 +31,7 @@ export interface PromptToolLoadState {
   alreadyActive: string[];
   evicted: string[];
   missing: string[];
+  unavailable: ToolLoadResult["unavailable"];
   message: string;
 }
 
@@ -249,16 +250,16 @@ function buildPendingTurnWorkingFeedback(state: LoopState): PromptWorkingFeedbac
     return {
       severity: "warning",
       source: "tool_validation",
-      message: "The current git-context pending turn is unbound. Normal task tools are not valid until this turn is routed to an existing task or a new task.",
-      retryHint: "Inspect task candidates, then call git_context_activate_task or git_context_create_task. Ask the user directly if task ownership is ambiguous.",
+      message: "The current git-context pending turn is unbound. Normal workstream tools are not valid until this turn is routed to an existing workstream or a new workstream.",
+      retryHint: "Inspect workstream/resource candidates, then activate or create the correct workstream. Ask the user directly if ownership is ambiguous.",
     };
   }
   if (pendingTurn?.routingStatus === "clarifying") {
     return {
       severity: "warning",
       source: "tool_validation",
-      message: "The current git-context pending turn is clarifying. Do not call executable tools while task ownership is unresolved.",
-      retryHint: "Ask the user directly which task or target they mean.",
+      message: "The current git-context pending turn is clarifying. Do not call executable tools while workstream ownership is unresolved.",
+      retryHint: "Ask the user directly which workstream or target they mean.",
     };
   }
   return undefined;
@@ -272,7 +273,9 @@ function buildToolLoadWorkingFeedback(result: ToolLoadResult | undefined): Promp
     severity: result.status === "failed" ? "error" : "warning",
     source: "tool_load",
     message: truncate(result.message, 360),
-    retryHint: result.missing.length > 0
+    retryHint: result.unavailable.some((entry) => entry.reason === "requires_workstream_binding")
+      ? "During routing, use the resource inspector for a user-provided path, then activate or create the owning workstream. Make a fresh mutation decision only after binding."
+      : result.missing.length > 0
       ? `Requested tools were not available: ${compactList(result.missing, 5, 80).join(", ")}. Use another selected tool or request a broader group/query.`
       : "If tools are still needed, request exact tool names, groups, or a clearer search query with decision_load_tools.",
   };
@@ -282,12 +285,12 @@ function isToolValidationReason(reason: string): boolean {
   return reason.includes("Invalid input for")
     || reason.includes("Tool input preflight failed")
     || reason.includes("missing required field")
-    || reason.includes("No active task exists");
+    || reason.includes("No active workstream exists");
 }
 
 function buildFailureRetryHint(failureType: LoopState["failureHistory"][number]["failureType"], reason: string): string | undefined {
-  if (reason.includes("No active task exists")) {
-    return "Inspect task candidates, then activate the matching task or create a distinct task before mutation. Ask a short clarification if ownership is unclear.";
+  if (reason.includes("No active workstream exists")) {
+    return "Inspect workstream candidates, then activate the matching workstream or create a distinct workstream before mutation. Ask a short clarification if ownership is unclear.";
   }
   if (failureType === "validation_error" || isToolValidationReason(reason)) {
     return "Retry the selected executable tool with all required schema fields. Do not use an empty input object.";
@@ -319,6 +322,7 @@ function buildToolLoadView(result: ToolLoadResult | undefined): PromptToolLoadSt
     alreadyActive: compactList(result.alreadyActive, 12, 120),
     evicted: compactList(result.evicted, 12, 120),
     missing: compactList(result.missing, 12, 120),
+    unavailable: result.unavailable.slice(0, 12),
     message: truncate(result.message, 360),
   };
 }

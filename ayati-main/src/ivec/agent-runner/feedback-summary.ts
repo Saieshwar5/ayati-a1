@@ -52,17 +52,14 @@ export function summarizePromptStateView(
         toSeq: gitCurrent.pendingTurn.toSeq,
       } : undefined,
       focusStatus: gitCurrent?.focus.status,
-      activeWorkId: gitCurrent?.focus.status === "active" ? gitCurrent.focus.workId : undefined,
-      task: gitCurrent?.task ? {
-        workId: gitCurrent.task.identity.workId,
-        title: gitCurrent.task.identity.title,
-        status: gitCurrent.task.state.status,
-        openCount: gitCurrent.task.state.open.length,
-        blockerCount: gitCurrent.task.state.blockers.length,
-        factCount: gitCurrent.task.state.facts.length,
-        recentRunCount: gitCurrent.task.activity.recentRuns.length,
-        recentEvidenceCount: gitCurrent.task.activity.recentEvidence.length,
-        assetCount: gitCurrent.task.assets.length,
+      activeWorkstreamId: gitCurrent?.focus.status === "active" ? gitCurrent.focus.workstreamId : undefined,
+      workstream: gitCurrent?.workstream ? {
+        workstreamId: gitCurrent.workstream.identity.workstreamId,
+        title: gitCurrent.workstream.identity.title,
+        status: gitCurrent.workstream.state.workstreamStatus,
+        blockerCount: gitCurrent.workstream.state.blockers.length,
+        recentCommitCount: gitCurrent.workstream.activity.recentCommits.length,
+        resourceCount: gitCurrent.workstream.resources.length,
       } : undefined,
     } : undefined,
     tools: context.tools ? {
@@ -109,11 +106,13 @@ export function summarizeToolLoadResult(result: ToolLoadResult | undefined): Rec
     alreadyActive: result.alreadyActive,
     evicted: result.evicted,
     missing: result.missing,
+    unavailable: result.unavailable,
     taxonomy: {
       loaded: summarizeToolTaxonomy(result.loaded),
       alreadyActive: summarizeToolTaxonomy(result.alreadyActive),
       evicted: summarizeToolTaxonomy(result.evicted),
       missing: summarizeToolTaxonomy(result.missing),
+      unavailable: summarizeToolTaxonomy(result.unavailable.map((entry) => entry.tool)),
     },
     message: result.message,
   };
@@ -140,11 +139,11 @@ export function summarizeDecision(decision: AgentDecision): Record<string, unkno
       request: decision.request,
     };
   }
-  if (decision.kind === "task_completion") {
+  if (decision.kind === "workstream_completion") {
     return {
-      kind: "task_completion",
+      kind: "workstream_completion",
       summaryPreview: previewString(decision.request.summary, 240),
-      assetCount: decision.request.assets.length,
+      resourceCount: decision.request.resources.length,
     };
   }
   return {
@@ -230,7 +229,7 @@ export function summarizeContextEngine(
     sessionSummaryChars: context.session.summary?.text.length ?? 0,
     activityCount: context.session.activityTail.length,
     recentCommitCount: context.session.recentCommits?.length ?? 0,
-    assetCount: sessionMeta.assetCount,
+    resourceCount: sessionMeta.resourceCount,
     pendingWriteCount: context.pendingWrites?.length ?? 0,
     pendingTurnStatus: context.pendingTurn?.routingStatus,
     pendingTurnRange: context.pendingTurn ? {
@@ -238,17 +237,14 @@ export function summarizeContextEngine(
       toSeq: context.pendingTurn.toSeq,
     } : undefined,
     focusStatus: context.focus.status,
-    activeWorkId: context.focus.status === "active" ? context.focus.workId : undefined,
-    task: context.task ? {
-      workId: context.task.workId,
-      title: context.task.title,
-      status: context.task.status,
-      openCount: context.task.open.length,
-      blockerCount: context.task.blockers.length,
-      factCount: context.task.facts.length,
-      recentRunCount: context.task.recentRuns.length,
-      recentEvidenceCount: context.task.recentEvidence.length,
-      assetCount: context.task.assets.length,
+    activeWorkstreamId: context.focus.status === "active" ? context.focus.workstreamId : undefined,
+    workstream: context.workstream ? {
+      workstreamId: context.workstream.workstreamId,
+      title: context.workstream.title,
+      status: context.workstream.workstreamStatus,
+      blockerCount: context.workstream.blockers.length,
+      recentCommitCount: context.workstream.recentCommits.length,
+      resourceCount: context.workstream.resources.length,
     } : undefined,
   };
 }

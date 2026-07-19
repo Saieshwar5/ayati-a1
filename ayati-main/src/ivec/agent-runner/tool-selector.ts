@@ -1,10 +1,10 @@
 import type { ToolDefinition } from "../../skills/types.js";
 import type { LoopState } from "../types.js";
 import {
-  deriveTaskBindingCapabilityPolicy,
-  filterToolsByTaskBinding,
+  deriveWorkstreamBindingCapabilityPolicy,
+  filterToolsByWorkstreamBinding,
   requiredRoutingControls,
-} from "./task-binding-capability-policy.js";
+} from "./workstream-binding-capability-policy.js";
 
 export const PRESSURE_MAX_SELECTED_TOOLS = 10;
 
@@ -13,8 +13,8 @@ export function selectToolsForDecision(
   toolDefinitions: ToolDefinition[],
   limit: number,
 ): ToolDefinition[] {
-  const policy = deriveTaskBindingCapabilityPolicy(state);
-  const candidateTools = filterToolsByTaskBinding(policy, toolDefinitions);
+  const policy = deriveWorkstreamBindingCapabilityPolicy(state);
+  const candidateTools = filterToolsByWorkstreamBinding(policy, toolDefinitions);
   const requiredToolNames = new Set(requiredRoutingControls(policy, state));
   const requiredTools = candidateTools.filter((tool) => requiredToolNames.has(tool.name));
   const budgetedTools = candidateTools.filter((tool) => !requiredToolNames.has(tool.name));
@@ -119,42 +119,42 @@ function buildToolSelectionQuery(state: LoopState): string {
 }
 
 function gitContextTerms(state: LoopState): string[] {
-  const task = state.harnessContext.contextEngine?.task;
+  const workstream = state.harnessContext.contextEngine?.workstream;
   const focus = state.harnessContext.contextEngine?.focus;
-  if (!task && !focus) return [];
+  if (!workstream && !focus) return [];
   return [
     focus && "ref" in focus ? focus.ref : undefined,
     focus && "reason" in focus ? focus.reason : undefined,
-    task?.workId,
-    task?.title,
-    task?.objective,
-    task?.status,
-    task?.next,
-    ...(task?.completed ?? []),
-    ...(task?.open ?? []),
-    ...(task?.blockers ?? []),
-    ...(task?.facts ?? []).map((fact) => fact.text),
-    ...(task?.assets ?? []).flatMap((asset) => [
-      asset.name,
-      asset.path,
-      asset.kind,
-    ]),
-    ...(task?.recentRuns ?? []).flatMap((run) => [
-      run.summary,
-      run.status,
-      ...run.completed,
-      ...run.open,
+    workstream?.workstreamId,
+    workstream?.title,
+    workstream?.objective,
+    workstream?.summary,
+    workstream?.workstreamStatus,
+    workstream?.currentFocus,
+    workstream?.next,
+    workstream?.currentRequest?.title,
+    workstream?.currentRequest?.request,
+    ...(workstream?.blockers ?? []),
+    ...(workstream?.resources ?? []).flatMap(({ resource }) => [
+      resource.resourceId,
+      resource.displayName,
+      resource.description,
+      ...resource.aliases,
+      resource.locator.kind === "filesystem" ? resource.locator.path : undefined,
+      resource.locator.kind === "url" ? resource.locator.url : undefined,
+      resource.kind,
     ]),
   ].filter((term): term is string => typeof term === "string" && term.trim().length > 0);
 }
 
 function gitContextAttachmentTerms(state: LoopState): string[] {
-  const artifactTerms = (state.harnessContext.contextEngine?.task?.assets ?? []).flatMap((asset) => [
-    asset.name,
-    asset.path,
-    asset.kind,
+  const resourceTerms = (state.harnessContext.contextEngine?.workstream?.resources ?? []).flatMap(({ resource }) => [
+    resource.displayName,
+    ...resource.aliases,
+    resource.locator.kind === "filesystem" ? resource.locator.path : undefined,
+    resource.kind,
   ]);
-  if (artifactTerms.length === 0) {
+  if (resourceTerms.length === 0) {
     return [];
   }
   return [
@@ -170,7 +170,7 @@ function gitContextAttachmentTerms(state: LoopState): string[] {
     "directory",
     "document",
     "dataset",
-    ...artifactTerms,
+    ...resourceTerms,
   ].filter((term): term is string => typeof term === "string" && term.trim().length > 0);
 }
 

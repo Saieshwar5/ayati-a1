@@ -313,7 +313,7 @@ describe("prepare context turn", () => {
     const reopenedDatabase = await ContextDatabase.open({ path: fixture.databasePath });
     const reopenedService = new SqliteGitContextService({
       database: reopenedDatabase,
-      dataRoot: fixture.directory,
+      rootDirectory: fixture.directory,
       now: () => "2026-07-18T10:01:00+05:30",
     });
     services.push(reopenedService);
@@ -344,7 +344,7 @@ async function createService(): Promise<{
   const events: GitContextObservabilityEvent[] = [];
   const service = new SqliteGitContextService({
     database,
-    dataRoot: directory,
+    rootDirectory: directory,
     now: () => "2026-07-18T10:00:00+05:30",
     observer: new GitContextObserver("git-context-engine", (event) => events.push(event)),
   });

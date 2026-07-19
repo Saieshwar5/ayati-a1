@@ -1,20 +1,20 @@
-export type FeedbackTaskSelectionMode = "created" | "activated";
-export type FeedbackTaskRequestDecision = "initial" | "continue" | "create";
-export type FeedbackTaskFinalizationStatus = "not_started" | "started" | "not_required" | "no_change" | "committed" | "failed";
+export type FeedbackWorkstreamSelectionMode = "created" | "activated";
+export type FeedbackWorkstreamRequestDecision = "initial" | "continue" | "create";
+export type FeedbackWorkstreamFinalizationStatus = "not_started" | "started" | "not_required" | "no_change" | "committed" | "failed";
 
-export interface FeedbackTaskRepository {
-  taskId?: string;
-  workingDirectory?: string;
+export interface FeedbackWorkstreamRepository {
+  workstreamId?: string;
+  contextRepositoryPath?: string;
   branch?: string;
-  selectionMode?: FeedbackTaskSelectionMode;
-  taskCreated?: boolean;
+  selectionMode?: FeedbackWorkstreamSelectionMode;
+  workstreamCreated?: boolean;
   health?: "ready" | "dirty_external" | "unavailable";
   headBefore?: string;
   headAfter?: string;
 }
 
-export interface FeedbackTaskRequest {
-  decision?: FeedbackTaskRequestDecision;
+export interface FeedbackWorkstreamRequest {
+  decision?: FeedbackWorkstreamRequestDecision;
   requestId?: string;
   status?: "queued" | "active" | "blocked" | "done" | "dropped";
   created?: boolean;
@@ -22,11 +22,11 @@ export interface FeedbackTaskRequest {
 
 export interface FeedbackRun {
   runId?: string;
-  taskBound?: boolean;
+  workstreamBound?: boolean;
 }
 
-export interface FeedbackTaskFinalization {
-  status?: FeedbackTaskFinalizationStatus;
+export interface FeedbackWorkstreamFinalization {
+  status?: FeedbackWorkstreamFinalizationStatus;
   outcome?: "done" | "incomplete" | "failed" | "blocked" | "needs_user_input";
   validation?: "passed" | "failed" | "not_applicable";
   commit?: string;
@@ -35,20 +35,20 @@ export interface FeedbackTaskFinalization {
   headAfter?: string;
 }
 
-export interface FeedbackTaskLifecycle {
-  repository?: FeedbackTaskRepository;
-  request?: FeedbackTaskRequest;
+export interface FeedbackWorkstreamLifecycle {
+  repository?: FeedbackWorkstreamRepository;
+  request?: FeedbackWorkstreamRequest;
   run?: FeedbackRun;
-  finalization?: FeedbackTaskFinalization;
+  finalization?: FeedbackWorkstreamFinalization;
 }
 
-export function mergeFeedbackTaskLifecycle(
-  current: FeedbackTaskLifecycle | undefined,
-  update: FeedbackTaskLifecycle | undefined,
-): FeedbackTaskLifecycle | undefined {
-  if (!current) return compactFeedbackTaskLifecycle(update);
-  if (!update) return compactFeedbackTaskLifecycle(current);
-  return compactFeedbackTaskLifecycle({
+export function mergeFeedbackWorkstreamLifecycle(
+  current: FeedbackWorkstreamLifecycle | undefined,
+  update: FeedbackWorkstreamLifecycle | undefined,
+): FeedbackWorkstreamLifecycle | undefined {
+  if (!current) return compactFeedbackWorkstreamLifecycle(update);
+  if (!update) return compactFeedbackWorkstreamLifecycle(current);
+  return compactFeedbackWorkstreamLifecycle({
     repository: mergeDefined(current.repository, update.repository),
     request: mergeDefined(current.request, update.request),
     run: mergeDefined(current.run, update.run),
@@ -56,9 +56,9 @@ export function mergeFeedbackTaskLifecycle(
   });
 }
 
-export function readFeedbackTaskLifecycle(value: unknown): FeedbackTaskLifecycle | undefined {
+export function readFeedbackWorkstreamLifecycle(value: unknown): FeedbackWorkstreamLifecycle | undefined {
   if (!isRecord(value)) return undefined;
-  return compactFeedbackTaskLifecycle({
+  return compactFeedbackWorkstreamLifecycle({
     repository: readRepository(value["repository"]),
     request: readRequest(value["request"]),
     run: readRun(value["run"]),
@@ -66,11 +66,11 @@ export function readFeedbackTaskLifecycle(value: unknown): FeedbackTaskLifecycle
   });
 }
 
-export function compactFeedbackTaskLifecycle(
-  value: FeedbackTaskLifecycle | undefined,
-): FeedbackTaskLifecycle | undefined {
+export function compactFeedbackWorkstreamLifecycle(
+  value: FeedbackWorkstreamLifecycle | undefined,
+): FeedbackWorkstreamLifecycle | undefined {
   if (!value) return undefined;
-  const compacted: FeedbackTaskLifecycle = {
+  const compacted: FeedbackWorkstreamLifecycle = {
     ...(hasValues(value.repository) ? { repository: value.repository } : {}),
     ...(hasValues(value.request) ? { request: value.request } : {}),
     ...(hasValues(value.run) ? { run: value.run } : {}),
@@ -79,23 +79,23 @@ export function compactFeedbackTaskLifecycle(
   return Object.keys(compacted).length > 0 ? compacted : undefined;
 }
 
-function readRepository(value: unknown): FeedbackTaskRepository | undefined {
+function readRepository(value: unknown): FeedbackWorkstreamRepository | undefined {
   if (!isRecord(value)) return undefined;
   const selectionMode = oneOf(value["selectionMode"], ["created", "activated"] as const);
   const health = oneOf(value["health"], ["ready", "dirty_external", "unavailable"] as const);
   return compactRecord({
-    taskId: stringValue(value["taskId"]),
-    workingDirectory: stringValue(value["workingDirectory"]),
+    workstreamId: stringValue(value["workstreamId"]),
+    contextRepositoryPath: stringValue(value["contextRepositoryPath"]),
     branch: stringValue(value["branch"]),
     selectionMode,
-    taskCreated: booleanValue(value["taskCreated"]),
+    workstreamCreated: booleanValue(value["workstreamCreated"]),
     health,
     headBefore: stringValue(value["headBefore"]),
     headAfter: stringValue(value["headAfter"]),
   });
 }
 
-function readRequest(value: unknown): FeedbackTaskRequest | undefined {
+function readRequest(value: unknown): FeedbackWorkstreamRequest | undefined {
   if (!isRecord(value)) return undefined;
   const decision = oneOf(value["decision"], ["initial", "continue", "create"] as const);
   const status = oneOf(value["status"], ["queued", "active", "blocked", "done", "dropped"] as const);
@@ -111,11 +111,11 @@ function readRun(value: unknown): FeedbackRun | undefined {
   if (!isRecord(value)) return undefined;
   return compactRecord({
     runId: stringValue(value["runId"]),
-    taskBound: booleanValue(value["taskBound"]),
+    workstreamBound: booleanValue(value["workstreamBound"]),
   });
 }
 
-function readFinalization(value: unknown): FeedbackTaskFinalization | undefined {
+function readFinalization(value: unknown): FeedbackWorkstreamFinalization | undefined {
   if (!isRecord(value)) return undefined;
   return compactRecord({
     status: oneOf(value["status"], ["not_started", "started", "not_required", "no_change", "committed", "failed"] as const),

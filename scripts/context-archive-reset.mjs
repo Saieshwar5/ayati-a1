@@ -25,15 +25,22 @@ import { fileURLToPath } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const mainRoot = join(repositoryRoot, "ayati-main");
-const confirmed = process.argv.slice(2).includes("--confirm");
-const preserveTaskRepositories = process.argv.slice(2).includes("--preserve-task-repositories");
+const argumentsList = process.argv.slice(2);
+const unknownArguments = argumentsList.filter((argument) => argument !== "--confirm");
+if (unknownArguments.length > 0) {
+  throw new Error(`Unknown context archive reset option: ${unknownArguments.join(", ")}`);
+}
+const confirmed = argumentsList.includes("--confirm");
 const paths = resolveRuntimePaths(process.env);
 
 if (!confirmed) {
   process.stdout.write([
+    `ayati-root: ${paths.rootDirectory}`,
     `database: ${paths.databasePath}`,
     `session-data: ${paths.sessionRoot}`,
-    `task-root: ${paths.taskRoot}${preserveTaskRepositories ? " (preserved)" : ""}`,
+    `resource-root: ${paths.resourceRoot}`,
+    `workstream-root: ${paths.workstreamRoot}`,
+    `workspace: ${paths.workspaceRoot} (preserved)`,
     "No files were changed. Re-run with --confirm to archive this state.",
     "",
   ].join("\n"));
@@ -43,43 +50,59 @@ if (!confirmed) {
 validateSafePaths(paths);
 await refuseLiveRuntime(paths);
 
-const archiveRoot = await createArchiveRoot(paths.databasePath);
+const archiveRoot = await createArchiveRoot(paths.rootDirectory);
 const entries = [
-  { label: "database", source: paths.databasePath, destination: join(archiveRoot, "database", basename(paths.databasePath)) },
-  { label: "database-wal", source: paths.databasePath + "-wal", destination: join(archiveRoot, "database", basename(paths.databasePath) + "-wal") },
-  { label: "database-shm", source: paths.databasePath + "-shm", destination: join(archiveRoot, "database", basename(paths.databasePath) + "-shm") },
-  { label: "session-data", source: paths.sessionRoot, destination: join(archiveRoot, "sessions") },
   {
-    label: "task-root",
-    source: paths.taskRoot,
-    destination: join(archiveRoot, "tasks"),
-    action: preserveTaskRepositories ? "preserve" : "archive",
+    label: "database",
+    source: paths.databasePath,
+    destination: join(archiveRoot, "database", basename(paths.databasePath)),
+  },
+  {
+    label: "database-wal",
+    source: paths.databasePath + "-wal",
+    destination: join(archiveRoot, "database", basename(paths.databasePath) + "-wal"),
+  },
+  {
+    label: "database-shm",
+    source: paths.databasePath + "-shm",
+    destination: join(archiveRoot, "database", basename(paths.databasePath) + "-shm"),
+  },
+  {
+    label: "session-data",
+    source: paths.sessionRoot,
+    destination: join(archiveRoot, "sessions"),
+  },
+  {
+    label: "resource-root",
+    source: paths.resourceRoot,
+    destination: join(archiveRoot, "resources"),
+  },
+  {
+    label: "workstream-root",
+    source: paths.workstreamRoot,
+    destination: join(archiveRoot, "workstreams"),
   },
 ];
 const manifest = {
-  version: 1,
+  version: 2,
   operation: "context_archive_reset",
   createdAt: new Date().toISOString(),
+  ayatiRoot: paths.rootDirectory,
   archiveRoot,
   socketPath: paths.socketPath,
-  preserveTaskRepositories,
+  preservedPaths: [paths.workspaceRoot],
   status: "in_progress",
   entries: entries.map((entry) => ({
     ...entry,
-    action: entry.action ?? "archive",
+    action: "archive",
     archived: false,
-    preserved: false,
   })),
 };
 await writeManifest(archiveRoot, manifest);
 
 try {
   for (const entry of manifest.entries) {
-    if (entry.action === "preserve") {
-      entry.preserved = await pathExists(entry.source);
-    } else {
-      entry.archived = await moveIfPresent(entry.source, entry.destination);
-    }
+    entry.archived = await moveIfPresent(entry.source, entry.destination);
     await writeManifest(archiveRoot, manifest);
   }
   manifest.status = "completed";
@@ -96,33 +119,26 @@ try {
 process.stdout.write(`Archived Git Context state to ${archiveRoot}\n`);
 
 function resolveRuntimePaths(env) {
-  const workspaceRoot = resolveConfiguredPath(
-    env["AYATI_WORKSPACE_DIR"],
-    join(mainRoot, "work_space"),
+  const rootDirectory = resolveConfiguredPath(
+    env["AYATI_ROOT_DIR"],
+    join(mainRoot, "ayati"),
   );
-  const storeDir = resolveConfiguredPath(
-    env["AYATI_GIT_CONTEXT_STORE_DIR"],
-    join(mainRoot, "data", "context-engine"),
-  );
-  const databasePath = resolveConfiguredPath(
-    env["AYATI_GIT_CONTEXT_DATABASE"],
-    join(storeDir, "context.sqlite"),
-  );
-  const dataRoot = resolveConfiguredPath(
-    env["AYATI_GIT_CONTEXT_DATA_ROOT"] ?? env["AYATI_GIT_CONTEXT_DATA_DIR"],
-    join(workspaceRoot, ".ayati-context"),
-  );
-  const socketPath = resolveConfiguredPath(
-    env["AYATI_GIT_CONTEXT_SOCKET"],
-    join(storeDir, "git-context.sock"),
-  );
+  const stateRoot = join(rootDirectory, ".ayati");
   return {
-    databasePath,
-    dataRoot,
-    sessionRoot: join(dataRoot, "sessions"),
-    workspaceRoot,
-    taskRoot: join(workspaceRoot, "tasks"),
-    socketPath,
+    rootDirectory,
+    stateRoot,
+    databasePath: resolveConfiguredPath(
+      env["AYATI_GIT_CONTEXT_DATABASE"],
+      join(stateRoot, "context.db"),
+    ),
+    socketPath: resolveConfiguredPath(
+      env["AYATI_GIT_CONTEXT_SOCKET"],
+      join(stateRoot, "git-context.sock"),
+    ),
+    sessionRoot: join(stateRoot, "sessions"),
+    resourceRoot: join(stateRoot, "resources"),
+    workstreamRoot: join(rootDirectory, "workstreams"),
+    workspaceRoot: join(rootDirectory, "workspace"),
   };
 }
 
@@ -140,20 +156,28 @@ function normalizeSpecialPath(value) {
 }
 
 function validateSafePaths(paths) {
-  requireExactChild(paths.sessionRoot, paths.dataRoot, "sessions", "session data root");
-  requireExactChild(paths.taskRoot, paths.workspaceRoot, "tasks", "task root");
+  requireExactChild(paths.stateRoot, paths.rootDirectory, ".ayati", "state root");
+  requireExactChild(paths.sessionRoot, paths.stateRoot, "sessions", "session data root");
+  requireExactChild(paths.resourceRoot, paths.stateRoot, "resources", "resource root");
+  requireExactChild(paths.workstreamRoot, paths.rootDirectory, "workstreams", "workstream root");
+  requireExactChild(paths.workspaceRoot, paths.rootDirectory, "workspace", "workspace root");
   for (const [label, value] of [
+    ["Ayati root", paths.rootDirectory],
     ["database parent", dirname(paths.databasePath)],
     ["session data root", paths.sessionRoot],
-    ["task root", paths.taskRoot],
+    ["resource root", paths.resourceRoot],
+    ["workstream root", paths.workstreamRoot],
   ]) {
     if (isBroadDirectory(value)) {
       throw new Error(`Refusing to archive unsafe ${label}: ${value}`);
     }
   }
-  if (pathsOverlap(paths.sessionRoot, paths.taskRoot)
+  if (pathsOverlap(paths.sessionRoot, paths.resourceRoot)
+    || pathsOverlap(paths.sessionRoot, paths.workstreamRoot)
+    || pathsOverlap(paths.resourceRoot, paths.workstreamRoot)
     || isWithin(paths.databasePath, paths.sessionRoot)
-    || isWithin(paths.databasePath, paths.taskRoot)) {
+    || isWithin(paths.databasePath, paths.resourceRoot)
+    || isWithin(paths.databasePath, paths.workstreamRoot)) {
     throw new Error("Refusing to archive overlapping Git Context paths.");
   }
 }
@@ -179,7 +203,8 @@ function pathsOverlap(left, right) {
 function isWithin(value, parent) {
   const child = resolve(value);
   const root = resolve(parent);
-  return child === root || (!relative(root, child).startsWith("..") && child.startsWith(root + sep));
+  const path = relative(root, child);
+  return path === "" || (path !== ".." && !path.startsWith(".." + sep) && !isAbsolute(path));
 }
 
 async function refuseLiveRuntime(paths) {
@@ -187,7 +212,7 @@ async function refuseLiveRuntime(paths) {
     throw new Error(`Refusing to archive while the Git Context socket is live: ${paths.socketPath}`);
   }
   const lockPath = paths.databasePath + ".writer-lock";
-  const owner = await readWriterOwner(lockPath);
+  const owner = await readWriterOwner(join(lockPath, "owner.json"));
   const pid = Number(owner?.pid);
   if (Number.isInteger(pid) && pid > 0 && isProcessAlive(pid)) {
     throw new Error(`Refusing to archive while Git Context writer PID ${pid} is live.`);
@@ -197,7 +222,10 @@ async function refuseLiveRuntime(paths) {
 function socketAcceptsConnections(socketPath) {
   return new Promise((resolveConnection) => {
     const socket = createConnection({ path: socketPath });
+    let settled = false;
     const finish = (connected) => {
+      if (settled) return;
+      settled = true;
       socket.destroy();
       resolveConnection(connected);
     };
@@ -216,13 +244,16 @@ function isProcessAlive(pid) {
   }
 }
 
-async function createArchiveRoot(databasePath) {
+async function createArchiveRoot(rootDirectory) {
   const stamp = new Date().toISOString().replaceAll(":", "").replaceAll(".", "-");
-  const archiveRoot = join(dirname(databasePath), `context-archive-${stamp}`);
+  const archiveRoot = join(
+    dirname(rootDirectory),
+    `${basename(rootDirectory)}-archive-${stamp}`,
+  );
   if (isBroadDirectory(archiveRoot)) {
     throw new Error(`Refusing unsafe archive destination: ${archiveRoot}`);
   }
-  await mkdir(dirname(databasePath), { recursive: true });
+  await mkdir(dirname(rootDirectory), { recursive: true });
   await mkdir(archiveRoot, { recursive: false });
   return archiveRoot;
 }
@@ -238,17 +269,14 @@ async function moveIfPresent(source, destination) {
     await rename(source, destination);
   } catch (error) {
     if (error?.code !== "EXDEV") throw error;
-    await cp(source, destination, { recursive: stat.isDirectory(), errorOnExist: true, preserveTimestamps: true });
+    await cp(source, destination, {
+      recursive: stat.isDirectory(),
+      errorOnExist: true,
+      preserveTimestamps: true,
+    });
     await rm(source, { recursive: stat.isDirectory(), force: false });
   }
   return true;
-}
-
-async function pathExists(path) {
-  return await lstat(path).then(() => true, (error) => {
-    if (error?.code === "ENOENT") return false;
-    throw error;
-  });
 }
 
 async function readWriterOwner(path) {

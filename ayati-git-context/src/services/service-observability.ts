@@ -2,7 +2,7 @@ import type {
   ActiveContext,
   RecordRunStepRequest,
   RecordRunStepResponse,
-  SelectedTaskForRunResponse,
+  SelectedWorkstreamForRunResponse,
 } from "../contracts.js";
 import { GitContextObserver } from "../observability.js";
 
@@ -60,7 +60,7 @@ export class GitContextServiceObservability {
       event: "active_context_built",
       sessionId,
       runId: context.run?.run.runId,
-      taskId: context.activeTask?.task.taskId,
+      workstreamId: context.activeWorkstream?.workstream.workstreamId,
       durationMs,
       outcome: "succeeded",
       data: {
@@ -94,7 +94,7 @@ export class GitContextServiceObservability {
             : 0,
         },
         readContextAfterCommitRunId: context.readContext?.afterCommitRunId,
-        taskCandidateCount: context.taskCandidates?.length ?? 0,
+        workstreamCandidateCount: context.workstreamCandidates?.length ?? 0,
         ...counters,
       },
     });
@@ -103,7 +103,7 @@ export class GitContextServiceObservability {
   cacheInvalidated(reason: string, input: {
     sessionId?: string;
     runId?: string;
-    taskId?: string;
+    workstreamId?: string;
     previousRevision?: string;
     scope?: "session" | "all";
     invalidatedEntries?: number;
@@ -114,7 +114,7 @@ export class GitContextServiceObservability {
       event: "active_context_invalidated",
       sessionId: input.sessionId,
       runId: input.runId,
-      taskId: input.taskId,
+      workstreamId: input.workstreamId,
       outcome: "succeeded",
       data: {
         reason,
@@ -125,26 +125,27 @@ export class GitContextServiceObservability {
     });
   }
 
-  taskSelected(mode: "created" | "activated", result: SelectedTaskForRunResponse): void {
+  workstreamSelected(mode: "created" | "activated", result: SelectedWorkstreamForRunResponse): void {
     this.emit({
       level: "info",
-      event: "run_task_bound",
+      event: "run_workstream_bound",
       sessionId: result.run.sessionId,
       conversationId: result.run.conversationId,
       runId: result.run.runId,
-      taskId: result.task.taskId,
+      workstreamId: result.workstream.workstreamId,
       outcome: "succeeded",
       data: {
         mode,
         runIdPreserved: true,
-        taskHead: result.task.head,
-        workingDirectory: result.context.workingDirectory,
-        branch: result.task.branch,
-        taskCreated: result.taskCreated,
-        taskRequestDecision: result.taskRequestDecision,
-        taskRequestId: result.run.taskBinding?.taskRequestId,
-        taskRequestStatus: result.taskRequestStatus,
-        taskRequestCreated: result.taskRequestCreated,
+        contextRepositoryPath: result.workstream.contextRepositoryPath,
+        workstreamHead: result.workstream.head,
+        primaryResourceCount: result.context.resources?.filter((entry) => entry.primary).length ?? 0,
+        branch: result.workstream.branch,
+        workstreamCreated: result.workstreamCreated,
+        requestDecision: result.workstreamRequestDecision,
+        requestId: result.run.workstreamBinding?.requestId,
+        requestStatus: result.workstreamRequestStatus,
+        requestCreated: result.workstreamRequestCreated,
       },
     });
   }

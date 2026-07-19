@@ -8,16 +8,17 @@ import {
   GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
   GIT_CONTEXT_ROUTING_SUPPORT_TOOL_NAMES,
   GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
+  isGitContextRoutingSupportToolName,
   isGitContextTurnRoutingToolName,
 } from "../../skills/builtins/git-context/tool-policy.js";
 import { getToolLoadPriority } from "../../skills/tool-taxonomy.js";
 import {
-  deriveTaskBindingCapabilityPolicy,
-  deterministicToolsForTaskBinding,
-  isToolAllowedByTaskBinding,
+  deriveWorkstreamBindingCapabilityPolicy,
+  deterministicToolsForWorkstreamBinding,
+  isToolAllowedByWorkstreamBinding,
   requiredRoutingControls,
-  type TaskBindingCapabilityPolicy,
-} from "./task-binding-capability-policy.js";
+  type WorkstreamBindingCapabilityPolicy,
+} from "./workstream-binding-capability-policy.js";
 
 export interface ToolLoadRequest {
   query?: string;
@@ -25,7 +26,17 @@ export interface ToolLoadRequest {
   groups?: string[];
 }
 
-export type ToolLoadStatus = "loaded" | "partial" | "already_active" | "no_match" | "invalid_request" | "failed" | "not_needed";
+export type ToolLoadStatus = "loaded" | "partial" | "already_active" | "unavailable" | "no_match" | "invalid_request" | "failed" | "not_needed";
+
+export type ToolLoadUnavailableReason =
+  | "requires_workstream_binding"
+  | "not_available_after_workstream_binding"
+  | "routing_unavailable";
+
+export interface ToolLoadUnavailable {
+  tool: string;
+  reason: ToolLoadUnavailableReason;
+}
 
 export interface ToolWorkingSetManagerOptions {
   catalog: ToolCatalog;
@@ -44,6 +55,7 @@ export interface ToolLoadResult {
   alreadyActive: string[];
   evicted: string[];
   missing: string[];
+  unavailable: ToolLoadUnavailable[];
   message: string;
 }
 
@@ -51,13 +63,14 @@ interface RunToolState {
   ordered: string[];
   loadedAtStep: Map<string, number>;
   usedAtStep: Map<string, number>;
-  taskRouting: {
+  workstreamRouting: {
     resolved: boolean;
   };
 }
 
 const DEFAULT_MAX_VISIBLE_TOOLS = 15;
-const TASK_ROUTING_WINDOW_TOOL_NAMES = [
+const WORKSTREAM_ROUTING_WINDOW_TOOL_NAMES = [
+  ...GIT_CONTEXT_ROUTING_SUPPORT_TOOL_NAMES,
   ...GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
 ] as const;
 
@@ -96,21 +109,25 @@ export class ToolWorkingSetManager {
     context: ToolExecutionContext,
   ): ToolLoadResult {
     const runState = this.getRunState(context);
-    const policy = deriveTaskBindingCapabilityPolicy(state);
-    if (policy.taskBound) {
-      this.removeTaskRoutingResolutionTools(runState, []);
+    const policy = deriveWorkstreamBindingCapabilityPolicy(state);
+    if (policy.workstreamBound) {
+      this.removeWorkstreamRoutingResolutionTools(runState, []);
       this.syncMount(context);
     }
     const request = buildDeterministicLoadRequest(state);
-    const suppressTaskRoutingTools = shouldSuppressTaskRoutingTools(state);
-    const requiredRoutingTools = suppressTaskRoutingTools
+    const suppressWorkstreamRoutingTools = shouldSuppressWorkstreamRoutingTools(state);
+    const requiredRoutingTools = suppressWorkstreamRoutingTools
       ? []
       : requiredRoutingControls(policy, state);
-    const result = this.load(this.addTaskRoutingWindowTools(request, state, context), context);
+    const result = this.load(
+      this.addWorkstreamRoutingWindowTools(request, state, context),
+      context,
+      policy,
+    );
     let prepared = mergeToolLoadResult(result, this.ensureToolsLoadedOutsideLimit(requiredRoutingTools, context));
-    if (suppressTaskRoutingTools) {
+    if (suppressWorkstreamRoutingTools) {
       const removed: string[] = [];
-      this.removeTaskRoutingTools(runState, removed);
+      this.removeWorkstreamRoutingTools(runState, removed);
       if (removed.length > 0) {
         this.syncMount(context);
         return {
@@ -118,26 +135,30 @@ export class ToolWorkingSetManager {
           loaded: prepared.loaded.filter((tool) => !removed.includes(tool)),
           alreadyActive: prepared.alreadyActive.filter((tool) => !removed.includes(tool)),
           evicted: [...prepared.evicted, ...removed],
-          message: `${prepared.message} Removed task routing tools after prior routing use: ${removed.join(", ")}.`,
+          message: `${prepared.message} Removed workstream routing tools after prior routing use: ${removed.join(", ")}.`,
         };
       }
     }
     const policyRemoved: string[] = [];
-    this.removeToolsDisallowedByTaskBinding(runState, policy, policyRemoved);
+    this.removeToolsDisallowedByWorkstreamBinding(runState, policy, policyRemoved);
     if (policyRemoved.length > 0) {
       prepared = {
         ...prepared,
         loaded: prepared.loaded.filter((tool) => !policyRemoved.includes(tool)),
         alreadyActive: prepared.alreadyActive.filter((tool) => !policyRemoved.includes(tool)),
         evicted: normalizeStrings([...prepared.evicted, ...policyRemoved]),
-        message: `${prepared.message} Removed tools disallowed by task binding: ${policyRemoved.join(", ")}.`,
+        message: `${prepared.message} Removed tools disallowed by workstream binding: ${policyRemoved.join(", ")}.`,
       };
     }
     this.syncMount(context);
     return prepared;
   }
 
-  load(request: ToolLoadRequest, context: ToolExecutionContext): ToolLoadResult {
+  load(
+    request: ToolLoadRequest,
+    context: ToolExecutionContext,
+    policy: WorkstreamBindingCapabilityPolicy,
+  ): ToolLoadResult {
     const state = this.getRunState(context);
     const normalized = normalizeRequest(request);
     if (normalized.toolNames.length === 0 && normalized.groups.length === 0 && !normalized.query) {
@@ -148,7 +169,8 @@ export class ToolWorkingSetManager {
         alreadyActive: [],
         evicted: [],
         missing: [],
-        message: this.summarizeLoadMessage("invalid_request", [], [], [], normalized),
+        unavailable: [],
+        message: this.summarizeLoadMessage("invalid_request", [], [], [], [], normalized),
       };
     }
 
@@ -163,6 +185,7 @@ export class ToolWorkingSetManager {
         alreadyActive: [],
         evicted: [],
         missing: [],
+        unavailable: [],
         message: `Failed to resolve tool load request: ${error instanceof Error ? error.message : String(error)} ${this.availableGroupHint()}`.trim(),
       };
     }
@@ -171,8 +194,17 @@ export class ToolWorkingSetManager {
     const alreadyActive: string[] = [];
     const evicted: string[] = [];
     const missing = [...resolved.missing];
+    const unavailable = resolved.entries
+      .filter((entry) => !isToolAllowedByWorkstreamBinding(policy, entry.name))
+      .map((entry): ToolLoadUnavailable => ({
+        tool: entry.name,
+        reason: unavailableReason(policy, entry.name),
+      }));
+    const availableEntries = resolved.entries.filter(
+      (entry) => isToolAllowedByWorkstreamBinding(policy, entry.name),
+    );
 
-    for (const entry of resolved.entries) {
+    for (const entry of availableEntries) {
       if (state.ordered.includes(entry.name)) {
         alreadyActive.push(entry.name);
         continue;
@@ -196,7 +228,13 @@ export class ToolWorkingSetManager {
     }
 
     this.syncMount(context);
-    const status = summarizeLoadStatus(loaded, alreadyActive, missing, resolved.entries.length);
+    const status = summarizeLoadStatus(
+      loaded,
+      alreadyActive,
+      missing,
+      unavailable,
+      availableEntries.length,
+    );
     return {
       status,
       requested: normalized,
@@ -204,11 +242,24 @@ export class ToolWorkingSetManager {
       alreadyActive,
       evicted,
       missing,
-      message: this.summarizeLoadMessage(status, loaded, alreadyActive, missing, normalized, evicted),
+      unavailable,
+      message: this.summarizeLoadMessage(
+        status,
+        loaded,
+        alreadyActive,
+        missing,
+        unavailable,
+        normalized,
+        evicted,
+      ),
     };
   }
 
-  afterExecution(calls: ActToolCallRecord[], context: ToolExecutionContext): ToolLoadResult {
+  afterExecution(
+    calls: ActToolCallRecord[],
+    context: ToolExecutionContext,
+    policy: WorkstreamBindingCapabilityPolicy,
+  ): ToolLoadResult {
     const state = this.getRunState(context);
     const nextTools: string[] = [];
     const removeAfterUse = new Set<string>();
@@ -219,8 +270,8 @@ export class ToolWorkingSetManager {
         continue;
       }
       state.usedAtStep.set(entry.name, context.stepNumber ?? 0);
-      if (!call.error && isTaskRoutingResolutionTool(entry.name)) {
-        state.taskRouting.resolved = true;
+      if (!call.error && isWorkstreamRoutingResolutionTool(entry.name)) {
+        state.workstreamRouting.resolved = true;
       }
       nextTools.push(...(call.error ? entry.nextOnFailure : entry.nextOnSuccess));
       if (!call.error && (entry.deactivationPolicy === "success" || entry.deactivationPolicy === "one_step")) {
@@ -229,7 +280,7 @@ export class ToolWorkingSetManager {
     }
 
     const result = nextTools.length > 0
-      ? this.load({ toolNames: nextTools }, context)
+      ? this.load({ toolNames: nextTools }, context, policy)
       : {
         status: "not_needed" as const,
         requested: { toolNames: [], groups: [] },
@@ -237,6 +288,7 @@ export class ToolWorkingSetManager {
         alreadyActive: [],
         evicted: [],
         missing: [],
+        unavailable: [],
         message: "No deterministic follow-up tools were needed.",
       };
 
@@ -250,8 +302,8 @@ export class ToolWorkingSetManager {
       }
       this.syncMount(context);
     }
-    if (state.taskRouting.resolved) {
-      this.removeTaskRoutingTools(state, []);
+    if (state.workstreamRouting.resolved) {
+      this.removeWorkstreamRoutingTools(state, []);
       this.syncMount(context);
     }
 
@@ -277,30 +329,30 @@ export class ToolWorkingSetManager {
       }
       return !shouldRemove;
     });
-    if (state.taskRouting.resolved) {
-      this.removeTaskRoutingTools(state, removed);
+    if (state.workstreamRouting.resolved) {
+      this.removeWorkstreamRoutingTools(state, removed);
     }
     this.syncMount(context);
     return removed;
   }
 
-  private addTaskRoutingWindowTools(
+  private addWorkstreamRoutingWindowTools(
     request: ToolLoadRequest,
     state: LoopState,
     context: ToolExecutionContext,
   ): ToolLoadRequest {
     const runState = this.getRunState(context);
-    const policy = deriveTaskBindingCapabilityPolicy(state);
-    if (runState.taskRouting.resolved) {
+    const policy = deriveWorkstreamBindingCapabilityPolicy(state);
+    if (runState.workstreamRouting.resolved) {
       return request;
     }
-    if (policy.taskBound || !policy.routingAvailable) {
+    if (policy.workstreamBound || !policy.routingAvailable) {
       return request;
     }
     if (state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "clarifying") {
       return request;
     }
-    if (shouldSuppressTaskRoutingTools(state)) {
+    if (shouldSuppressWorkstreamRoutingTools(state)) {
       return request;
     }
     const step = context.stepNumber ?? 0;
@@ -309,7 +361,7 @@ export class ToolWorkingSetManager {
     }
     const routingTools = state.harnessContext.contextEngine?.focus.status === "none"
       ? GIT_CONTEXT_UNBOUND_RUN_ROUTING_TOOL_NAMES
-      : TASK_ROUTING_WINDOW_TOOL_NAMES;
+      : WORKSTREAM_ROUTING_WINDOW_TOOL_NAMES;
     return {
       ...request,
       toolNames: [
@@ -319,11 +371,11 @@ export class ToolWorkingSetManager {
     };
   }
 
-  private removeTaskRoutingTools(state: RunToolState, removed: string[]): void {
+  private removeWorkstreamRoutingTools(state: RunToolState, removed: string[]): void {
     const before = state.ordered;
-    state.ordered = state.ordered.filter((tool) => !isTaskRoutingResolutionTool(tool));
+    state.ordered = state.ordered.filter((tool) => !isWorkstreamRoutingWindowTool(tool));
     for (const tool of before) {
-      if (!state.ordered.includes(tool) && isTaskRoutingResolutionTool(tool)) {
+      if (!state.ordered.includes(tool) && isWorkstreamRoutingWindowTool(tool)) {
         state.loadedAtStep.delete(tool);
         state.usedAtStep.delete(tool);
         removed.push(tool);
@@ -331,11 +383,11 @@ export class ToolWorkingSetManager {
     }
   }
 
-  private removeTaskRoutingResolutionTools(state: RunToolState, removed: string[]): void {
+  private removeWorkstreamRoutingResolutionTools(state: RunToolState, removed: string[]): void {
     const before = state.ordered;
-    state.ordered = state.ordered.filter((tool) => !isTaskRoutingResolutionTool(tool));
+    state.ordered = state.ordered.filter((tool) => !isWorkstreamRoutingResolutionTool(tool));
     for (const tool of before) {
-      if (!state.ordered.includes(tool) && isTaskRoutingResolutionTool(tool)) {
+      if (!state.ordered.includes(tool) && isWorkstreamRoutingResolutionTool(tool)) {
         state.loadedAtStep.delete(tool);
         state.usedAtStep.delete(tool);
         removed.push(tool);
@@ -343,13 +395,13 @@ export class ToolWorkingSetManager {
     }
   }
 
-  private removeToolsDisallowedByTaskBinding(
+  private removeToolsDisallowedByWorkstreamBinding(
     state: RunToolState,
-    policy: TaskBindingCapabilityPolicy,
+    policy: WorkstreamBindingCapabilityPolicy,
     removed: string[],
   ): void {
     const before = state.ordered;
-    state.ordered = state.ordered.filter((tool) => isToolAllowedByTaskBinding(policy, tool));
+    state.ordered = state.ordered.filter((tool) => isToolAllowedByWorkstreamBinding(policy, tool));
     for (const tool of before) {
       if (!state.ordered.includes(tool)) {
         state.loadedAtStep.delete(tool);
@@ -389,7 +441,7 @@ export class ToolWorkingSetManager {
   private evictOneForIncomingTool(state: RunToolState, incomingTool: string): string | undefined {
     const incomingPriority = toolPriority(this.catalog.get(incomingTool)?.name ?? incomingTool);
     const candidates = state.ordered
-      .filter((tool) => !isTaskRoutingResolutionTool(tool))
+      .filter((tool) => !isWorkstreamRoutingResolutionTool(tool))
       .map((tool, index) => ({
         tool,
         index,
@@ -446,10 +498,11 @@ export class ToolWorkingSetManager {
     loaded: string[],
     alreadyActive: string[],
     missing: string[],
+    unavailable: ToolLoadUnavailable[],
     request: Required<Pick<ToolLoadRequest, "toolNames" | "groups">> & Pick<ToolLoadRequest, "query">,
     evicted: string[] = [],
   ): string {
-    const base = summarizeLoadMessage(status, loaded, alreadyActive, missing);
+    const base = summarizeLoadMessage(status, loaded, alreadyActive, missing, unavailable);
     const parts = [base];
     if (evicted.length > 0) {
       parts.push(`Evicted lower-priority tools to stay within the ${this.maxVisibleTools}-tool working set: ${evicted.join(", ")}.`);
@@ -488,7 +541,7 @@ export class ToolWorkingSetManager {
       ordered: [],
       loadedAtStep: new Map(),
       usedAtStep: new Map(),
-      taskRouting: {
+      workstreamRouting: {
         resolved: false,
       },
     };
@@ -521,8 +574,8 @@ export class ToolWorkingSetManager {
 function buildDeterministicLoadRequest(
   state: LoopState,
 ): ToolLoadRequest {
-  const policy = deriveTaskBindingCapabilityPolicy(state);
-  const modeTools = deterministicToolsForTaskBinding(policy);
+  const policy = deriveWorkstreamBindingCapabilityPolicy(state);
+  const modeTools = deterministicToolsForWorkstreamBinding(policy);
   if (modeTools) {
     return {
       toolNames: modeTools,
@@ -665,26 +718,33 @@ function mergeToolLoadResult(
   if (pinned.loaded.length === 0 && pinned.alreadyActive.length === 0 && pinned.missing.length === 0) {
     return result;
   }
+  const loaded = normalizeStrings([...result.loaded, ...pinned.loaded]);
+  const alreadyActive = normalizeStrings([...result.alreadyActive, ...pinned.alreadyActive]);
+  const missing = normalizeStrings([...result.missing, ...pinned.missing]);
+  const status = summarizeLoadStatus(
+    loaded,
+    alreadyActive,
+    missing,
+    result.unavailable,
+    result.loaded.length + result.alreadyActive.length + pinned.loaded.length + pinned.alreadyActive.length,
+  );
   return {
     ...result,
-    loaded: normalizeStrings([...result.loaded, ...pinned.loaded]),
-    alreadyActive: normalizeStrings([...result.alreadyActive, ...pinned.alreadyActive]),
-    missing: normalizeStrings([...result.missing, ...pinned.missing]),
+    status,
+    loaded,
+    alreadyActive,
+    missing,
     message: summarizeLoadMessage(
-      summarizeLoadStatus(
-        normalizeStrings([...result.loaded, ...pinned.loaded]),
-        normalizeStrings([...result.alreadyActive, ...pinned.alreadyActive]),
-        normalizeStrings([...result.missing, ...pinned.missing]),
-        result.loaded.length + result.alreadyActive.length + pinned.loaded.length + pinned.alreadyActive.length,
-      ),
-      normalizeStrings([...result.loaded, ...pinned.loaded]),
-      normalizeStrings([...result.alreadyActive, ...pinned.alreadyActive]),
-      normalizeStrings([...result.missing, ...pinned.missing]),
+      status,
+      loaded,
+      alreadyActive,
+      missing,
+      result.unavailable,
     ),
   };
 }
 
-function shouldSuppressTaskRoutingTools(state: LoopState): boolean {
+function shouldSuppressWorkstreamRoutingTools(state: LoopState): boolean {
   const routingAttempts = state.routingAttempts ?? {
     successCount: 0,
     failureCount: 0,
@@ -695,23 +755,30 @@ function shouldSuppressTaskRoutingTools(state: LoopState): boolean {
     || routingAttempts.successCount > 0
     || routingAttempts.failureCount >= routingAttempts.maxFailures
     || state.completedSteps.some((step) => {
-    return step.outcome !== "failed" && (step.toolsUsed ?? []).some(isTaskRoutingResolutionTool);
+    return step.outcome !== "failed" && (step.toolsUsed ?? []).some(isWorkstreamRoutingResolutionTool);
   });
 }
 
-function isTaskRoutingResolutionTool(tool: string): boolean {
+function isWorkstreamRoutingResolutionTool(tool: string): boolean {
   return isGitContextTurnRoutingToolName(tool);
+}
+
+function isWorkstreamRoutingWindowTool(tool: string): boolean {
+  return isWorkstreamRoutingResolutionTool(tool)
+    || isGitContextRoutingSupportToolName(tool);
 }
 
 function summarizeLoadStatus(
   loaded: string[],
   alreadyActive: string[],
   missing: string[],
+  unavailable: ToolLoadUnavailable[],
   matchedCount: number,
 ): ToolLoadStatus {
-  if ((loaded.length > 0 || alreadyActive.length > 0) && missing.length > 0) return "partial";
+  if ((loaded.length > 0 || alreadyActive.length > 0) && (missing.length > 0 || unavailable.length > 0)) return "partial";
   if (loaded.length > 0) return "loaded";
-  if (alreadyActive.length > 0 && missing.length === 0) return "already_active";
+  if (alreadyActive.length > 0 && missing.length === 0 && unavailable.length === 0) return "already_active";
+  if (unavailable.length > 0) return "unavailable";
   if (matchedCount === 0) return "no_match";
   return missing.length > 0 ? "no_match" : "loaded";
 }
@@ -721,7 +788,9 @@ function summarizeLoadMessage(
   loaded: string[],
   alreadyActive: string[],
   missing: string[],
+  unavailable: ToolLoadUnavailable[],
 ): string {
+  const unavailableText = formatUnavailableTools(unavailable);
   switch (status) {
     case "loaded":
       return `Loaded tools: ${loaded.join(", ")}.`;
@@ -729,10 +798,13 @@ function summarizeLoadMessage(
       return [
         loaded.length > 0 ? `Loaded tools: ${loaded.join(", ")}.` : "",
         alreadyActive.length > 0 ? `Already active tools: ${alreadyActive.join(", ")}.` : "",
-        `Missing selectors: ${missing.join(", ")}.`,
+        missing.length > 0 ? `Missing selectors: ${missing.join(", ")}.` : "",
+        unavailable.length > 0 ? `Unavailable in the current run phase: ${unavailableText}.` : "",
       ].filter((part) => part.length > 0).join(" ");
     case "already_active":
       return `Requested tools were already active: ${alreadyActive.join(", ")}.`;
+    case "unavailable":
+      return `Requested tools are unavailable in the current run phase: ${unavailableText}.`;
     case "no_match":
       return missing.length > 0
         ? `No new tools matched the request. Missing selectors: ${missing.join(", ")}.`
@@ -746,13 +818,35 @@ function summarizeLoadMessage(
   }
 }
 
+function unavailableReason(
+  policy: WorkstreamBindingCapabilityPolicy,
+  toolName: string,
+): ToolLoadUnavailableReason {
+  if (policy.workstreamBound) {
+    return "not_available_after_workstream_binding";
+  }
+  if (!policy.routingAvailable && (
+    isGitContextTurnRoutingToolName(toolName)
+    || isGitContextRoutingSupportToolName(toolName)
+  )) {
+    return "routing_unavailable";
+  }
+  return "requires_workstream_binding";
+}
+
+function formatUnavailableTools(unavailable: ToolLoadUnavailable[]): string {
+  return unavailable
+    .map((entry) => `${entry.tool} (${entry.reason.replace(/_/g, " ")})`)
+    .join(", ");
+}
+
 function hasAttachmentWork(state: LoopState): boolean {
   return (state.attachedDocuments?.length ?? 0) > 0
     || (state.preparedAttachments?.length ?? 0) > 0
     || (state.preparedAttachmentRecords?.length ?? 0) > 0
     || (state.managedFiles?.length ?? 0) > 0
     || (state.managedDirectories?.length ?? 0) > 0
-    || (state.harnessContext.contextEngine?.task?.assets.length ?? 0) > 0;
+    || (state.harnessContext.contextEngine?.workstream?.resources.length ?? 0) > 0;
 }
 
 function hasPreparedDocument(state: LoopState): boolean {

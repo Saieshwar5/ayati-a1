@@ -19,7 +19,7 @@ import type {
   RunRecorder,
   SessionInputHandle,
 } from "../memory/types.js";
-import type { ContextRunStepRecord, TaskAssetRecord } from "../context-engine/index.js";
+import type { ContextRunStepRecord } from "../context-engine/index.js";
 import type { DocumentStore } from "../documents/document-store.js";
 import type { PreparedAttachmentRecord, PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
@@ -39,14 +39,22 @@ import type { AgentFeedbackLedger } from "./feedback-ledger.js";
 import type { HarnessContext, HarnessContextInput } from "./harness-context.js";
 import type { ContextPressureState } from "./context-pressure-state.js";
 import type { TimelineCheckpointCacheState } from "./agent-runner/timeline-checkpoint-cache.js";
-import type { AgentRunHandle, RunOutcome, RunStopReason } from "ayati-git-context";
+import type {
+  AgentRunHandle,
+  ResourceKind,
+  ResourceOrigin,
+  ResourcePublicLocator,
+  ResourceRole,
+  RunOutcome,
+  RunStopReason,
+} from "ayati-git-context";
 
 export type SystemEventApprovalState = "not_needed" | "pending" | "granted" | "rejected";
-export type TaskSummaryRunStatus = "completed" | "failed" | "stuck";
-export type TaskSummaryTaskStatus = "open" | "done" | "blocked" | "needs_user_input";
-export type TaskSummaryStopReason = "completed" | "needs_user_input" | "blocked" | "failed" | "stuck" | "context_limit" | "run_limit";
+export type WorkstreamSummaryRunStatus = "completed" | "failed" | "stuck";
+export type WorkstreamSummaryStatus = "open" | "done" | "blocked" | "needs_user_input";
+export type WorkstreamSummaryStopReason = "completed" | "needs_user_input" | "blocked" | "failed" | "stuck" | "context_limit" | "run_limit";
 
-export interface TaskSummaryFailureSummary {
+export interface WorkstreamSummaryFailureSummary {
   failedStep?: number;
   failedTool?: string;
   failureType?: string;
@@ -55,14 +63,14 @@ export interface TaskSummaryFailureSummary {
   suggestedRecovery?: string;
 }
 
-export interface AgentTaskSummaryRecord {
+export interface AgentWorkstreamSummaryRecord {
   runId: string;
   runPath: string;
   triggerSeq?: number;
   discussionStartSeq?: number;
   discussionEndSeq?: number;
-  runStatus: TaskSummaryRunStatus;
-  taskStatus?: TaskSummaryTaskStatus;
+  runStatus: WorkstreamSummaryRunStatus;
+  workstreamStatus?: WorkstreamSummaryStatus;
   objective?: string;
   summary: string;
   progressSummary?: string;
@@ -86,9 +94,20 @@ export interface AgentTaskSummaryRecord {
   goalDoneWhen?: string[];
   goalRequiredEvidence?: string[];
   nextAction?: string;
-  stopReason?: TaskSummaryStopReason;
-  failureSummary?: TaskSummaryFailureSummary;
+  stopReason?: WorkstreamSummaryStopReason;
+  failureSummary?: WorkstreamSummaryFailureSummary;
   attachmentNames?: string[];
+}
+
+export interface AgentResourceRecord {
+  resourceId: string;
+  role: ResourceRole;
+  kind: ResourceKind;
+  origin: ResourceOrigin;
+  displayName: string;
+  description: string;
+  aliases: string[];
+  locator: ResourcePublicLocator;
 }
 
 // --- State ---
@@ -212,11 +231,13 @@ export interface LoopState {
   workState: WorkState;
   /** Exact accepted completion summary, retained outside compact prompt state. */
   verifiedCompletionSummary?: string;
-  completionAssets?: Array<{
+  completionResources?: Array<{
+    resourceId: string;
     path: string;
     resolvedPath: string;
     kind: "file" | "directory";
     description: string;
+    aliases: string[];
   }>;
   toolContext?: ToolContextState;
   lastToolLoad?: ToolLoadResult;
@@ -391,10 +412,10 @@ export interface AgentLoopResult {
   totalIterations: number;
   totalToolCalls: number;
   runPath: string;
-  taskSummary?: AgentTaskSummaryRecord;
-  taskAssets?: TaskAssetRecord[];
-  /** Exact assets accepted by deterministic task-completion verification. */
-  verifiedCompletionAssets?: TaskAssetRecord[];
+  workstreamSummary?: AgentWorkstreamSummaryRecord;
+  resources?: AgentResourceRecord[];
+  /** Exact resources accepted by deterministic workstream-completion verification. */
+  verifiedCompletionResources?: AgentResourceRecord[];
   artifacts?: AgentArtifact[];
   workState?: WorkState;
   completedSteps?: StepSummary[];

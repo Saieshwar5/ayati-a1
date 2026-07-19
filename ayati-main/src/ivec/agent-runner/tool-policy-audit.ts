@@ -6,15 +6,15 @@ import {
   summarizeToolTaxonomy,
 } from "../../skills/tool-taxonomy.js";
 import {
-  toolPhaseForTaskBinding,
-  type TaskBindingCapabilityPolicy,
-} from "./task-binding-capability-policy.js";
+  toolPhaseForWorkstreamBinding,
+  type WorkstreamBindingCapabilityPolicy,
+} from "./workstream-binding-capability-policy.js";
 
 export type ToolPolicyViolationCode =
   | "unknown_tool_taxonomy"
-  | "mutation_tool_without_task_binding"
-  | "routing_control_after_task_bound"
-  | "long_running_tool_without_task_binding"
+  | "mutation_tool_without_workstream_binding"
+  | "routing_control_after_workstream_bound"
+  | "long_running_tool_without_workstream_binding"
   | "tool_not_allowed_in_phase";
 
 export type ToolPolicyViolationSeverity = "warning" | "error";
@@ -28,7 +28,7 @@ export interface ToolPolicyViolation {
 
 export interface ToolPolicyAudit {
   phase: ToolPhase;
-  taskBound: boolean;
+  workstreamBound: boolean;
   selectedTools: string[];
   taxonomy: ToolTaxonomySummary;
   violations: ToolPolicyViolation[];
@@ -36,11 +36,11 @@ export interface ToolPolicyAudit {
 }
 
 export function auditToolPolicy(input: {
-  policy: TaskBindingCapabilityPolicy;
+  policy: WorkstreamBindingCapabilityPolicy;
   selectedTools: ToolDefinition[] | string[];
 }): ToolPolicyAudit {
   const selectedTools = normalizeToolNames(input.selectedTools);
-  const phase = toolPhaseForTaskBinding(input.policy, selectedTools.length);
+  const phase = toolPhaseForWorkstreamBinding(input.policy, selectedTools.length);
   const violationMap = new Map<ToolPolicyViolationCode, ToolPolicyViolation>();
 
   for (const toolName of selectedTools) {
@@ -55,30 +55,30 @@ export function auditToolPolicy(input: {
       continue;
     }
 
-    if (!input.policy.taskBound && taxonomy.requiresTaskBinding) {
+    if (!input.policy.workstreamBound && taxonomy.requiresWorkstreamBinding) {
       addViolation(violationMap, {
-        code: "mutation_tool_without_task_binding",
+        code: "mutation_tool_without_workstream_binding",
         severity: "error",
         tools: [toolName],
-        message: "A task-bound-only mutation tool was selected while the run was unbound.",
+        message: "A workstream-bound-only mutation tool was selected while the run was unbound.",
       });
     }
 
-    if (!input.policy.taskBound && isLongRunningTool(taxonomy)) {
+    if (!input.policy.workstreamBound && isLongRunningTool(taxonomy)) {
       addViolation(violationMap, {
-        code: "long_running_tool_without_task_binding",
+        code: "long_running_tool_without_workstream_binding",
         severity: "error",
         tools: [toolName],
         message: "A long-running tool was selected while the run was unbound.",
       });
     }
 
-    if (isRoutingControlAfterTaskBound(input.policy, taxonomy)) {
+    if (isRoutingControlAfterWorkstreamBound(input.policy, taxonomy)) {
       addViolation(violationMap, {
-        code: "routing_control_after_task_bound",
+        code: "routing_control_after_workstream_bound",
         severity: "error",
         tools: [toolName],
-        message: "A task-routing control was selected after the turn is already bound to task work.",
+        message: "A workstream-routing control was selected after the turn is already bound to workstream work.",
       });
     }
 
@@ -96,7 +96,7 @@ export function auditToolPolicy(input: {
   const violations = [...violationMap.values()];
   return {
     phase,
-    taskBound: input.policy.taskBound,
+    workstreamBound: input.policy.workstreamBound,
     selectedTools,
     taxonomy: summarizeToolTaxonomy(selectedTools),
     violations,
@@ -108,22 +108,22 @@ function normalizeToolNames(tools: ToolDefinition[] | string[]): string[] {
   return tools.map((tool) => typeof tool === "string" ? tool : tool.name);
 }
 
-function isRoutingControlAfterTaskBound(
-  policy: TaskBindingCapabilityPolicy,
+function isRoutingControlAfterWorkstreamBound(
+  policy: WorkstreamBindingCapabilityPolicy,
   taxonomy: NonNullable<ReturnType<typeof getToolTaxonomy>>,
 ): boolean {
-  return policy.taskBound
+  return policy.workstreamBound
     && taxonomy.purpose === "control"
-    && taxonomy.roles.includes("task_routing");
+    && taxonomy.roles.includes("workstream_routing");
 }
 
 function isAvailableRoutingControl(
-  policy: TaskBindingCapabilityPolicy,
+  policy: WorkstreamBindingCapabilityPolicy,
   taxonomy: NonNullable<ReturnType<typeof getToolTaxonomy>>,
 ): boolean {
   return policy.routingAvailable
     && taxonomy.purpose === "control"
-    && taxonomy.roles.includes("task_routing");
+    && taxonomy.roles.includes("workstream_routing");
 }
 
 function isLongRunningTool(taxonomy: NonNullable<ReturnType<typeof getToolTaxonomy>>): boolean {

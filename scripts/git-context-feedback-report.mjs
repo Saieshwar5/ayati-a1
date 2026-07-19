@@ -54,7 +54,7 @@ function renderReport(path, input) {
   const contextEvents = input.filter((event) =>
     event.stage === "context_engine" || event.stage === "git_context_service");
   const counts = countBy(contextEvents, (event) => event.event);
-  const lifecycles = buildTaskLifecycles(contextEvents);
+  const lifecycles = buildWorkstreamLifecycles(contextEvents);
   const findings = validate(contextEvents, lifecycles);
   const rows = contextEvents.map((event) => {
     const data = event.data ?? {};
@@ -63,7 +63,7 @@ function renderReport(path, input) {
       data.component ?? event.stage,
       event.event,
       event.runId ?? "-",
-      data.taskId ?? "-",
+      data.workstreamId ?? event.workstreamId ?? "-",
       data.step ?? "-",
       data.outcome ?? "-",
       data.durationMs ?? "-",
@@ -93,36 +93,36 @@ function renderReport(path, input) {
     `- Incremental context updates: ${counts.get("harness_context_incrementally_updated") ?? 0}`,
     `- Persisted steps: ${sum(counts, ["run_step_persisted", "run_step_persistence_acknowledged"])}`,
     `- HTTP request failures: ${counts.get("http_request_failed") ?? 0}`,
-    `- Task selections: ${lifecycles.length}`,
-    `- New-task selections: ${lifecycles.filter((item) => item.taskCreated === true).length}`,
+    `- Workstream selections: ${lifecycles.length}`,
+    `- New-workstream selections: ${lifecycles.filter((item) => item.workstreamCreated === true).length}`,
     `- Continued requests: ${lifecycles.filter((item) => item.requestDecision === "continue").length}`,
     `- New requests: ${lifecycles.filter((item) => item.requestDecision === "create").length}`,
-    `- Task-bound runs: ${counts.get("run_task_bound") ?? 0}`,
-    `- Verified task mutations staged: ${counts.get("task_mutation_staged") ?? 0}`,
+    `- Workstream-bound runs: ${counts.get("run_workstream_bound") ?? 0}`,
+    `- Verified resource mutations: ${counts.get("resource_mutation_verified") ?? 0}`,
     `- Run finalizations: ${counts.get("run_finalization_completed") ?? 0}`,
-    `- Task commits created: ${counts.get("task_commit_created") ?? 0}`,
+    `- Workstream context commits created: ${sum(counts, ["workstream_commit_created", "workstream_context_commit_created"])}`,
     `- Child restarts: ${counts.get("child_restart_completed") ?? 0}`,
     "",
-    "## Task lifecycle",
+    "## Workstream lifecycle",
     "",
-    "Task | Run | Selection | Request decision | Request | Working directory | Finalization | Commit",
+    "Workstream | Run | Selection | Request decision | Request | Context repository | Finalization | Commit",
     "--- | --- | --- | --- | --- | --- | --- | ---",
     ...(lifecycles.length === 0
       ? ["- | - | - | - | - | - | - | -"]
       : lifecycles.map((item) => [
-        item.taskId ?? "-",
+        item.workstreamId ?? "-",
         item.runId ?? "-",
         item.selectionMode ?? "-",
         item.requestDecision ?? "-",
         formatRequest(item),
-        item.workingDirectory ?? "-",
+        item.contextRepositoryPath ?? "-",
         formatFinalization(item),
         formatCommit(item),
       ].map(cell).join(" | "))),
     "",
     "## Timeline",
     "",
-    "Time | Component | Event | Run | Task | Step | Outcome | ms | Revision",
+    "Time | Component | Event | Run | Workstream | Step | Outcome | ms | Revision",
     "--- | --- | --- | --- | --- | ---: | --- | ---: | ---",
     ...rows,
     "",
@@ -141,29 +141,23 @@ function validate(events, lifecycles) {
   }
   pair(events, "run_step_persistence_queued", "run_step_persistence_acknowledged", (event) => `${event.runId}:${event.data?.step}`, findings);
   pair(events, "run_finalization_started", "run_finalization_completed", (event) => event.runId, findings, new Set(["run_finalization_failed"]));
-  pair(events, "mutation_authority_acquired", "mutation_verified", (event) => event.data?.authorityId, findings);
-  const verifiedMutations = events.filter((event) =>
-    event.event === "mutation_verified" && event.data?.verified === true);
-  const stagedMutations = new Set(events
-    .filter((event) => event.event === "task_mutation_staged")
-    .map((event) => event.data?.authorityId)
-    .filter(Boolean));
-  for (const verified of verifiedMutations) {
-    const authorityId = verified.data?.authorityId;
-    if (authorityId && !stagedMutations.has(authorityId)) {
-      findings.push(`verified mutation was not staged for task-bound finalization: ${authorityId}`);
-    }
-  }
+  pair(
+    events,
+    "resource_mutation_prepared",
+    "resource_mutation_verified",
+    (event) => event.data?.operationId,
+    findings,
+  );
   for (const lifecycle of lifecycles) {
-    const identity = lifecycle.taskId ?? lifecycle.runId ?? "unknown task";
-    if (!lifecycle.workingDirectory) {
-      findings.push(`task selection has no stable working directory: ${identity}`);
+    const identity = lifecycle.workstreamId ?? lifecycle.runId ?? "unknown workstream";
+    if (!lifecycle.contextRepositoryPath) {
+      findings.push(`workstream selection has no context repository: ${identity}`);
     }
     if (!lifecycle.requestDecision) {
-      findings.push(`task selection has no explicit request decision: ${identity}`);
+      findings.push(`workstream selection has no explicit request decision: ${identity}`);
     }
     if (!lifecycle.requestId) {
-      findings.push(`task selection has no request identity: ${identity}`);
+      findings.push(`workstream selection has no request identity: ${identity}`);
     }
     if (["initial", "create"].includes(lifecycle.requestDecision)
       && lifecycle.requestCreated !== true) {
@@ -173,79 +167,87 @@ function validate(events, lifecycles) {
       findings.push(`continue selection does not prove request reuse: ${identity}`);
     }
     if (lifecycle.finalizationStatus === "committed" && lifecycle.commitCreated === undefined) {
-      findings.push(`task finalization has no commit-created result: ${identity}`);
+      findings.push(`workstream finalization has no commit-created result: ${identity}`);
     }
     if (lifecycle.finalizationStatus === "committed" && !lifecycle.headAfter) {
-      findings.push(`task finalization has no final task HEAD: ${identity}`);
+      findings.push(`workstream finalization has no final context HEAD: ${identity}`);
     }
     if (lifecycle.commitCreated === true && !lifecycle.commit) {
-      findings.push(`task finalization created a commit without its identity: ${identity}`);
+      findings.push(`workstream finalization created a context commit without its identity: ${identity}`);
     }
     if (lifecycle.commit && lifecycle.headAfter && lifecycle.commit !== lifecycle.headAfter) {
-      findings.push(`task finalization commit does not match task HEAD: ${identity}`);
+      findings.push(`workstream finalization commit does not match context HEAD: ${identity}`);
     }
     if (lifecycle.validation === "failed") {
-      findings.push(`task finalization validation failed: ${identity}`);
+      findings.push(`workstream finalization validation failed: ${identity}`);
     }
     if (lifecycle.outcome && lifecycle.outcome !== "done") {
-      findings.push(`task outcome is ${lifecycle.outcome}: ${identity}`);
+      findings.push(`workstream outcome is ${lifecycle.outcome}: ${identity}`);
     }
   }
   return [...new Set(findings)];
 }
 
-function buildTaskLifecycles(events) {
+function buildWorkstreamLifecycles(events) {
   const records = new Map();
   for (const event of events) {
     const data = event.data ?? {};
-    const nested = data.taskLifecycle ?? data.contextEngine?.taskLifecycle ?? {};
+    const nested = data.workstreamLifecycle ?? data.contextEngine?.workstreamLifecycle ?? {};
     const repository = nested.repository ?? {};
     const request = nested.request ?? {};
     const run = nested.run ?? {};
     const finalization = nested.finalization ?? {};
-    const commitResult = data.commit ?? {};
-    const taskId = event.taskId ?? data.taskId ?? repository.taskId ?? commitResult.taskId;
+    const binding = data.workstreamBinding ?? {};
+    const commitResult = data.workstreamContextCommit ?? {};
+    const workstreamId = event.workstreamId
+      ?? data.workstreamId
+      ?? binding.workstreamId
+      ?? repository.workstreamId
+      ?? commitResult.workstreamId;
     const runId = event.runId ?? data.runId ?? run.runId;
-    if (!taskId && !runId) continue;
-    if (!isTaskLifecycleEvent(event.event, data, nested)) continue;
-    const key = taskId ? `task:${taskId}:run:${runId ?? "-"}` : `run:${runId}`;
+    if (!workstreamId && !runId) continue;
+    if (!isWorkstreamLifecycleEvent(event.event, nested)) continue;
+    const key = workstreamId
+      ? `workstream:${workstreamId}:run:${runId ?? "-"}`
+      : `run:${runId}`;
     const current = records.get(key) ?? {};
     records.set(key, mergeDefined(current, {
-      taskId,
+      workstreamId,
       runId,
-      workingDirectory: data.workingDirectory ?? repository.workingDirectory,
+      contextRepositoryPath: data.contextRepositoryPath ?? repository.contextRepositoryPath,
       selectionMode: data.mode ?? repository.selectionMode,
-      taskCreated: data.taskCreated ?? repository.taskCreated,
-      requestDecision: data.taskRequestDecision ?? request.decision,
-      requestId: data.taskRequestId ?? request.requestId,
-      requestStatus: data.taskRequestStatus ?? request.status,
-      requestCreated: data.taskRequestCreated ?? request.created,
+      workstreamCreated: data.workstreamCreated ?? repository.workstreamCreated,
+      requestDecision: data.requestDecision ?? request.decision,
+      requestId: data.requestId ?? binding.requestId ?? request.requestId ?? commitResult.requestId,
+      requestStatus: data.requestStatus ?? request.status,
+      requestCreated: data.requestCreated ?? request.created,
       finalizationStatus: finalization.status
         ?? (event.event === "run_finalization_started" ? "started" : undefined)
         ?? (event.event === "run_finalization_completed" ? commitResult.status : undefined)
         ?? (event.event === "run_finalization_failed" ? "failed" : undefined),
       outcome: data.outcome ?? data.requestedOutcome ?? finalization.outcome,
       validation: data.validation ?? finalization.validation,
-      commit: data.taskCommit ?? commitResult.commit ?? finalization.commit,
-      commitCreated: data.taskCommitCreated
-        ?? (commitResult.status === "committed" ? true : undefined)
+      commit: commitResult.commit ?? finalization.commit,
+      commitCreated: (commitResult.status === "committed" ? true : undefined)
         ?? finalization.commitCreated,
-      headAfter: data.taskHeadAfter ?? commitResult.headAfter ?? repository.headAfter ?? finalization.headAfter,
+      headAfter: commitResult.headAfter ?? repository.headAfter ?? finalization.headAfter,
     }));
   }
   return [...records.values()]
-    .filter((item) => item.taskId)
-    .sort((left, right) => String(left.taskId ?? left.runId).localeCompare(String(right.taskId ?? right.runId)));
+    .filter((item) => item.workstreamId)
+    .sort((left, right) => String(left.workstreamId ?? left.runId)
+      .localeCompare(String(right.workstreamId ?? right.runId)));
 }
 
-function isTaskLifecycleEvent(name, data, nested) {
+function isWorkstreamLifecycleEvent(name, nested) {
   return [
-    "run_task_bound",
+    "run_workstream_bound",
     "agent_routed",
     "run_finalization_started",
     "run_finalization_completed",
     "run_finalization_failed",
-    "task_commit_created",
+    "workstream_commit_created",
+    "workstream_context_commit_created",
   ].includes(name) || Boolean(nested.repository);
 }
 

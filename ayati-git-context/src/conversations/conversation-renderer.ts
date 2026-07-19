@@ -29,8 +29,8 @@ export function conversationContentHash(content: string): string {
   return "sha256:" + createHash("sha256").update(content).digest("hex");
 }
 
-export function renderTaskConversationWindow(input: {
-  taskId: string;
+export function renderWorkstreamConversationWindow(input: {
+  workstreamId: string;
   runId: string;
   previousSessionHead: string;
   conversations: ConversationContext[];
@@ -38,9 +38,9 @@ export function renderTaskConversationWindow(input: {
   const first = input.conversations.at(0)?.conversation.sequence;
   const last = input.conversations.at(-1)?.conversation.sequence;
   return [
-    "# Task Conversation Window",
+    "# Workstream Conversation Window",
     "",
-    "Task-Id: " + input.taskId,
+    "Workstream-Id: " + input.workstreamId,
     "Run: " + input.runId,
     "Previous-Session-Head: " + input.previousSessionHead,
     "Conversation-Range: " + (first ?? "unknown") + "-" + (last ?? "unknown"),

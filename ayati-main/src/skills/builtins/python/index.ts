@@ -397,7 +397,7 @@ function createInspectDatasetTool(deps: PythonSkillDeps): ToolDefinition {
         sql: { type: "string", description: "SQLite query text when sourceType is sqlite_query." },
         sampleRows: { type: "number", description: "Sample row count to include in the response. Defaults to 10." },
         profileColumns: { type: "boolean", description: "Whether to compute per-column summaries. Defaults to true." },
-        cwd: { type: "string", description: "Optional canonical absolute working directory. Omit to use the task directory." },
+        cwd: { type: "string", description: "Optional canonical absolute working directory. Omit to use the default Ayati workspace." },
         timeoutMs: { type: "number", description: "Optional timeout override in milliseconds." },
         maxOutputChars: { type: "number", description: "Optional cap for stdout/stderr previews." },
       },
@@ -435,7 +435,7 @@ function createPythonExecuteTool(deps: PythonSkillDeps): ToolDefinition {
           description: "Optional script arguments.",
           items: PYTHON_STRING_ARRAY_ITEM_SCHEMA,
         },
-        cwd: { type: "string", description: "Optional canonical absolute working directory. Omit to use the task directory." },
+        cwd: { type: "string", description: "Optional canonical absolute working directory. Omit to use the default Ayati workspace." },
         timeoutMs: { type: "number", description: "Optional timeout override in milliseconds." },
         maxOutputChars: { type: "number", description: "Optional cap for stdout/stderr previews." },
         inputFiles: {
@@ -450,7 +450,7 @@ function createPythonExecuteTool(deps: PythonSkillDeps): ToolDefinition {
         },
         targets: {
           type: "array",
-          description: "Bounded task paths the Python code may create or modify. Required by task authorization when writing task files.",
+          description: "Bounded resource paths the Python code may create or modify. Required by resource authorization when writing files.",
           items: {
             type: "object",
             required: ["path"],
@@ -487,7 +487,7 @@ const PYTHON_PROMPT_BLOCK = [
   "Prefer these Python tools over process execution whenever the job is primarily dataframe work, statistics, visualization, or machine learning.",
   "python_execute exposes AYATI_PYTHON_RUN_DIR, AYATI_PYTHON_ARTIFACT_DIR, AYATI_PYTHON_INPUT_FILES, and AYATI_PYTHON_SQLITE_DB_PATHS to the Python process.",
   "Write generated charts, reports, and derived files into AYATI_PYTHON_ARTIFACT_DIR so they are captured as Python artifacts.",
-  "If Python code may create or modify task files outside AYATI_PYTHON_ARTIFACT_DIR, declare every bounded canonical absolute path in targets.",
+  "If Python code may create or modify bound resource files outside AYATI_PYTHON_ARTIFACT_DIR, declare every exact canonical absolute path in targets.",
   "Do not use bare python, python3, or pip through process execution when these managed Python tools can do the job.",
 ].join("\n");
 

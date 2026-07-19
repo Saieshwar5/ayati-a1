@@ -7,15 +7,15 @@ import type {
   RunStepRecord,
   RunStopReason,
   RunWorkStateInput,
-  TaskCompletionRecord,
-  RecordSessionAttachmentsResponse,
+  WorkstreamCompletionRecord,
+  ResourceAdmission,
 } from "ayati-git-context";
 import { GitContextObserver } from "ayati-git-context";
 import type {
   ContextEngineMachineContext,
   ContextRunStepRecord,
-  ContextSessionAttachmentRecord,
 } from "../context-engine/index.js";
+import { compactWorkState } from "../ivec/state-compaction.js";
 import { getToolTaxonomy } from "../skills/tool-taxonomy.js";
 import { GitContextHarnessCache } from "./git-context-harness-cache.js";
 
@@ -43,7 +43,7 @@ export interface GitContextFinalizeRunInput {
   validation: "passed" | "failed" | "not_applicable";
   next?: string;
   workState?: unknown;
-  taskCompletion?: TaskCompletionRecord;
+  workstreamCompletion?: WorkstreamCompletionRecord;
   at: string;
 }
 
@@ -59,6 +59,7 @@ export interface GitContextRuntime {
   prepareUserTurn(input: {
     clientId: string;
     userMessage: string;
+    resources?: ResourceAdmission[];
     at: string;
   }): Promise<GitContextPreparedTurn>;
   prepareSystemEventTurn(input: {
@@ -73,12 +74,6 @@ export interface GitContextRuntime {
     currentContext?: ContextEngineMachineContext;
     [key: string]: unknown;
   }): Promise<ContextEngineMachineContext | null>;
-  recordSessionAttachments(input: {
-    turn: GitContextPreparedTurn | null;
-    attachments: ContextSessionAttachmentRecord[];
-    at: string;
-    [key: string]: unknown;
-  }): Promise<RecordSessionAttachmentsResponse | null>;
   buildActiveContext(sessionId: string): Promise<ContextEngineMachineContext>;
 }
 
@@ -114,9 +109,10 @@ class AppGitContextRuntime implements GitContextRuntime {
   async prepareUserTurn(input: {
     clientId: string;
     userMessage: string;
+    resources?: ResourceAdmission[];
     at: string;
   }): Promise<GitContextPreparedTurn> {
-    return await this.prepareInput(input.clientId, "user", input.userMessage, input.at);
+    return await this.prepareInput(input.clientId, "user", input.userMessage, input.at, input.resources);
   }
 
   async prepareSystemEventTurn(input: {
@@ -137,11 +133,11 @@ class AppGitContextRuntime implements GitContextRuntime {
       sessionId: turn.sessionId,
       seq: turn.messageSeq,
       runId: turn.run.runId,
-      taskId: turn.context.pendingTurn?.workId,
+      workstreamId: turn.context.pendingTurn?.workstreamId,
       data: {
         outcome: input.outcome,
         stopReason: input.stopReason,
-        taskBound: turn.context.pendingTurn?.routingStatus === "bound",
+        workstreamBound: turn.context.pendingTurn?.routingStatus === "bound",
       },
     });
     try {
@@ -157,7 +153,9 @@ class AppGitContextRuntime implements GitContextRuntime {
         validation: input.validation,
         ...(input.next ? { next: input.next } : {}),
         workState: toRunWorkState(input.workState, input.outcome),
-        ...(input.taskCompletion ? { task: { completion: input.taskCompletion } } : {}),
+        ...(input.workstreamCompletion
+          ? { workstream: { completion: input.workstreamCompletion } }
+          : {}),
         at: input.at,
       });
       this.contextCache.markDirty(turn.sessionId);
@@ -167,26 +165,27 @@ class AppGitContextRuntime implements GitContextRuntime {
         sessionId: turn.sessionId,
         seq: turn.messageSeq,
         runId: response.run.runId,
-        taskId: response.run.taskBinding?.taskId,
+        workstreamId: response.run.workstreamBinding?.workstreamId,
         outcome: "succeeded",
         data: {
           outcome: response.run.status,
           stopReason: response.run.stopReason,
-          taskBinding: response.run.taskBinding,
+          workstreamBinding: response.run.workstreamBinding,
           materialization: response.materialization,
-          commit: response.commit,
+          resourceEffects: response.resourceEffects,
+          workstreamContextCommit: response.workstreamContextCommit,
         },
       });
-      if (response.commit.status === "committed") {
+      if (response.workstreamContextCommit.status === "committed") {
         this.observer.emit({
           level: "info",
-          event: "task_commit_created",
+          event: "workstream_context_commit_created",
           sessionId: turn.sessionId,
           seq: turn.messageSeq,
           runId: response.run.runId,
-          taskId: response.commit.taskId,
+          workstreamId: response.workstreamContextCommit.workstreamId,
           outcome: "succeeded",
-          data: response.commit,
+          data: response.workstreamContextCommit,
         });
       }
       return response;
@@ -270,23 +269,6 @@ class AppGitContextRuntime implements GitContextRuntime {
     return await persisted;
   }
 
-  async recordSessionAttachments(input: {
-    turn: GitContextPreparedTurn | null;
-    attachments: ContextSessionAttachmentRecord[];
-    at: string;
-  }): Promise<RecordSessionAttachmentsResponse | null> {
-    if (!input.turn || input.attachments.length === 0) return null;
-    const response = await this.options.service.recordSessionAttachments({
-      requestId: operationRequestId(input.turn.run.runId, "session-attachments"),
-      sessionId: input.turn.sessionId,
-      conversationId: input.turn.conversationId,
-      attachments: input.attachments,
-      at: input.at,
-    });
-    this.contextCache.markDirty(input.turn.sessionId);
-    return response;
-  }
-
   async buildActiveContext(sessionId: string): Promise<ContextEngineMachineContext> {
     const cached = this.contextCache.getProjection(sessionId);
     if (cached) {
@@ -304,6 +286,7 @@ class AppGitContextRuntime implements GitContextRuntime {
     role: "user" | "system_event",
     content: string,
     at: string,
+    resources?: ResourceAdmission[],
   ): Promise<GitContextPreparedTurn> {
     const requestId = preparationRequestId(clientId, role, content, at);
     const prepared = await this.options.service.prepareContextTurn({
@@ -313,6 +296,7 @@ class AppGitContextRuntime implements GitContextRuntime {
       agentId: this.options.agentId,
       role,
       content,
+      ...(resources && resources.length > 0 ? { resources } : {}),
       at,
     });
     const context = this.contextCache.set(prepared.session.sessionId, prepared.context);
@@ -447,22 +431,36 @@ function toRunWorkState(value: unknown, outcome?: RunOutcome): RunWorkStateInput
   )
     ? state["status"] as RunWorkStateInput["status"]
     : inferredStatus;
-  return {
+  const fallbackSummary = outcome
+    ? "Run ended with outcome " + outcome + "."
+    : "Run in progress.";
+  const summary = typeof state["summary"] === "string" && state["summary"].trim()
+    ? state["summary"]
+    : fallbackSummary;
+  const userInputNeeded = typeof state["userInputNeeded"] === "string"
+    ? state["userInputNeeded"]
+    : strings(state["userInputNeeded"]).find((item) => item.trim().length > 0);
+  const compacted = compactWorkState({
     status,
-    summary: typeof state["summary"] === "string"
-      ? state["summary"]
-      : outcome
-        ? "Run ended with outcome " + outcome + "."
-        : "Run in progress.",
+    summary,
     openWork: strings(state["openWork"]),
     blockers: strings(state["blockers"]),
-    facts: strings(state["verifiedFacts"] ?? state["facts"]),
+    verifiedFacts: strings(state["verifiedFacts"] ?? state["facts"]),
     evidence: strings(state["evidence"]),
     artifacts: strings(state["artifacts"]),
-    nextStep: typeof state["nextStep"] === "string" ? state["nextStep"] : null,
-    userInputNeeded: typeof state["userInputNeeded"] === "string"
-      ? [state["userInputNeeded"]]
-      : strings(state["userInputNeeded"]),
+    ...(typeof state["nextStep"] === "string" ? { nextStep: state["nextStep"] } : {}),
+    ...(userInputNeeded ? { userInputNeeded } : {}),
+  });
+  return {
+    status: compacted.status,
+    summary: compacted.summary,
+    openWork: compacted.openWork ?? [],
+    blockers: compacted.blockers ?? [],
+    facts: compacted.verifiedFacts,
+    evidence: compacted.evidence,
+    artifacts: compacted.artifacts ?? [],
+    nextStep: compacted.nextStep ?? null,
+    userInputNeeded: compacted.userInputNeeded ? [compacted.userInputNeeded] : [],
   };
 }
 

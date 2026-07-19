@@ -37,11 +37,11 @@ const REFLECTION_SYSTEM_PROMPT = [
   `Use ask_user only when confidence is at least ${MIN_ASK_CONFIDENCE}.`,
 ].join("\n");
 
-export interface PulseProposalReflectionTaskSummary {
+export interface PulseProposalReflectionWorkstreamSummary {
   runStatus?: "completed" | "failed" | "stuck";
   /** @deprecated Use runStatus. */
   status?: "completed" | "failed" | "stuck";
-  taskStatus?: ReflectionTaskStatus;
+  workstreamStatus?: ReflectionTaskStatus;
   objective?: string;
   summary?: string;
   progressSummary?: string;
@@ -56,7 +56,7 @@ export interface PulseProposalReflectionInput {
   provider: LlmProvider;
   currentUserMessage: string;
   assistantResponse: string;
-  taskSummary: PulseProposalReflectionTaskSummary;
+  workstreamSummary: PulseProposalReflectionWorkstreamSummary;
   memoryContext: PromptMemoryContext;
   toolDefinitions: ToolDefinition[];
   now: Date;
@@ -141,26 +141,26 @@ export function shouldRunReflection(input: PulseProposalReflectionInput): boolea
   if (!hasPulseTool(input.toolDefinitions)) {
     return false;
   }
-  const runStatus = input.taskSummary.runStatus ?? input.taskSummary.status;
+  const runStatus = input.workstreamSummary.runStatus ?? input.workstreamSummary.status;
   if (runStatus && runStatus !== "completed") {
     return false;
   }
-  if (input.taskSummary.taskStatus && !isCompletedTaskStatus(input.taskSummary.taskStatus)) {
+  if (input.workstreamSummary.workstreamStatus && !isCompletedTaskStatus(input.workstreamSummary.workstreamStatus)) {
     return false;
   }
-  if (input.taskSummary.userInputNeeded?.trim()) {
+  if (input.workstreamSummary.userInputNeeded?.trim()) {
     return false;
   }
-  if (input.taskSummary.assistantResponseKind === "feedback") {
+  if (input.workstreamSummary.assistantResponseKind === "feedback") {
     return false;
   }
-  if (input.taskSummary.stopReason === "needs_user_input" || input.taskSummary.stopReason === "blocked") {
+  if (input.workstreamSummary.stopReason === "needs_user_input" || input.workstreamSummary.stopReason === "blocked") {
     return false;
   }
   if (isLikelyPulseApprovalOrDismissal(input.currentUserMessage)) {
     return false;
   }
-  if (looksLikePulseManagement(input.currentUserMessage, input.taskSummary.objective, input.assistantResponse)) {
+  if (looksLikePulseManagement(input.currentUserMessage, input.workstreamSummary.objective, input.assistantResponse)) {
     return false;
   }
   if (looksLikeOpenQuestion(input.assistantResponse)) {
@@ -175,7 +175,7 @@ function buildReflectionUserPrompt(input: PulseProposalReflectionInput): string 
     now: input.now.toISOString(),
     currentUserMessage: truncateText(input.currentUserMessage),
     finalAssistantResponse: truncateText(input.assistantResponse, MAX_RESPONSE_CHARS),
-    taskSummary: compactReflectionTaskSummary(input.taskSummary),
+    workstreamSummary: compactReflectionWorkstreamSummary(input.workstreamSummary),
     personalMemorySnapshot: truncateText(memoryContext.personalMemorySnapshot ?? ""),
     recentTurns: compactConversation(memoryContext.conversationTurns ?? []),
     availableCapabilities: summarizeCapabilities(input.toolDefinitions),
@@ -188,10 +188,10 @@ function buildReflectionUserPrompt(input: PulseProposalReflectionInput): string 
   ].join("\n\n");
 }
 
-function compactReflectionTaskSummary(summary: PulseProposalReflectionTaskSummary): Record<string, unknown> {
+function compactReflectionWorkstreamSummary(summary: PulseProposalReflectionWorkstreamSummary): Record<string, unknown> {
   return {
     status: summary.status,
-    taskStatus: summary.taskStatus,
+    workstreamStatus: summary.workstreamStatus,
     objective: truncateText(summary.objective ?? ""),
     summary: truncateText(summary.summary ?? ""),
     progressSummary: truncateText(summary.progressSummary ?? ""),

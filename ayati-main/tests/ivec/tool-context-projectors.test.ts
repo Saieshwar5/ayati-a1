@@ -111,7 +111,7 @@ describe("tool context projectors", () => {
       projectionMetadata: { runId: "run-7", step: 4, summary: "Verified the build." },
     }), "summary");
 
-    expect(projection.projectorId).toBe("git_context_v1");
+    expect(projection.projectorId).toBe("git_context_v4");
     expect(projection.call.input).toEqual({ runId: "run-7", step: 4, callId: "call-4" });
     expect(projection.call.summary).toContain("Verified the build.");
   });

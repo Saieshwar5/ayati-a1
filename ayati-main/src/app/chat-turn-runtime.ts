@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { LlmProvider } from "../core/contracts/provider.js";
 import { isProviderEmptyResponseError } from "../core/contracts/provider-errors.js";
@@ -16,7 +16,12 @@ import type {
   RunRecorder,
   SessionInputHandle,
 } from "../memory/types.js";
-import type { AgentRunHandle, FinalizeRunResponse } from "ayati-git-context";
+import type {
+  AgentRunHandle,
+  FinalizeRunResponse,
+  ResourceAdmission,
+  ResourceKind,
+} from "ayati-git-context";
 import {
   appendPulseProposalQuestion,
   PulseProposalReflectionService,
@@ -24,10 +29,7 @@ import {
 import type { SkillActivationManager } from "../skills/activation-manager.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition } from "../skills/types.js";
-import {
-  type ContextSessionAttachmentRecord,
-  type ContextEngineMachineContext,
-} from "../context-engine/index.js";
+import type { ContextEngineMachineContext } from "../context-engine/index.js";
 import {
   createInitialHarnessContext,
   type HarnessContextInput,
@@ -57,8 +59,8 @@ import type {
 } from "./git-context-runtime.js";
 import {
   finalizeAgentRun,
-  isTaskBoundResult,
-  isTaskBoundRun,
+  isWorkstreamBoundResult,
+  isWorkstreamBoundRun,
 } from "./run-finalization-coordinator.js";
 
 export interface CreateChatTurnRuntimeOptions {
@@ -199,7 +201,14 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     let finalizationAttempted = false;
 
     try {
-      chatContextTurn = await this.prepareChatContextTurn(input.clientId, input.content);
+      const ingressAt = this.nowProvider().toISOString();
+      const registeredAttachments = await this.registerIncomingDocuments(input.attachments);
+      chatContextTurn = await this.prepareChatContextTurn(
+        input.clientId,
+        input.content,
+        resourceAdmissions(registeredAttachments),
+        ingressAt,
+      );
       inputHandle = this.inputHandleFromChatContextTurn(chatContextTurn);
       runHandle = chatContextTurn.run;
       this.feedbackLedger?.record({
@@ -216,25 +225,9 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         },
       });
 
-      const attachmentScopeId = runHandle.runId;
-      const registeredAttachments = await this.registerIncomingDocuments(
-        input.attachments,
-        attachmentScopeId,
-      );
-      const recordedAttachments = await this.recordChatContextSessionAttachments(
-        input.clientId,
-        chatContextTurn,
-        registeredAttachments,
-      );
-
       if (this.provider) {
         await this.associateRegisteredAttachmentsWithRun(registeredAttachments, runHandle.runId);
-        let harnessContext = this.harnessContextFromPreparedTurn(chatContextTurn);
-        if (recordedAttachments && chatContextTurn) {
-          harnessContext = {
-            contextEngine: await this.chatContextRuntime.buildActiveContext(chatContextTurn.sessionId),
-          };
-        }
+        const harnessContext = this.harnessContextFromPreparedTurn(chatContextTurn);
         const toolDefinitions = this.toolExecutor?.definitions({
           clientId: input.clientId,
           runId: runHandle.runId,
@@ -387,11 +380,14 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   private async prepareChatContextTurn(
     clientId: string,
     userMessage: string,
+    resources: ResourceAdmission[],
+    at: string,
   ): Promise<GitContextPreparedTurn> {
     const turn = await this.chatContextRuntime.prepareUserTurn({
       clientId,
       userMessage,
-      at: this.nowProvider().toISOString(),
+      ...(resources.length > 0 ? { resources } : {}),
+      at,
     });
     const contextEngine = turn.context;
 
@@ -435,7 +431,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     prepared: GitContextPreparedTurn,
     result: AgentLoopResult,
   ): Promise<ReplyCommitStatus> {
-    const taskBound = isTaskBoundRun(prepared, result);
+    const workstreamBound = isWorkstreamBoundRun(prepared, result);
     this.feedbackLedger?.record({
       clientId,
       sessionId: prepared.sessionId,
@@ -446,7 +442,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       data: {
         outcome: result.outcome,
         stopReason: result.stopReason,
-        taskBound,
+        workstreamBound,
       },
     });
     const finalized = await finalizeAgentRun({
@@ -474,9 +470,10 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       data: {
         outcome: finalized.run.status,
         stopReason: finalized.run.stopReason,
-        taskBinding: finalized.run.taskBinding,
+        workstreamBinding: finalized.run.workstreamBinding,
         materialization: finalized.materialization,
-        commit: finalized.commit,
+        resourceEffects: finalized.resourceEffects,
+        workstreamContextCommit: finalized.workstreamContextCommit,
       },
     });
   }
@@ -494,7 +491,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         runId: runHandle.runId,
         outcome: "failed",
         stopReason: "failed",
-        content: `Runtime failed before the task-bound run could complete: ${message}`,
+        content: `Runtime failed before the workstream-bound run could complete: ${message}`,
         status: "failed",
         totalIterations: 0,
         totalToolCalls: 0,
@@ -502,11 +499,11 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         workState: {
           status: "blocked",
           summary: "Run failed before completion.",
-          openWork: ["Retry or continue the task after resolving the runtime failure."],
+          openWork: ["Retry or continue the workstream after resolving the runtime failure."],
           blockers: [message],
           verifiedFacts: [],
           evidence: [],
-          nextStep: "Retry or continue the task.",
+          nextStep: "Retry or continue the workstream.",
         },
         completedSteps: [],
         harnessContext: createInitialHarnessContext(this.harnessContextFromPreparedTurn(prepared)),
@@ -514,43 +511,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     } catch (finalizationError) {
       devWarn(`[${clientId}] git memory failed-run finalization failed: ${errMessage(finalizationError)}`);
     }
-  }
-
-  private async recordChatContextSessionAttachments(
-    clientId: string,
-    turn: GitContextPreparedTurn | null,
-    registered: RegisteredChatAttachments,
-  ): Promise<boolean> {
-    if (!turn) {
-      return false;
-    }
-    const at = this.nowProvider().toISOString();
-    const attachments = buildContextSessionAttachmentRecords(turn.sessionId, registered, at);
-    if (attachments.length === 0) {
-      return false;
-    }
-    if (typeof this.chatContextRuntime.recordSessionAttachments !== "function") {
-      return false;
-    }
-    const file = await this.chatContextRuntime.recordSessionAttachments({
-      clientId,
-      turn,
-      attachments,
-      at,
-    });
-    this.feedbackLedger?.record({
-      clientId,
-      sessionId: turn.sessionId,
-      seq: turn.messageSeq,
-      stage: "context_engine",
-      event: "session_attachments_recorded",
-      data: {
-        recorded: Boolean(file),
-        count: attachments.length,
-        sessionAssetIds: attachments.map((attachment) => attachment.sessionAssetId),
-      },
-    });
-    return Boolean(file);
   }
 
   private inputHandleFromChatContextTurn(turn: GitContextPreparedTurn): SessionInputHandle {
@@ -578,7 +538,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     result: AgentLoopResult,
     toolDefinitions: ToolDefinition[],
   ): Promise<AgentLoopResult> {
-    if (!this.provider || result.type !== "reply" || result.outcome !== "done" || !isTaskBoundResult(result) || !result.taskSummary) {
+    if (!this.provider || result.type !== "reply" || result.outcome !== "done" || !isWorkstreamBoundResult(result) || !result.workstreamSummary) {
       return result;
     }
 
@@ -587,7 +547,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         provider: this.provider,
         currentUserMessage: userMessage,
         assistantResponse: result.content,
-        taskSummary: result.taskSummary,
+        workstreamSummary: result.workstreamSummary,
         memoryContext: promptMemoryContextFromGitContext(result.harnessContext?.contextEngine),
         toolDefinitions,
         now: this.nowProvider(),
@@ -608,8 +568,8 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         ...result,
         type: "feedback",
         content,
-        taskSummary: {
-          ...result.taskSummary,
+        workstreamSummary: {
+          ...result.workstreamSummary,
           assistantResponse: content,
           assistantResponseKind: "feedback",
         },
@@ -864,7 +824,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
 
   private async registerIncomingDocuments(
     attachments: ChatAttachmentInput[],
-    runId: string,
   ): Promise<RegisteredChatAttachments> {
     if (attachments.length === 0) {
       return { documents: [], warnings: [], managedFiles: [], managedDirectories: [] };
@@ -884,7 +843,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
             managedDirectories.push(await this.directoryLibrary.registerPath({
               path: attachment.path,
               name: attachment.name,
-              runId,
               include: attachment.include,
               exclude: attachment.exclude,
               maxDepth: attachment.maxDepth,
@@ -893,7 +851,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
             continue;
           }
 
-          managedFiles.push(await this.registerIncomingManagedFile(attachment, runId));
+          managedFiles.push(await this.registerIncomingManagedFile(attachment));
         } catch (err) {
           warnings.push(`${formatAttachmentLabel(attachment)}: ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -922,10 +880,8 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
 
   private async registerIncomingManagedFile(
     attachment: ChatAttachmentInput,
-    runId: string,
   ): Promise<ManagedFileRecord> {
     if ("fileId" in attachment && typeof attachment.fileId === "string" && attachment.fileId.trim().length > 0) {
-      await this.fileLibrary!.touchRunFile(runId, attachment.fileId, "attached");
       return this.fileLibrary!.getFile(attachment.fileId);
     }
 
@@ -936,8 +892,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         bytes,
         origin: "user_upload",
         mimeType: attachment.mimeType,
-        runId,
-        runRole: "attached",
         originalPath: attachment.uploadedPath,
       });
     }
@@ -946,8 +900,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       return this.fileLibrary!.registerPath({
         path: attachment.path,
         name: attachment.name,
-        runId,
-        runRole: "attached",
       });
     }
 
@@ -1047,101 +999,47 @@ function managedFileToDocumentManifest(file: ManagedFileRecord): ManagedDocument
   };
 }
 
-function buildContextSessionAttachmentRecords(
-  sessionId: string,
-  registered: RegisteredChatAttachments,
-  at: string,
-): ContextSessionAttachmentRecord[] {
-  const records: ContextSessionAttachmentRecord[] = [
-    ...registered.managedFiles.map((file) => managedFileToSessionAttachment(sessionId, file, at)),
-    ...registered.managedDirectories.map((directory) => managedDirectoryToSessionAttachment(sessionId, directory, at)),
-  ];
-  if (registered.managedFiles.length === 0) {
-    records.push(...registered.documents.map((document) => documentManifestToSessionAttachment(sessionId, document, at)));
-  }
-  return records;
-}
-
-function managedFileToSessionAttachment(
-  sessionId: string,
-  file: ManagedFileRecord,
-  at: string,
-): ContextSessionAttachmentRecord {
-  return {
-    sessionAssetId: stableSessionAssetId(sessionId, "file", file.fileId),
-    kind: "file",
-    name: file.originalName,
-    source: file.origin,
-    status: toSessionAttachmentStatus(file.processingStatus),
-    fileId: file.fileId,
-    documentId: file.sha256.slice(0, 16),
-    originalPath: file.originalPath ?? file.sourceUri ?? file.storagePath,
-    storedPath: file.storagePath,
-    ...(file.mimeType ? { mimeType: file.mimeType } : {}),
-    sizeBytes: file.sizeBytes,
-    checksum: file.sha256,
-    createdAt: file.createdAt || at,
-    lastUsedAt: file.lastUsedAt ?? at,
-  };
-}
-
-function managedDirectoryToSessionAttachment(
-  sessionId: string,
-  directory: DirectoryAttachmentRecord,
-  at: string,
-): ContextSessionAttachmentRecord {
-  return {
-    sessionAssetId: stableSessionAssetId(sessionId, "directory", directory.directoryId),
+function resourceAdmissions(registered: RegisteredChatAttachments): ResourceAdmission[] {
+  const managedFiles = registered.managedFiles.map((file): ResourceAdmission => ({
+    admissionId: "file:" + file.fileId,
+    kind: resourceKindForManagedFile(file),
+    origin: "user_attachment",
+    locator: { kind: "filesystem", path: file.storagePath },
+    displayName: file.originalName,
+    aliases: [file.safeName],
+    role: "attachment",
+    mediaType: file.mimeType,
+  }));
+  const directories = registered.managedDirectories.map((directory): ResourceAdmission => ({
+    admissionId: "directory:" + directory.directoryId,
     kind: "directory",
-    name: directory.name,
-    source: directory.source,
-    status: toSessionAttachmentStatus(directory.status),
-    directoryId: directory.directoryId,
-    originalPath: directory.rootPath,
-    storedPath: directory.rootPath,
-    sizeBytes: directory.totalSizeBytes,
-    createdAt: directory.createdAt || at,
-    lastUsedAt: directory.lastUsedAt ?? at,
-  };
+    origin: "user_reference",
+    locator: { kind: "filesystem", path: directory.rootPath },
+    displayName: directory.name,
+    aliases: [directory.name],
+    role: "attachment",
+  }));
+  const documents = registered.managedFiles.length > 0
+    ? []
+    : registered.documents.map((document): ResourceAdmission => ({
+        admissionId: "document:" + document.documentId,
+        kind: document.kind === "csv" || document.kind === "xlsx" ? "dataset" : "document",
+        origin: "user_attachment",
+        locator: { kind: "filesystem", path: document.storedPath },
+        displayName: document.displayName,
+        aliases: [document.name],
+        role: "attachment",
+        mediaType: document.mimeType,
+      }));
+  return [...managedFiles, ...directories, ...documents];
 }
 
-function documentManifestToSessionAttachment(
-  sessionId: string,
-  document: ManagedDocumentManifest,
-  at: string,
-): ContextSessionAttachmentRecord {
-  return {
-    sessionAssetId: stableSessionAssetId(sessionId, "document", document.documentId),
-    kind: document.kind === "csv" || document.kind === "xlsx" ? "dataset" : "document",
-    name: document.displayName,
-    source: document.source,
-    status: "ready",
-    documentId: document.documentId,
-    originalPath: document.originalPath,
-    storedPath: document.storedPath,
-    ...(document.mimeType ? { mimeType: document.mimeType } : {}),
-    sizeBytes: document.sizeBytes,
-    checksum: document.checksum,
-    createdAt: at,
-    lastUsedAt: at,
-  };
-}
-
-function toSessionAttachmentStatus(
-  status: string,
-): ContextSessionAttachmentRecord["status"] {
-  if (status === "partial" || status === "failed" || status === "unsupported") {
-    return status;
-  }
-  return "ready";
-}
-
-function stableSessionAssetId(sessionId: string, kind: string, value: string): string {
-  const digest = createHash("sha256")
-    .update(`${sessionId}\0${kind}\0${value}`)
-    .digest("hex")
-    .slice(0, 16);
-  return `SA-${digest}`;
+function resourceKindForManagedFile(file: ManagedFileRecord): ResourceKind {
+  if (file.kind === "image") return "image";
+  if (file.kind === "csv" || file.kind === "xlsx") return "dataset";
+  if (file.kind === "pdf" || file.kind === "docx" || file.kind === "pptx"
+    || file.kind === "txt" || file.kind === "markdown") return "document";
+  return "file";
 }
 
 function isDirectoryChatAttachment(attachment: ChatAttachmentInput): attachment is DirectoryChatAttachmentInput {
@@ -1215,7 +1113,7 @@ function formatChatRuntimeError(error: unknown): string {
 }
 
 function replyCommitStatus(response: FinalizeRunResponse): ReplyCommitStatus {
-  return response.commit.status;
+  return response.workstreamContextCommit.status;
 }
 
 function directReplyResult(runId: string, content: string): AgentLoopResult {

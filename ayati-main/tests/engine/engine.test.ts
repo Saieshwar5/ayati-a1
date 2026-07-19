@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { IVecEngine } from "../../src/ivec/index.js";
 import {
@@ -23,19 +23,19 @@ import { createToolExecutor } from "../../src/skills/tool-executor.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
 import { nativeDecisionFixture } from "../ivec/native-decision-fixture.js";
 
-const originalWorkspaceDir = process.env["AYATI_WORKSPACE_DIR"];
+const originalAyatiRootDir = process.env["AYATI_ROOT_DIR"];
 
 afterEach(() => {
-  if (originalWorkspaceDir === undefined) {
-    delete process.env["AYATI_WORKSPACE_DIR"];
+  if (originalAyatiRootDir === undefined) {
+    delete process.env["AYATI_ROOT_DIR"];
   } else {
-    process.env["AYATI_WORKSPACE_DIR"] = originalWorkspaceDir;
+    process.env["AYATI_ROOT_DIR"] = originalAyatiRootDir;
   }
 });
 
 function makeTmpDir(prefix = "ayati-engine-"): string {
   const path = mkdtempSync(join(tmpdir(), prefix));
-  process.env["AYATI_WORKSPACE_DIR"] = path;
+  process.env["AYATI_ROOT_DIR"] = path;
   return path;
 }
 
@@ -114,7 +114,7 @@ function createPreparedTurn(input: {
     },
     context: {
       session: {
-        meta: { sessionId, assetCount: 0 },
+        meta: { sessionId, resourceCount: 0 },
         conversationTail: [],
         activityTail: [],
       },
@@ -147,16 +147,16 @@ function createContextRuntime(prepared: GitContextPreparedTurn): GitContextRunti
   const finalizeRun = vi.fn(async (
     input: Parameters<GitContextRuntime["finalizeRun"]>[0],
   ) => {
-    const taskBound = Boolean(input.taskCompletion);
+    const workstreamBound = Boolean(input.workstreamCompletion);
     return {
       run: {
         runId: prepared.run.runId,
         sessionId: prepared.sessionId,
         conversationId: prepared.conversationId,
-        ...(taskBound ? {
-          taskBinding: {
-            taskId: "T-20260719-0001",
-            taskRequestId: "REQ-20260719-0001",
+        ...(workstreamBound ? {
+          workstreamBinding: {
+            workstreamId: "W-20260719-0001",
+            requestId: "R-0001",
             boundAt: "2026-07-19T10:00:01.000Z",
           },
         } : {}),
@@ -177,14 +177,15 @@ function createContextRuntime(prepared: GitContextPreparedTurn): GitContextRunti
       persistence: {
         database: "saved",
         materialization: "not_requested",
-        git: taskBound ? "not_committed" : "not_required",
+        git: "not_committed",
       },
       materialization: { status: "not_requested" },
-      commit: taskBound
+      resourceEffects: { status: "none", events: [] },
+      workstreamContextCommit: workstreamBound
         ? {
             status: "no_change",
-            taskId: "T-20260719-0001",
-            taskRequestId: "REQ-20260719-0001",
+            workstreamId: "W-20260719-0001",
+            requestId: "R-0001",
             headBefore: "a".repeat(40),
             headAfter: "a".repeat(40),
           }
@@ -305,20 +306,20 @@ function createReadTool(): ToolDefinition {
   };
 }
 
-function createTaskBindingTool(
+function createWorkstreamBindingTool(
   prepared: GitContextPreparedTurn,
   workingDirectory: string,
 ): ToolDefinition {
   return {
-    name: "git_context_create_task",
-    description: "Bind the current run to a fixture task.",
+    name: "git_context_create_workstream",
+    description: "Bind the current run to a fixture workstream.",
     inputSchema: {
       type: "object",
-      required: ["title", "objective", "createReason"],
+      required: ["title", "objective", "reason"],
       properties: {
         title: { type: "string" },
         objective: { type: "string" },
-        createReason: { type: "string" },
+        reason: { type: "string" },
       },
       additionalProperties: false,
     },
@@ -334,61 +335,96 @@ function createTaskBindingTool(
       longRunning: false,
     },
     async execute() {
-      const taskId = "T-20260719-0001";
-      const branch = "task/T-20260719-0001-one-run";
+      const workstreamId = "W-20260719-0001";
+      const requestId = "R-0001";
+      const branch = "main";
+      const resource = {
+        resource: {
+          resourceId: `RES-${"A".repeat(24)}`,
+          kind: "directory" as const,
+          origin: "agent_created" as const,
+          displayName: "One run output",
+          description: "User-visible output directory for the one-run fixture.",
+          aliases: ["one run output"],
+          locator: { kind: "filesystem" as const, path: workingDirectory },
+          version: {
+            key: "directory:one-run",
+            observedAt: "2026-07-19T10:00:00.000Z",
+            exists: true,
+            kind: "directory" as const,
+            entryCount: 0,
+          },
+          availability: "available" as const,
+          metadataStatus: "enriched" as const,
+          createdAt: "2026-07-19T10:00:00.000Z",
+          updatedAt: "2026-07-19T10:00:00.000Z",
+        },
+        role: "primary" as const,
+        access: "mutate" as const,
+        primary: true,
+        requestIds: [requestId],
+        boundAt: "2026-07-19T10:00:00.000Z",
+      };
       const contextEngine = {
         ...prepared.context,
         pendingTurn: {
           ...prepared.context.pendingTurn!,
           routingStatus: "bound" as const,
-          workId: taskId,
+          workstreamId,
           branch,
           runId: prepared.run.runId,
         },
         focus: {
           status: "active" as const,
           ref: `refs/heads/${branch}`,
-          workId: taskId,
+          workstreamId,
         },
-        task: {
-          workingDirectory,
+        workstream: {
+          contextRepositoryPath: join(dirname(workingDirectory), "workstreams", workstreamId),
           ref: `refs/heads/${branch}`,
-          workId: taskId,
+          workstreamId,
           title: "One run integration",
           objective: "Create the requested file.",
-          status: "active",
-          completed: [],
-          open: ["Create the requested file."],
+          summary: "Create and verify the requested file.",
+          workstreamStatus: "in_progress" as const,
+          lifecycleStatus: "active" as const,
+          repositoryHealth: "ready" as const,
           blockers: [],
-          facts: [],
           next: "Create the requested file.",
-          assets: [],
-          recentRuns: [],
+          currentRequest: {
+            id: requestId,
+            title: "Create one-run.txt",
+            status: "active" as const,
+            request: "Create the requested file.",
+            acceptance: ["one-run.txt exists and is verified."],
+            constraints: [],
+          },
+          resources: [resource],
           recentCommits: [],
-          recentEvidence: [],
         },
       };
       return {
         ok: true,
-        output: "Bound the existing run to a new task.",
+        output: "Bound the existing run to a new workstream.",
         v2: {
           transportOk: true,
           operationStatus: "succeeded",
-          code: "GIT_CONTEXT_TURN_TASK_CREATED",
-          message: "Bound the existing run to a new task.",
+          code: "GIT_CONTEXT_WORKSTREAM_CREATED",
+          message: "Bound the existing run to a new workstream.",
           structuredContent: {
             status: "ready",
             mode: "created",
             sessionId: prepared.sessionId,
-            taskId,
-            taskRequestId: "REQ-20260719-0001",
-            taskRequestStatus: "active",
-            taskRequestCreated: true,
+            workstreamId,
+            contextRepositoryPath: join(dirname(workingDirectory), "workstreams", workstreamId),
+            requestId,
+            requestStatus: "active",
+            requestCreated: true,
             requestDecision: "initial",
-            taskCreated: true,
+            workstreamCreated: true,
             branch,
-            workingDirectory,
-            taskHead: "a".repeat(40),
+            resources: [resource],
+            workstreamHead: "a".repeat(40),
             runId: prepared.run.runId,
             harnessContext: { contextEngine },
           },
@@ -502,7 +538,7 @@ describe("IVecEngine one-run integration", () => {
         outcome: "needs_user_input",
         stopReason: "needs_user_input",
       }));
-      expect(vi.mocked(runtime.finalizeRun).mock.calls[0]?.[0]).not.toHaveProperty("taskCompletion");
+      expect(vi.mocked(runtime.finalizeRun).mock.calls[0]?.[0]).not.toHaveProperty("workstreamCompletion");
       expect(onReply).toHaveBeenCalledWith("c1", expect.objectContaining({
         type: "reply",
         content: "Which file should I inspect? Please provide the file path.",
@@ -516,7 +552,7 @@ describe("IVecEngine one-run integration", () => {
 
   it("rejects an unbound mutation without execution or step replay", async () => {
     const dataDir = makeTmpDir();
-    const outputPath = join(dataDir, "must-not-exist.txt");
+    const outputPath = join(dataDir, "workspace", "must-not-exist.txt");
     try {
       const provider = createProvider([
         {
@@ -565,27 +601,28 @@ describe("IVecEngine one-run integration", () => {
 
   it("binds and mutates on the same run, then acknowledges finalization", async () => {
     const dataDir = makeTmpDir();
-    const outputPath = join(dataDir, "one-run.txt");
+    const workingDirectory = join(dataDir, "workspace");
+    const outputPath = join(workingDirectory, "one-run.txt");
     const prepared = createPreparedTurn({ role: "user", runId: "R-route-and-write" });
     const runtime = createContextRuntime(prepared);
-    const routeTool = createTaskBindingTool(prepared, dataDir);
+    const routeTool = createWorkstreamBindingTool(prepared, workingDirectory);
     const provider = createProvider([
       {
         kind: "act",
         action: {
           mode: "single",
           calls: [{
-            id: "bind-task",
-            tool: "git_context_create_task",
+            id: "bind-workstream",
+            tool: "git_context_create_workstream",
             input: {
               title: "One run file",
               objective: "Create one-run.txt",
-              createReason: "No task owns this deliverable.",
+              reason: "No existing workstream owns this deliverable.",
             },
             dependsOn: [],
             purpose: "Bind the durable work",
           }],
-          allowedTools: ["git_context_create_task"],
+          allowedTools: ["git_context_create_workstream"],
           assertions: [],
         },
       },
@@ -604,9 +641,18 @@ describe("IVecEngine one-run integration", () => {
           assertions: [],
         },
       },
-      {
-        kind: "task_completion",
-        request: { summary: "Created and verified one-run.txt.", assets: [] },
+        {
+          kind: "workstream_completion",
+          request: {
+            summary: "Created and verified one-run.txt.",
+            resources: [{
+              resourceId: `RES-${"A".repeat(24)}`,
+              path: "one-run.txt",
+              kind: "file",
+              description: "Requested text file",
+              aliases: ["one run file"],
+            }],
+          },
       },
       { kind: "reply", status: "completed", message: "Created one-run.txt." },
     ]);
@@ -638,7 +684,7 @@ describe("IVecEngine one-run integration", () => {
         turn: expect.objectContaining({ run: expect.objectContaining({ runId: "R-route-and-write" }) }),
         outcome: "done",
         stopReason: "completed",
-        taskCompletion: expect.objectContaining({ accepted: true }),
+        workstreamCompletion: expect.objectContaining({ accepted: true }),
       }));
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "reply",
@@ -716,7 +762,7 @@ describe("IVecEngine one-run integration", () => {
         outcome: "done",
         stopReason: "completed",
       }));
-      expect(vi.mocked(runtime.finalizeRun).mock.calls[0]?.[0]).not.toHaveProperty("taskCompletion");
+      expect(vi.mocked(runtime.finalizeRun).mock.calls[0]?.[0]).not.toHaveProperty("workstreamCompletion");
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "notification",
         content: "Health notes are current.",
@@ -779,7 +825,7 @@ describe("IVecEngine one-run integration", () => {
         }),
       }));
       expect(runtime.finalizeRun).toHaveBeenCalledOnce();
-      expect(vi.mocked(runtime.finalizeRun).mock.calls[0]?.[0]).not.toHaveProperty("taskCompletion");
+      expect(vi.mocked(runtime.finalizeRun).mock.calls[0]?.[0]).not.toHaveProperty("workstreamCompletion");
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }

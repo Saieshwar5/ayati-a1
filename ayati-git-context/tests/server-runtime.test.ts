@@ -23,7 +23,7 @@ describe("Git Context server runtime", () => {
     const events: GitContextObservabilityEvent[] = [];
     const runtime = await startGitContextServerRuntime({
       databasePath,
-      dataRoot: join(root, "git-data"),
+      rootDirectory: root,
       socketPath,
       observabilitySink: (event) => events.push(event),
     });
@@ -36,7 +36,7 @@ describe("Git Context server runtime", () => {
 
     await expect(startGitContextServerRuntime({
       databasePath,
-      dataRoot: join(root, "other-git-data"),
+      rootDirectory: root,
       socketPath: join(root, "run", "other.sock"),
     })).rejects.toThrow(/live writer/);
 
@@ -52,13 +52,12 @@ describe("Git Context server runtime", () => {
     ]));
   });
 
-  it("restarts against the same version-3 catalog without conflicting startup idempotency", async () => {
+  it("restarts against the same version-5 catalog without conflicting startup idempotency", async () => {
     const root = await mkdtemp(join(tmpdir(), "ayati-git-context-restart-"));
     const databasePath = join(root, "store", "context.sqlite");
-    const dataRoot = join(root, "git-data");
     const first = await startGitContextServerRuntime({
       databasePath,
-      dataRoot,
+      rootDirectory: root,
       socketPath: join(root, "run", "first.sock"),
       timezone: "Asia/Kolkata",
       agentId: "local",
@@ -69,7 +68,7 @@ describe("Git Context server runtime", () => {
 
     const restarted = await startGitContextServerRuntime({
       databasePath,
-      dataRoot,
+      rootDirectory: root,
       socketPath: join(root, "run", "second.sock"),
       timezone: "Asia/Kolkata",
       agentId: "local",
@@ -78,7 +77,7 @@ describe("Git Context server runtime", () => {
 
     const client = new GitContextClient({ connection: restarted.address });
     await expect(client.getHealth()).resolves.toMatchObject({
-      protocolVersion: 35,
+      protocolVersion: 36,
       ready: true,
     });
   });

@@ -23,7 +23,6 @@ export interface ContextStepVerificationRecord {
 export interface ContextRunStepRecord {
   v: 1;
   runId: string;
-  taskId?: string;
   sessionId?: string;
   step: number;
   status: ContextStepStatus;

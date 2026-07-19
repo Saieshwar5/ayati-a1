@@ -25,13 +25,13 @@ describe("Git Context observability", () => {
     const data = sanitizeObservabilityData({
       authorization: "Bearer private",
       apiToken: "private",
-      purpose: "inspect task state",
+      purpose: "inspect workstream state",
       output: "x".repeat(2_100),
     });
 
     expect(data.authorization).toBe("[redacted]");
     expect(data.apiToken).toBe("[redacted]");
-    expect(data.purpose).toBe("inspect task state");
+    expect(data.purpose).toBe("inspect workstream state");
     expect(String(data.output)).toContain("[truncated");
   });
 });

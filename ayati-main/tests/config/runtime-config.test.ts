@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import {
+  DEFAULT_AGENT_MAX_SELECTED_TOOLS,
+  DEFAULT_AYATI_ROOT_DIR,
   DEFAULT_DOCUMENT_EMBED_BATCH_SIZE,
   DEFAULT_DOCUMENT_VECTOR_MIN_CHUNKS,
-  DEFAULT_AGENT_MAX_SELECTED_TOOLS,
   DEFAULT_GIT_CONTEXT_AGENT_ID,
-  DEFAULT_GIT_CONTEXT_STORE_DIR,
+  DEFAULT_GIT_CONTEXT_REQUEST_TIMEOUT_MS,
   DEFAULT_GIT_CONTEXT_START_TIMEOUT_MS,
   DEFAULT_GIT_CONTEXT_STOP_TIMEOUT_MS,
-  DEFAULT_GIT_CONTEXT_REQUEST_TIMEOUT_MS,
   DEFAULT_GIT_CONTEXT_TIMEZONE,
   DEFAULT_HTTP_ALLOW_ORIGIN,
   DEFAULT_HTTP_HOST,
@@ -17,12 +17,11 @@ import {
   DEFAULT_WORKSPACE_DIR,
   loadAyatiRuntimeConfig,
   parsePositiveInt,
-  resolveGitContextStoreDir,
-  resolveWorkspaceDir,
+  resolveAyatiRootDir,
 } from "../../src/config/runtime-config.js";
 
 describe("ayati runtime config", () => {
-  it("loads default app-level runtime config", () => {
+  it("derives all storage from the default Ayati root", () => {
     const config = loadAyatiRuntimeConfig({});
 
     expect(config).toEqual({
@@ -38,21 +37,12 @@ describe("ayati runtime config", () => {
         vectorMinChunks: DEFAULT_DOCUMENT_VECTOR_MIN_CHUNKS,
       },
       python: {},
-      agent: {
-        loopConfig: {
-          maxSelectedTools: DEFAULT_AGENT_MAX_SELECTED_TOOLS,
-        },
-      },
-      workspace: {
-        root: DEFAULT_WORKSPACE_DIR,
-      },
+      agent: { loopConfig: { maxSelectedTools: DEFAULT_AGENT_MAX_SELECTED_TOOLS } },
+      workspace: { root: DEFAULT_WORKSPACE_DIR },
       gitContext: {
-        storeDir: DEFAULT_GIT_CONTEXT_STORE_DIR,
-        databasePath: join(DEFAULT_GIT_CONTEXT_STORE_DIR, "context.sqlite"),
-        dataRoot: join(DEFAULT_WORKSPACE_DIR, ".ayati-context"),
-        workspaceRoot: DEFAULT_WORKSPACE_DIR,
-        trustedRoots: [],
-        socketPath: join(DEFAULT_GIT_CONTEXT_STORE_DIR, "git-context.sock"),
+        rootDirectory: DEFAULT_AYATI_ROOT_DIR,
+        databasePath: join(DEFAULT_AYATI_ROOT_DIR, ".ayati", "context.db"),
+        socketPath: join(DEFAULT_AYATI_ROOT_DIR, ".ayati", "git-context.sock"),
         managed: true,
         startTimeoutMs: DEFAULT_GIT_CONTEXT_START_TIMEOUT_MS,
         stopTimeoutMs: DEFAULT_GIT_CONTEXT_STOP_TIMEOUT_MS,
@@ -63,8 +53,9 @@ describe("ayati runtime config", () => {
     });
   });
 
-  it("loads explicit HTTP, document, Python, agent, workspace, and git context overrides", () => {
+  it("loads explicit runtime values around one Ayati root", () => {
     const config = loadAyatiRuntimeConfig({
+      AYATI_ROOT_DIR: " /tmp/ayati-runtime ",
       AYATI_HTTP_HOST: " 0.0.0.0 ",
       AYATI_HTTP_PORT: "9090",
       AYATI_HTTP_ALLOW_ORIGIN: " https://app.example ",
@@ -75,10 +66,7 @@ describe("ayati runtime config", () => {
       AYATI_DOCUMENT_VECTOR_MIN_CHUNKS: "12",
       AYATI_PYTHON_INTERPRETER: " /usr/bin/python3 ",
       AYATI_AGENT_MAX_SELECTED_TOOLS: "5",
-      AYATI_WORKSPACE_DIR: " /tmp/ayati-workspace ",
-      AYATI_GIT_CONTEXT_STORE_DIR: " /tmp/ayati-context-engine ",
-      AYATI_GIT_CONTEXT_DATABASE: " /tmp/ayati-db/context.sqlite ",
-      AYATI_GIT_CONTEXT_DATA_ROOT: " /tmp/ayati-git-data ",
+      AYATI_GIT_CONTEXT_DATABASE: " /tmp/ayati-db/context.db ",
       AYATI_GIT_CONTEXT_SOCKET: " /tmp/ayati-context.sock ",
       AYATI_GIT_CONTEXT_MANAGED: "false",
       AYATI_GIT_CONTEXT_START_TIMEOUT_MS: "1200",
@@ -86,56 +74,38 @@ describe("ayati runtime config", () => {
       AYATI_GIT_CONTEXT_REQUEST_TIMEOUT_MS: "1400",
       AYATI_GIT_CONTEXT_TIMEZONE: " UTC ",
       AYATI_GIT_CONTEXT_AGENT_ID: " local-agent ",
-      AYATI_GIT_CONTEXT_TRUSTED_ROOTS: ["/tmp/trusted-projects", "learning"].join(delimiter),
     });
 
-    expect(config).toEqual({
-      http: {
-        host: "0.0.0.0",
-        port: 9090,
-        allowOrigin: "https://app.example",
-        apiToken: "local-token",
-        maxUploadBytes: 4096,
-      },
-      documents: {
-        vectorEnabled: false,
-        embedBatchSize: 64,
-        vectorMinChunks: 12,
-      },
-      python: {
-        interpreterPath: "/usr/bin/python3",
-      },
-      agent: {
-        loopConfig: {
-          maxSelectedTools: 5,
-        },
-      },
-      workspace: {
-        root: "/tmp/ayati-workspace",
-      },
-      gitContext: {
-        storeDir: "/tmp/ayati-context-engine",
-        databasePath: "/tmp/ayati-db/context.sqlite",
-        dataRoot: "/tmp/ayati-git-data",
-        workspaceRoot: "/tmp/ayati-workspace",
-        trustedRoots: ["/tmp/trusted-projects", "/tmp/ayati-workspace/learning"],
-        socketPath: "/tmp/ayati-context.sock",
-        managed: false,
-        startTimeoutMs: 1200,
-        stopTimeoutMs: 1300,
-        requestTimeoutMs: 1400,
-        timezone: "UTC",
-        agentId: "local-agent",
-      },
+    expect(config.workspace.root).toBe("/tmp/ayati-runtime/workspace");
+    expect(config.gitContext).toEqual({
+      rootDirectory: "/tmp/ayati-runtime",
+      databasePath: "/tmp/ayati-db/context.db",
+      socketPath: "/tmp/ayati-context.sock",
+      managed: false,
+      startTimeoutMs: 1200,
+      stopTimeoutMs: 1300,
+      requestTimeoutMs: 1400,
+      timezone: "UTC",
+      agentId: "local-agent",
     });
+    expect(config.http).toMatchObject({
+      host: "0.0.0.0",
+      port: 9090,
+      allowOrigin: "https://app.example",
+      apiToken: "local-token",
+      maxUploadBytes: 4096,
+    });
+    expect(config.documents).toEqual({
+      vectorEnabled: false,
+      embedBatchSize: 64,
+      vectorMinChunks: 12,
+    });
+    expect(config.python.interpreterPath).toBe("/usr/bin/python3");
+    expect(config.agent.loopConfig.maxSelectedTools).toBe(5);
   });
 
-  it("resolves relative workspace overrides from the project root", () => {
-    expect(resolveWorkspaceDir("custom-workspace")).toMatch(/\/ayati-main\/custom-workspace$/);
-  });
-
-  it("resolves relative git context store overrides from the project root", () => {
-    expect(resolveGitContextStoreDir("custom-context")).toMatch(/\/ayati-main\/custom-context$/);
+  it("resolves a relative Ayati root from the package project root", () => {
+    expect(resolveAyatiRootDir("custom-ayati")).toMatch(/\/ayati-main\/custom-ayati$/);
   });
 
   it("falls back for invalid positive integer values", () => {

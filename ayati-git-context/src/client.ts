@@ -2,43 +2,41 @@ import { request as httpRequest, type RequestOptions } from "node:http";
 import { randomUUID } from "node:crypto";
 import type {
   ActiveContext,
-  AdoptTaskReferenceRequest,
-  AdoptTaskReferenceResponse,
-  ActivateTaskForRunRequest,
-  AcquireMutationAuthorityRequest,
-  AcquireMutationAuthorityResponse,
-  BindTaskAttachmentsRequest,
-  BindTaskAttachmentsResponse,
-  CreateTaskForRunRequest,
+  ActivateWorkstreamForRunRequest,
+  BindResourcesForRunRequest,
+  BindResourcesForRunResponse,
+  CreateWorkstreamForRunRequest,
   EnsureActiveSessionRequest,
   EnsureActiveSessionResponse,
   FinalizeRunRequest,
   FinalizeRunResponse,
-  FindTasksRequest,
-  FindTasksResponse,
+  FindWorkstreamsRequest,
+  FindWorkstreamsResponse,
+  FindResourcesRequest,
+  FindResourcesResponse,
   GetActiveContextRequest,
-  GetTaskRequest,
-  GetTaskResponse,
+  GetWorkstreamRequest,
+  GetWorkstreamResponse,
   HealthResponse,
-  InspectTaskLocationRequest,
-  InspectTaskLocationResponse,
-  ListTasksRequest,
-  ListTasksResponse,
-  PlanTaskRequestRouteRequest,
-  PlanTaskRequestRouteResponse,
+  InspectResourceForRunRequest,
+  InspectResourceForRunResponse,
+  ListWorkstreamsRequest,
+  ListWorkstreamsResponse,
+  PlanWorkstreamRequestRouteRequest,
+  PlanWorkstreamRequestRouteResponse,
   PrepareContextTurnRequest,
   PrepareContextTurnResponse,
-  ReadTaskRequest,
-  ReadTaskResponse,
+  ReadWorkstreamRequest,
+  ReadWorkstreamResponse,
   RecordRunStepRequest,
   RecordRunStepResponse,
-  RecordSessionAttachmentsRequest,
-  RecordSessionAttachmentsResponse,
-  SelectedTaskForRunResponse,
-  SetTaskStarRequest,
-  SetTaskStarResponse,
-  VerifyMutationRequest,
-  VerifyMutationResponse,
+  PrepareResourceMutationRequest,
+  PrepareResourceMutationResponse,
+  SelectedWorkstreamForRunResponse,
+  SetWorkstreamStarRequest,
+  SetWorkstreamStarResponse,
+  VerifyResourceMutationRequest,
+  VerifyResourceMutationResponse,
 } from "./contracts.js";
 import {
   GitContextServiceError,
@@ -115,51 +113,41 @@ export class GitContextClient implements GitContextService {
     );
   }
 
-  async createTaskForRun(input: CreateTaskForRunRequest): Promise<SelectedTaskForRunResponse> {
-    return await this.requestJson<SelectedTaskForRunResponse>(
+  async createWorkstreamForRun(input: CreateWorkstreamForRunRequest): Promise<SelectedWorkstreamForRunResponse> {
+    return await this.requestJson<SelectedWorkstreamForRunResponse>(
       "POST",
-      "/runs/" + encodeURIComponent(input.runId) + "/tasks/create",
+      "/runs/" + encodeURIComponent(input.runId) + "/workstreams/create",
       input,
     );
   }
 
-  async inspectTaskLocation(
-    input: InspectTaskLocationRequest,
-  ): Promise<InspectTaskLocationResponse> {
-    return await this.requestJson<InspectTaskLocationResponse>(
+  async activateWorkstreamForRun(input: ActivateWorkstreamForRunRequest): Promise<SelectedWorkstreamForRunResponse> {
+    return await this.requestJson<SelectedWorkstreamForRunResponse>(
       "POST",
-      "/runs/" + encodeURIComponent(input.runId) + "/task-location/inspect",
+      "/runs/" + encodeURIComponent(input.runId) + "/workstreams/activate",
       input,
     );
   }
 
-  async activateTaskForRun(input: ActivateTaskForRunRequest): Promise<SelectedTaskForRunResponse> {
-    return await this.requestJson<SelectedTaskForRunResponse>(
+  async planWorkstreamRequestRoute(
+    input: PlanWorkstreamRequestRouteRequest,
+  ): Promise<PlanWorkstreamRequestRouteResponse> {
+    return await this.requestJson<PlanWorkstreamRequestRouteResponse>(
       "POST",
-      "/runs/" + encodeURIComponent(input.runId) + "/tasks/activate",
+      "/runs/" + encodeURIComponent(input.runId) + "/workstream-request-route",
       input,
     );
   }
 
-  async planTaskRequestRoute(
-    input: PlanTaskRequestRouteRequest,
-  ): Promise<PlanTaskRequestRouteResponse> {
-    return await this.requestJson<PlanTaskRequestRouteResponse>(
-      "POST",
-      "/runs/" + encodeURIComponent(input.runId) + "/task-request-route",
-      input,
-    );
-  }
-
-  async listTasks(input: ListTasksRequest): Promise<ListTasksResponse> {
+  async listWorkstreams(input: ListWorkstreamsRequest): Promise<ListWorkstreamsResponse> {
     const params = new URLSearchParams();
     if (input.query) params.set("query", input.query);
     if (input.limit) params.set("limit", String(input.limit));
     const query = params.size > 0 ? "?" + params.toString() : "";
-    return await this.requestJson<ListTasksResponse>("GET", "/tasks" + query);
+    return await this.requestJson<ListWorkstreamsResponse>("GET", "/workstreams" + query);
   }
 
-  async findTasks(input: FindTasksRequest): Promise<FindTasksResponse> {
+  async findWorkstreams(input: FindWorkstreamsRequest): Promise<FindWorkstreamsResponse> {
     const params = new URLSearchParams();
     if (input.query) params.set("query", input.query);
     for (const path of input.paths ?? []) params.append("path", path);
@@ -169,77 +157,80 @@ export class GitContextClient implements GitContextService {
     if (input.sessionId) params.set("sessionId", input.sessionId);
     if (input.currentText) params.set("currentText", input.currentText);
     const query = params.size > 0 ? "?" + params.toString() : "";
-    return await this.requestJson<FindTasksResponse>("GET", "/tasks/find" + query);
+    return await this.requestJson<FindWorkstreamsResponse>("GET", "/workstreams/find" + query);
   }
 
-  async getTask(input: GetTaskRequest): Promise<GetTaskResponse> {
-    return await this.requestJson<GetTaskResponse>(
+  async getWorkstream(input: GetWorkstreamRequest): Promise<GetWorkstreamResponse> {
+    return await this.requestJson<GetWorkstreamResponse>(
       "GET",
-      "/tasks/" + encodeURIComponent(input.taskId),
+      "/workstreams/" + encodeURIComponent(input.workstreamId),
     );
   }
 
-  async readTask(input: ReadTaskRequest): Promise<ReadTaskResponse> {
-    return await this.requestJson<ReadTaskResponse>(
+  async readWorkstream(input: ReadWorkstreamRequest): Promise<ReadWorkstreamResponse> {
+    return await this.requestJson<ReadWorkstreamResponse>(
       "POST",
-      "/tasks/" + encodeURIComponent(input.taskId) + "/open",
+      "/workstreams/" + encodeURIComponent(input.workstreamId) + "/open",
       input,
     );
   }
 
-  async setTaskStar(input: SetTaskStarRequest): Promise<SetTaskStarResponse> {
-    return await this.requestJson<SetTaskStarResponse>(
+  async setWorkstreamStar(input: SetWorkstreamStarRequest): Promise<SetWorkstreamStarResponse> {
+    return await this.requestJson<SetWorkstreamStarResponse>(
       "POST",
-      "/tasks/" + encodeURIComponent(input.taskId) + "/star",
+      "/workstreams/" + encodeURIComponent(input.workstreamId) + "/star",
       input,
     );
   }
 
-  async recordSessionAttachments(
-    input: RecordSessionAttachmentsRequest,
-  ): Promise<RecordSessionAttachmentsResponse> {
-    return await this.requestJson<RecordSessionAttachmentsResponse>(
+  async findResources(input: FindResourcesRequest): Promise<FindResourcesResponse> {
+    const params = new URLSearchParams();
+    if (input.query) params.set("query", input.query);
+    for (const resourceId of input.resourceIds ?? []) params.append("resourceId", resourceId);
+    for (const locator of input.locators ?? []) params.append("locator", locator);
+    if (input.workstreamId) params.set("workstreamId", input.workstreamId);
+    if (input.includeMissing) params.set("includeMissing", "true");
+    if (input.limit) params.set("limit", String(input.limit));
+    const query = params.size > 0 ? "?" + params.toString() : "";
+    return await this.requestJson<FindResourcesResponse>("GET", "/resources/find" + query);
+  }
+
+  async inspectResourceForRun(
+    input: InspectResourceForRunRequest,
+  ): Promise<InspectResourceForRunResponse> {
+    return await this.requestJson<InspectResourceForRunResponse>(
       "POST",
-      "/sessions/" + encodeURIComponent(input.sessionId) + "/attachments",
+      "/runs/" + encodeURIComponent(input.runId) + "/resources/inspect",
       input,
     );
   }
 
-  async bindTaskAttachments(
-    input: BindTaskAttachmentsRequest,
-  ): Promise<BindTaskAttachmentsResponse> {
-    return await this.requestJson<BindTaskAttachmentsResponse>(
+  async bindResourcesForRun(
+    input: BindResourcesForRunRequest,
+  ): Promise<BindResourcesForRunResponse> {
+    return await this.requestJson<BindResourcesForRunResponse>(
       "POST",
-      "/runs/" + encodeURIComponent(input.runId) + "/task-attachments",
+      "/runs/" + encodeURIComponent(input.runId) + "/resources/bind",
       input,
     );
   }
 
-  async adoptTaskReference(
-    input: AdoptTaskReferenceRequest,
-  ): Promise<AdoptTaskReferenceResponse> {
-    return await this.requestJson<AdoptTaskReferenceResponse>(
+  async prepareResourceMutation(
+    input: PrepareResourceMutationRequest,
+  ): Promise<PrepareResourceMutationResponse> {
+    return await this.requestJson<PrepareResourceMutationResponse>(
       "POST",
-      "/mutation-authorities/" + encodeURIComponent(input.authorityId) + "/adopt-reference",
+      "/runs/" + encodeURIComponent(input.runId) + "/resource-mutations/prepare",
       input,
     );
   }
 
-  async acquireMutationAuthority(
-    input: AcquireMutationAuthorityRequest,
-  ): Promise<AcquireMutationAuthorityResponse> {
-    return await this.requestJson<AcquireMutationAuthorityResponse>(
+  async verifyResourceMutation(
+    input: VerifyResourceMutationRequest,
+  ): Promise<VerifyResourceMutationResponse> {
+    return await this.requestJson<VerifyResourceMutationResponse>(
       "POST",
-      "/runs/" + encodeURIComponent(input.runId)
-        + "/tasks/" + encodeURIComponent(input.taskId) + "/mutation-authority",
-      input,
-    );
-  }
-
-  async verifyMutation(input: VerifyMutationRequest): Promise<VerifyMutationResponse> {
-    return await this.requestJson<VerifyMutationResponse>(
-      "POST",
-      "/mutation-authorities/" + encodeURIComponent(input.authorityId) + "/verify",
+      "/resource-mutations/" + encodeURIComponent(input.operationId) + "/verify",
       input,
     );
   }
@@ -356,7 +347,7 @@ function requestCorrelationHeaders(input: unknown): Record<string, string> {
     ...stringHeader("x-ayati-session-id", record["sessionId"]),
     ...stringHeader("x-ayati-conversation-id", record["conversationId"]),
     ...stringHeader("x-ayati-run-id", record["runId"]),
-    ...stringHeader("x-ayati-task-id", record["taskId"]),
+    ...stringHeader("x-ayati-workstream-id", record["workstreamId"]),
   };
 }
 

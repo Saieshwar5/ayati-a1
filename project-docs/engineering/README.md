@@ -6,8 +6,8 @@ operations, and project-history context for Ayati.
 Important paths:
 
 - `architecture/`: daemon architecture, agent harness, context/memory, tool contracts, APIs, runtime data, clients, integrations, and trust boundaries.
-- `architecture/task-repositories.md`: canonical current task/request/run and
-  independent Git repository design.
+- `architecture/workstreams-and-resources.md`: canonical durable-work,
+  resource, request, run, and context-repository design.
 - `history/`: architecture decisions, progress notes, and external references.
 - `history/progress/current-state.md`: current implementation state, runtime
   boundaries, and remaining priorities.

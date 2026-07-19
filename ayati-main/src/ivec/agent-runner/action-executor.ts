@@ -8,7 +8,7 @@ import type {
 } from "../types.js";
 import type { ToolExecutor } from "../../skills/tool-executor.js";
 import type { ToolDefinition, ToolResult } from "../../skills/types.js";
-import type { TaskAssetRecord } from "../../context-engine/index.js";
+import type { WorkstreamResourceBinding } from "ayati-git-context";
 import type { RunMetrics } from "../metrics.js";
 import { recordRunMetric } from "../metrics.js";
 import { uniqueArtifacts } from "../../verification/artifact-assertions.js";
@@ -30,7 +30,7 @@ export interface AgentActionExecutionDeps {
   uiContext?: AgentUiContext;
   runRecorder: RunRecorder;
   runHandle: MemoryRunHandle;
-  taskAssets?: TaskAssetRecord[];
+  workstreamResources?: WorkstreamResourceBinding[];
   metrics?: RunMetrics;
 }
 
@@ -228,7 +228,7 @@ function validateActionPlan(deps: AgentActionExecutionDeps, action: AgentAction)
     clientId: deps.clientId,
     runId: deps.runHandle.runId,
     sessionId: deps.runHandle.sessionId,
-    ...(deps.taskAssets?.length ? { taskAssets: deps.taskAssets } : {}),
+    ...(deps.workstreamResources?.length ? { workstreamResources: deps.workstreamResources } : {}),
     ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
   };
   for (const tool of action.allowedTools) {
@@ -318,7 +318,7 @@ async function executeToolCall(
     runId: deps.runHandle.runId,
     callId: call.id,
     sessionId: deps.runHandle.sessionId,
-    ...(deps.taskAssets?.length ? { taskAssets: deps.taskAssets } : {}),
+    ...(deps.workstreamResources?.length ? { workstreamResources: deps.workstreamResources } : {}),
     stepNumber,
     ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
   };

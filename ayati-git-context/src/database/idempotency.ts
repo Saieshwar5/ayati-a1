@@ -2,16 +2,19 @@ import { createHash } from "node:crypto";
 import type { ContextDatabase } from "./database.js";
 import { GitContextServiceError } from "../errors.js";
 
+export type IdempotencyStatus = "in_progress" | "completed" | "recovery_required";
+
 interface IdempotencyRow {
   operation: string;
   request_hash: string;
-  status: "in_progress" | "completed" | "recovery_required";
+  status: IdempotencyStatus;
   response_json: string;
 }
 
 export interface RecoverableIdempotencyResult<T> {
   result: T;
   completed: boolean;
+  status: IdempotencyStatus;
 }
 
 export function readCompletedIdempotent<T>(input: {
@@ -94,6 +97,7 @@ export function beginRecoverableIdempotent<T>(input: {
       return {
         result: JSON.parse(existing.response_json) as T,
         completed: existing.status === "completed",
+        status: existing.status,
       };
     }
 
@@ -112,8 +116,27 @@ export function beginRecoverableIdempotent<T>(input: {
     input.database.prepare([
       "UPDATE idempotency_requests SET response_json = ? WHERE request_id = ?",
     ].join(" ")).run(JSON.stringify(result), input.requestId);
-    return { result, completed: false };
+    return { result, completed: false, status: "in_progress" };
   });
+}
+
+export function updateRecoverableIdempotentResult<T>(input: {
+  database: ContextDatabase;
+  requestId: string;
+  result: T;
+}): T {
+  const updated = input.database.prepare([
+    "UPDATE idempotency_requests SET response_json = ?",
+    "WHERE request_id = ? AND status = 'in_progress'",
+  ].join(" ")).run(JSON.stringify(input.result), input.requestId);
+  if (Number(updated.changes) !== 1) {
+    throw new GitContextServiceError({
+      code: "RECOVERY_REQUIRED",
+      message: "The recoverable request receipt is no longer active.",
+      details: { requestId: input.requestId },
+    });
+  }
+  return input.result;
 }
 
 export function hasRecoverableIdempotencyRequest(input: {

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AgentRunHandle } from "ayati-git-context";
 import { agentLoop } from "../../src/ivec/agent-loop.js";
@@ -12,27 +12,31 @@ import type { AgentFeedbackEventInput, AgentFeedbackLedger } from "../../src/ive
 import { noopRunRecorder } from "../../src/ivec/noop-run-recorder.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
-import type { ToolDefinition } from "../../src/skills/types.js";
+import type { SkillDefinition, ToolDefinition } from "../../src/skills/types.js";
+import { ToolCatalog } from "../../src/ivec/agent-runner/tool-catalog.js";
+import { ToolWorkingSetManager } from "../../src/ivec/agent-runner/tool-working-set.js";
 import { nativeDecisionFixture } from "./native-decision-fixture.js";
 
-const originalWorkspaceDir = process.env["AYATI_WORKSPACE_DIR"];
+const originalAyatiRootDir = process.env["AYATI_ROOT_DIR"];
 
 afterEach(() => {
-  if (originalWorkspaceDir === undefined) {
-    delete process.env["AYATI_WORKSPACE_DIR"];
+  if (originalAyatiRootDir === undefined) {
+    delete process.env["AYATI_ROOT_DIR"];
   } else {
-    process.env["AYATI_WORKSPACE_DIR"] = originalWorkspaceDir;
+    process.env["AYATI_ROOT_DIR"] = originalAyatiRootDir;
   }
 });
 
 function makeTmpDir(): string {
-  const path = mkdtempSync(join(tmpdir(), "ayati-agent-loop-"));
-  process.env["AYATI_WORKSPACE_DIR"] = path;
-  return path;
+  const root = mkdtempSync(join(tmpdir(), "ayati-agent-loop-"));
+  const workspace = join(root, "workspace");
+  mkdirSync(workspace, { recursive: true });
+  process.env["AYATI_ROOT_DIR"] = root;
+  return workspace;
 }
 
 function cleanup(path: string): void {
-  rmSync(path, { recursive: true, force: true });
+  rmSync(dirname(path), { recursive: true, force: true });
 }
 
 function runHandle(runId: string, triggerSeq = 1): AgentRunHandle {
@@ -48,7 +52,7 @@ function baseContext(): HarnessContextInput {
   return {
     contextEngine: {
       session: {
-        meta: { sessionId: "s1", assetCount: 0 },
+        meta: { sessionId: "s1", resourceCount: 0 },
         conversationTail: [],
         activityTail: [],
       },
@@ -75,8 +79,9 @@ function unboundContext(runId: string, text: string): HarnessContextInput {
 }
 
 function boundContext(runId: string, text: string, workingDirectory?: string): HarnessContextInput {
-  const taskId = "T-20260719-001";
-  const branch = "task/T-20260719-001-one-run";
+  const workstreamId = "W-20260719-0001";
+  const resourcePath = workingDirectory ?? "/tmp/ayati-test-workspace";
+  const branch = "main";
   const context = baseContext().contextEngine!;
   return {
     contextEngine: {
@@ -87,33 +92,69 @@ function boundContext(runId: string, text: string, workingDirectory?: string): H
         text,
         at: "2026-07-19T10:00:00.000Z",
         routingStatus: "bound",
-        workId: taskId,
+        workstreamId,
         branch,
         runId,
       },
       focus: {
         status: "active",
         ref: `refs/heads/${branch}`,
-        workId: taskId,
+        workstreamId,
       },
-      task: {
-        ...(workingDirectory ? { workingDirectory } : {}),
+      workstream: {
+        contextRepositoryPath: join(dirname(resourcePath), "workstreams", workstreamId),
         ref: `refs/heads/${branch}`,
-        workId: taskId,
-        title: "One run test task",
+        workstreamId,
+        title: "One run file",
         objective: text,
-        status: "active",
-        completed: [],
-        open: [text],
+        summary: "Create and verify the requested file.",
+        workstreamStatus: "in_progress",
+        lifecycleStatus: "active",
+        repositoryHealth: "ready",
         blockers: [],
-        facts: [],
         next: text,
-        assets: [],
-        recentRuns: [],
+        currentRequest: {
+          id: "R-0001",
+          title: "Create one-run.txt",
+          status: "active",
+          request: text,
+          acceptance: ["one-run.txt exists and is verified."],
+          constraints: [],
+        },
+        resources: [workstreamResource(resourcePath)],
         recentCommits: [],
-        recentEvidence: [],
       },
     },
+  };
+}
+
+function workstreamResource(path: string) {
+  return {
+    resource: {
+      resourceId: `RES-${"A".repeat(24)}`,
+      kind: "directory" as const,
+      origin: "agent_created" as const,
+      displayName: "One run output",
+      description: "User-visible output directory for the one-run fixture.",
+      aliases: ["one run output"],
+      locator: { kind: "filesystem" as const, path },
+      version: {
+        key: "directory:one-run",
+        observedAt: "2026-07-19T10:00:00.000Z",
+        exists: true,
+        kind: "directory" as const,
+        entryCount: 0,
+      },
+      availability: "available" as const,
+      metadataStatus: "enriched" as const,
+      createdAt: "2026-07-19T10:00:00.000Z",
+      updatedAt: "2026-07-19T10:00:00.000Z",
+    },
+    role: "primary" as const,
+    access: "mutate" as const,
+    primary: true,
+    requestIds: ["R-0001"],
+    boundAt: "2026-07-19T10:00:00.000Z",
   };
 }
 
@@ -203,48 +244,70 @@ function readTool(): ToolDefinition {
   };
 }
 
-function createTaskTool(runId: string, workingDirectory: string): ToolDefinition {
-  const taskId = "T-20260719-001";
-  const taskRequestId = "REQ-20260719-001";
-  const branch = "task/T-20260719-001-one-run";
+function fixtureTool(name: string): ToolDefinition {
   return {
-    name: "git_context_create_task",
-    description: "Bind the current run to a newly created task.",
+    name,
+    description: `${name} fixture`,
+    inputSchema: { type: "object", properties: {} },
+    async execute() {
+      return { ok: true, output: `${name} completed` };
+    },
+  };
+}
+
+function fixtureSkill(id: string, tools: ToolDefinition[]): SkillDefinition {
+  return {
+    id,
+    version: "1.0.0",
+    description: `${id} fixture skill`,
+    promptBlock: "",
+    tools,
+  };
+}
+
+function createWorkstreamTool(runId: string, workingDirectory: string): ToolDefinition {
+  const workstreamId = "W-20260719-0001";
+  const requestId = "R-0001";
+  const branch = "main";
+  return {
+    name: "git_context_create_workstream",
+    description: "Bind the current run to a newly created workstream.",
     inputSchema: {
       type: "object",
-      required: ["title", "objective", "createReason"],
+      required: ["title", "objective", "reason"],
       properties: {
         title: { type: "string" },
         objective: { type: "string" },
-        createReason: { type: "string" },
+        reason: { type: "string" },
       },
     },
     async execute(_input, context) {
       expect(context).toMatchObject({
         runId,
-        callId: "bind-task",
+        callId: "bind-workstream",
       });
       return {
         ok: true,
-        output: `Created ${taskId} and bound ${runId}.`,
+        output: `Created ${workstreamId} and bound ${runId}.`,
         v2: {
           transportOk: true,
           operationStatus: "succeeded",
-          code: "GIT_CONTEXT_TURN_TASK_CREATED",
-          message: "Created a task and bound the existing run.",
+          code: "GIT_CONTEXT_WORKSTREAM_CREATED",
+          message: "Created a workstream and bound the existing run.",
           structuredContent: {
             status: "ready",
             mode: "created",
             sessionId: "s1",
-            taskId,
-            taskRequestId,
-            taskRequestStatus: "active",
-            taskRequestCreated: true,
+            workstreamId,
+            contextRepositoryPath: join(dirname(workingDirectory), "workstreams", workstreamId),
+            requestId,
+            requestStatus: "active",
+            requestCreated: true,
             requestDecision: "initial",
-            taskCreated: true,
+            workstreamCreated: true,
             branch,
-            workingDirectory,
-            taskHead: "0123456789abcdef",
+            resources: [workstreamResource(workingDirectory)],
+            workstreamHead: "0123456789abcdef",
             runId,
             harnessContext: boundContext(runId, "Create the requested file.", workingDirectory),
           },
@@ -254,28 +317,28 @@ function createTaskTool(runId: string, workingDirectory: string): ToolDefinition
   };
 }
 
-function failingCreateTaskTool(): ToolDefinition {
+function failingCreateWorkstreamTool(): ToolDefinition {
   return {
-    name: "git_context_create_task",
+    name: "git_context_create_workstream",
     description: "Fail to bind the current run for a persistence test.",
     inputSchema: {
       type: "object",
-      required: ["title", "objective", "createReason"],
+      required: ["title", "objective", "reason"],
       properties: {
         title: { type: "string" },
         objective: { type: "string" },
-        createReason: { type: "string" },
+        reason: { type: "string" },
       },
     },
     async execute() {
       return {
         ok: false,
-        error: "Task creation failed deterministically.",
+        error: "Workstream creation failed deterministically.",
         v2: {
           transportOk: true,
           operationStatus: "failed",
-          code: "GIT_CONTEXT_TASK_CREATE_FAILED",
-          message: "Task creation failed deterministically.",
+          code: "GIT_CONTEXT_WORKSTREAM_CREATE_FAILED",
+          message: "Workstream creation failed deterministically.",
         },
       };
     },
@@ -438,9 +501,70 @@ describe("agentLoop one-run lifecycle", () => {
       expect(recordRunStep).not.toHaveBeenCalled();
       const repairs = feedback.events.filter((event) => event.event === "repair_requested");
       expect(repairs[0]?.data?.["repair"]).toMatchObject({
-        code: "R_MUTATION_REQUIRES_TASK_BINDING",
+        code: "R_MUTATION_REQUIRES_WORKSTREAM_BINDING",
         blockedTargets: ["write_files"],
       });
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("terminates repeated no-progress loads of bound-only tools before the run limit", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const routingTools = [
+        fixtureTool("git_context_inspect_resource"),
+        fixtureTool("git_context_activate_workstream"),
+        fixtureTool("git_context_create_workstream"),
+      ];
+      const toolExecutor = createToolExecutor([]);
+      const toolWorkingSetManager = new ToolWorkingSetManager({
+        catalog: new ToolCatalog([
+          fixtureSkill("filesystem", [writeFilesTool]),
+          fixtureSkill("git-context", routingTools),
+        ]),
+        toolExecutor,
+      });
+      const loadWriteFiles = {
+        kind: "load_tools",
+        request: { toolNames: ["write_files"] },
+      };
+      const provider = createProvider([loadWriteFiles, loadWriteFiles]);
+      const feedback = createMemoryFeedbackLedger();
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolWorkingSetManager,
+        toolDefinitions: [writeFilesTool, ...routingTools],
+        runRecorder: noopRunRecorder,
+        runHandle: runHandle("R-repeated-load"),
+        feedbackLedger: feedback.ledger,
+        clientId: "c1",
+        initialUserMessage: "Create a file in /tmp/existing-project",
+        dataDir,
+        systemContext: "test system context",
+        harnessContext: unboundContext("R-repeated-load", "Create a file in /tmp/existing-project"),
+      });
+
+      expect(result).toMatchObject({
+        runId: "R-repeated-load",
+        outcome: "failed",
+        stopReason: "failed",
+        totalIterations: 2,
+        totalToolCalls: 0,
+      });
+      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+      const firstInput = vi.mocked(provider.generateTurn).mock.calls[0]?.[0];
+      expect(firstInput.tools.map((tool) => tool.name)).toContain("git_context_inspect_resource");
+      expect(firstInput.tools.map((tool) => tool.name)).not.toContain("write_files");
+      expect(feedback.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          stage: "guard",
+          event: "tool_load_no_progress",
+          data: expect.objectContaining({ repeatedTargets: ["write_files"] }),
+        }),
+      ]));
     } finally {
       cleanup(dataDir);
     }
@@ -451,7 +575,7 @@ describe("agentLoop one-run lifecycle", () => {
     const outputPath = join(dataDir, "one-run.txt");
     const runId = "R-route-and-write";
     try {
-      const routeTool = createTaskTool(runId, dataDir);
+      const routeTool = createWorkstreamTool(runId, dataDir);
       const toolExecutor = createToolExecutor([routeTool, writeFilesTool]);
       const provider = createProvider([
         {
@@ -459,17 +583,17 @@ describe("agentLoop one-run lifecycle", () => {
           action: {
             mode: "single",
             calls: [{
-              id: "bind-task",
-              tool: "git_context_create_task",
+              id: "bind-workstream",
+              tool: "git_context_create_workstream",
               input: {
                 title: "One run file",
                 objective: "Create one-run.txt",
-                createReason: "no_active_task",
+                reason: "No existing workstream owns this file request.",
               },
               dependsOn: [],
-              purpose: "Bind durable work to a task",
+              purpose: "Bind durable work to a workstream",
             }],
-            allowedTools: ["git_context_create_task"],
+            allowedTools: ["git_context_create_workstream"],
             assertions: [],
           },
         },
@@ -489,8 +613,17 @@ describe("agentLoop one-run lifecycle", () => {
           },
         },
         {
-          kind: "task_completion",
-          request: { summary: "Created and verified one-run.txt.", assets: [] },
+          kind: "workstream_completion",
+          request: {
+            summary: "Created and verified one-run.txt.",
+            resources: [{
+              resourceId: `RES-${"A".repeat(24)}`,
+              path: "one-run.txt",
+              kind: "file",
+              description: "Requested text file",
+              aliases: ["one run file"],
+            }],
+          },
         },
         { kind: "reply", status: "completed", message: "Created one-run.txt." },
       ]);
@@ -520,16 +653,16 @@ describe("agentLoop one-run lifecycle", () => {
         stopReason: "completed",
         status: "completed",
       });
-      expect(result.taskSummary).toMatchObject({
+      expect(result.workstreamSummary).toMatchObject({
         runId,
-        taskStatus: "done",
+        workstreamStatus: "done",
         stopReason: "completed",
       });
       expect(records.map((record) => [record.runId, record.step])).toEqual([
         [runId, 1],
         [runId, 2],
       ]);
-      expect(records[0]?.toolCalls[0]).toMatchObject({ tool: "git_context_create_task", callId: "bind-task" });
+      expect(records[0]?.toolCalls[0]).toMatchObject({ tool: "git_context_create_workstream", callId: "bind-workstream" });
       expect(records[1]?.toolCalls[0]).toMatchObject({ tool: "write_files", callId: "write-after-binding" });
       expect(persistedContexts).toHaveLength(2);
       expect(persistedContexts[0]?.contextEngine?.pendingTurn).toMatchObject({
@@ -544,10 +677,10 @@ describe("agentLoop one-run lifecycle", () => {
 
       const firstInput = vi.mocked(provider.generateTurn).mock.calls[0]?.[0];
       const secondInput = vi.mocked(provider.generateTurn).mock.calls[1]?.[0];
-      expect(firstInput.tools.map((tool) => tool.name)).toContain("git_context_create_task");
+      expect(firstInput.tools.map((tool) => tool.name)).toContain("git_context_create_workstream");
       expect(firstInput.tools.map((tool) => tool.name)).not.toContain("write_files");
       expect(secondInput.tools.map((tool) => tool.name)).toContain("write_files");
-      expect(secondInput.tools.map((tool) => tool.name)).not.toContain("git_context_create_task");
+      expect(secondInput.tools.map((tool) => tool.name)).not.toContain("git_context_create_workstream");
     } finally {
       cleanup(dataDir);
     }
@@ -556,7 +689,7 @@ describe("agentLoop one-run lifecycle", () => {
   it("persists a failed routing control step before terminal failure", async () => {
     const dataDir = makeTmpDir();
     try {
-      const routeTool = failingCreateTaskTool();
+      const routeTool = failingCreateWorkstreamTool();
       const toolExecutor = createToolExecutor([routeTool]);
       const provider = createProvider([{
         kind: "act",
@@ -564,16 +697,16 @@ describe("agentLoop one-run lifecycle", () => {
           mode: "single",
           calls: [{
             id: "failed-bind",
-            tool: "git_context_create_task",
+            tool: "git_context_create_workstream",
             input: {
-              title: "Unavailable task",
+              title: "Unavailable workstream",
               objective: "Exercise routing failure persistence.",
-              createReason: "no_active_task",
+              reason: "No existing workstream owns this request.",
             },
             dependsOn: [],
             purpose: "Bind the run before durable work",
           }],
-          allowedTools: ["git_context_create_task"],
+          allowedTools: ["git_context_create_workstream"],
           assertions: [],
         },
       }]);
@@ -590,10 +723,10 @@ describe("agentLoop one-run lifecycle", () => {
         },
         config: { maxConsecutiveFailures: 1 },
         clientId: "c1",
-        initialUserMessage: "Create a durable task",
+        initialUserMessage: "Create durable work",
         dataDir,
         systemContext: "test system context",
-        harnessContext: unboundContext("R-routing-failure", "Create a durable task"),
+        harnessContext: unboundContext("R-routing-failure", "Create durable work"),
       });
 
       expect(result).toMatchObject({
@@ -608,7 +741,7 @@ describe("agentLoop one-run lifecycle", () => {
         status: "failed",
         toolCalls: [{
           callId: "failed-bind",
-          tool: "git_context_create_task",
+          tool: "git_context_create_workstream",
           status: "failed",
         }],
       });
@@ -620,7 +753,7 @@ describe("agentLoop one-run lifecycle", () => {
   it("finalizes as failed after routing retries are exhausted", async () => {
     const dataDir = makeTmpDir();
     try {
-      const routeTool = failingCreateTaskTool();
+      const routeTool = failingCreateWorkstreamTool();
       const toolExecutor = createToolExecutor([routeTool]);
       const routeDecision = (id: string) => ({
         kind: "act",
@@ -628,23 +761,23 @@ describe("agentLoop one-run lifecycle", () => {
           mode: "single",
           calls: [{
             id,
-            tool: "git_context_create_task",
+            tool: "git_context_create_workstream",
             input: {
-              title: "Unavailable task",
+              title: "Unavailable workstream",
               objective: "Exercise exhausted routing failures.",
-              createReason: "no_active_task",
+              reason: "No existing workstream owns this request.",
             },
             dependsOn: [],
             purpose: "Bind the run before durable work",
           }],
-          allowedTools: ["git_context_create_task"],
+          allowedTools: ["git_context_create_workstream"],
           assertions: [],
         },
       });
       const provider = createProvider([
         routeDecision("failed-bind-1"),
         routeDecision("failed-bind-2"),
-        { kind: "reply", status: "completed", message: "Task routing failed twice, so I could not complete the request." },
+        { kind: "reply", status: "completed", message: "Workstream routing failed twice, so I could not complete the request." },
       ]);
 
       const result = await agentLoop({
@@ -654,10 +787,10 @@ describe("agentLoop one-run lifecycle", () => {
         runRecorder: noopRunRecorder,
         runHandle: runHandle("R-routing-exhausted"),
         clientId: "c1",
-        initialUserMessage: "Create a durable task",
+        initialUserMessage: "Create durable work",
         dataDir,
         systemContext: "test system context",
-        harnessContext: unboundContext("R-routing-exhausted", "Create a durable task"),
+        harnessContext: unboundContext("R-routing-exhausted", "Create durable work"),
       });
 
       expect(result).toMatchObject({
@@ -704,9 +837,59 @@ describe("agentLoop one-run lifecycle", () => {
     }
   });
 
-  it("maps context admission exhaustion to incomplete/context_limit without losing task state", async () => {
+  it("preserves a full workstream clarification while bounding durable WorkState", async () => {
     const dataDir = makeTmpDir();
-    const message = `Continue the task: ${"x".repeat(300_000)}`;
+    const question = [
+      "Every mutation-capable tool requires a selected workstream resource before I can continue.",
+      "Please tell me whether I should create a new output resource or use an existing absolute path.",
+      "If an existing path should be used, include the exact path and whether Ayati may modify it.",
+      "I will wait for that choice before changing files so the durable resource catalog remains truthful.",
+      "You may also name the intended deliverable if the destination should be created automatically.",
+      "This clarification is intentionally long enough to exercise the durable finalization boundary.",
+    ].join(" ");
+    expect(question.length).toBeGreaterThan(500);
+    try {
+      const provider = createProvider([{
+        kind: "ask_user",
+        question,
+        reason: "Mutation requires an explicit durable resource target.",
+      }]);
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        runRecorder: noopRunRecorder,
+        runHandle: runHandle("R-bound-long-clarification"),
+        clientId: "c1",
+        initialUserMessage: "Build the site in the right place",
+        dataDir,
+        systemContext: "test system context",
+        harnessContext: boundContext(
+          "R-bound-long-clarification",
+          "Build the site in the right place",
+        ),
+      });
+
+      expect(result).toMatchObject({
+        runId: "R-bound-long-clarification",
+        outcome: "needs_user_input",
+        stopReason: "needs_user_input",
+        status: "completed",
+        content: question,
+        workState: {
+          status: "needs_user_input",
+        },
+      });
+      expect(result.workState?.userInputNeeded).not.toBe(question);
+      expect(result.workState?.userInputNeeded?.length).toBeLessThanOrEqual(500);
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("maps context admission exhaustion to incomplete/context_limit without losing workstream state", async () => {
+    const dataDir = makeTmpDir();
+    const message = `Continue the workstream: ${"x".repeat(300_000)}`;
     try {
       const provider: LlmProvider = {
         name: "mock",
@@ -743,7 +926,7 @@ describe("agentLoop one-run lifecycle", () => {
         outcome: "incomplete",
         stopReason: "context_limit",
         status: "stuck",
-        taskSummary: {
+        workstreamSummary: {
           runId: "R-context-limit",
           stopReason: "context_limit",
         },

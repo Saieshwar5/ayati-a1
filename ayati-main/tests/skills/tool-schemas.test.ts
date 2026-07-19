@@ -120,20 +120,22 @@ describe("runtime tool schemas", () => {
     });
 
     expect(tools.some((tool) => tool.name === "db_create_table")).toBe(true);
-    expect(tools.some((tool) => tool.name === "git_context_activate_task")).toBe(true);
-    expect(tools.some((tool) => tool.name === "git_context_create_task")).toBe(true);
+    expect(tools.some((tool) => tool.name === "git_context_activate_workstream")).toBe(true);
+    expect(tools.some((tool) => tool.name === "git_context_create_workstream")).toBe(true);
     expect(tools.some((tool) => tool.name === "git_context_switch_task")).toBe(false);
     expect(tools.some((tool) => tool.name === "python_execute")).toBe(true);
     expect(tools.some((tool) => tool.name.startsWith("learning_"))).toBe(false);
     expect(tools.some((tool) => tool.name.startsWith("ui_open_learning_"))).toBe(false);
-    const createTask = tools.find((tool) => tool.name === "git_context_create_task");
-    expect(createTask?.inputSchema.properties).not.toHaveProperty("placement");
-    expect(createTask?.inputSchema.required).toEqual(["title", "objective", "reason"]);
-    expect(createTask?.inputSchema.properties).not.toHaveProperty("directory");
-    const activateTask = tools.find((tool) => tool.name === "git_context_activate_task");
-    expect(activateTask?.inputSchema.properties?.["requestDecision"]).toMatchObject({ type: "object" });
-    expect(activateTask?.inputSchema.required).toEqual(["taskId", "reason", "requestDecision"]);
-    expect(createTask?.outputSchema.properties?.["workingDirectory"]).toMatchObject({ type: "string" });
+    const createWorkstream = tools.find((tool) => tool.name === "git_context_create_workstream");
+    expect(createWorkstream?.inputSchema.properties).not.toHaveProperty("placement");
+    expect(createWorkstream?.inputSchema.required).toEqual(["title", "objective", "reason"]);
+    expect(createWorkstream?.inputSchema.properties).not.toHaveProperty("directory");
+    expect(createWorkstream?.inputSchema.properties?.["resources"]).toMatchObject({ type: "array" });
+    const activateWorkstream = tools.find((tool) => tool.name === "git_context_activate_workstream");
+    expect(activateWorkstream?.inputSchema.properties?.["requestDecision"]).toMatchObject({ type: "object" });
+    expect(activateWorkstream?.inputSchema.required).toEqual(["workstreamId", "reason", "requestDecision"]);
+    expect(createWorkstream?.outputSchema.properties?.["contextRepositoryPath"]).toMatchObject({ type: "string" });
+    expect(createWorkstream?.outputSchema.properties?.["resources"]).toMatchObject({ type: "array" });
     expect(issues).toEqual([]);
   });
 

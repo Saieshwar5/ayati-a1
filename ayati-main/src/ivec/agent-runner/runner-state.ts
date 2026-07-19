@@ -12,7 +12,7 @@ import {
   createInitialHarnessContext,
   type HarnessContextInput,
 } from "../harness-context.js";
-import { createRoutingAttemptState as emptyRoutingAttemptState } from "./task-routing-policy.js";
+import { createRoutingAttemptState as emptyRoutingAttemptState } from "./workstream-routing-policy.js";
 import { createInitialContextPressureState } from "../context-pressure-state.js";
 import { createTimelineCheckpointCache } from "./timeline-checkpoint-cache.js";
 

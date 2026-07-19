@@ -46,6 +46,11 @@ import {
   updateReadProgressAfterActOutput,
 } from "./read-progress-policy.js";
 import type { ToolLoadResult } from "./tool-working-set.js";
+import {
+  createToolLoadNoProgressFailure,
+  createToolLoadProgressState,
+  evaluateToolLoadProgress,
+} from "./tool-load-progress-policy.js";
 import { recordRunStep } from "./step-lifecycle.js";
 import { buildContextEngineFeedbackSummary } from "../feedback-ledger.js";
 import { isGitContextTurnRoutingToolName } from "../../skills/builtins/git-context/tool-policy.js";
@@ -54,12 +59,12 @@ import {
   summarizeRoutingAttempts,
   updateRoutingAttemptsFromActOutput,
   validateRoutingAttemptLimits,
-} from "./task-routing-policy.js";
+} from "./workstream-routing-policy.js";
 import {
   executePendingRoutingAction,
   extractTurnRoutingUpdate,
   recordRoutingAttemptFeedback,
-} from "./task-routing-executor.js";
+} from "./workstream-routing-executor.js";
 import {
   createFailureRecordFromStepSummary,
   hasRepeatedRepairFailure,
@@ -80,21 +85,21 @@ import {
   shouldRejectTerminalReplyForUnresolvedMutation,
 } from "./final-response-policy.js";
 import {
-  buildTaskAssets,
-  buildVerifiedCompletionAssets,
-  buildTaskSummaryRecord,
+  buildRunResources,
+  buildVerifiedCompletionResources,
+  buildWorkstreamSummaryRecord,
 } from "./run-result.js";
 import {
   buildFinalFeedbackWarnings,
   buildToolExposureWarningCodes,
-  latestCompletedTaskRoutingToolNames,
+  latestCompletedWorkstreamRoutingToolNames,
   recordActionFeedback,
   recordFeedback,
   recordReducerFeedback,
   recordStepFeedback,
   recordToolWorkingSetFeedback,
   summarizeDecisionInputState,
-  summarizeTaskSummary,
+  summarizeWorkstreamSummary,
 } from "./runner-feedback.js";
 import {
   buildInitialState,
@@ -109,14 +114,14 @@ import {
   syncPreparedAttachmentsFromRegistry,
 } from "./action-step.js";
 import {
-  evaluateTaskCompletion,
-  isTaskCompletionAvailable,
-} from "./task-completion-policy.js";
+  evaluateWorkstreamCompletion,
+  isWorkstreamCompletionAvailable,
+} from "./workstream-completion-policy.js";
 import {
-  deriveTaskBindingCapabilityPolicy,
-  isDecisionAllowedByTaskBinding,
+  deriveWorkstreamBindingCapabilityPolicy,
+  isDecisionAllowedByWorkstreamBinding,
   isGitContextRoutingToolName,
-} from "./task-binding-capability-policy.js";
+} from "./workstream-binding-capability-policy.js";
 import {
   summarizeAgentAction,
   summarizeDecision,
@@ -140,6 +145,7 @@ export async function runAgentLoop(
   let actionStepCount = 0;
   let failedVerificationCount = 0;
   let lastVerificationPassed: boolean | undefined;
+  let toolLoadProgress = createToolLoadProgressState();
   const state = buildInitialState(deps, config, inputHandle, runHandle);
   recordFeedback(deps, inputHandle, runHandle.runId, "loop", "started", {
     inputKind: state.inputKind ?? "user_message",
@@ -155,6 +161,7 @@ export async function runAgentLoop(
     completion?: CompletionDirective;
     responseKind?: AgentLoopResult["type"];
   }): Promise<AgentLoopResult> => {
+    state.workState = compactWorkState(state.workState);
     syncPreparedAttachmentsFromRegistry(state, deps);
     syncHarnessContext(state, deps, inputHandle);
     recordStateSnapshotMetric("final");
@@ -176,8 +183,8 @@ export async function runAgentLoop(
     devLog(`[${deps.clientId}] [metrics:agent_loop] ${formatRunMetrics(metrics)}`);
     const responseKind = input.responseKind ?? input.completion?.response_kind ?? state.preferredResponseKind ?? "reply";
     const finalContent = input.content ?? state.finalOutput;
-    const taskSummary = isTaskBound(state)
-      ? buildTaskSummaryRecord(state, finalContent, input.status, responseKind, input.completion)
+    const workstreamSummary = isWorkstreamBound(state)
+      ? buildWorkstreamSummaryRecord(state, finalContent, input.status, responseKind, input.completion)
       : undefined;
     const warningFlags = buildFinalFeedbackWarnings({
       status: input.status,
@@ -190,7 +197,7 @@ export async function runAgentLoop(
     recordFeedback(deps, inputHandle, runHandle.runId, "harness", "result", {
       status: input.status,
       responseKind,
-      taskBound: isTaskBound(state),
+      workstreamBound: isWorkstreamBound(state),
       totalIterations: state.iteration,
       totalToolCalls,
       toolLoadDecisionCount,
@@ -200,7 +207,7 @@ export async function runAgentLoop(
       finalContentPreview: finalContent,
       workState: summarizeWorkState(state.workState),
       completedStepCount: state.completedSteps.length,
-      taskSummary: summarizeTaskSummary(taskSummary),
+      workstreamSummary: summarizeWorkstreamSummary(workstreamSummary),
       harnessContext: summarizeHarnessContext(state.harnessContext),
     });
     recordFeedback(deps, inputHandle, runHandle.runId, "final", "reply", {
@@ -215,7 +222,7 @@ export async function runAgentLoop(
       verificationPassed: lastVerificationPassed,
       basedOnVerifiedFacts: state.workState.verifiedFacts.length > 0 || lastVerificationPassed === true,
       warnings: warningFlags,
-      taskSummary: summarizeTaskSummary(taskSummary),
+      workstreamSummary: summarizeWorkstreamSummary(workstreamSummary),
       feedbackSummary: {
         status: input.status,
         responseKind,
@@ -342,12 +349,12 @@ export async function runAgentLoop(
     const stateView = buildAgentStateView(state, {
       activeTools: selectedTools.map((tool) => tool.name),
     });
-    const taskFeedbackToolAvailable = isTaskFeedbackToolAvailable(state);
-    const capabilityPolicy = deriveTaskBindingCapabilityPolicy(state);
+    const workstreamFeedbackToolAvailable = isWorkstreamFeedbackToolAvailable(state);
+    const capabilityPolicy = deriveWorkstreamBindingCapabilityPolicy(state);
     const nativeControlTools = [
       ...(capabilityPolicy.allowToolLoading ? ["decision_load_tools"] : []),
-      ...(isTaskCompletionAvailable(state) ? ["task_completion"] : []),
-      ...(taskFeedbackToolAvailable ? ["ask_user_feedback"] : []),
+      ...(isWorkstreamCompletionAvailable(state) ? ["workstream_completion"] : []),
+      ...(workstreamFeedbackToolAvailable ? ["ask_user_feedback"] : []),
     ];
     const decisionToolPolicyAudit = auditToolPolicy({
       policy: capabilityPolicy,
@@ -385,9 +392,9 @@ export async function runAgentLoop(
         toolDefinitions: selectedTools,
         toolRoutingSummary,
         toolLoadingAvailable: capabilityPolicy.allowToolLoading,
-        taskFeedbackToolAvailable,
-        taskCompletionAvailable: isTaskCompletionAvailable(state),
-        taskBound: capabilityPolicy.taskBound,
+        workstreamFeedbackToolAvailable,
+        workstreamCompletionAvailable: isWorkstreamCompletionAvailable(state),
+        workstreamBound: capabilityPolicy.workstreamBound,
         toolContextProjectionPolicy: config.toolContextProjectionPolicy,
         timelineCheckpointCache: state.timelineCheckpointCache,
         systemContext: deps.systemContext,
@@ -414,7 +421,7 @@ export async function runAgentLoop(
       state.contextLimitReached = true;
       state.status = "stuck";
       state.workState = preserveWorkStateForContextLimit(state);
-      state.finalOutput = "This run reached its context capacity. I preserved the completed work and task state so it can continue in a new turn.";
+      state.finalOutput = "This run reached its context capacity. I preserved the completed work and workstream state so it can continue in a new turn.";
       recordFeedback(deps, inputHandle, runHandle.runId, "guard", "context_limit", {
         iteration: state.iteration,
         finalInputTokens: error.receipt.finalInputTokens,
@@ -464,20 +471,20 @@ export async function runAgentLoop(
         }
         continue;
       }
-      const directTaskCompletionRejected = isTaskBound(state)
+      const directWorkstreamCompletionRejected = isWorkstreamBound(state)
         && state.workState.status === "not_done"
         && decision.status === "completed"
         && !deriveUserInputNeededFromTerminalReply(decision.message);
-      if (directTaskCompletionRejected) {
-        const reason = "An active task-bound run cannot finish through a direct reply while WorkState is not_done. Call task_completion after the requested work and deterministic verification are complete.";
+      if (directWorkstreamCompletionRejected) {
+        const reason = "An active workstream-bound run cannot finish through a direct reply while WorkState is not_done. Call workstream_completion after the requested work and deterministic verification are complete.";
         state.consecutiveFailures++;
         state.failureHistory.push({
           step: state.iteration,
           failureType: "validation_error",
           reason,
-          blockedTargets: ["task_completion"],
+          blockedTargets: ["workstream_completion"],
         });
-        recordFeedback(deps, inputHandle, runHandle.runId, "guard", "task_reply_before_completion", {
+        recordFeedback(deps, inputHandle, runHandle.runId, "guard", "workstream_reply_before_completion", {
           iteration: state.iteration,
           reason,
         });
@@ -488,7 +495,7 @@ export async function runAgentLoop(
         }
         continue;
       }
-      const routingFailed = !isTaskBound(state) && hasExhaustedRoutingFailures(state);
+      const routingFailed = !isWorkstreamBound(state) && hasExhaustedRoutingFailures(state);
       state.status = decision.status === "failed" || routingFailed ? "failed" : "completed";
       state.finalOutput = decision.message;
       const userInputNeeded = state.status === "completed" && decision.status === "completed"
@@ -502,7 +509,7 @@ export async function runAgentLoop(
           nextStep: userInputNeeded,
           summary: state.workState.summary || decision.message,
         };
-      } else if (decision.status === "completed" && !isTaskBound(state) && canMarkTerminalReplyDone(state)) {
+      } else if (decision.status === "completed" && !isWorkstreamBound(state) && canMarkTerminalReplyDone(state)) {
         state.workState = {
           ...state.workState,
           status: "done",
@@ -529,7 +536,7 @@ export async function runAgentLoop(
         ...state.workState,
         status: "needs_user_input",
         userInputNeeded: decision.question,
-        summary: decision.reason || "User input is needed before the task can continue.",
+        summary: decision.reason || "User input is needed before the workstream can continue.",
       };
       state.finalOutput = decision.question;
       return finalize({
@@ -546,31 +553,31 @@ export async function runAgentLoop(
       });
     }
 
-    if (decision.kind === "task_completion") {
-      const evaluation = await evaluateTaskCompletion(state, decision.request);
+    if (decision.kind === "workstream_completion") {
+      const evaluation = await evaluateWorkstreamCompletion(state, decision.request);
       state.workState = compactWorkState(evaluation.nextWorkState);
       recordFeedback(
         deps,
         inputHandle,
         runHandle.runId,
-        "task_completion",
+        "workstream_completion",
         evaluation.accepted ? "accepted" : "rejected",
         {
           iteration: state.iteration,
           request: decision.request,
           code: evaluation.code,
           ...(evaluation.accepted
-            ? { verifiedAssets: evaluation.assets }
+            ? { verifiedResources: evaluation.resources }
             : { failures: evaluation.failures }),
           workState: summarizeWorkState(state.workState),
         },
       );
       if (evaluation.accepted) {
         state.verifiedCompletionSummary = decision.request.summary;
-        state.completionAssets = evaluation.assets;
+        state.completionResources = evaluation.resources;
         state.consecutiveFailures = 0;
         recordRunMetric(metrics, "verified_completion", { kind: "local" });
-        recordStateSnapshotMetric("after_task_completion_accepted");
+        recordStateSnapshotMetric("after_workstream_completion_accepted");
       } else {
         state.consecutiveFailures++;
         const reason = evaluation.failures.map((failure) => failure.message).join(" ");
@@ -578,9 +585,9 @@ export async function runAgentLoop(
           step: state.iteration,
           failureType: "verify_failed",
           reason,
-          blockedTargets: evaluation.failures.flatMap((failure) => failure.path ? [failure.path] : ["task_completion"]),
+          blockedTargets: evaluation.failures.flatMap((failure) => failure.path ? [failure.path] : ["workstream_completion"]),
         });
-        recordStateSnapshotMetric("after_task_completion_rejected");
+        recordStateSnapshotMetric("after_workstream_completion_rejected");
         if (hasRepeatedRepairFailure(state.failureHistory) || state.consecutiveFailures >= config.maxConsecutiveFailures) {
           state.status = "failed";
           state.finalOutput = buildFailureReply(state);
@@ -625,7 +632,11 @@ export async function runAgentLoop(
         iteration: state.iteration,
         request: decision.request,
       });
-      const loadResult = deps.toolWorkingSetManager?.load(decision.request, workToolContext) ?? {
+      const loadResult = deps.toolWorkingSetManager?.load(
+        decision.request,
+        workToolContext,
+        capabilityPolicy,
+      ) ?? {
         status: "failed" as const,
         requested: {
           ...(decision.request.query ? { query: decision.request.query } : {}),
@@ -636,6 +647,7 @@ export async function runAgentLoop(
         alreadyActive: [],
         evicted: [],
         missing: [],
+        unavailable: [],
         message: "No tool working-set manager is available.",
       };
       state.lastToolLoad = loadResult;
@@ -647,6 +659,7 @@ export async function runAgentLoop(
         loaded: loadResult.loaded,
         alreadyActive: loadResult.alreadyActive,
         missing: loadResult.missing,
+        unavailable: loadResult.unavailable,
         evicted: loadResult.evicted,
         message: loadResult.message,
       });
@@ -654,13 +667,31 @@ export async function runAgentLoop(
         kind: "local",
         status: ["loaded", "partial", "already_active"].includes(loadResult.status) ? "success" : "failed",
       });
+      const progressEvaluation = evaluateToolLoadProgress(toolLoadProgress, loadResult);
+      toolLoadProgress = progressEvaluation.state;
+      if (progressEvaluation.shouldStop) {
+        const failure = createToolLoadNoProgressFailure(progressEvaluation, state.iteration);
+        state.consecutiveFailures++;
+        state.failureHistory.push(failure);
+        recordFeedback(deps, inputHandle, runHandle.runId, "guard", "tool_load_no_progress", {
+          iteration: state.iteration,
+          status: loadResult.status,
+          repeatedTargets: progressEvaluation.repeatedTargets,
+          message: failure.reason,
+          warningCodes: ["tool_load_no_progress", "R_NO_PROGRESS"],
+          repair: failure.repair,
+        });
+        state.status = "failed";
+        state.finalOutput = buildFailureReply(state);
+        return finalize({ status: "failed", content: state.finalOutput });
+      }
       continue;
     }
 
-    const decisionAllowed = isDecisionAllowedByTaskBinding(capabilityPolicy, decision);
+    const decisionAllowed = isDecisionAllowedByWorkstreamBinding(capabilityPolicy, decision);
     if (!decisionAllowed) {
       const routingAttemptBlock = decision.kind === "act"
-        ? validateRoutingAttemptLimits(state, decision.action, isTaskBound(state))
+        ? validateRoutingAttemptLimits(state, decision.action, isWorkstreamBound(state))
         : undefined;
       if (routingAttemptBlock) {
         recordFeedback(deps, inputHandle, runHandle.runId, "guard", "routing_attempt_blocked", {
@@ -707,7 +738,7 @@ export async function runAgentLoop(
       const routingAttemptBlock = validateRoutingAttemptLimits(
         state,
         decision.action,
-        isTaskBound(state),
+        isWorkstreamBound(state),
       );
       if (routingAttemptBlock) {
         recordFeedback(deps, inputHandle, routingRunId, "guard", "routing_attempt_blocked", {
@@ -789,7 +820,7 @@ export async function runAgentLoop(
       if (routingUpdate?.status === "ready") {
         if (routingUpdate.runId !== runHandle.runId) {
           state.status = "failed";
-          state.finalOutput = "Task binding returned a different run identity, so execution stopped safely.";
+          state.finalOutput = "Workstream binding returned a different run identity, so execution stopped safely.";
           recordFeedback(deps, inputHandle, runHandle.runId, "guard", "run_identity_mismatch", {
             expectedRunId: runHandle.runId,
             returnedRunId: routingUpdate.runId,
@@ -798,51 +829,57 @@ export async function runAgentLoop(
         }
         deps.harnessContext = routingUpdate.harnessContext;
         syncHarnessContext(state, deps, inputHandle);
-        recordFeedback(deps, inputHandle, runHandle.runId, "run", "task_bound", {
-          taskId: routingUpdate.taskId,
+        recordFeedback(deps, inputHandle, runHandle.runId, "run", "workstream_bound", {
+          workstreamId: routingUpdate.workstreamId,
+          contextRepositoryPath: routingUpdate.contextRepositoryPath,
           branch: routingUpdate.branch,
-          workingDirectory: routingUpdate.workingDirectory,
-          taskRequestId: routingUpdate.taskRequestId,
-          taskRequestDecision: routingUpdate.requestDecision,
+          mode: routingUpdate.mode,
+          workstreamCreated: routingUpdate.workstreamCreated,
+          workstreamHead: routingUpdate.workstreamHead,
+          requestId: routingUpdate.requestId,
+          requestDecision: routingUpdate.requestDecision,
+          requestStatus: routingUpdate.requestStatus,
+          requestCreated: routingUpdate.requestCreated,
+          resources: routingUpdate.resources,
         });
-        const taskLifecycle = {
+        const workstreamLifecycle = {
           repository: {
-            taskId: routingUpdate.taskId,
-            workingDirectory: routingUpdate.workingDirectory,
+            workstreamId: routingUpdate.workstreamId,
+            contextRepositoryPath: routingUpdate.contextRepositoryPath,
             branch: routingUpdate.branch,
             selectionMode: routingUpdate.mode,
-            taskCreated: routingUpdate.taskCreated,
-            headBefore: routingUpdate.taskHead,
+            workstreamCreated: routingUpdate.workstreamCreated,
+            headBefore: routingUpdate.workstreamHead,
           },
           request: {
             decision: routingUpdate.requestDecision,
-            requestId: routingUpdate.taskRequestId,
-            status: routingUpdate.taskRequestStatus,
-            created: routingUpdate.taskRequestCreated,
+            requestId: routingUpdate.requestId,
+            status: routingUpdate.requestStatus,
+            created: routingUpdate.requestCreated,
           },
           run: {
             runId: routingUpdate.runId,
-            taskBound: true,
+            workstreamBound: true,
           },
           finalization: { status: "not_started" },
         } as const;
         recordFeedback(deps, inputHandle, runHandle.runId, "context_engine", "agent_routed", {
           status: routingUpdate.status,
           mode: routingUpdate.mode,
-          taskId: routingUpdate.taskId,
+          workstreamId: routingUpdate.workstreamId,
           branch: routingUpdate.branch,
           runId: routingUpdate.runId,
-          taskLifecycle,
+          workstreamLifecycle,
           contextEngine: buildContextEngineFeedbackSummary({
             context: routingUpdate.harnessContext.contextEngine,
             routeStatus: routingUpdate.status,
             routeMode: routingUpdate.mode,
             routeSource: "agent_tool",
             pendingTurnStatus: "bound",
-            taskId: routingUpdate.taskId,
+            workstreamId: routingUpdate.workstreamId,
             branch: routingUpdate.branch,
             runId: routingUpdate.runId,
-            taskLifecycle,
+            workstreamLifecycle,
           }),
         });
       } else if (routingUpdate?.status === "ambiguous") {
@@ -895,12 +932,12 @@ export async function runAgentLoop(
     recordFeedback(deps, inputHandle, runHandle.runId, "tools", "run_tools_enabled", {
       iteration: state.iteration,
       toolContextRunId: toolContext.runId,
-      taskBound: isTaskBound(state),
+      workstreamBound: isWorkstreamBound(state),
       activeTools: activeToolsForRun,
       normalTools: activeToolsForRun.filter((tool) => !isGitContextRoutingToolName(tool)),
       routingTools: routingToolsForRun,
     });
-    const completedRoutingTools = latestCompletedTaskRoutingToolNames(state);
+    const completedRoutingTools = latestCompletedWorkstreamRoutingToolNames(state);
     if (completedRoutingTools.length > 0 && routingToolsForRun.length === 0) {
       recordFeedback(deps, inputHandle, runHandle.runId, "tools", "routing_tools_deactivated", {
         iteration: state.iteration,
@@ -1019,7 +1056,11 @@ export async function runAgentLoop(
         stepNumber,
         ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
       };
-      state.lastToolLoad = deps.toolWorkingSetManager.afterExecution(stepResult.execution.actOutput.toolCalls, cleanupContext);
+      state.lastToolLoad = deps.toolWorkingSetManager.afterExecution(
+        stepResult.execution.actOutput.toolCalls,
+        cleanupContext,
+        deriveWorkstreamBindingCapabilityPolicy(state),
+      );
       deps.toolWorkingSetManager.cleanupAfterStep(cleanupContext);
       recordFeedback(deps, inputHandle, runHandle.runId, "tools", "after_execution", {
         iteration: state.iteration,
@@ -1066,10 +1107,10 @@ export async function runAgentLoop(
     status: state.workState.status === "done" ? "done" : "not_done",
     openWork: normalizeList(state.workState.openWork).length > 0
       ? state.workState.openWork
-      : ["Continue the requested task from the latest verified state."],
-    nextStep: state.workState.nextStep || "Continue the requested task from the latest verified state.",
+      : ["Continue the requested workstream from the latest verified state."],
+    nextStep: state.workState.nextStep || "Continue the requested workstream from the latest verified state.",
   });
-  state.finalOutput = `I reached the ${config.maxIterations}-step limit before finishing the task.`;
+  state.finalOutput = `I reached the ${config.maxIterations}-step limit before finishing the workstream.`;
   return finalize({ status: "stuck", content: state.finalOutput });
 }
 
@@ -1140,13 +1181,13 @@ async function buildFinalResponseFromWorkState(input: {
       stateView,
       toolDefinitions: [],
       toolLoadingAvailable: false,
-      taskFeedbackToolAvailable: false,
-      taskBound: isTaskBound(input.state),
+      workstreamFeedbackToolAvailable: false,
+      workstreamBound: isWorkstreamBound(input.state),
       toolContextProjectionPolicy: input.config.toolContextProjectionPolicy,
       timelineCheckpointCache: input.state.timelineCheckpointCache,
       systemContext: [
         input.deps.systemContext,
-        "Final response-only mode: tools are unavailable. Reply naturally to the user from context.run.workState, verified facts, artifacts, and recent tool-call memory. Do not mention harness internals. Do not say control tool names such as task_completion, decision_load_tools, or ask_user_feedback.",
+        "Final response-only mode: tools are unavailable. Reply naturally to the user from context.run.workState, verified facts, artifacts, and recent tool-call memory. Do not mention harness internals. Do not say control tool names such as workstream_completion, decision_load_tools, or ask_user_feedback.",
       ].filter((section): section is string => Boolean(section?.trim())).join("\n\n"),
       metrics: input.metrics,
       feedbackLedger: input.deps.feedbackLedger,
@@ -1263,20 +1304,20 @@ function buildLoopResult(
     harnessContext: state.harnessContext,
   };
 
-  if (isTaskBound(state)) {
-    result.taskSummary = buildTaskSummaryRecord(state, content, input.status, responseKind, input.completion);
-    result.taskAssets = buildTaskAssets(state);
-    result.verifiedCompletionAssets = buildVerifiedCompletionAssets(state);
+  if (isWorkstreamBound(state)) {
+    result.workstreamSummary = buildWorkstreamSummaryRecord(state, content, input.status, responseKind, input.completion);
+    result.resources = buildRunResources(state);
+    result.verifiedCompletionResources = buildVerifiedCompletionResources(state);
   }
 
   return result;
 }
 
-function isTaskFeedbackToolAvailable(state: LoopState): boolean {
-  return isTaskBound(state) && state.workState.status === "not_done";
+function isWorkstreamFeedbackToolAvailable(state: LoopState): boolean {
+  return isWorkstreamBound(state) && state.workState.status === "not_done";
 }
 
-function isTaskBound(state: LoopState): boolean {
+function isWorkstreamBound(state: LoopState): boolean {
   return state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "bound";
 }
 
@@ -1310,24 +1351,27 @@ function normalizeList(values: string[] | undefined): string[] {
 }
 
 function preserveWorkStateForContextLimit(state: LoopState): WorkState {
-  const task = state.harnessContext.contextEngine?.task;
+  const workstream = state.harnessContext.contextEngine?.workstream;
   const openWork = normalizeList(state.workState.openWork);
-  const taskOpenWork = normalizeList(task?.open);
+  const durableOpenWork = normalizeList([
+    workstream?.currentRequest?.request,
+    workstream?.next,
+  ].filter((value): value is string => Boolean(value)));
   const blockers = normalizeList(state.workState.blockers);
   const verifiedFacts = normalizeList(state.workState.verifiedFacts);
   return compactWorkState({
     ...state.workState,
     status: "not_done",
-    summary: state.workState.summary || "The task remains in progress.",
+    summary: state.workState.summary || "The workstream request remains in progress.",
     openWork: openWork.length > 0
       ? openWork
-      : taskOpenWork.length > 0
-        ? taskOpenWork
-        : ["Continue the requested task in a new run."],
-    blockers: blockers.length > 0 ? blockers : task?.blockers ?? [],
-    verifiedFacts: verifiedFacts.length > 0
-      ? verifiedFacts
-      : normalizeList(task?.facts.map((fact) => fact.text)),
-    nextStep: state.workState.nextStep || task?.next || "Continue the requested task in a new run.",
+      : durableOpenWork.length > 0
+        ? durableOpenWork
+        : ["Continue the active workstream request in a new run."],
+    blockers: blockers.length > 0 ? blockers : workstream?.blockers ?? [],
+    verifiedFacts,
+    nextStep: state.workState.nextStep
+      || workstream?.next
+      || "Continue the active workstream request in a new run.",
   });
 }

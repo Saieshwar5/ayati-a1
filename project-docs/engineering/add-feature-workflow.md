@@ -8,14 +8,15 @@
 6. Run the narrow test first, then broader package tests if the change affects shared behavior.
 7. Update `project-docs` when architecture, commands, API contracts, or agent guidance changes.
 
-For task-context changes:
+For workstream/resource changes:
 
-1. Read [Task Repositories](architecture/task-repositories.md).
+1. Read [Workstreams and Resources](architecture/workstreams-and-resources.md).
 2. Keep protocol/schema/service/Git responsibilities inside
    `ayati-git-context`; keep model-facing tool and harness integration inside
    `ayati-main`.
-3. Preserve V1 mount-free selection, explicit request decisions, runtime-owned
-   `.ayati/` writes, and one final task commit.
+3. Preserve context-only workstream Git, real resource locations, explicit
+   request decisions, exact resource mutation scopes, and at most one context
+   commit during finalization.
 4. Add focused tests in both packages when a shared protocol or live flow
    changes.
 5. Update protocol version and compatibility behavior deliberately when the
@@ -26,7 +27,7 @@ Placement rule:
 - If the feature affects intelligence, memory, tools, providers, events, permissions, runtime state, or personalization, it belongs in `ayati-main`.
 - If the feature only affects terminal rendering, terminal input, local attachment queue UX, or CLI display behavior, it belongs in `ayati-cli`.
 - New communication channels should be clients that talk to the daemon, not independent agent runtimes.
-- Git Context service, repository-layout, request-lifecycle, and catalog code
+- Git Context service, workstream layout, resource/request lifecycle, and catalog code
   belongs in `ayati-git-context`.
 
 Common test locations:

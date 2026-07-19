@@ -762,7 +762,7 @@ function readOptionalDatabasePath(input: Record<string, unknown>): string | Tool
     target: result.requestedPath,
     retryable: true,
     recoverable: true,
-    suggestedNextActions: ["Use the active task workingDirectory to construct the complete absolute database path and retry."],
+    suggestedNextActions: ["Use the absolute locator of the bound database or filesystem resource and retry."],
   });
 }
 

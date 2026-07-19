@@ -40,7 +40,7 @@ export const writeFilesTool: ToolDefinition = {
           properties: {
             path: {
               type: "string",
-              description: "Absolute path of the file to write. It must remain inside the active task workingDirectory during task work.",
+              description: "Absolute file path inside one mutable filesystem resource bound to the active workstream.",
             },
             content: { type: "string", description: "Content to write." },
             baseSha256: {

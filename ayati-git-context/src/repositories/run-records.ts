@@ -7,7 +7,7 @@ import type {
   RunStepContext,
   RunStopReason,
   RunWorkStateInput,
-  TaskBinding,
+  WorkstreamBinding,
   ToolEffect,
   ToolPurpose,
 } from "../contracts.js";
@@ -22,9 +22,9 @@ interface RunRow {
   run_id: string;
   session_id: string;
   conversation_id: string;
-  task_id: string | null;
-  task_request_id: string | null;
-  task_bound_at: string | null;
+  workstream_id: string | null;
+  bound_request_id: string | null;
+  workstream_bound_at: string | null;
 }
 
 interface RunEvidenceRow extends RunRow {
@@ -104,7 +104,7 @@ export function createRun(database: ContextDatabase, input: CreateRunInput): Run
   const runId = "R-" + datePart + "-" + String(sequence).padStart(4, "0");
   database.prepare([
     "INSERT INTO runs(",
-    "run_id, session_id, conversation_id, task_id, task_request_id, task_bound_at,",
+    "run_id, session_id, conversation_id, workstream_id, bound_request_id, workstream_bound_at,",
     "run_sequence, status, stop_reason, trigger, started_at, completed_at, step_count",
     ") VALUES (?, ?, ?, NULL, NULL, NULL, ?, 'running', NULL, ?, ?, NULL, 0)",
   ].join(" ")).run(
@@ -126,7 +126,7 @@ export function createRun(database: ContextDatabase, input: CreateRunInput): Run
 
 export function readActiveRun(database: ContextDatabase, sessionId: string): RunRef | undefined {
   const row = database.prepare([
-    "SELECT run_id, session_id, conversation_id, task_id, task_request_id, task_bound_at",
+    "SELECT run_id, session_id, conversation_id, workstream_id, bound_request_id, workstream_bound_at",
     "FROM runs WHERE session_id = ? AND status = 'running' LIMIT 1",
   ].join(" ")).get(sessionId) as RunRow | undefined;
   return row ? runRef(row) : undefined;
@@ -134,7 +134,7 @@ export function readActiveRun(database: ContextDatabase, sessionId: string): Run
 
 export function readBlockingRun(database: ContextDatabase, sessionId: string): RunRef | undefined {
   const row = database.prepare([
-    "SELECT run_id, session_id, conversation_id, task_id, task_request_id, task_bound_at",
+    "SELECT run_id, session_id, conversation_id, workstream_id, bound_request_id, workstream_bound_at",
     "FROM runs WHERE session_id = ? AND status IN ('running', 'recovery_required') LIMIT 1",
   ].join(" ")).get(sessionId) as RunRow | undefined;
   return row ? runRef(row) : undefined;
@@ -149,7 +149,7 @@ export function readActiveRunIds(database: ContextDatabase): string[] {
 
 export function readRun(database: ContextDatabase, runId: string): RunRef | undefined {
   const row = database.prepare([
-    "SELECT run_id, session_id, conversation_id, task_id, task_request_id, task_bound_at",
+    "SELECT run_id, session_id, conversation_id, workstream_id, bound_request_id, workstream_bound_at",
     "FROM runs WHERE run_id = ?",
   ].join(" ")).get(runId) as RunRow | undefined;
   return row ? runRef(row) : undefined;
@@ -160,7 +160,7 @@ export function readRunEvidence(
   runId: string,
 ): RunEvidenceRecord | undefined {
   const row = database.prepare([
-    "SELECT run_id, session_id, conversation_id, task_id, task_request_id, task_bound_at,",
+    "SELECT run_id, session_id, conversation_id, workstream_id, bound_request_id, workstream_bound_at,",
     "status, stop_reason, trigger, started_at, completed_at, step_count",
     "FROM runs WHERE run_id = ?",
   ].join(" ")).get(runId) as RunEvidenceRow | undefined;
@@ -227,25 +227,25 @@ export function markRunRecoveryRequired(
   ].join(" ")).run(runId);
 }
 
-export function bindActiveRunToTask(
+export function bindActiveRunToWorkstream(
   database: ContextDatabase,
   input: {
     sessionId: string;
     conversationId: string;
     runId: string;
-    taskId: string;
-    taskRequestId: string;
+    workstreamId: string;
+    requestId: string;
     at: string;
   },
 ): RunRef {
   const row = database.prepare([
-    "SELECT run_id, session_id, conversation_id, task_id, task_request_id, task_bound_at",
+    "SELECT run_id, session_id, conversation_id, workstream_id, bound_request_id, workstream_bound_at",
     "FROM runs WHERE run_id = ? AND session_id = ? AND status = 'running'",
   ].join(" ")).get(input.runId, input.sessionId) as RunRow | undefined;
   if (!row || row.conversation_id !== input.conversationId) {
     throw new GitContextServiceError({
       code: "RUN_NOT_ACTIVE",
-      message: "Task selection requires the matching active run and conversation.",
+      message: "Workstream selection requires the matching active run and conversation.",
       details: {
         sessionId: input.sessionId,
         conversationId: input.conversationId,
@@ -253,36 +253,36 @@ export function bindActiveRunToTask(
       },
     });
   }
-  if (row.task_id || row.task_request_id || row.task_bound_at) {
-    if (row.task_id === input.taskId && row.task_request_id === input.taskRequestId) {
+  if (row.workstream_id || row.bound_request_id || row.workstream_bound_at) {
+    if (row.workstream_id === input.workstreamId && row.bound_request_id === input.requestId) {
       return runRef(row);
     }
     throw new GitContextServiceError({
-      code: "RUN_TASK_BINDING_IMMUTABLE",
-      message: "Run is already bound to a different task or request.",
+      code: "RUN_WORKSTREAM_BINDING_IMMUTABLE",
+      message: "Run is already bound to a different workstream or request.",
       details: {
         runId: input.runId,
-        activeTaskId: row.task_id,
-        activeTaskRequestId: row.task_request_id,
-        requestedTaskId: input.taskId,
-        requestedTaskRequestId: input.taskRequestId,
+        activeWorkstreamId: row.workstream_id,
+        activeRequestId: row.bound_request_id,
+        requestedWorkstreamId: input.workstreamId,
+        requestedRequestId: input.requestId,
       },
     });
   }
 
   database.prepare([
-    "UPDATE runs SET task_id = ?, task_request_id = ?, task_bound_at = ? WHERE run_id = ?",
-  ].join(" ")).run(input.taskId, input.taskRequestId, input.at, input.runId);
+    "UPDATE runs SET workstream_id = ?, bound_request_id = ?, workstream_bound_at = ? WHERE run_id = ?",
+  ].join(" ")).run(input.workstreamId, input.requestId, input.at, input.runId);
   database.prepare([
-    "UPDATE conversation_segments SET task_id = ?, run_id = ? WHERE conversation_id = ?",
-  ].join(" ")).run(input.taskId, input.runId, input.conversationId);
+    "UPDATE conversation_segments SET workstream_id = ?, run_id = ? WHERE conversation_id = ?",
+  ].join(" ")).run(input.workstreamId, input.runId, input.conversationId);
   return {
     runId: input.runId,
     sessionId: input.sessionId,
     conversationId: input.conversationId,
-    taskBinding: {
-      taskId: input.taskId,
-      taskRequestId: input.taskRequestId,
+    workstreamBinding: {
+      workstreamId: input.workstreamId,
+      requestId: input.requestId,
       boundAt: input.at,
     },
   };
@@ -293,11 +293,11 @@ export function recordRunStep(
   input: RecordRunStepRequest,
 ): { step: RunStepContext; workState: ReturnType<typeof replaceRunWorkState> } {
   const run = database.prepare([
-    "SELECT session_id, task_id, task_request_id, status, step_count FROM runs WHERE run_id = ?",
+    "SELECT session_id, workstream_id, bound_request_id, status, step_count FROM runs WHERE run_id = ?",
   ].join(" ")).get(input.runId) as {
     session_id: string;
-    task_id: string | null;
-    task_request_id: string | null;
+    workstream_id: string | null;
+    bound_request_id: string | null;
     status: string;
     step_count: number;
   } | undefined;
@@ -318,10 +318,10 @@ export function recordRunStep(
   }
   assertToolClassifications(input.record.toolCalls);
   const mutation = input.record.toolCalls.find((call) => call.toolPurpose === "mutation");
-  if (mutation && (!run.task_id || !run.task_request_id)) {
+  if (mutation && (!run.workstream_id || !run.bound_request_id)) {
     throw new GitContextServiceError({
-      code: "MUTATION_REQUIRES_TASK_BINDING",
-      message: "Mutation effects require an immutable task/request binding.",
+      code: "MUTATION_REQUIRES_WORKSTREAM_BINDING",
+      message: "Mutation effects require an immutable workstream/request binding.",
       details: { runId: input.runId, tool: mutation.tool, toolEffect: mutation.toolEffect },
     });
   }
@@ -354,21 +354,21 @@ export function recordRunStep(
 }
 
 function runRef(row: RunRow): RunRef {
-  const taskBinding = taskBindingFromRow(row);
+  const workstreamBinding = workstreamBindingFromRow(row);
   return {
     runId: row.run_id,
     sessionId: row.session_id,
     conversationId: row.conversation_id,
-    ...(taskBinding ? { taskBinding } : {}),
+    ...(workstreamBinding ? { workstreamBinding } : {}),
   };
 }
 
-function taskBindingFromRow(row: RunRow): TaskBinding | undefined {
-  if (!row.task_id || !row.task_request_id || !row.task_bound_at) return undefined;
+function workstreamBindingFromRow(row: RunRow): WorkstreamBinding | undefined {
+  if (!row.workstream_id || !row.bound_request_id || !row.workstream_bound_at) return undefined;
   return {
-    taskId: row.task_id,
-    taskRequestId: row.task_request_id,
-    boundAt: row.task_bound_at,
+    workstreamId: row.workstream_id,
+    requestId: row.bound_request_id,
+    boundAt: row.workstream_bound_at,
   };
 }
 

@@ -1,52 +1,53 @@
 import { join } from "node:path";
 import {
   GIT_CONTEXT_PROTOCOL_VERSION,
-  type AdoptTaskReferenceRequest,
-  type AdoptTaskReferenceResponse,
-  type ActivateTaskForRunRequest,
-  type AcquireMutationAuthorityRequest,
-  type AcquireMutationAuthorityResponse,
-  type BindTaskAttachmentsRequest,
-  type BindTaskAttachmentsResponse,
+  type ActivateWorkstreamForRunRequest,
   type ActiveContext,
-  type CreateTaskForRunRequest,
+  type BindResourcesForRunRequest,
+  type BindResourcesForRunResponse,
+  type CreateWorkstreamForRunRequest,
   type EnsureActiveSessionRequest,
   type EnsureActiveSessionResponse,
   type FinalizeRunRequest,
   type FinalizeRunResponse,
-  type FindTasksRequest,
-  type FindTasksResponse,
+  type FindWorkstreamsRequest,
+  type FindWorkstreamsResponse,
+  type FindResourcesRequest,
+  type FindResourcesResponse,
   type GetActiveContextRequest,
-  type GetTaskRequest,
-  type GetTaskResponse,
+  type GetWorkstreamRequest,
+  type GetWorkstreamResponse,
   type HealthResponse,
-  type InspectTaskLocationRequest,
-  type InspectTaskLocationResponse,
-  type ListTasksRequest,
-  type ListTasksResponse,
-  type PlanTaskRequestRouteRequest,
-  type PlanTaskRequestRouteResponse,
+  type InspectResourceForRunRequest,
+  type InspectResourceForRunResponse,
+  type ListWorkstreamsRequest,
+  type ListWorkstreamsResponse,
+  type PlanWorkstreamRequestRouteRequest,
+  type PlanWorkstreamRequestRouteResponse,
   type PrepareContextTurnRequest,
   type PrepareContextTurnResponse,
-  type ReadTaskRequest,
-  type ReadTaskResponse,
+  type ReadWorkstreamRequest,
+  type ReadWorkstreamResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
-  type RecordSessionAttachmentsRequest,
-  type RecordSessionAttachmentsResponse,
+  type PrepareResourceMutationRequest,
+  type PrepareResourceMutationResponse,
   type SessionRef,
-  type SetTaskStarRequest,
-  type SetTaskStarResponse,
-  type SelectedTaskForRunResponse,
-  type VerifyMutationRequest,
-  type VerifyMutationResponse,
+  type SetWorkstreamStarRequest,
+  type SetWorkstreamStarResponse,
+  type SelectedWorkstreamForRunResponse,
+  type VerifyResourceMutationRequest,
+  type VerifyResourceMutationResponse,
 } from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
 import {
   beginRecoverableIdempotent,
   completeRecoverableIdempotent,
+  executeIdempotent,
   hasRecoverableIdempotencyRequest,
   markRecoverableIdempotencyFailed,
+  readCompletedIdempotent,
+  updateRecoverableIdempotentResult,
 } from "../database/idempotency.js";
 import { GitContextServiceError } from "../errors.js";
 import {
@@ -68,16 +69,14 @@ import { ActiveContextCache } from "./active-context-cache.js";
 import { ActiveContextProjectionService } from "./active-context-projection-service.js";
 import {
   ActiveContextDataCache,
-  DEFAULT_TASK_CANDIDATE_CACHE_INTERVAL_MS,
+  DEFAULT_WORKSTREAM_CANDIDATE_CACHE_INTERVAL_MS,
 } from "./active-context-data-cache.js";
 import {
   ActiveContextInvalidation,
   type ContextInvalidationInput,
 } from "./active-context-invalidation.js";
-import { MutationBoundaryService } from "./mutation-boundary-service.js";
-import { TaskLifecycleService } from "./task-lifecycle-service.js";
-import { TaskBoundFinalizationService } from "./task-bound-finalization-service.js";
-import { TaskAttachmentService } from "./task-attachment-service.js";
+import { WorkstreamLifecycleService } from "./workstream-lifecycle-service.js";
+import { WorkstreamBoundFinalizationService } from "./workstream-bound-finalization-service.js";
 import { SessionRegistryCache } from "./session-registry-cache.js";
 import { ConversationHotCache } from "./conversation-hot-cache.js";
 import {
@@ -95,9 +94,8 @@ import {
   completePreparedContextTurnReceipt,
   requirePreparedContextTurnReceipt,
 } from "./prepared-context-turn-receipt.js";
-import { TaskBindingService } from "./task-binding-service.js";
-import { TaskRequestRoutingService } from "./task-request-routing-service.js";
-import { readMutationAuthority } from "../repositories/mutation-authority-records.js";
+import { WorkstreamBindingService } from "./workstream-binding-service.js";
+import { WorkstreamRequestRoutingService } from "./workstream-request-routing-service.js";
 import { readRun, readRunEvidence } from "../repositories/run-records.js";
 import { GitContextObserver } from "../observability.js";
 import { GitContextServiceObservability } from "./service-observability.js";
@@ -111,20 +109,19 @@ import { TurnPreparationService } from "./turn-preparation-service.js";
 import { UnboundRunFinalizationService } from "./unbound-run-finalization-service.js";
 import { RunFinalizationService } from "./run-finalization-service.js";
 import { StartupRunRecoveryService } from "./startup-run-recovery-service.js";
-import { TaskDiscoveryService } from "./task-discovery-service.js";
-import { refreshTaskDiscoveryProjection } from "../repositories/task-discovery-records.js";
-import { TaskLocationService } from "./task-location-service.js";
+import { WorkstreamDiscoveryService } from "./workstream-discovery-service.js";
+import { refreshWorkstreamDiscoveryProjection } from "../repositories/workstream-discovery-records.js";
+import { ResourceCatalogService } from "./resource-catalog-service.js";
+import { ResourceMutationService } from "./resource-mutation-service.js";
 
 export interface SqliteGitContextServiceOptions {
   database: ContextDatabase;
-  dataRoot: string;
-  workspaceRoot?: string;
+  rootDirectory: string;
   now?: () => string;
   observer?: GitContextObserver;
   rolloverCheckIntervalMs?: number;
   sessionRepositoryValidationIntervalMs?: number;
-  taskCandidateCacheIntervalMs?: number;
-  trustedRoots?: string[];
+  workstreamCandidateCacheIntervalMs?: number;
 }
 
 interface TurnRolloverAssessment {
@@ -134,7 +131,8 @@ interface TurnRolloverAssessment {
 
 export class SqliteGitContextService implements GitContextService {
   private readonly database: ContextDatabase;
-  private readonly dataRoot: string;
+  private readonly rootDirectory: string;
+  private readonly stateRoot: string;
   private readonly now: () => string;
   private readonly observer: GitContextObserver;
   private readonly events: GitContextServiceObservability;
@@ -149,15 +147,14 @@ export class SqliteGitContextService implements GitContextService {
   private readonly sessionSummaryCache = new SessionSummaryHotCache();
   private readonly sessionRepositoryValidation: SessionRepositoryValidationService;
   private readonly runs: RunLifecycleService;
-  private readonly taskLifecycle: TaskLifecycleService;
-  private readonly taskLocations: TaskLocationService;
-  private readonly taskDiscovery: TaskDiscoveryService;
-  private readonly taskBinding: TaskBindingService;
-  private readonly taskRequestRouting: TaskRequestRoutingService;
-  private readonly mutationBoundary: MutationBoundaryService;
+  private readonly workstreamLifecycle: WorkstreamLifecycleService;
+  private readonly workstreamDiscovery: WorkstreamDiscoveryService;
+  private readonly workstreamBinding: WorkstreamBindingService;
+  private readonly workstreamRequestRouting: WorkstreamRequestRoutingService;
+  private readonly resourceCatalog: ResourceCatalogService;
+  private readonly resourceMutations: ResourceMutationService;
   private readonly runFinalization: RunFinalizationService;
   private readonly startupRunRecovery: StartupRunRecoveryService;
-  private readonly taskAttachments: TaskAttachmentService;
   private readonly dailySessionRollover: DailySessionRolloverService;
   private readonly rolloverCheckIntervalMs: number;
   private rolloverTimer?: ReturnType<typeof setInterval>;
@@ -166,7 +163,8 @@ export class SqliteGitContextService implements GitContextService {
 
   constructor(options: SqliteGitContextServiceOptions) {
     this.database = options.database;
-    this.dataRoot = options.dataRoot;
+    this.rootDirectory = options.rootDirectory;
+    this.stateRoot = join(this.rootDirectory, ".ayati");
     this.now = options.now ?? (() => new Date().toISOString());
     this.observer = options.observer ?? new GitContextObserver("git-context-engine");
     this.events = new GitContextServiceObservability(this.observer);
@@ -187,56 +185,48 @@ export class SqliteGitContextService implements GitContextService {
     });
     this.runs = new RunLifecycleService(this.database);
     this.turnPreparation = new TurnPreparationService(this.database);
-    const workspaceRoot = options.workspaceRoot ?? join(this.dataRoot, "workspace");
-    const taskRoot = join(workspaceRoot, "tasks");
-    this.taskLocations = new TaskLocationService({
+    const workstreamRoot = join(this.rootDirectory, "workstreams");
+    this.resourceCatalog = new ResourceCatalogService({
       database: this.database,
-      workspaceRoot,
-      trustedRoots: options.trustedRoots ?? [],
-      now: this.now,
+      rootDirectory: this.rootDirectory,
     });
-    this.taskDiscovery = new TaskDiscoveryService(this.database, this.now);
-    this.taskLifecycle = new TaskLifecycleService({
+    this.resourceMutations = new ResourceMutationService(this.database);
+    this.workstreamDiscovery = new WorkstreamDiscoveryService(this.database, this.now);
+    this.workstreamLifecycle = new WorkstreamLifecycleService({
       database: this.database,
-      dataRoot: this.dataRoot,
-      workspaceRoot,
+      workstreamRoot,
       now: this.now,
-      taskLocations: this.taskLocations,
-      onContextRead: (task, context) => {
-        refreshTaskDiscoveryProjection({
+      onContextRead: (workstream, context) => {
+        refreshWorkstreamDiscoveryProjection({
           database: this.database,
-          task,
+          workstream,
           context,
         });
       },
     });
-    this.taskRequestRouting = new TaskRequestRoutingService({
+    this.workstreamRequestRouting = new WorkstreamRequestRoutingService({
       database: this.database,
-      taskRoot,
+      workstreamRoot,
     });
-    this.taskBinding = new TaskBindingService(
+    this.workstreamBinding = new WorkstreamBindingService(
       this.database,
-      this.taskLifecycle,
-      this.taskRequestRouting,
+      this.workstreamLifecycle,
+      this.workstreamRequestRouting,
       this.observer,
     );
-    this.mutationBoundary = new MutationBoundaryService(
+    const workstreamBoundFinalization = new WorkstreamBoundFinalizationService(
       this.database,
-      taskRoot,
-    );
-    const taskBoundFinalization = new TaskBoundFinalizationService(
-      this.database,
-      taskRoot,
-      this.mutationBoundary,
+      workstreamRoot,
+      this.resourceCatalog,
       async (phase, record) => {
         if (phase === "commit_created") {
           this.events.emit({
             level: "info",
-            event: "task_commit_created",
-            requestId: record.requestId,
+            event: "workstream_commit_created",
+            requestId: record.operationRequestId,
             sessionId: record.sessionId,
             runId: record.runId,
-            taskId: record.taskId,
+            workstreamId: record.workstreamId,
             outcome: "succeeded",
             data: { baseHead: record.baseHead, stagedPaths: record.plan.stagedPaths },
           });
@@ -244,14 +234,13 @@ export class SqliteGitContextService implements GitContextService {
         }
         this.events.emit({
           level: "info",
-          event: "task_mutation_staged",
-          requestId: record.requestId,
+          event: "workstream_mutation_staged",
+          requestId: record.operationRequestId,
           sessionId: record.sessionId,
           runId: record.runId,
-          taskId: record.taskId,
+          workstreamId: record.workstreamId,
           outcome: "succeeded",
           data: {
-            authorityId: record.authorityId,
             baseHead: record.baseHead,
             stagedPaths: record.plan.stagedPaths,
           },
@@ -261,24 +250,20 @@ export class SqliteGitContextService implements GitContextService {
     this.runFinalization = new RunFinalizationService({
       database: this.database,
       unbound: new UnboundRunFinalizationService(this.database),
-      taskBound: taskBoundFinalization,
+      workstreamBound: workstreamBoundFinalization,
     });
     this.startupRunRecovery = new StartupRunRecoveryService(this.database);
-    this.taskAttachments = new TaskAttachmentService({
-      database: this.database,
-      taskRoot,
-    });
     this.contextDataCache = new ActiveContextDataCache({
       database: this.database,
       loadReadContext: (sessionId) => buildReadContext(this.database, sessionId),
-      loadAttachments: (sessionId) => this.taskAttachments.sessionProjection(sessionId),
-      loadTaskCandidates: async (input) => this.taskDiscovery.find({
+      loadResources: (sessionId) => this.resourceCatalog.sessionProjection(sessionId),
+      loadWorkstreamCandidates: async (input) => this.workstreamDiscovery.find({
         limit: input.limit,
         ...(input.sessionId ? { sessionId: input.sessionId } : {}),
         ...(input.currentText ? { currentText: input.currentText } : {}),
-      }).tasks,
-      taskCandidateMaxAgeMs: options.taskCandidateCacheIntervalMs
-        ?? DEFAULT_TASK_CANDIDATE_CACHE_INTERVAL_MS,
+      }).workstreams,
+      workstreamCandidateMaxAgeMs: options.workstreamCandidateCacheIntervalMs
+        ?? DEFAULT_WORKSTREAM_CANDIDATE_CACHE_INTERVAL_MS,
       now: this.now,
     });
     this.contextInvalidation = new ActiveContextInvalidation({
@@ -298,18 +283,24 @@ export class SqliteGitContextService implements GitContextService {
         session.head,
       ) ?? await this.sessionSummaryCache.refresh(session),
       loadActiveRun: (sessionId) => this.runs.getActive(sessionId),
-      loadActiveTask: async (_sessionId, run) => run.run.taskBinding
-        ? await this.taskRequestRouting.projectContext(
-            run.run.runId,
-            await this.taskLifecycle.readContext(
-              (await this.taskLifecycle.getTask({ taskId: run.run.taskBinding.taskId })).task,
-            ),
-          )
-        : undefined,
+      loadActiveWorkstream: async (_sessionId, run) => {
+        if (!run.run.workstreamBinding) return undefined;
+        const workstreamId = run.run.workstreamBinding.workstreamId;
+        const projected = await this.workstreamRequestRouting.projectContext(
+          run.run.runId,
+          await this.workstreamLifecycle.readContext(
+            (await this.workstreamLifecycle.getWorkstream({ workstreamId })).workstream,
+          ),
+        );
+        return {
+          ...projected,
+          resources: this.resourceCatalog.readWorkstreamBindings(workstreamId),
+        };
+      },
     });
     this.dailySessionRollover = new DailySessionRolloverService({
       database: this.database,
-      dataRoot: this.dataRoot,
+      stateRoot: this.stateRoot,
       sessionRegistry: this.sessionRegistry,
       conversationCache: this.conversationCache,
       events: this.events,
@@ -334,8 +325,8 @@ export class SqliteGitContextService implements GitContextService {
           "sessions",
           "conversations",
           "runs",
-          "tasks",
-          "attachments",
+          "workstreams",
+          "resources",
           "mutations",
           "recovery",
         ],
@@ -367,11 +358,22 @@ export class SqliteGitContextService implements GitContextService {
         operation: "prepare_context_turn",
         payload: input,
       });
+      const normalizedResources = existingRequest
+        ? []
+        : await this.resourceCatalog.normalizeIngressAdmissions(input.resources, input.at);
       const rollover = existingRequest
         ? undefined
         : await this.assessRequestedTurnRollover(input, input.at);
       const pending = this.turnPreparation.prepare(input, {
         ensureSession: () => this.ensureSessionForTurn(input, input.at, rollover),
+        admitResources: ({ messageId, runId }) => {
+          this.resourceCatalog.admitPreparedTurn({
+            messageId,
+            runId,
+            admissions: normalizedResources,
+            at: input.at,
+          });
+        },
       });
       try {
         const receipt = requirePreparedContextTurnReceipt(pending.result);
@@ -402,7 +404,10 @@ export class SqliteGitContextService implements GitContextService {
           } else {
             this.conversationCache.append(session.sessionId, conversation, message);
           }
-          this.invalidateContext("conversation_persisted", { sessionId: session.sessionId });
+          this.invalidateContext("conversation_persisted", {
+            sessionId: session.sessionId,
+            resources: normalizedResources.length > 0,
+          });
         }
 
         const sessionRecord = this.sessionRegistry.getSession(this.database, session.sessionId);
@@ -554,113 +559,141 @@ export class SqliteGitContextService implements GitContextService {
     });
   }
 
-  async createTaskForRun(input: CreateTaskForRunRequest): Promise<SelectedTaskForRunResponse> {
+  async createWorkstreamForRun(input: CreateWorkstreamForRunRequest): Promise<SelectedWorkstreamForRunResponse> {
     return await this.queue.enqueue(async () => {
       await this.ensureStartupRecovery();
       const session = this.requireWritableSession(input.sessionId);
       verifyExpectedHead(session, input.expectedHead);
-      const result = await this.taskBinding.create(input);
-      this.taskDiscovery.recordAccess({
-        taskId: result.task.taskId,
+      this.resourceCatalog.validateBindings(input.resources);
+      let result = await this.workstreamBinding.create(input);
+      if (input.resources && input.resources.length > 0) {
+        this.resourceCatalog.bind({
+          requestId: input.requestId + ":resources",
+          sessionId: input.sessionId,
+          runId: input.runId,
+          workstreamId: result.workstream.workstreamId,
+          bindings: input.resources,
+          at: input.at,
+        });
+      }
+      const resourceBindings = await this.resourceCatalog.ensureManagedOutput({
+        sessionId: input.sessionId,
+        runId: input.runId,
+        workstreamId: result.workstream.workstreamId,
+        title: result.workstream.title,
+        at: input.at,
+      });
+      result = {
+        ...result,
+        resourceBindings,
+        context: { ...result.context, resources: resourceBindings },
+      };
+      this.workstreamDiscovery.recordAccess({
+        workstreamId: result.workstream.workstreamId,
         runId: result.run.runId,
         kind: "bound",
         at: input.at,
       });
       this.runs.refresh(result.run.runId);
-      this.invalidateContext("run_task_bound", {
+      this.invalidateContext("run_workstream_bound", {
         sessionId: input.sessionId,
         runId: result.run.runId,
-        taskId: result.task.taskId,
+        workstreamId: result.workstream.workstreamId,
         allSessions: true,
-        taskCandidates: true,
+        workstreamCandidates: true,
       });
-      this.events.taskSelected("created", result);
+      this.events.workstreamSelected("created", result);
       this.events.emit({
         level: "info",
-        event: result.task.placement === "requested" ? "task_registered" : "task_created",
+        event: "workstream_created",
         requestId: input.requestId,
         sessionId: input.sessionId,
         runId: result.run.runId,
-        taskId: result.task.taskId,
+        workstreamId: result.workstream.workstreamId,
         outcome: "succeeded",
         data: {
-          placement: result.task.placement,
-          repositoryPath: result.task.repositoryPath,
-          taskCreated: result.taskCreated,
-          registrationHeadBefore: result.task.registrationHeadBefore,
+          contextRepositoryPath: result.workstream.contextRepositoryPath,
+          workstreamCreated: result.workstreamCreated,
+          resourceCount: resourceBindings.length,
         },
       });
       return result;
     });
   }
 
-  async activateTaskForRun(input: ActivateTaskForRunRequest): Promise<SelectedTaskForRunResponse> {
+  async activateWorkstreamForRun(input: ActivateWorkstreamForRunRequest): Promise<SelectedWorkstreamForRunResponse> {
     return await this.queue.enqueue(async () => {
       await this.ensureStartupRecovery();
       const session = this.requireWritableSession(input.sessionId);
       verifyExpectedHead(session, input.expectedHead);
-      const result = await this.taskBinding.activate(input);
-      this.taskDiscovery.recordAccess({
-        taskId: result.task.taskId,
+      const selected = await this.workstreamBinding.activate(input);
+      const resourceBindings = this.resourceCatalog.readWorkstreamBindings(input.workstreamId);
+      const result = {
+        ...selected,
+        resourceBindings,
+        context: { ...selected.context, resources: resourceBindings },
+      };
+      this.workstreamDiscovery.recordAccess({
+        workstreamId: result.workstream.workstreamId,
         runId: result.run.runId,
         kind: "bound",
         at: input.at,
       });
       this.runs.refresh(result.run.runId);
-      this.invalidateContext("run_task_bound", {
+      this.invalidateContext("run_workstream_bound", {
         sessionId: input.sessionId,
         runId: result.run.runId,
-        taskId: result.task.taskId,
+        workstreamId: result.workstream.workstreamId,
         allSessions: true,
-        taskCandidates: true,
+        workstreamCandidates: true,
       });
-      this.events.taskSelected("activated", result);
+      this.events.workstreamSelected("activated", result);
       return result;
     });
   }
 
-  async planTaskRequestRoute(
-    input: PlanTaskRequestRouteRequest,
-  ): Promise<PlanTaskRequestRouteResponse> {
+  async planWorkstreamRequestRoute(
+    input: PlanWorkstreamRequestRouteRequest,
+  ): Promise<PlanWorkstreamRequestRouteResponse> {
     return await this.queue.enqueue(async () => {
       await this.ensureStartupRecovery();
       this.requireWritableSession(input.sessionId);
-      const result = await this.taskRequestRouting.plan(input);
+      const result = await this.workstreamRequestRouting.plan(input);
       this.runs.refresh(input.runId);
-      this.invalidateContext("task_request_route_planned", {
+      this.invalidateContext("workstream_request_route_planned", {
         sessionId: input.sessionId,
         runId: input.runId,
-        taskId: input.taskId,
+        workstreamId: input.workstreamId,
       });
       return result;
     });
   }
 
-  async listTasks(input: ListTasksRequest): Promise<ListTasksResponse> {
+  async listWorkstreams(input: ListWorkstreamsRequest): Promise<ListWorkstreamsResponse> {
     return await this.queue.enqueue(async () => {
       await this.ensureStartupRecovery();
-      return this.taskDiscovery.find(input);
+      return this.workstreamDiscovery.find(input);
     });
   }
 
-  async findTasks(input: FindTasksRequest): Promise<FindTasksResponse> {
+  async findWorkstreams(input: FindWorkstreamsRequest): Promise<FindWorkstreamsResponse> {
     return await this.queue.enqueue(async () => {
       await this.ensureStartupRecovery();
-      const result = this.taskDiscovery.find(input);
+      const result = this.workstreamDiscovery.find(input);
       this.events.emit({
         level: "info",
-        event: "task_candidates_discovered",
+        event: "workstream_candidates_discovered",
         sessionId: input.sessionId,
         outcome: "succeeded",
         data: {
-          count: result.tasks.length,
+          count: result.workstreams.length,
           view: input.view ?? "relevant",
           queried: Boolean(input.query),
           pathCount: input.paths?.length ?? 0,
-          candidates: result.tasks.slice(0, 20).map((task) => ({
-            taskId: task.taskId,
-            tier: task.discovery.tier,
-            reasons: task.discovery.reasons,
+          candidates: result.workstreams.slice(0, 20).map((workstream) => ({
+            workstreamId: workstream.workstreamId,
+            tier: workstream.discovery.tier,
+            reasons: workstream.discovery.reasons,
           })),
         },
       });
@@ -668,92 +701,95 @@ export class SqliteGitContextService implements GitContextService {
     });
   }
 
-  async inspectTaskLocation(
-    input: InspectTaskLocationRequest,
-  ): Promise<InspectTaskLocationResponse> {
+  async getWorkstream(input: GetWorkstreamRequest): Promise<GetWorkstreamResponse> {
     return await this.queue.enqueue(async () => {
       await this.ensureStartupRecovery();
-      this.requireWritableSession(input.sessionId);
-      const result = await this.taskLocations.inspect(input);
-      this.events.emit({
-        level: "info",
-        event: "task_location_inspected",
+      const result = await this.workstreamLifecycle.getWorkstream(input);
+      const resources = this.resourceCatalog.readWorkstreamBindings(input.workstreamId);
+      return {
+        ...result,
+        ...(result.context ? { context: { ...result.context, resources } } : {}),
+      };
+    });
+  }
+
+  async readWorkstream(input: ReadWorkstreamRequest): Promise<ReadWorkstreamResponse> {
+    return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
+      const replay = readCompletedIdempotent<ReadWorkstreamResponse>({
+        database: this.database,
         requestId: input.requestId,
-        sessionId: input.sessionId,
-        runId: input.runId,
-        outcome: "succeeded",
-        data: {
-          kind: result.kind,
-          repositoryPath: result.canonicalPath,
-          approvalRequired: Boolean(result.registrationApprovalId),
-        },
+        operation: "read_workstream",
+        payload: input,
       });
-      return result;
-    });
-  }
-
-  async getTask(input: GetTaskRequest): Promise<GetTaskResponse> {
-    return await this.queue.enqueue(async () => {
-      await this.ensureStartupRecovery();
-      return await this.taskLifecycle.getTask(input);
-    });
-  }
-
-  async readTask(input: ReadTaskRequest): Promise<ReadTaskResponse> {
-    return await this.queue.enqueue(async () => {
-      await this.ensureStartupRecovery();
+      if (replay) return replay;
       const run = readRunEvidence(this.database, input.runId);
       if (!run || run.sessionId !== input.sessionId || run.status !== "running") {
         throw new GitContextServiceError({
           code: "RUN_NOT_ACTIVE",
-          message: "Opening a task requires the matching active run.",
+          message: "Opening a workstream requires the matching active run.",
           details: { sessionId: input.sessionId, runId: input.runId },
         });
       }
-      const result = await this.taskLifecycle.getTask({ taskId: input.taskId });
-      this.taskDiscovery.recordAccess({
-        taskId: input.taskId,
-        runId: input.runId,
-        kind: "opened",
-        at: input.at,
+      const selected = await this.workstreamLifecycle.getWorkstream({ workstreamId: input.workstreamId });
+      const resources = this.resourceCatalog.readWorkstreamBindings(input.workstreamId);
+      const result = {
+        ...selected,
+        ...(selected.context ? { context: { ...selected.context, resources } } : {}),
+      };
+      const response = executeIdempotent<ReadWorkstreamResponse>({
+        database: this.database,
+        requestId: input.requestId,
+        operation: "read_workstream",
+        payload: input,
+        now: input.at,
+        execute: () => {
+          this.workstreamDiscovery.recordAccess({
+            workstreamId: input.workstreamId,
+            runId: input.runId,
+            kind: "opened",
+            at: input.at,
+          });
+          return { ...result, opened: true };
+        },
       });
-      this.invalidateContext("task_opened", {
+      this.invalidateContext("workstream_opened", {
         sessionId: input.sessionId,
-        taskCandidates: true,
+        workstreamCandidates: true,
       });
       this.events.emit({
         level: "info",
-        event: "task_opened",
+        event: "workstream_opened",
         requestId: input.requestId,
         sessionId: input.sessionId,
         runId: input.runId,
-        taskId: input.taskId,
+        workstreamId: input.workstreamId,
         outcome: "succeeded",
         data: {
-          repositoryPath: result.task.repositoryPath,
+          contextRepositoryPath: result.workstream.contextRepositoryPath,
           repositoryHealth: result.context?.repositoryHealth,
         },
       });
-      return { ...result, opened: true };
+      return response;
     });
   }
 
-  async setTaskStar(input: SetTaskStarRequest): Promise<SetTaskStarResponse> {
+  async setWorkstreamStar(input: SetWorkstreamStarRequest): Promise<SetWorkstreamStarResponse> {
     return await this.queue.enqueue(async () => {
       await this.ensureStartupRecovery();
-      const result = this.taskDiscovery.setStar(input);
-      this.invalidateContext("task_star_changed", {
+      const result = this.workstreamDiscovery.setStar(input);
+      this.invalidateContext("workstream_star_changed", {
         sessionId: input.sessionId,
         allSessions: true,
-        taskCandidates: true,
+        workstreamCandidates: true,
       });
       this.events.emit({
         level: "info",
-        event: "task_star_changed",
+        event: "workstream_star_changed",
         requestId: input.requestId,
         sessionId: input.sessionId,
         runId: input.runId,
-        taskId: input.taskId,
+        workstreamId: input.workstreamId,
         outcome: "succeeded",
         data: { starred: input.starred },
       });
@@ -761,111 +797,184 @@ export class SqliteGitContextService implements GitContextService {
     });
   }
 
-  async recordSessionAttachments(
-    input: RecordSessionAttachmentsRequest,
-  ): Promise<RecordSessionAttachmentsResponse> {
+  async findResources(input: FindResourcesRequest): Promise<FindResourcesResponse> {
     return await this.queue.enqueue(async () => {
       await this.ensureStartupRecovery();
-      this.requireWritableSession(input.sessionId);
-      const result = await this.taskAttachments.record(input);
-      this.invalidateContext("session_attachments_recorded", {
-        sessionId: input.sessionId,
-        attachments: true,
-      });
-      return result;
+      return this.resourceCatalog.find(input);
     });
   }
 
-  async bindTaskAttachments(
-    input: BindTaskAttachmentsRequest,
-  ): Promise<BindTaskAttachmentsResponse> {
+  async inspectResourceForRun(
+    input: InspectResourceForRunRequest,
+  ): Promise<InspectResourceForRunResponse> {
     return await this.queue.enqueue(async () => {
       await this.ensureStartupRecovery();
       this.requireWritableSession(input.sessionId);
-      const result = await this.taskAttachments.bind(input);
-      this.invalidateContext("task_attachments_bound", {
+      const result = await this.resourceCatalog.inspect(input);
+      this.invalidateContext("resource_inspected", {
         sessionId: input.sessionId,
         runId: input.runId,
-        taskId: input.taskId,
+        resources: true,
+        workstreamCandidates: true,
+      });
+      this.events.emit({
+        level: "info",
+        event: "resource_inspected",
+        requestId: input.requestId,
+        sessionId: input.sessionId,
+        runId: input.runId,
+        outcome: "succeeded",
+        data: {
+          resourceId: result.resource.resourceId,
+          kind: result.resource.kind,
+          availability: result.resource.availability,
+          existing: result.existing,
+        },
       });
       return result;
     });
   }
 
-  async adoptTaskReference(
-    input: AdoptTaskReferenceRequest,
-  ): Promise<AdoptTaskReferenceResponse> {
+  async bindResourcesForRun(
+    input: BindResourcesForRunRequest,
+  ): Promise<BindResourcesForRunResponse> {
     return await this.queue.enqueue(async () => {
       await this.ensureStartupRecovery();
-      const result = await this.taskAttachments.adopt(input);
-      const run = readRun(this.database, result.runId);
-      this.invalidateContext("task_reference_adopted", {
-        sessionId: run?.sessionId,
-        runId: result.runId,
-        taskId: result.taskId,
-        allSessions: true,
-        taskCandidates: true,
+      this.requireWritableSession(input.sessionId);
+      const result = this.resourceCatalog.bind(input);
+      this.invalidateContext("resources_bound", {
+        sessionId: input.sessionId,
+        runId: input.runId,
+        workstreamId: input.workstreamId,
+        resources: true,
+        workstreamCandidates: true,
       });
       return result;
     });
   }
 
-  async acquireMutationAuthority(
-    input: AcquireMutationAuthorityRequest,
-  ): Promise<AcquireMutationAuthorityResponse> {
+  async prepareResourceMutation(
+    input: PrepareResourceMutationRequest,
+  ): Promise<PrepareResourceMutationResponse> {
     return await this.queue.enqueue(async () => {
       await this.ensureStartupRecovery();
       const session = this.requireWritableSession(input.sessionId);
       verifyExpectedHead(session, input.expectedHead);
-      const result = await this.mutationBoundary.acquire(input);
+      const pending = beginRecoverableIdempotent<PrepareResourceMutationResponse | null>({
+        database: this.database,
+        requestId: input.requestId,
+        operation: "prepare_resource_mutation",
+        payload: input,
+        now: input.at,
+        execute: () => null,
+      });
+      if (pending.completed) {
+        if (!pending.result) throw new Error("Completed mutation preparation receipt is invalid.");
+        const authority = this.resourceMutations.operationContext(pending.result.operationId);
+        if (authority?.operationStatus !== "prepared" || authority.leaseStatus !== "active") {
+          throw new GitContextServiceError({
+            code: "RECOVERY_REQUIRED",
+            message: "The replayed mutation authority is no longer active.",
+            details: { operationId: pending.result.operationId },
+          });
+        }
+        return pending.result;
+      }
+      if (pending.status === "recovery_required" || pending.result) {
+        throw new GitContextServiceError({
+          code: "RECOVERY_REQUIRED",
+          message: "Resource mutation preparation was interrupted after authority allocation.",
+          details: { requestId: input.requestId, runId: input.runId, callId: input.callId },
+        });
+      }
+      let result: PrepareResourceMutationResponse;
+      try {
+        result = await this.resourceMutations.prepare(input, (prepared) => {
+          updateRecoverableIdempotentResult({
+            database: this.database,
+            requestId: input.requestId,
+            result: prepared,
+          });
+        });
+        completeRecoverableIdempotent({
+          database: this.database,
+          requestId: input.requestId,
+          result,
+          now: input.at,
+        });
+      } catch (error) {
+        markRecoverableIdempotencyFailed({
+          database: this.database,
+          requestId: input.requestId,
+        });
+        throw error;
+      }
       this.runs.refresh(input.runId);
-      this.invalidateContext("mutation_authority_acquired", {
+      this.invalidateContext("resource_mutation_prepared", {
         sessionId: input.sessionId,
         runId: input.runId,
-        taskId: input.taskId,
+        workstreamId: input.workstreamId,
       });
       this.events.emit({
         level: "info",
-        event: "mutation_authority_acquired",
+        event: "resource_mutation_prepared",
         requestId: input.requestId,
         sessionId: input.sessionId,
         runId: input.runId,
-        taskId: input.taskId,
+        workstreamId: input.workstreamId,
         outcome: "succeeded",
-        data: { authorityId: result.authority.authorityId, targetCount: input.targets.length },
+        data: { operationId: result.operationId, targetCount: result.targets.length },
       });
       return result;
     });
   }
 
-  async verifyMutation(input: VerifyMutationRequest): Promise<VerifyMutationResponse> {
+  async verifyResourceMutation(
+    input: VerifyResourceMutationRequest,
+  ): Promise<VerifyResourceMutationResponse> {
     return await this.queue.enqueue(async () => {
       await this.ensureStartupRecovery();
-      const authority = readMutationAuthority(this.database, input.authorityId);
-      const result = await this.mutationBoundary.verify(input);
-      this.invalidateContext("mutation_verified", {
-        sessionId: authority?.sessionId,
-        runId: authority?.runId,
-        taskId: authority?.taskId,
+      const replay = readCompletedIdempotent<VerifyResourceMutationResponse>({
+        database: this.database,
+        requestId: input.requestId,
+        operation: "verify_resource_mutation",
+        payload: input,
+      });
+      if (replay) return replay;
+      const operationContext = this.resourceMutations.operationContext(input.operationId);
+      const result = await this.resourceMutations.verify(input);
+      const persisted = executeIdempotent({
+        database: this.database,
+        requestId: input.requestId,
+        operation: "verify_resource_mutation",
+        payload: input,
+        now: input.at,
+        execute: () => result,
+      });
+      const run = readRun(this.database, operationContext?.runId ?? result.events[0]?.runId ?? "");
+      this.invalidateContext("resource_mutation_verified", {
+        sessionId: run?.sessionId,
+        runId: run?.runId,
+        workstreamId: run?.workstreamBinding?.workstreamId,
         allSessions: true,
-        taskCandidates: true,
+        resources: true,
+        workstreamCandidates: true,
       });
       this.events.emit({
-        level: result.verified ? "info" : "warn",
-        event: "mutation_verified",
+        level: result.verified ? "info" : "error",
+        event: "resource_mutation_verified",
         requestId: input.requestId,
+        sessionId: run?.sessionId,
+        runId: run?.runId,
+        workstreamId: run?.workstreamBinding?.workstreamId,
         outcome: result.verified ? "succeeded" : "failed",
         data: {
-          authorityId: result.authorityId,
-          verified: result.verified,
-          mutationOutcome: result.outcome,
-          changedPathCount: result.provenance.created.length
-            + result.provenance.modified.length
-            + result.provenance.deleted.length
-            + result.provenance.renamed.length,
+          operationId: result.operationId,
+          status: result.status,
+          eventCount: result.events.length,
         },
       });
-      return result;
+      return persisted;
     });
   }
 
@@ -874,9 +983,9 @@ export class SqliteGitContextService implements GitContextService {
       await this.ensureStartupRecovery();
       const session = this.requireSession(input.sessionId);
       const selectedRun = readRun(this.database, input.runId);
-      const taskId = selectedRun?.taskBinding?.taskId;
-      const selectedTask = taskId
-        ? await this.taskLifecycle.getTask({ taskId })
+      const workstreamId = selectedRun?.workstreamBinding?.workstreamId;
+      const selectedWorkstream = workstreamId
+        ? await this.workstreamLifecycle.getWorkstream({ workstreamId })
         : undefined;
       let result: FinalizeRunResponse;
       let completed = false;
@@ -886,11 +995,11 @@ export class SqliteGitContextService implements GitContextService {
         requestId: input.requestId,
         sessionId: input.sessionId,
         runId: input.runId,
-        ...(taskId ? { taskId } : {}),
+        ...(workstreamId ? { workstreamId } : {}),
         outcome: "started",
         data: {
-          workingDirectory: selectedTask?.task.workingPath,
-          taskRequestId: selectedRun?.taskBinding?.taskRequestId,
+          workstreamBinding: selectedRun?.workstreamBinding,
+          contextRepositoryPath: selectedWorkstream?.workstream.contextRepositoryPath,
           requestedOutcome: input.outcome,
           validation: input.validation,
         },
@@ -905,7 +1014,7 @@ export class SqliteGitContextService implements GitContextService {
           requestId: input.requestId,
           sessionId: input.sessionId,
           runId: input.runId,
-          ...(taskId ? { taskId } : {}),
+          ...(workstreamId ? { workstreamId } : {}),
           outcome: "failed",
           message: error instanceof Error ? error.message : String(error),
         });
@@ -923,10 +1032,10 @@ export class SqliteGitContextService implements GitContextService {
         this.invalidateContext("run_finalization", {
           sessionId: input.sessionId,
           runId: input.runId,
-          ...(taskId ? { taskId } : {}),
+          ...(workstreamId ? { workstreamId } : {}),
           allSessions: true,
           readContext: true,
-          taskCandidates: true,
+          workstreamCandidates: true,
         });
       }
       const updatedSession = readSessionRecord(this.database, input.sessionId);
@@ -944,16 +1053,17 @@ export class SqliteGitContextService implements GitContextService {
         requestId: input.requestId,
         sessionId: input.sessionId,
         runId: input.runId,
-        ...(taskId ? { taskId } : {}),
+        ...(workstreamId ? { workstreamId } : {}),
         outcome: "succeeded",
         data: {
           outcome: result.run.status,
           stopReason: result.run.stopReason,
-          workingDirectory: selectedTask?.task.workingPath,
-          taskRequestId: selectedRun?.taskBinding?.taskRequestId,
+          workstreamBinding: selectedRun?.workstreamBinding,
+          contextRepositoryPath: selectedWorkstream?.workstream.contextRepositoryPath,
           materialization: result.materialization,
-          commit: result.commit,
-          readContextReset: result.commit.status === "committed",
+          resourceEffects: result.resourceEffects,
+          workstreamContextCommit: result.workstreamContextCommit,
+          readContextReset: result.workstreamContextCommit.status === "committed",
         },
       });
       await this.reconcileLatestDailySession(input.at);
@@ -1005,7 +1115,8 @@ export class SqliteGitContextService implements GitContextService {
       if (session) {
         this.conversationCache.refreshSession(this.database, session.sessionId);
       }
-      await this.taskLifecycle.recoverInitializingState();
+      await this.workstreamLifecycle.recoverInitializingState();
+      this.resourceMutations.recoverInterrupted();
       await this.runFinalization.recover(this.now());
       const runRecovery = this.startupRunRecovery.recover(this.now());
       for (const runId of runRecovery.interruptedRunIds) {
@@ -1031,7 +1142,7 @@ export class SqliteGitContextService implements GitContextService {
           event: "run_finalization_failed",
           sessionId: run?.sessionId,
           runId,
-          taskId: run?.taskBinding?.taskId,
+          workstreamId: run?.workstreamBinding?.workstreamId,
           outcome: "failed",
           message: "Startup recovery requires manual resolution before another run can start.",
           data: { recoveredAtStartup: true, runStatus: "recovery_required" },
@@ -1112,7 +1223,7 @@ export class SqliteGitContextService implements GitContextService {
       date: input.date,
       timezone: input.timezone,
       agentId,
-      repositoryPath: join(this.dataRoot, "sessions", sessionId),
+      repositoryPath: join(this.stateRoot, "sessions", sessionId),
       ...(previousSessionId ? { previousSessionId } : {}),
       createdAt,
     });
@@ -1191,7 +1302,7 @@ export class SqliteGitContextService implements GitContextService {
             date: input.date,
             timezone: input.timezone,
             agentId,
-            repositoryPath: join(this.dataRoot, "sessions", nextSessionId),
+            repositoryPath: join(this.stateRoot, "sessions", nextSessionId),
             previousSessionId: existing.sessionId,
             createdAt,
           }),
@@ -1209,7 +1320,7 @@ export class SqliteGitContextService implements GitContextService {
         date: input.date,
         timezone: input.timezone,
         agentId,
-        repositoryPath: join(this.dataRoot, "sessions", sessionId),
+        repositoryPath: join(this.stateRoot, "sessions", sessionId),
         ...(previousSessionId ? { previousSessionId } : {}),
         createdAt,
       }),

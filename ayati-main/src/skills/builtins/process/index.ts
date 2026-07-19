@@ -944,7 +944,7 @@ const processCommandOutputSchema = {
 
 const processMutationTargetsSchema = {
   type: "array",
-  description: "Bounded host paths the command may create or modify. Required by task authorization for mutation-capable commands.",
+  description: "Bounded host paths the command may create or modify. Required by resource authorization for mutation-capable commands.",
   items: {
     type: "object",
     required: ["path"],
@@ -1019,7 +1019,7 @@ export const processRunTool: ToolDefinition = {
     properties: {
       executable: { type: "string", description: "Executable name or canonical absolute executable path. Shell command strings are not accepted." },
       args: { type: "array", items: { type: "string" }, description: "Arguments passed directly to the executable without shell parsing." },
-      cwd: { type: "string", description: "Canonical absolute working directory. Omit to use the task directory." },
+      cwd: { type: "string", description: "Canonical absolute working directory. Omit to use the default Ayati workspace." },
       targets: processMutationTargetsSchema,
       timeoutMs: { type: "number" },
       maxOutputChars: { type: "number" },
@@ -1062,7 +1062,7 @@ export const processStartTool: ToolDefinition = {
     properties: {
       executable: { type: "string", description: "Executable name or canonical absolute executable path. Shell command strings are not accepted." },
       args: { type: "array", items: { type: "string" }, description: "Arguments passed directly to the executable without shell parsing." },
-      cwd: { type: "string", description: "Canonical absolute working directory. Omit to use the task directory." },
+      cwd: { type: "string", description: "Canonical absolute working directory. Omit to use the default Ayati workspace." },
       targets: processMutationTargetsSchema,
       waitMs: { type: "number" },
       maxOutputChars: { type: "number" },
@@ -1474,7 +1474,7 @@ const PROCESS_PROMPT_BLOCK = [
   "Use process_run for one non-interactive executable, or process_start/process_poll/process_send_input/process_stop for one long-running process lifecycle.",
   "Pass executable and args separately. Shell command strings, shell interpreters, inline interpreter code, and direct filesystem/search/database/Git commands are rejected.",
   "Use read_files, search_in_files, find_files, list_directory, inspect_paths, filesystem mutation tools, database tools, Python tools, file_fetch_url, and Git Context for their owned capabilities.",
-  "Default process cwd to the task directory. Any supplied cwd and mutation targets must be canonical absolute paths.",
+  "Default process cwd to the selected bound resource. Any supplied cwd and mutation targets must be canonical absolute paths.",
   "For a project command that may create generated files, declare every bounded absolute mutation target in targets.",
 ].join("\n");
 

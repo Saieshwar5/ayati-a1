@@ -15,7 +15,7 @@ describe("system prompt contract", () => {
     expect(prompt).toContain("`context.tools`");
     expect(prompt).toContain("`context.personal`");
     expect(prompt).toContain("`decision_load_tools`");
-    expect(prompt).toContain("`task_completion`");
+    expect(prompt).toContain("`workstream_completion`");
     expect(prompt).toContain("`ask_user_feedback`");
 
     expect(prompt).not.toContain("decision_reply");

@@ -5,10 +5,7 @@ import type {
   ContextReadContext,
   ContextReadEntry,
   ContextSessionActivityRecord,
-  ContextSessionTaskRunCheckpoint,
-  ContextTaskArtifactRecord,
-  ContextTaskEvidenceSummary,
-  ContextTaskRunSummary,
+  ContextSessionRunCheckpoint,
 } from "../../context-engine/index.js";
 import type { AgentContextPack } from "./context-pack.js";
 import type { PromptToolCalls } from "./run-tool-call-context.js";
@@ -27,69 +24,55 @@ export interface PromptGitSessionContext {
   meta: ContextEngineMachineContext["session"]["meta"];
   summary?: ContextEngineMachineContext["session"]["summary"];
   recentCommits?: PromptCommitSummary[];
-  recentTaskRuns?: PromptSessionRunCheckpoint[];
+  recentRunCheckpoints?: PromptSessionRunCheckpoint[];
   attachments?: unknown;
   activity: {
     recent: PromptSessionActivityRecord[];
   };
 }
 
-type ContextEngineTaskContext = NonNullable<ContextEngineMachineContext["task"]> & {
-  branch?: string;
-  summary?: string;
-  taskId?: string;
-};
+type ContextEngineWorkstreamContext = NonNullable<ContextEngineMachineContext["workstream"]>;
 
 type PromptGitCurrentBase = Omit<
   ContextEngineMachineContext,
-  "session" | "task" | "pendingTurn" | "readContext"
+  "session" | "workstream" | "pendingTurn" | "readContext"
 >;
 
 export type PromptGitCurrentContext = PromptGitCurrentBase & {
   pendingTurn?: PromptPendingTurn;
   readContext?: PromptReadContext;
-  task?: PromptGitTaskContext;
+  workstream?: PromptGitWorkstreamContext;
 };
 
-export interface PromptGitTaskContext {
+export interface PromptGitWorkstreamContext {
   identity: {
     ref: string;
+    workstreamId: string;
     title: string;
     objective: string;
-    branch?: string;
-    taskId?: string;
-    workId?: string;
-    workingDirectory?: string;
   };
   state: {
-    status: string;
-    completed: string[];
-    open: string[];
+    summary: string;
+    workstreamStatus: "in_progress" | "done" | "blocked";
+    lifecycleStatus: "active" | "paused" | "archived";
+    repositoryHealth: "ready" | "dirty_external";
+    currentFocus?: string;
     blockers: string[];
-    facts: ContextEngineTaskContext["facts"];
     next?: string;
-    summary?: string;
+    currentRequest?: ContextEngineWorkstreamContext["currentRequest"];
   };
-  assets: ContextEngineTaskContext["assets"];
-  artifacts?: PromptTaskArtifact[];
+  resources: ContextEngineWorkstreamContext["resources"];
   activity: {
-    recentRuns: PromptTaskRunSummary[];
-    recentEvidence: PromptTaskEvidenceSummary[];
+    recentCommits: PromptCommitSummary[];
   };
 };
 
 type PromptCommitSummary = Omit<ContextCommitSummary, "runId">;
-type PromptSessionRunCheckpoint = Omit<ContextSessionTaskRunCheckpoint, "runId">;
+type PromptSessionRunCheckpoint = Omit<ContextSessionRunCheckpoint, "runId">;
 type WithoutRunId<Value> = Value extends unknown ? Omit<Value, "runId"> : never;
 type PromptSessionActivityRecord = WithoutRunId<ContextSessionActivityRecord>;
 type PromptPendingTurn = Omit<ContextPendingTurn, "runId">;
 type PromptReadEntry = Omit<ContextReadEntry, "runId">;
-type PromptTaskRunSummary = Omit<ContextTaskRunSummary, "runId">;
-type PromptTaskEvidenceSummary = Omit<ContextTaskEvidenceSummary, "runId">;
-type PromptTaskArtifact = Omit<
-  ContextTaskArtifactRecord,
-  "createdByRunId" | "lastTouchedRunId" | "sourceRunId"
->;
 
 interface PromptReadContext extends Omit<ContextReadContext, "afterCommitRunId" | "inventory" | "discovery" | "evidence" | "actions"> {
   inventory: PromptReadEntry[];
@@ -195,8 +178,8 @@ function projectGitSessionForPrompt(
     ...(session.recentCommits ? {
       recentCommits: session.recentCommits.map(withoutRunId),
     } : {}),
-    ...(session.recentTaskRuns ? {
-      recentTaskRuns: session.recentTaskRuns.map(withoutRunId),
+    ...(session.recentRunCheckpoints ? {
+      recentRunCheckpoints: session.recentRunCheckpoints.map(withoutRunId),
     } : {}),
     ...(promptAttachments ? {
       attachments: withoutInternalStoragePaths(promptAttachments),
@@ -217,7 +200,7 @@ function readSessionMeta(session: ContextEngineMachineContext["session"]): Conte
 function projectGitCurrentForPrompt(gitContext: ContextEngineMachineContext): PromptGitCurrentContext {
   const {
     session: _session,
-    task,
+    workstream,
     pendingTurn,
     readContext,
     ...current
@@ -226,41 +209,35 @@ function projectGitCurrentForPrompt(gitContext: ContextEngineMachineContext): Pr
     ...current,
     ...(pendingTurn ? { pendingTurn: withoutRunId(pendingTurn) } : {}),
     ...(readContext ? { readContext: projectReadContextForPrompt(readContext) } : {}),
-    ...(task ? {
-      task: projectGitTaskForPrompt(task),
+    ...(workstream ? {
+      workstream: projectGitWorkstreamForPrompt(workstream),
     } : {}),
   };
 }
 
-function projectGitTaskForPrompt(
-  task: ContextEngineTaskContext,
-): PromptGitTaskContext {
+function projectGitWorkstreamForPrompt(
+  workstream: ContextEngineWorkstreamContext,
+): PromptGitWorkstreamContext {
   return {
     identity: {
-      ref: task.ref,
-      title: task.title,
-      objective: task.objective,
-      ...(task.branch ? { branch: task.branch } : {}),
-      ...(task.taskId ? { taskId: task.taskId } : {}),
-      ...(task.workId ? { workId: task.workId } : {}),
-      ...(task.workingDirectory ? { workingDirectory: task.workingDirectory } : {}),
+      ref: workstream.ref,
+      workstreamId: workstream.workstreamId,
+      title: workstream.title,
+      objective: workstream.objective,
     },
     state: {
-      status: task.status,
-      completed: task.completed,
-      open: task.open,
-      blockers: task.blockers,
-      facts: task.facts,
-      ...(task.next ? { next: task.next } : {}),
-      ...(task.summary ? { summary: task.summary } : {}),
+      summary: workstream.summary,
+      workstreamStatus: workstream.workstreamStatus,
+      lifecycleStatus: workstream.lifecycleStatus,
+      repositoryHealth: workstream.repositoryHealth,
+      ...(workstream.currentFocus ? { currentFocus: workstream.currentFocus } : {}),
+      blockers: workstream.blockers,
+      ...(workstream.next ? { next: workstream.next } : {}),
+      ...(workstream.currentRequest ? { currentRequest: workstream.currentRequest } : {}),
     },
-    assets: task.assets,
-    ...(task.artifacts ? {
-      artifacts: task.artifacts.map(projectTaskArtifactForPrompt),
-    } : {}),
+    resources: workstream.resources,
     activity: {
-      recentRuns: task.recentRuns.map(withoutRunId),
-      recentEvidence: task.recentEvidence.map(withoutRunId),
+      recentCommits: workstream.recentCommits.map(withoutRunId),
     },
   };
 }
@@ -278,18 +255,6 @@ function projectReadContextForPrompt(
   };
 }
 
-function projectTaskArtifactForPrompt(
-  artifact: ContextTaskArtifactRecord | PromptTaskArtifact,
-): PromptTaskArtifact {
-  const {
-    createdByRunId: _createdByRunId,
-    lastTouchedRunId: _lastTouchedRunId,
-    sourceRunId: _sourceRunId,
-    ...projected
-  } = artifact as ContextTaskArtifactRecord;
-  return projected;
-}
-
 function withoutRunId<Value extends object>(value: Value): WithoutRunId<Value> {
   const { runId: _runId, ...projected } = value as Value & { runId?: unknown };
   return projected as WithoutRunId<Value>;
@@ -297,6 +262,7 @@ function withoutRunId<Value extends object>(value: Value): WithoutRunId<Value> {
 
 const INTERNAL_STORAGE_PATH_KEYS = new Set([
   "artifactPath",
+  "contextRepositoryPath",
   "derivedDir",
   "metadataPath",
   "repositoryPath",
@@ -340,8 +306,8 @@ function compactPromptGitContext(git: PromptGitContext): PromptGitContext {
       ...(git.session.recentCommits ? {
         recentCommits: git.session.recentCommits.map(withoutRunId),
       } : {}),
-      ...(git.session.recentTaskRuns ? {
-        recentTaskRuns: git.session.recentTaskRuns.map(withoutRunId),
+      ...(git.session.recentRunCheckpoints ? {
+        recentRunCheckpoints: git.session.recentRunCheckpoints.map(withoutRunId),
       } : {}),
       ...(git.session.attachments ? {
         attachments: withoutInternalStoragePaths(git.session.attachments),
@@ -355,24 +321,22 @@ function compactPromptGitContext(git: PromptGitContext): PromptGitContext {
 }
 
 function compactPromptGitCurrent(current: PromptGitCurrentContext): PromptGitCurrentContext {
-  const { pendingTurn, readContext, task, ...rest } = current;
+  const { pendingTurn, readContext, workstream, ...rest } = current;
   return {
     ...rest,
     ...(pendingTurn ? { pendingTurn: withoutRunId(pendingTurn) } : {}),
     ...(readContext ? { readContext: projectReadContextForPrompt(readContext) } : {}),
-    ...(task ? { task: compactPromptGitTask(task) } : {}),
+    ...(workstream ? { workstream: compactPromptGitWorkstream(workstream) } : {}),
   };
 }
 
-function compactPromptGitTask(task: PromptGitTaskContext): PromptGitTaskContext {
+function compactPromptGitWorkstream(
+  workstream: PromptGitWorkstreamContext,
+): PromptGitWorkstreamContext {
   return {
-    ...task,
-    ...(task.artifacts ? {
-      artifacts: task.artifacts.map(projectTaskArtifactForPrompt),
-    } : {}),
+    ...workstream,
     activity: {
-      recentRuns: task.activity.recentRuns.map(withoutRunId),
-      recentEvidence: task.activity.recentEvidence.map(withoutRunId),
+      recentCommits: workstream.activity.recentCommits.map(withoutRunId),
     },
   };
 }

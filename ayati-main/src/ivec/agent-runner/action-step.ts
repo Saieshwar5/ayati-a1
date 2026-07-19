@@ -53,8 +53,8 @@ export interface ExecuteActionStepInput {
 
 export async function executeActionStep(input: ExecuteActionStepInput): Promise<ExecuteActionStepResult> {
   const runHandle = input.runHandle ?? requireRunHandle(input.deps);
-  const taskAssets = isTaskBound(input.state)
-    ? input.state.harnessContext.contextEngine?.task?.assets
+  const workstreamResources = isWorkstreamBound(input.state)
+    ? input.state.harnessContext.contextEngine?.workstream?.resources
     : undefined;
   let execution = await executeAgentAction(
     {
@@ -66,7 +66,7 @@ export async function executeActionStep(input: ExecuteActionStepInput): Promise<
       runRecorder: input.deps.runRecorder ?? noopRunRecorder,
       runHandle,
       metrics: input.metrics,
-      taskAssets,
+      workstreamResources,
     },
     input.decision.action,
     input.stepNumber,
@@ -87,7 +87,7 @@ export async function executeActionStep(input: ExecuteActionStepInput): Promise<
           runRecorder: input.deps.runRecorder ?? noopRunRecorder,
           runHandle,
           metrics: input.metrics,
-          taskAssets,
+          workstreamResources,
         },
         recovery.action,
         input.stepNumber,
@@ -112,7 +112,7 @@ export async function executeActionStep(input: ExecuteActionStepInput): Promise<
   };
 }
 
-function isTaskBound(state: LoopState): boolean {
+function isWorkstreamBound(state: LoopState): boolean {
   return state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "bound";
 }
 

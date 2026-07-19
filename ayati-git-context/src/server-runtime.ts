@@ -11,9 +11,7 @@ import {
 
 export interface GitContextServerRuntimeOptions {
   databasePath: string;
-  dataRoot: string;
-  workspaceRoot?: string;
-  trustedRoots?: string[];
+  rootDirectory: string;
   timezone?: string;
   agentId?: string;
   socketPath: string;
@@ -36,10 +34,10 @@ export async function startGitContextServerRuntime(
     level: "info",
     event: "process_starting",
     outcome: "started",
-    data: { databasePath: options.databasePath, dataRoot: options.dataRoot, socketPath: options.socketPath },
+    data: { databasePath: options.databasePath, rootDirectory: options.rootDirectory, socketPath: options.socketPath },
   });
   await mkdir(dirname(options.databasePath), { recursive: true });
-  await mkdir(options.dataRoot, { recursive: true });
+  await mkdir(options.rootDirectory, { recursive: true });
   const lock = await GitContextProcessLock.acquire({
     path: options.databasePath + ".writer-lock",
     databasePath: options.databasePath,
@@ -56,13 +54,12 @@ export async function startGitContextServerRuntime(
   let stopPromise: Promise<void> | undefined;
   try {
     const database = await ContextDatabase.open({ path: options.databasePath });
-    const workspaceRoot = options.workspaceRoot ?? join(options.dataRoot, "workspace");
-    await mkdir(join(workspaceRoot, "tasks"), { recursive: true });
+    await mkdir(join(options.rootDirectory, "workstreams"), { recursive: true });
+    await mkdir(join(options.rootDirectory, "workspace"), { recursive: true });
+    await mkdir(join(options.rootDirectory, ".ayati"), { recursive: true });
     service = new SqliteGitContextService({
       database,
-      dataRoot: options.dataRoot,
-      workspaceRoot,
-      trustedRoots: options.trustedRoots ?? [],
+      rootDirectory: options.rootDirectory,
       observer,
     });
     const at = new Date().toISOString();

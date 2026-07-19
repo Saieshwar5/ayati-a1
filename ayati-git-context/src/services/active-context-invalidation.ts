@@ -5,11 +5,11 @@ import { GitContextServiceObservability } from "./service-observability.js";
 export interface ContextInvalidationInput {
   sessionId?: string;
   runId?: string;
-  taskId?: string;
+  workstreamId?: string;
   allSessions?: boolean;
   readContext?: boolean;
-  attachments?: boolean;
-  taskCandidates?: boolean;
+  resources?: boolean;
+  workstreamCandidates?: boolean;
 }
 
 export class ActiveContextInvalidation {
@@ -23,11 +23,11 @@ export class ActiveContextInvalidation {
     if (input.readContext && input.sessionId) {
       this.options.dataCache.invalidateReadContext(input.sessionId);
     }
-    if (input.attachments && input.sessionId) {
-      this.options.dataCache.invalidateAttachments(input.sessionId);
+    if (input.resources && input.sessionId) {
+      this.options.dataCache.invalidateResources(input.sessionId);
     }
-    if (input.taskCandidates) {
-      this.options.dataCache.invalidateTaskCandidates();
+    if (input.workstreamCandidates) {
+      this.options.dataCache.invalidateWorkstreamCandidates();
     }
     const previousRevision = input.sessionId
       ? this.options.contextCache.latestRevision(input.sessionId)
@@ -39,7 +39,7 @@ export class ActiveContextInvalidation {
     this.options.events.cacheInvalidated(reason, {
       sessionId: input.sessionId,
       runId: input.runId,
-      taskId: input.taskId,
+      workstreamId: input.workstreamId,
       previousRevision,
       scope,
       invalidatedEntries,

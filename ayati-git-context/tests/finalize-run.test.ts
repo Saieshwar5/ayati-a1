@@ -38,7 +38,8 @@ describe("unified run finalization", () => {
       run: { runId: prepared.run.runId, status: "done", stopReason: "completed", stepCount: 0 },
       conversation: { status: "closed" },
       materialization: { status: "not_requested" },
-      commit: { status: "not_required" },
+      resourceEffects: { status: "none", events: [] },
+      workstreamContextCommit: { status: "not_required" },
     });
     expect(fixture.database.prepare(
       "SELECT COUNT(*) AS count FROM messages WHERE conversation_id = ?",
@@ -124,7 +125,7 @@ describe("unified run finalization", () => {
       runFile: `runs/${prepared.run.runId}/run.json`,
       stepsFile: `runs/${prepared.run.runId}/steps.jsonl`,
     });
-    expect(result.commit).toEqual({ status: "not_required" });
+    expect(result.workstreamContextCommit).toEqual({ status: "not_required" });
     const runFile = JSON.parse(await readFile(
       join(prepared.session.repositoryPath, result.materialization.runFile!),
       "utf8",
@@ -170,7 +171,7 @@ describe("unified run finalization", () => {
           summary: `Run ended as ${outcome}.`,
           ...(workStatus === "blocked" ? { blockers: ["A proven blocker remains."] } : {}),
           ...(workStatus === "needs_user_input"
-            ? { userInputNeeded: ["Choose the intended task."] }
+            ? { userInputNeeded: ["Choose the intended workstream."] }
             : {}),
         },
       }));
@@ -192,8 +193,7 @@ async function createFixture(): Promise<{
   const database = await ContextDatabase.open({ path: join(root, "context.sqlite") });
   const service = new SqliteGitContextService({
     database,
-    dataRoot: join(root, "session-data"),
-    workspaceRoot: join(root, "workspace"),
+    rootDirectory: root,
     now: () => "2026-07-19T10:00:00+05:30",
   });
   services.push(service);

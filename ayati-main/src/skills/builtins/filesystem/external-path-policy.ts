@@ -11,8 +11,8 @@ export function externalWorkspacePathError(rejection: WorkspaceMutationPathRejec
     retryable: true,
     recoverable: true,
     suggestedNextActions: [
-      "Use an absolute path inside the active task workingDirectory.",
-      "If the user requested another location, route the work to a task whose workingDirectory contains that absolute path.",
+      "Use an absolute path inside one filesystem resource bound to the active workstream.",
+      "If the user requested another location, inspect and bind that exact resource before mutation.",
     ],
     structuredContent: {
       requestedPath: rejection.requestedPath,

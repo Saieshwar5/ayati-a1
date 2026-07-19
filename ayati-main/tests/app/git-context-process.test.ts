@@ -80,7 +80,7 @@ describe("managed Git Context Engine process", () => {
     const socketPath = join(root, "context.sock");
     const server = await startGitContextServerRuntime({
       databasePath: join(root, "context.sqlite"),
-      dataRoot: join(root, "git-data"),
+      rootDirectory: root,
       socketPath,
     });
     try {
@@ -107,10 +107,8 @@ describe("managed Git Context Engine process", () => {
 
 function config(root: string, socketPath: string): GitContextRuntimeConfig {
   return {
-    storeDir: root,
+    rootDirectory: root,
     databasePath: join(root, "context.sqlite"),
-    dataRoot: join(root, "git-data"),
-    workspaceRoot: join(root, "workspace"),
     socketPath,
     managed: true,
     startTimeoutMs: 5_000,

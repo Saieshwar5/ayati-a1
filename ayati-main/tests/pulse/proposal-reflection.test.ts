@@ -62,7 +62,7 @@ function createInput(provider: LlmProvider, overrides?: Partial<PulseProposalRef
     provider,
     currentUserMessage: "Check AI news today",
     assistantResponse: "Here are the important AI news updates from today.",
-    taskSummary: {
+    workstreamSummary: {
       runStatus: "completed",
       taskStatus: "done",
       objective: "Check AI news and summarize important updates.",

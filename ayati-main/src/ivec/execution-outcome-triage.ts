@@ -11,7 +11,7 @@ export interface FeedbackExecutionTriageFinding {
 export interface FeedbackExecutionTriageInput {
   execution?: FeedbackExecutionOutcome;
   actionSteps?: number;
-  taskBound: boolean;
+  workstreamBound: boolean;
   commitIdentity?: string;
 }
 
@@ -41,15 +41,15 @@ export function buildExecutionOutcomeFindings(
       "Use not_applicable for tool-free conversation and control-only turns.",
     ));
   }
-  if (input.taskBound
+  if (input.workstreamBound
     && (execution.finalization === "pending" || execution.finalization === "started")
     && execution.commit !== "pending") {
     findings.push(finding(
-      "task_commit_state_mismatch",
+      "workstream_commit_state_mismatch",
       "error",
-      "Task commit state contradicts finalization",
-      "Task finalization is incomplete but the commit outcome is not pending.",
-      "Derive task commit state from the same finalization journal and commit acknowledgement.",
+      "Workstream context commit contradicts finalization",
+      "Workstream finalization is incomplete but the context-commit outcome is not pending.",
+      "Derive context-commit state from the same finalization journal and acknowledgement.",
     ));
   }
   if (execution.commit === "committed" && !nonEmpty(input.commitIdentity)) {
@@ -61,13 +61,13 @@ export function buildExecutionOutcomeFindings(
       "Preserve final commit identity through finalization and feedback projection.",
     ));
   }
-  if (!input.taskBound && execution.commit === "committed") {
+  if (!input.workstreamBound && execution.commit === "committed") {
     findings.push(finding(
       "unexpected_conversation_commit",
       "error",
-      "Conversation-only turn created a task commit",
-      "Feedback reports a committed execution even though the run had no task binding.",
-      "Keep direct conversations commit-free or report the missing task binding.",
+      "Conversation-only turn created a workstream context commit",
+      "Feedback reports a committed execution even though the run had no workstream binding.",
+      "Keep direct conversations commit-free or report the missing workstream binding.",
     ));
   }
   if (execution.finalization === "failed" && execution.commit !== "failed") {
@@ -79,14 +79,14 @@ export function buildExecutionOutcomeFindings(
       "Reduce both outcomes from the same finalization failure event.",
     ));
   }
-  if (input.taskBound
+  if (input.workstreamBound
     && execution.finalization === "completed"
     && execution.verification === "failed") {
     findings.push(finding(
       "finalized_after_failed_verification",
       "warning",
-      "Task finalized after failed verification",
-      "The task reached completed finalization even though deterministic verification failed.",
+      "Workstream finalized after failed verification",
+      "The workstream-bound run reached completed finalization even though deterministic verification failed.",
       "Inspect whether the finalization outcome should have been failed or blocked.",
     ));
   }
@@ -96,7 +96,7 @@ export function buildExecutionOutcomeFindings(
 
 export function isHealthyConversationOutcome(input: FeedbackExecutionTriageInput): boolean {
   const actionSteps = validCount(input.actionSteps);
-  return input.taskBound === false
+  return input.workstreamBound === false
     && (actionSteps === 0
       ? input.execution?.verification === "not_applicable"
       : input.execution?.verification === "passed")

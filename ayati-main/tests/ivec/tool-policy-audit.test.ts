@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { auditToolPolicy } from "../../src/ivec/agent-runner/tool-policy-audit.js";
-import type { TaskBindingCapabilityPolicy } from "../../src/ivec/agent-runner/task-binding-capability-policy.js";
+import type { WorkstreamBindingCapabilityPolicy } from "../../src/ivec/agent-runner/workstream-binding-capability-policy.js";
 
 describe("tool policy audit", () => {
   it("allows observational tools on an unbound run", () => {
@@ -13,25 +13,25 @@ describe("tool policy audit", () => {
     expect(audit.violations).toEqual([]);
   });
 
-  it("flags mutation and long-running tools without a task binding", () => {
+  it("flags mutation and long-running tools without a workstream binding", () => {
     const audit = auditToolPolicy({
       policy: policy(),
       selectedTools: ["write_files", "process_start"],
     });
 
     expect(audit.warningCodes).toEqual(expect.arrayContaining([
-      "mutation_tool_without_task_binding",
-      "long_running_tool_without_task_binding",
+      "mutation_tool_without_workstream_binding",
+      "long_running_tool_without_workstream_binding",
       "tool_not_allowed_in_phase",
     ]));
     expect(audit.violations).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        code: "mutation_tool_without_task_binding",
+        code: "mutation_tool_without_workstream_binding",
         severity: "error",
         tools: ["write_files", "process_start"],
       }),
       expect.objectContaining({
-        code: "long_running_tool_without_task_binding",
+        code: "long_running_tool_without_workstream_binding",
         tools: ["process_start"],
       }),
     ]));
@@ -40,25 +40,25 @@ describe("tool policy audit", () => {
   it("allows routing controls only before binding", () => {
     const routing = auditToolPolicy({
       policy: policy({ routingAvailable: true }),
-      selectedTools: ["git_context_create_task"],
+      selectedTools: ["git_context_create_workstream"],
     });
     const bound = auditToolPolicy({
-      policy: policy({ taskBound: true, routingAvailable: false }),
-      selectedTools: ["git_context_create_task"],
+      policy: policy({ workstreamBound: true, routingAvailable: false }),
+      selectedTools: ["git_context_create_workstream"],
     });
 
     expect(routing.phase).toBe("routing");
     expect(routing.violations).toEqual([]);
-    expect(bound.phase).toBe("task_bound");
+    expect(bound.phase).toBe("workstream_bound");
     expect(bound.warningCodes).toEqual(expect.arrayContaining([
-      "routing_control_after_task_bound",
+      "routing_control_after_workstream_bound",
       "tool_not_allowed_in_phase",
     ]));
   });
 
   it("flags selected tools missing taxonomy", () => {
     const audit = auditToolPolicy({
-      policy: policy({ taskBound: true }),
+      policy: policy({ workstreamBound: true }),
       selectedTools: ["unknown_tool"],
     });
 
@@ -70,10 +70,10 @@ describe("tool policy audit", () => {
 });
 
 function policy(
-  overrides: Partial<TaskBindingCapabilityPolicy> = {},
-): TaskBindingCapabilityPolicy {
+  overrides: Partial<WorkstreamBindingCapabilityPolicy> = {},
+): WorkstreamBindingCapabilityPolicy {
   return {
-    taskBound: false,
+    workstreamBound: false,
     routingSuppressed: false,
     routingAvailable: false,
     routingFailureLimitReached: false,

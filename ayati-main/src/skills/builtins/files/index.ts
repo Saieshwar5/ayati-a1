@@ -11,12 +11,12 @@ export interface FilesSkillDeps {
 
 const FILES_PROMPT_BLOCK = [
   "Managed file tools are built in.",
-  "Once a file matters to a task, register it and use its fileId instead of raw paths.",
+  "Once a file matters to durable work, register it and use its fileId instead of raw paths.",
   "Attached files are registered before the agent loop runs and can be auto-selected when there is exactly one run file.",
   "Use file_describe to inspect file metadata and capabilities.",
-  "Use file_register_path after filesystem search finds a local file the user wants to work on.",
+  "After workstream binding, use file_register_path when filesystem search finds one local file the user wants in the managed file library.",
   "Pass canonical absolute filesystem paths to file_register_path and file_register_artifact.",
-  "Use file_fetch_url when the task requires downloading a file from a URL.",
+  "Use file_fetch_url when the current work requires downloading a file from a URL.",
   "Use file_read_text or file_query for text-capable files.",
   "Use file_profile_table and file_query_table for CSV/XLSX table files. The staged table name is file_data.",
   "Prefer attachment_list, attachment_inspect, attachment_read, attachment_query, attachment_query_table, and directory_search for attached inputs.",
@@ -293,7 +293,7 @@ function createFileDescribeTool(deps: FilesSkillDeps): ToolDefinition {
 function createFileRegisterPathTool(deps: FilesSkillDeps): ToolDefinition {
   return {
     name: "file_register_path",
-    description: "Register a local file path into the managed file library and return its fileId.",
+    description: "After workstream binding, register one local file in the managed file library and return its fileId. Do not use this to adopt or route an existing project directory.",
     inputSchema: {
       type: "object",
       required: ["path"],
@@ -304,7 +304,8 @@ function createFileRegisterPathTool(deps: FilesSkillDeps): ToolDefinition {
       additionalProperties: false,
     },
     selectionHints: {
-      tags: ["file", "register", "path", "local"],
+      tags: ["file", "register", "path", "local", "workstream-bound"],
+      aliases: ["register bound workstream file", "add local file to managed library"],
       domain: "files",
       priority: 95,
     },

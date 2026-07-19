@@ -1,20 +1,16 @@
 import type { ContextDatabase } from "../database/database.js";
 import { closeRunConversationWithoutAssistant } from "../repositories/conversation-records.js";
 import {
-  readMutationAuthorityForRun,
-  type MutationAuthorityRecord,
-} from "../repositories/mutation-authority-records.js";
-import {
   finalizeRunRecord,
   markRunRecoveryRequired,
   readActiveRunIds,
   readRunEvidence,
 } from "../repositories/run-records.js";
-import { readSimpleTaskFinalization } from "../repositories/simple-task-finalization-records.js";
+import { readWorkstreamFinalization } from "../repositories/workstream-finalization-records.js";
 import {
-  readTaskRequestRoutePlan,
-  updateTaskRequestRoutePlan,
-} from "../repositories/task-request-route-plan-records.js";
+  readWorkstreamRequestRoutePlan,
+  updateWorkstreamRequestRoutePlan,
+} from "../repositories/workstream-request-route-plan-records.js";
 import { readUnboundRunFinalization } from "../repositories/unbound-run-finalization-records.js";
 
 export interface StartupRunRecoveryResult {
@@ -37,14 +33,16 @@ export class StartupRunRecoveryService {
 
       const hasFinalizationJournal = Boolean(
         readUnboundRunFinalization(this.database, runId)
-        || readSimpleTaskFinalization(this.database, runId),
+        || readWorkstreamFinalization(this.database, runId),
       );
-      const authority = readMutationAuthorityForRun(this.database, runId);
-      const routePlan = readTaskRequestRoutePlan(this.database, runId);
+      const mutation = this.database.prepare([
+        "SELECT status FROM resource_mutation_leases",
+        "WHERE run_id = ? AND status IN ('active', 'recovery_required') LIMIT 1",
+      ].join(" ")).get(runId) as { status: string } | undefined;
+      const routePlan = readWorkstreamRequestRoutePlan(this.database, runId);
       if (run.status === "recovery_required"
         || hasFinalizationJournal
-        || isBlockingAuthority(authority)
-        || routePlan?.phase === "authority_acquired"
+        || Boolean(mutation)
         || routePlan?.phase === "recovery_required") {
         markRunRecoveryRequired(this.database, runId);
         result.recoveryRequiredRunIds.push(runId);
@@ -54,7 +52,7 @@ export class StartupRunRecoveryService {
       try {
         this.database.transaction(() => {
           if (routePlan?.phase === "planned") {
-            updateTaskRequestRoutePlan(this.database, {
+            updateWorkstreamRequestRoutePlan(this.database, {
               runId,
               phase: "discarded",
               at,
@@ -64,7 +62,7 @@ export class StartupRunRecoveryService {
             sessionId: run.sessionId,
             conversationId: run.conversationId,
             runId,
-            ...(run.taskBinding ? { taskId: run.taskBinding.taskId } : {}),
+            ...(run.workstreamBinding ? { workstreamId: run.workstreamBinding.workstreamId } : {}),
             at,
           });
           finalizeRunRecord(this.database, {
@@ -82,10 +80,4 @@ export class StartupRunRecoveryService {
     }
     return result;
   }
-}
-
-function isBlockingAuthority(authority: MutationAuthorityRecord | undefined): boolean {
-  return authority?.status === "active"
-    || authority?.status === "verified"
-    || authority?.status === "recovery_required";
 }

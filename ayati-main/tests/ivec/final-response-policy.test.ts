@@ -39,7 +39,7 @@ function state(input: Partial<LoopState> = {}): LoopState {
     harnessContext: createInitialHarnessContext({
       contextEngine: {
         session: {
-          meta: { sessionId: "S-1", assetCount: 0 },
+          meta: { sessionId: "S-1", resourceCount: 0 },
           conversationTail: [],
           activityTail: [],
         },
@@ -49,14 +49,14 @@ function state(input: Partial<LoopState> = {}): LoopState {
           text: "update the html file",
           at: "2026-07-19T10:00:00.000Z",
           routingStatus: "bound",
-          workId: "T-1",
-          branch: "task/T-1",
+          workstreamId: "W-1",
+          branch: "main",
           runId: "R-1",
         },
         focus: {
           status: "active",
-          ref: "refs/heads/task/T-1",
-          workId: "T-1",
+          ref: "refs/heads/main",
+          workstreamId: "W-1",
         },
       },
     }),
@@ -131,7 +131,7 @@ describe("final response policy", () => {
   });
 
   it("rejects control-tool payloads as final user-facing messages", () => {
-    expect(isUsableFinalResponseMessage("task_completion")).toBe(false);
+    expect(isUsableFinalResponseMessage("workstream_completion")).toBe(false);
     expect(isUsableFinalResponseMessage(JSON.stringify({ kind: "act" }))).toBe(false);
     expect(isUsableFinalResponseMessage("Done. I updated the file.")).toBe(true);
   });
@@ -169,7 +169,7 @@ describe("final response policy", () => {
   });
 
   it("falls back to latest failure details for failure replies", () => {
-    expect(buildFailureReply(state())).toBe("I couldn't complete the task.");
+    expect(buildFailureReply(state())).toBe("I couldn't complete the workstream.");
     expect(buildFailureReply(state({
       failureHistory: [{
         step: 3,
@@ -177,7 +177,7 @@ describe("final response policy", () => {
         reason: "Missing path",
         blockedTargets: ["write_files"],
       }],
-    }))).toBe("I couldn't complete the task. Latest failure: Missing path");
+    }))).toBe("I couldn't complete the workstream. Latest failure: Missing path");
   });
 
   it("detects work-state finalization statuses", () => {

@@ -11,7 +11,7 @@ import { createUiSkill } from "../../src/skills/builtins/ui/index.js";
 import { builtInSkillsProvider } from "../../src/skills/provider.js";
 import type { SkillDefinition } from "../../src/skills/types.js";
 import {
-  canRunBeforeTask,
+  canRunBeforeWorkstream,
   getToolTaxonomy,
   getToolPurpose,
   hasMutationEffect,
@@ -21,7 +21,7 @@ import {
   isToolAllowedInPhase,
   getToolLoadGroups,
   missingToolTaxonomy,
-  requiresTaskBinding,
+  requiresWorkstreamBinding,
   summarizeToolTaxonomy,
 } from "../../src/skills/tool-taxonomy.js";
 
@@ -43,29 +43,29 @@ describe("tool taxonomy", () => {
     expect(getToolPurpose("search_in_files")).toBe("search");
     expect(getToolPurpose("list_directory")).toBe("list");
     expect(isObservationalTool("list_directory")).toBe(true);
-    expect(canRunBeforeTask("read_files")).toBe(true);
-    expect(requiresTaskBinding("read_files")).toBe(false);
+    expect(canRunBeforeWorkstream("read_files")).toBe(true);
+    expect(requiresWorkstreamBinding("read_files")).toBe(false);
     expect(getToolTaxonomy("read_files")).toMatchObject({ lifetime: "run" });
     expect(getToolTaxonomy("write_files")).toMatchObject({ lifetime: "run" });
     expect(getToolLoadGroups("write_files")).toEqual(expect.arrayContaining(["file:write", "file:create"]));
 
-    expect(isRoutingTool("git_context_create_task")).toBe(true);
-    expect(getToolPurpose("git_context_create_task")).toBe("control");
-    expect(hasMutationEffect("git_context_create_task")).toBe(true);
-    expect(canRunBeforeTask("git_context_create_task")).toBe(true);
-    expect(isToolAllowedInPhase("git_context_create_task", "routing")).toBe(true);
-    expect(isToolAllowedInPhase("git_context_create_task", "task_bound")).toBe(false);
-    expect(getToolPurpose("git_context_find_tasks")).toBe("search");
-    expect(getToolPurpose("git_context_read_task")).toBe("read");
-    expect(getToolPurpose("git_context_set_task_star")).toBe("control");
-    expect(canRunBeforeTask("git_context_set_task_star")).toBe(true);
+    expect(isRoutingTool("git_context_create_workstream")).toBe(true);
+    expect(getToolPurpose("git_context_create_workstream")).toBe("control");
+    expect(hasMutationEffect("git_context_create_workstream")).toBe(true);
+    expect(canRunBeforeWorkstream("git_context_create_workstream")).toBe(true);
+    expect(isToolAllowedInPhase("git_context_create_workstream", "routing")).toBe(true);
+    expect(isToolAllowedInPhase("git_context_create_workstream", "workstream_bound")).toBe(false);
+    expect(getToolPurpose("git_context_find_workstreams")).toBe("search");
+    expect(getToolPurpose("git_context_read_workstream")).toBe("read");
+    expect(getToolPurpose("git_context_set_workstream_star")).toBe("control");
+    expect(canRunBeforeWorkstream("git_context_set_workstream_star")).toBe(true);
 
     expect(getToolTaxonomy("write_file")).toBeUndefined();
     expect(hasMutationEffect("write_files")).toBe(true);
     expect(getToolPurpose("write_files")).toBe("mutation");
-    expect(requiresTaskBinding("write_files")).toBe(true);
-    expect(canRunBeforeTask("write_files")).toBe(false);
-    expect(isToolAllowedInPhase("write_files", "task_bound")).toBe(true);
+    expect(requiresWorkstreamBinding("write_files")).toBe(true);
+    expect(canRunBeforeWorkstream("write_files")).toBe(false);
+    expect(isToolAllowedInPhase("write_files", "workstream_bound")).toBe(true);
     expect(isToolAllowedInPhase("write_files", "enquiry")).toBe(false);
 
     expect(getToolTaxonomy("process_start")).toMatchObject({
@@ -77,14 +77,14 @@ describe("tool taxonomy", () => {
     expect(getToolPurpose("process_stop")).toBe("control");
     expect(getToolPurpose("attachment_restore")).toBe("control");
     expect(isNativeControlToolName("decision_load_tools")).toBe(true);
-    expect(getToolPurpose("task_completion")).toBe("control");
+    expect(getToolPurpose("workstream_completion")).toBe("control");
   });
 
   it("summarizes selected tool classes for feedback", () => {
     const summary = summarizeToolTaxonomy([
       "read_files",
       "write_files",
-      "git_context_activate_task",
+      "git_context_activate_workstream",
       "process_start",
       "unknown_tool",
     ]);
@@ -92,7 +92,7 @@ describe("tool taxonomy", () => {
     expect(summary.known).toEqual([
       "read_files",
       "write_files",
-      "git_context_activate_task",
+      "git_context_activate_workstream",
       "process_start",
     ]);
     expect(summary.unknown).toEqual(["unknown_tool"]);
@@ -109,12 +109,12 @@ describe("tool taxonomy", () => {
       mutation: 2,
     });
     expect(summary.roles).toMatchObject({
-      task_routing: 1,
-      task_mutation: 1,
+      workstream_routing: 1,
+      workstream_mutation: 1,
       long_running_process: 1,
     });
-    expect(summary.requiresTaskBinding).toEqual(["write_files", "process_start"]);
-    expect(summary.canRunBeforeTask).toEqual(["read_files", "git_context_activate_task"]);
+    expect(summary.requiresWorkstreamBinding).toEqual(["write_files", "process_start"]);
+    expect(summary.canRunBeforeWorkstream).toEqual(["read_files", "git_context_activate_workstream"]);
     expect(summary.longRunning).toEqual(["process_start"]);
     expect(summary.lifetimes).toMatchObject({
       run: 2,

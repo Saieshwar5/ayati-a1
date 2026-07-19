@@ -60,7 +60,7 @@ function absolutePath(value: string, field: string): string | ToolResult {
         retryable: true,
         recoverable: true,
         target: value,
-        suggestedNextActions: ["Use the active task workingDirectory to construct the complete absolute path and retry."],
+        suggestedNextActions: ["Use the absolute locator of the relevant bound filesystem resource and retry."],
       },
     },
   };

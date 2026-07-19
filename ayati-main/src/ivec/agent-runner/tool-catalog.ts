@@ -6,7 +6,7 @@ import {
   getToolTaxonomy,
 } from "../../skills/tool-taxonomy.js";
 
-export type ToolDeactivationPolicy = "manual" | "one_step" | "success" | "task";
+export type ToolDeactivationPolicy = "manual" | "one_step" | "success" | "run";
 
 export interface ToolCatalogEntry {
   id: string;
@@ -328,7 +328,7 @@ function inferDeactivationPolicy(tool: ToolDefinition): ToolDeactivationPolicy {
       case "run":
       case "session":
       case "background":
-        return "task";
+        return "run";
     }
   }
   const name = tool.name;
@@ -338,7 +338,7 @@ function inferDeactivationPolicy(tool: ToolDefinition): ToolDeactivationPolicy {
   if (tool.annotations?.destructive || /^db_drop_|^delete$/.test(name)) {
     return "one_step";
   }
-  return "task";
+  return "run";
 }
 
 function tokenize(value: string): Set<string> {

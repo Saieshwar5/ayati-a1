@@ -1,385 +1,193 @@
 # Ayati
 
-Ayati is a modular AI agent platform built as a small monorepo. It combines a
-provider-agnostic agent runtime, layered prompt context, memory systems,
-composable tools, file/document handling, generated artifacts, and a terminal
-chat interface.
+Ayati is a local-first autonomous AI agent platform. It combines a persistent
+daemon, provider-independent agent harness, durable work continuity, resources,
+memory, composable tools, events, and a terminal client.
 
-The core idea is simple: keep the agent "chassis" stable while allowing models,
-skills, tools, plugins, clients, and memory behavior to evolve independently.
+The core design goal is to keep the agent chassis stable while models, skills,
+tools, plugins, clients, and memory behavior evolve independently.
 
-This repository includes:
+## Packages
 
-- `ayati-main`: the backend agent runtime, WebSocket server, HTTP API, memory, tools, plugins, and event processing
-- `ayati-cli`: a terminal chat client built with Ink and React
+- `ayati-main`: daemon, harness, providers, tools, memory, WebSocket/HTTP
+  servers, plugins, Pulse, and system events.
+- `ayati-git-context`: independent local SQLite-and-Git service for sessions,
+  runs, workstreams, requests, resources, discovery, steps, finalization, and
+  recovery.
+- `ayati-cli`: Ink/React terminal client.
+- `project-docs`: stable product and engineering context.
 
-## What Ayati Is
+## Harness
 
-Ayati is designed as an autonomous agent harness rather than a single prompt
-wrapper. The backend coordinates user messages, runtime context, tools, memory,
-external events, files, and model providers through the `IVecEngine`
-Intelligence Variable Execution Core.
-
-At a high level, Ayati provides:
-
-- A runtime-selectable LLM provider layer for OpenRouter, OpenAI, Anthropic, and Fireworks
-- Stable decision rules plus a structured state view containing bounded timeline
-  context, daily git task context, pending-turn routing state, attachments,
-  memory snapshots, progress, observations, and system activity
-- A native-tool decision loop that chooses a control tool or one selected executable tool, then verifies tool work deterministically
-- Built-in skills for shell, filesystem, calculator, SQLite database work, Python execution, documents, datasets, files, memory, recall, UI workspace control, and Pulse scheduling
-- Default daily git context for task/work continuity, plus personal memory and
-  episodic recall for personalization
-- Episodic recall for searching past sessions and run history
-- Managed file registration, upload processing, document extraction, structured data profiling, and artifact serving
-- Run-scoped tool working sets for built-in skills
-- Pulse scheduling and system-event processing
-- A terminal client that talks to the backend runtime
-
-## Repository Layout
-
-```text
-.
-|- README.md
-|- project-docs/ # product and engineering docs for humans and AI agents
-|- ayati-main/   # backend runtime, WebSocket server, upload/artifact server, tools, memory, plugins
-`- ayati-cli/    # Ink-based terminal client
-```
-
-## Agent Runtime
-
-The backend runtime is centered on `ayati-main/src/app/main.ts` and
-`ayati-main/src/ivec/index.ts`.
-
-Ayati runs work through the current harness loop:
+Ayati uses one execution model:
 
 ```text
 context pack -> decision -> action executor -> deterministic verification -> progress reducer
 ```
 
-Before each decision, the runner may deterministically preload likely tools into
-a bounded working set. The decision model then chooses one next outcome by
-calling exactly one native provider tool:
+Every accepted user message or system event creates one atomic run. A run may
+finish unbound for conversation or observation, or bind immutably to one
+workstream/request for durable work. The run id never changes after binding.
 
-- `decision_reply`: answer or finish without tool work.
-- `decision_ask_user`: request missing information before safe progress.
-- `decision_load_tools`: request hidden tools by exact group, exact tool name, or search query.
-- one selected executable tool, such as `read_file`, `write_files`, `edit_file`, or `shell`.
+The model can reply directly, load a bounded tool working set, call one
+selected executable tool, ask for focused feedback during bound work, or submit
+`workstream_completion`. Tool results advance progress only after deterministic
+verification.
 
-Tool work is validated, executed, checked through tool contracts/assertions, and
-reduced into task progress before the next decision. System events such as
-reminders enter the same harness with event-policy constraints.
+## Durable Work
 
-## How Ayati Works In Practice
+Ayati separates continuity from real output:
 
-1. A user sends a message from the CLI or another runtime input.
-2. `ayati-main` receives the message through WebSocket, HTTP, or a plugin event adapter.
-3. The backend atomically records the message, creates one run, prepares
-   pending-turn ownership state, and loads static decision rules, memory
-   snapshots, the hidden tool catalog, and the configured LLM provider.
-4. The run begins unbound. It may answer or perform observational work without
-   a task; durable task work requires an explicit create or activate decision.
-   A recent task never silently owns the turn.
-5. `IVecEngine` builds a bounded context pack and enters the agent runner.
-6. The decision model calls one native provider tool: `decision_reply`, `decision_ask_user`, `decision_load_tools`, or one selected executable tool.
-7. If more tools are needed, Ayati loads a run-scoped working set from strict selectors and reports the load result into the next decision state.
-8. If an executable tool is called, Ayati adapts that native call into an internal action record, validates it, executes it through the tool executor, verifies results with contracts/assertions, and updates progress from verified facts.
-9. Files, documents, datasets, Python outputs, and other generated files are stored as managed runtime data or run artifacts.
-10. Runtime-owned finalization closes the run exactly once. An unbound run may
-    materialize step evidence, while a task-bound run updates task state and
-    creates at most one verified task commit.
-11. The final reply and any artifact metadata are returned to the active client.
+```text
+workstream = compact long-lived context
+request    = bounded intention inside a workstream
+resource   = real file, directory, URL, dataset, database, repository, or external object
+run        = one compute/audit/recovery boundary
+```
 
-## Runtime Capabilities
+Workstream `W-*` directories are context-only Git repositories. They contain a
+workstream card, request files, and a portable resource ledger—never project
+files or deliverables.
 
-### Models and Providers
+The resource catalog stores stable identities, real locators, versions,
+descriptions, aliases, availability, and workstream relationships. It supports
+both `workstream -> resources` and `resource -> workstreams` discovery.
 
-Ayati can switch model providers at runtime without changing the core agent
-loop. Provider adapters live under `ayati-main/src/providers/`.
+When the user gives no output path, Ayati uses the visible default workspace.
+When the user names a path, the resource remains there. Ordinary output does
+not cause automatic Git initialization.
 
-Supported providers:
+## Managed Filesystem Layout
 
-- OpenRouter
-- OpenAI
-- Anthropic
-- Fireworks
+Set one root with `AYATI_ROOT_DIR`:
 
-The active provider is stored in:
+```text
+<AYATI_ROOT_DIR>/
+  workspace/       default user-visible output
+  workstreams/     context-only Git repositories
+  .ayati/
+    context.db
+    git-context.sock
+    sessions/
+    resources/     immutable admitted attachment bytes
+```
 
-- `ayati-main/data/runtime/llm-config.json`
+The default is `ayati-main/ayati`.
 
-The same file also stores the active embedding provider/model and image
-generation provider/model. Chat, embeddings, and image generation are separate
-runtime categories so memory, document retrieval, and image tools can use the
-right API without coupling to the chat provider.
+## Workstream Discovery and Safety
 
-Provider API keys are read from the backend `.env` file.
+The agent can autonomously find, read, create, and activate workstreams using
+explained signals: exact identity, resource ownership, unfinished request,
+text relevance, explicit star, recency, and frequency. Recency and stars help
+sorting but never grant mutation authority.
 
-### Prompt Context
+An unbound run may converse, list, read, search, inspect, and route. Mutation
+requires all of:
 
-Ayati separates stable operating rules from dynamic runtime context.
+- an immutable workstream/request binding;
+- a bound resource with mutation access;
+- exact admitted targets;
+- before/after resource observations;
+- deterministic verification.
 
-Stable system context can include:
+After routing, Ayati refreshes context and asks the model for a fresh decision.
+Mutation calls are not deferred or replayed.
 
-- Base system prompt
-- Soul and identity context
-- Skill prompt blocks
-- Available tool definitions
+## Finalization
 
-Dynamic context is sent to the decision model as structured JSON in the context
-pack and sparse state view:
+One finalization operation closes the run and conversation, records verified
+resource effects, reduces workstream context when useful, and creates at most
+one context-only commit. Deliverables are never staged into workstream Git.
 
-- Bounded `context.timeline` events, ending with the current input
-- `context.gitContext` for daily-session conversation, pending-turn ownership,
-  active task refs, selected task state, task assets, recent runs, recent
-  commits, and recent evidence
-- Optional `context.personalMemorySnapshot`
-- Current `progress`, `workingFeedback`, `toolLoad`, `observations`, `trace`,
-  `attachments`, and `systemEvent` sections when present
+Final text may stream, but the terminal envelope is sent only after durable
+finalization acknowledgement. Failure or uncertain recovery state cannot be
+reported as a successful commit.
 
-This keeps memory and task context visible without hiding important facts inside
-a large truncatable prompt string.
+## Other Capabilities
 
-### Memory and Continuity
-
-Ayati has several memory paths:
-
-- Session memory stores active conversation state and handoff summaries.
-- Daily git context stores task/work continuity through global conversation,
-  pending-turn routing, active task refs, work branches, task state, assets,
-  evidence manifests, run summaries, and commit metadata.
-- Personal memory stores canonical facts in sections such as `user_facts`, `time_based`, and `evolving_memory`.
-- Episodic memory indexes closed sessions for later semantic recall when embeddings are available.
-- The built-in recall tools can search past work by query, date range, or episode type.
-
-Obvious same-task follow-ups are bound automatically. When task ownership is
-semantic or ambiguous, the agent can search/read git context and route the
-pending turn through turn-aware activate, create, or clarify tools. Runtime owns
-run allocation, task state reduction, finalization, and git commits.
-
-Personal memory is managed through explicit tools such as `memory_search`,
-`memory_remember`, `memory_forget`, `memory_explain`, and `memory_feedback`.
-
-### Files, Documents, and Data
-
-Ayati can ingest uploaded or local files, register generated artifacts, extract
-text, query document sections, and profile structured datasets.
-
-Common supported formats include:
-
-- PDF
-- DOCX
-- PPTX
-- XLSX
-- CSV
-- TXT
-- Markdown
-- JSON
-- HTML
-
-Structured attachments can be inspected, queried with SQL, or promoted into a
-durable SQLite table. Text documents can be read by section or queried through
-retrieval when vector indexing is enabled.
-
-### Built-In Skills and Tools
-
-The backend registers a hidden catalog of built-in skills and tools:
-
-- Shell and filesystem tools for local workspace work
-- Calculator tools for deterministic arithmetic
-- SQLite database tools for schema inspection, table creation, row operations, and SQL execution
-- Python execution with managed run directories and captured artifacts
-- Document and dataset tools for prepared attachments
-- Managed file tools for upload registration, URL fetches, text reads, table profiling, and file queries
-- Memory and recall tools for personal facts and episodic history
-- UI workspace tools for reading and coordinating local workspace/window state
-- Pulse tools for reminders, notifications, scheduled tasks, previews, snoozing, and health checks
-
-The decision prompt receives a compact routing map with loadable groups and
-representative tool names. Full executable schemas are exposed only through a
-capped run-scoped working set as prompt context. The provider-native decision
-surface contains three control tools, `decision_reply`, `decision_ask_user`, and
-`decision_load_tools`, plus the selected executable tools directly under their
-own schemas. Executable schemas include harness-owned `taskCompletion` metadata,
-and `decision_load_tools` must request tools with at least one real selector:
-`groups`, `toolNames`, or `query`. Executable tools still run only through
-Ayati's local validation and deterministic verification path.
-
-### Events and Plugins
-
-Ayati includes a plugin lifecycle and an internal system-event ingress queue.
-Plugins can register adapters, publish normalized events, and let the engine
-analyze or act on those events according to `context/system-event-policy.json`.
-
-Current event sources include:
-
-- Pulse reminders and scheduled work
-
-## Package Overview
-
-### `ayati-main`
-
-The backend service. It is responsible for:
-
-- Bootstrapping the `IVecEngine`
-- Loading provider configuration
-- Loading static prompt context and skill blocks
-- Managing active sessions, personal memory, and episodic recall
-- Accepting chat messages over WebSocket
-- Accepting uploaded files over HTTP
-- Serving generated run artifacts
-- Registering built-in tools in the hidden catalog
-- Exposing a bounded run-scoped working set of executable tool schemas
-- Starting plugins and system-event workers
-
-Default runtime ports:
-
-- WebSocket chat server: `ws://localhost:8080`
-- Upload/artifact server: `http://localhost:8081`
-
-### `ayati-cli`
-
-A terminal client for chatting with Ayati over WebSocket.
-
-Features include:
-
-- Terminal-first chat workflow
-- Local attachment queue
-- Lightweight status and reply rendering
-
-Supported input commands:
-
-- `/attach <local-file-path>`
-- `/attach <local-file-path> -- <message>`
-- `/files`
-- `/clearfiles`
-
-## Prerequisites
-
-- Node.js 20+
-- pnpm
-
-Some optional capabilities need extra local dependencies or credentials:
-
-- OpenAI API key for document and episodic memory embeddings
-- Python interpreter for the managed Python tool, configurable with `AYATI_PYTHON_INTERPRETER`
+- OpenRouter, OpenAI, Anthropic, and Fireworks providers.
+- Filesystem inspection/read/write/patch/search, focused process execution,
+  Python, SQLite, documents, datasets, managed files, and artifacts.
+- Personal memory and episodic recall.
+- Upload admission and immutable attachment resources.
+- Pulse reminders, scheduled events, plugins, and system-event handling.
+- Optional JSONL feedback traces, compact triage, and a workstream lifecycle
+  report.
+- WebSocket terminal chat and HTTP upload/artifact/Pulse APIs.
 
 ## Quick Start
 
-Install dependencies once from the repository root:
+Requirements: Node.js 20+ and pnpm.
 
 ```bash
 pnpm install
+pnpm build
+pnpm start:main
 ```
 
-### 1. Start the backend
+In another terminal:
 
 ```bash
-pnpm --filter ayati-main build
-pnpm --filter ayati-main start
+pnpm start:cli
 ```
 
-The backend expects an `.env` file in `ayati-main/`.
-
-At minimum, provide the API key for the provider you plan to use.
-
-Example:
+Provide the API key for the configured provider in a local env file:
 
 ```env
-OPENAI_API_KEY=your_openai_key
-OPENROUTER_API_KEY=your_openrouter_key
-ANTHROPIC_API_KEY=your_anthropic_key
-FIREWORKS_API_KEY=your_fireworks_key
+OPENAI_API_KEY=
+OPENROUTER_API_KEY=
+ANTHROPIC_API_KEY=
+FIREWORKS_API_KEY=
+AYATI_ROOT_DIR=
 ```
 
-You do not need all of them at once. You only need the key for the active
-provider.
+Default endpoints:
 
-### 2. Run the CLI
+- WebSocket: `ws://localhost:8080`
+- HTTP: `http://127.0.0.1:8081`
 
-In a new terminal:
+## Development
 
 ```bash
-pnpm --filter ayati-cli build
-pnpm --filter ayati-cli start
-```
+pnpm build
+pnpm test
 
-## Environment Configuration
-
-### Backend HTTP Server
-
-The upload and artifact API defaults to `127.0.0.1:8081`. Useful overrides:
-
-```env
-AYATI_HTTP_HOST=127.0.0.1
-AYATI_HTTP_PORT=8081
-AYATI_HTTP_ALLOW_ORIGIN=*
-AYATI_UPLOAD_MAX_BYTES=26214400
-AYATI_HTTP_API_TOKEN=local_optional_token
-```
-
-## Development Commands
-
-### `ayati-main`
-
-```bash
+pnpm --filter ayati-git-context build
+pnpm --filter ayati-git-context test
 pnpm --filter ayati-main build
-pnpm --filter ayati-main start
-pnpm --filter ayati-main dev
 pnpm --filter ayati-main test
-pnpm --filter ayati-main test:watch
+pnpm --filter ayati-cli build
+pnpm --filter ayati-cli test
 ```
 
-### `ayati-cli`
+Feedback-enabled daemon:
 
 ```bash
-pnpm --filter ayati-cli build
-pnpm --filter ayati-cli start
-pnpm --filter ayati-cli dev
-pnpm --filter ayati-cli test
-pnpm --filter ayati-cli test:watch
+pnpm dev:main:feedback
+pnpm feedback:git-context
 ```
 
-## Runtime Data
+Safe context-state operations are preview-first:
 
-Backend runtime output is stored under `ayati-main/data/`, including:
+```bash
+pnpm context:archive-reset
+pnpm context:archive-reset -- --confirm
+pnpm context:catalog-rebuild
+pnpm context:catalog-rebuild -- --confirm
+```
 
-- Session data
-- Personal memory and episodic memory indexes
-- Document and file-library data
-- Runtime provider config
-- Generated run artifacts
-- System-event queues and plugin state
+## Security
 
-These files are runtime state, not source code.
+Ayati tools can access local files, processes, Python, databases, and external
+systems. Keep credentials in local env files, review enabled capabilities, and
+do not expose the daemon beyond trusted environments without stronger access
+controls. Feedback/full-prompt traces may contain sensitive content.
 
-## Security Notes
+## Architecture References
 
-- Never commit secrets or API keys.
-- Keep credentials in local env files only.
-- Do not document real keys in README examples.
-- Review tool access, filesystem access, plugin webhooks, and runtime event policies before exposing the backend beyond local development.
-- Treat shell, filesystem, Python, database, and external HTTP-backed tools as powerful local capabilities that should be enabled only in trusted environments.
-
-## Important Internal References
-
-If you want to go deeper into the architecture, start with:
-
-- `ayati-main/AGENTS.md`
-- `project-docs/README.md`
+- `project-docs/product/overview.md`
+- `project-docs/engineering/architecture/overview.md`
+- `project-docs/engineering/architecture/workstreams-and-resources.md`
 - `project-docs/engineering/architecture/agent-harness.md`
 - `project-docs/engineering/architecture/context-and-memory.md`
-- `project-docs/engineering/architecture/tool-contracts.md`
-- `ayati-main/src/app/main.ts`
-- `ayati-main/src/ivec/index.ts`
-- `ayati-main/src/ivec/agent-runner/runner.ts`
-- `ayati-main/context/system_prompt.md`
-
-## Current Status
-
-Ayati is structured as a modular agent system with separate backend and CLI
-packages. The backend supports runtime provider selection, the
-decision-action-reducer harness, built-in skills,
-session/personal/episodic memory, default daily git task context,
-document/data workflows, generated artifacts, scheduled Pulse work, and
-optional event-driven integrations.
+- `project-docs/engineering/testing.md`

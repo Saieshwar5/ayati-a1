@@ -24,7 +24,7 @@ export function recordGitContextObservabilityEvent(
       ...(event.requestId ? { requestId: event.requestId } : {}),
       ...(event.clientId ? { clientId: event.clientId } : {}),
       ...(event.conversationId ? { conversationId: event.conversationId } : {}),
-      ...(event.taskId ? { taskId: event.taskId } : {}),
+      ...(event.workstreamId ? { workstreamId: event.workstreamId } : {}),
       ...(event.step !== undefined ? { step: event.step } : {}),
       ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
       ...(event.outcome ? { outcome: event.outcome } : {}),

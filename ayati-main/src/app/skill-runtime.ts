@@ -28,7 +28,7 @@ import { SkillActivationManager } from "../skills/activation-manager.js";
 import { createSkillBundle, SkillCatalog } from "../skills/skill-catalog.js";
 import { ToolCatalog } from "../ivec/agent-runner/tool-catalog.js";
 import { ToolWorkingSetManager } from "../ivec/agent-runner/tool-working-set.js";
-import { createTaskScopedToolExecutor } from "./task-scoped-tool-executor.js";
+import { createResourceScopedToolExecutor } from "./resource-scoped-tool-executor.js";
 
 export interface SkillRuntimeOptions {
   projectRoot: string;
@@ -101,7 +101,7 @@ export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<
   ];
   const baseToolDefs: ToolDefinition[] = [];
   const baseToolExecutor = createToolExecutor(baseToolDefs);
-  const toolExecutor = createTaskScopedToolExecutor({
+  const toolExecutor = createResourceScopedToolExecutor({
     base: baseToolExecutor,
     gitContext: options.gitContextService,
     workspaceRoot: options.config.workspace.root,
