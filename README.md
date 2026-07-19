@@ -74,21 +74,20 @@ reminders enter the same harness with event-policy constraints.
 
 1. A user sends a message from the CLI or another runtime input.
 2. `ayati-main` receives the message through WebSocket, HTTP, or a plugin event adapter.
-3. The backend records the message in daily git context, prepares pending-turn
-   ownership state, loads static decision rules, memory snapshots, the hidden
-   tool catalog, and the configured LLM provider.
-4. Runtime auto-binds obvious same-task follow-ups. If task ownership is
-   semantic or ambiguous, the agent can search/read git context and route the
-   pending turn through activate, create, or clarify tools before normal task
-   work runs.
+3. The backend atomically records the message, creates one run, prepares
+   pending-turn ownership state, and loads static decision rules, memory
+   snapshots, the hidden tool catalog, and the configured LLM provider.
+4. The run begins unbound. It may answer or perform observational work without
+   a task; durable task work requires an explicit create or activate decision.
+   A recent task never silently owns the turn.
 5. `IVecEngine` builds a bounded context pack and enters the agent runner.
 6. The decision model calls one native provider tool: `decision_reply`, `decision_ask_user`, `decision_load_tools`, or one selected executable tool.
 7. If more tools are needed, Ayati loads a run-scoped working set from strict selectors and reports the load result into the next decision state.
 8. If an executable tool is called, Ayati adapts that native call into an internal action record, validates it, executes it through the tool executor, verifies results with contracts/assertions, and updates progress from verified facts.
 9. Files, documents, datasets, Python outputs, and other generated files are stored as managed runtime data or run artifacts.
-10. Runtime-owned finalization writes task state, run summaries, action records,
-    evidence manifests, assets, assistant responses, and git commit metadata
-    exactly once for each task run.
+10. Runtime-owned finalization closes the run exactly once. An unbound run may
+    materialize step evidence, while a task-bound run updates task state and
+    creates at most one verified task commit.
 11. The final reply and any artifact metadata are returned to the active client.
 
 ## Runtime Capabilities

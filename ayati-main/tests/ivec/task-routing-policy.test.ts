@@ -2,11 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { ContextEngineMachineContext } from "../../src/context-engine/index.js";
 import { createInitialHarnessContext } from "../../src/ivec/harness-context.js";
 import type { LoopState, StepSummary } from "../../src/ivec/types.js";
-import type { AgentAction, AgentDecision } from "../../src/ivec/agent-runner/decision.js";
+import type { AgentAction } from "../../src/ivec/agent-runner/decision.js";
 import {
   createRoutingAttemptState,
-  deferredMutationToolNames,
-  shouldDeferPreTaskMutation,
   stepUsesFileMutationTool,
   updateRoutingAttemptsFromActOutput,
   validateRoutingAttemptLimits,
@@ -14,9 +12,8 @@ import {
 
 function state(input: Partial<LoopState> = {}): LoopState {
   return {
-    runId: "",
+    runId: "R-1",
     currentSeq: 1,
-    runClass: "interaction",
     userMessage: "create a file",
     workState: {
       status: "not_done",
@@ -63,15 +60,10 @@ function action(tool: string, input: Record<string, unknown> = {}): AgentAction 
       id: "call_1",
       tool,
       input,
+      dependsOn: [],
+      purpose: `Use ${tool}`,
     }],
     assertions: [],
-  };
-}
-
-function decision(tool: string, input: Record<string, unknown> = {}): AgentDecision {
-  return {
-    kind: "act",
-    action: action(tool, input),
   };
 }
 
@@ -89,12 +81,12 @@ function step(tool: string, outcome: "success" | "failed"): StepSummary {
 }
 
 describe("task routing policy", () => {
-  it("blocks routing tools after a task run exists, after success, and after retry limit", () => {
+  it("blocks routing tools after binding, after success, and after retry limit", () => {
     const create = action("git_context_create_task");
     expect(validateRoutingAttemptLimits(state(), create, false)).toBeUndefined();
 
     expect(validateRoutingAttemptLimits(state(), create, true)).toMatchObject({
-      reason: "task_run_already_exists",
+      reason: "task_binding_already_exists",
       tools: ["git_context_create_task"],
     });
 
@@ -123,8 +115,8 @@ describe("task routing policy", () => {
       mode: "sequential",
       allowedTools: ["git_context_create_task", "git_context_activate_task"],
       calls: [
-        { id: "call_1", tool: "git_context_create_task", input: {} },
-        { id: "call_2", tool: "git_context_activate_task", input: {} },
+        { id: "call_1", tool: "git_context_create_task", input: {}, dependsOn: [], purpose: "Create task" },
+        { id: "call_2", tool: "git_context_activate_task", input: {}, dependsOn: [], purpose: "Activate task" },
       ],
       assertions: [],
     };
@@ -176,13 +168,6 @@ describe("task routing policy", () => {
       lastTool: "git_context_activate_task",
       lastError: "missing task",
     });
-  });
-
-  it("detects deferred pre-task mutations and keeps routing actions out of deferred mutation", () => {
-    expect(shouldDeferPreTaskMutation(state(), decision("write_files"), undefined)).toBe(true);
-    expect(deferredMutationToolNames(action("write_files"))).toEqual(["write_files"]);
-    expect(shouldDeferPreTaskMutation(state(), decision("git_context_create_task"), undefined)).toBe(false);
-    expect(shouldDeferPreTaskMutation(state({ runId: "R-1" }), decision("write_files"), { sessionId: "S-1", runId: "R-1" })).toBe(false);
   });
 
   it("detects file mutation tools on step summaries", () => {

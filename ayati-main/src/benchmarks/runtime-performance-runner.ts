@@ -804,7 +804,6 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
   return {
     runId: "runtime-state-view",
     currentSeq: exchangeCount * 2 + 1,
-    runClass: "task",
     inputKind: "user_message",
     userMessage: "Find the project artifact memory report and continue the performance analysis.",
     workState: {

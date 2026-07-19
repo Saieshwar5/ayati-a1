@@ -86,7 +86,6 @@ function createLoopState(overrides: Partial<LoopState> = {}): LoopState {
   return {
     runId: "run-current",
     currentSeq: 1,
-    runClass: "task",
     userMessage: "continue invoice",
     workState: {
       status: "not_done",
@@ -123,7 +122,6 @@ describe("buildAgentStateView", () => {
               key: "evidence:read_files:requirements.md",
               runId: "R-1",
               step: 1,
-              runClass: "task",
               tool: "read_files",
               purpose: "Read requirements.",
               resources: ["requirements.md"],
@@ -195,7 +193,6 @@ describe("buildAgentStateView", () => {
       },
       activity: {
         recentRuns: [{
-          runId: "R-20260627-0001",
           summary: "Read invoice.",
         }],
         recentEvidence: [{
@@ -223,6 +220,8 @@ describe("buildAgentStateView", () => {
     expect(context.git?.current.task).not.toHaveProperty("recentCommits");
     expect(context.git?.current.task).not.toHaveProperty("recentRuns");
     expect(context.git?.current.task).not.toHaveProperty("recentEvidence");
+    expect(context.git?.current.task?.activity.recentRuns[0]).not.toHaveProperty("runId");
+    expect(context.git?.current.task?.activity.recentEvidence[0]).not.toHaveProperty("runId");
     expect(context.gitContext?.session.recentCommits).toHaveLength(1);
     expect(context.gitContext?.task?.recentCommits).toHaveLength(1);
     expect(context).not.toHaveProperty("continuity");
@@ -256,7 +255,7 @@ describe("buildAgentStateView", () => {
     expect(context.git?.session.summary).not.toHaveProperty("conversationTail");
   });
 
-  it("projects recent task-run checkpoints separately from the exact timeline", () => {
+  it("projects recent task-bound-run checkpoints separately from the exact timeline", () => {
     const gitContext = createGitContext();
     const state = createLoopState({
       currentSeq: 7,
@@ -272,7 +271,7 @@ describe("buildAgentStateView", () => {
               text: "Continue with the next step.",
             }],
             recentTaskRuns: [{
-              checkpointId: `task-run-checkpoint-${"a".repeat(64)}`,
+              checkpointId: `task-bound-run-checkpoint-${"a".repeat(64)}`,
               commit: "checkpoint-commit",
               workId: "T-20260627-0001",
               runId: "R-20260627-0001",
@@ -307,10 +306,10 @@ describe("buildAgentStateView", () => {
       current: true,
     }]);
     expect(context.git?.session.recentTaskRuns).toMatchObject([{
-      runId: "R-20260627-0001",
       fromSeq: 1,
       toSeq: 6,
     }]);
+    expect(context.git?.session.recentTaskRuns?.[0]).not.toHaveProperty("runId");
     expect(context.git?.session).not.toHaveProperty("projection");
   });
 
@@ -367,9 +366,9 @@ describe("buildAgentStateView", () => {
         failureType: "validation_error",
         reason: "No active task exists. Create and activate the first task before using work tools.",
         blockedTargets: ["write_files"],
-        repairCode: "R_FRESH_SESSION_NEEDS_TASK",
+        repairCode: "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
         repair: {
-          code: "R_FRESH_SESSION_NEEDS_TASK",
+          code: "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
           message: "No active task exists yet. Normal work tools cannot run before task creation.",
           blockedTargets: ["write_files"],
           allowedNextActions: [
@@ -383,26 +382,26 @@ describe("buildAgentStateView", () => {
     expect(stateView.workingFeedback?.latest[0]).toMatchObject({
       severity: "error",
       source: "tool_validation",
-      code: "R_FRESH_SESSION_NEEDS_TASK",
+      code: "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
       message: "No active task exists yet. Normal work tools cannot run before task creation.",
       retryHint: "Call git_context_create_task with title, objective, and createReason \"no_active_task\".",
       repair: {
-        code: "R_FRESH_SESSION_NEEDS_TASK",
+        code: "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
         blockedTargets: ["write_files"],
       },
     });
-    expect(stateView.context.run).not.toHaveProperty("feedback");
+    expect(stateView.context.run ?? {}).not.toHaveProperty("feedback");
     expect(stateView.context.harness?.feedback?.latest[0]).toMatchObject({
-      code: "R_FRESH_SESSION_NEEDS_TASK",
+      code: "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
       repair: {
-        code: "R_FRESH_SESSION_NEEDS_TASK",
+        code: "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
       },
     });
     expect(stateView.trace?.recentFailures?.[0]).toMatchObject({
-      code: "R_FRESH_SESSION_NEEDS_TASK",
+      code: "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
       blockedTargets: ["write_files"],
     });
-    expect(stateView.context.run).not.toHaveProperty("trace");
+    expect(stateView.context.run ?? {}).not.toHaveProperty("trace");
   });
 
   it("builds timeline from git conversation tail", () => {
@@ -600,23 +599,19 @@ describe("buildAgentStateView", () => {
     });
     expect(stateView.context.git).not.toHaveProperty("personalMemorySnapshot");
     expect(stateView.context.tools).toBeUndefined();
-    expect(stateView.context.run).toEqual({ status: "not_done" });
-    expect(stateView.context.run).not.toHaveProperty("workState");
+    expect(stateView.context.run).toBeUndefined();
     expect(stateView.context).not.toHaveProperty("scratch");
     expect(Object.keys(stateView.context).sort()).toEqual([
       "git",
       "gitContext",
       "personal",
       "personalMemorySnapshot",
-      "run",
-      "runtimeMode",
       "timeline",
     ]);
   });
 
-  it("projects compact runtime mode context", () => {
+  it("does not project runtime mode names or routing counters", () => {
     const state = createLoopState({
-      runId: "",
       harnessContext: createHarnessContext({
         contextEngine: createGitContext({
           focus: {
@@ -627,33 +622,9 @@ describe("buildAgentStateView", () => {
       }),
     });
 
-    expect(buildAgentStateView(state).context.runtimeMode).toMatchObject({
-      name: "fresh_session_routing",
-      why: "No active task exists.",
-      allowed: [
-        "direct_reply",
-        "decision_load_tools",
-        "observational_tools",
-        "git_context_activate_task",
-        "git_context_create_task",
-      ],
-      blocked: [
-        "workspace_mutation_until_task_binding",
-        "external_mutation_until_task_binding",
-        "task_activation",
-      ],
-      repairCode: "R_FRESH_SESSION_NEEDS_TASK",
-      routingWindow: {
-        open: true,
-        step: 1,
-        maxSteps: 0,
-        remaining: 0,
-        expiresAfterThisDecision: false,
-        readToolsAvailable: true,
-        routingToolsAvailable: true,
-        readToolsRemainAfterExpiry: true,
-      },
-    });
+    const context = buildAgentStateView(state).context;
+    expect(context).not.toHaveProperty("runtimeMode");
+    expect(context.run).toBeUndefined();
   });
 
   it("keeps progress and observations independent from context source without run trace", () => {
@@ -841,7 +812,7 @@ describe("buildAgentStateView", () => {
       mode: "full",
       input: { path: "src/old.ts", query: oldReadQuery },
       output: oldReadOutput,
-      stepRef: { runId: "run-current", step: 1, callId: "call-old-read" },
+      stepRef: { step: 1, callId: "call-old-read" },
       evidenceRef: "steps/run-current.jsonl#call-old-read",
     });
     expect(toolCalls?.[0]).not.toHaveProperty("outputCompacted");
@@ -850,7 +821,7 @@ describe("buildAgentStateView", () => {
       mode: "full",
       output: failedOutput,
       error: "Tests failed.",
-      stepRef: { runId: "run-current", step: 2, callId: "call-old-failed" },
+      stepRef: { step: 2, callId: "call-old-failed" },
     });
     expect(toolCalls?.slice(2).map((call) => call.mode)).toEqual(["full", "full", "full", "full"]);
     expect(toolCalls?.[5]).toMatchObject({
@@ -898,7 +869,7 @@ describe("buildAgentStateView", () => {
     expect(toolCalls?.[0]).toMatchObject({
       callId: "call-old-read",
       output: "old read output",
-      stepRef: { runId: "run-current", step: 1, callId: "call-old-read" },
+      stepRef: { step: 1, callId: "call-old-read" },
     });
     expect(toolCalls?.[0]).not.toHaveProperty("outputCompacted");
   });
@@ -1121,9 +1092,9 @@ describe("buildAgentStateView", () => {
     });
     expect(stateView.context.tools).not.toHaveProperty("inputSchema");
     expect(stateView.context.tools).not.toHaveProperty("schemas");
-    expect(stateView.context.run).not.toHaveProperty("toolLoad");
+    expect(stateView.context.run ?? {}).not.toHaveProperty("toolLoad");
     expect(stateView.context.git?.session.attachments).toBeUndefined();
-    expect(stateView.context.run).not.toHaveProperty("attachments");
+    expect(stateView.context.run ?? {}).not.toHaveProperty("attachments");
     expect(stateView.attachments).toMatchObject({
       incoming: [{ id: "doc-1", name: "invoice.pdf", status: "registered" }],
       prepared: [{ id: "prepared-1", name: "invoice.pdf", status: "ready" }],
@@ -1145,7 +1116,7 @@ describe("buildAgentStateView", () => {
       approvalRequired: true,
       approvalState: "pending",
     });
-    expect(stateView.context.run).not.toHaveProperty("systemEvent");
+    expect(stateView.context.run ?? {}).not.toHaveProperty("systemEvent");
   });
 });
 

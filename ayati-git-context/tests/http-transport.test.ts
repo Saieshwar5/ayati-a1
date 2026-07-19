@@ -4,313 +4,223 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  GIT_CONTEXT_PROTOCOL_VERSION,
   type AcquireMutationAuthorityRequest,
   type AcquireMutationAuthorityResponse,
-  type AdoptTaskReferenceRequest,
-  type AdoptTaskReferenceResponse,
-  type BindTaskAttachmentsRequest,
-  type BindTaskAttachmentsResponse,
-  type CompleteContextTurnRequest,
-  type CompleteContextTurnResponse,
-  GIT_CONTEXT_PROTOCOL_VERSION,
-  type ActiveContext,
-  type AppendConversationRequest,
-  type AppendConversationResponse,
-  type EnsureActiveSessionRequest,
-  type EnsureActiveSessionResponse,
-  type FinalizeSessionRunRequest,
-  type FinalizeSessionRunResponse,
-  type FinalizeTaskRunRequest,
-  type FinalizeTaskRunResponse,
-  type GetActiveContextRequest,
-  type GetTaskRequest,
-  type GetTaskResponse,
-  type HealthResponse,
-  type PlanTaskRequestRouteRequest,
-  type PlanTaskRequestRouteResponse,
-  type PrepareContextTurnRequest,
-  type PrepareContextTurnResponse,
-  type RecordRunStepRequest,
-  type RecordRunStepResponse,
-  type RecordSessionAttachmentsRequest,
-  type RecordSessionAttachmentsResponse,
-  type StartRunRequest,
-  type StartRunResponse,
-  type TaskCatalogEntry,
-  type VerifyMutationRequest,
-  type VerifyMutationResponse,
 } from "../src/contracts.js";
+import { ContractOnlyGitContextService } from "../src/contract-only-service.js";
+import { GitContextClient } from "../src/client.js";
+import { ContextDatabase } from "../src/database/database.js";
 import {
   GitContextObserver,
   type GitContextObservabilityEvent,
 } from "../src/observability.js";
-import { ContractOnlyGitContextService } from "../src/contract-only-service.js";
-import { GitContextClient } from "../src/client.js";
 import {
   GitContextHttpServer,
   type GitContextServerAddress,
 } from "../src/server.js";
 import type { GitContextService } from "../src/service.js";
+import { SqliteGitContextService } from "../src/services/sqlite-git-context-service.js";
 
 const servers: GitContextHttpServer[] = [];
-const temporaryDirectories: string[] = [];
+const services: SqliteGitContextService[] = [];
+const roots: string[] = [];
 
 afterEach(async () => {
-  await Promise.all(servers.splice(0).map(async (server) => {
-    await server.stop();
-  }));
-  await Promise.all(temporaryDirectories.splice(0).map(async (path) => {
-    await rm(path, { recursive: true, force: true });
+  await Promise.all(servers.splice(0).map(async (server) => await server.stop()));
+  await Promise.all(services.splice(0).map(async (service) => await service.close()));
+  await Promise.all(roots.splice(0).map(async (root) => {
+    await rm(root, { recursive: true, force: true });
   }));
 });
 
-describe("Git Context Engine HTTP transport", () => {
-  it("propagates request and session correlation into transport events", async () => {
+describe("Git Context protocol 34 HTTP transport", () => {
+  it("round-trips atomic preparation, one step, and one finalization over TCP", async () => {
+    const service = await createService();
+    const { client } = await startTcpServer(service);
+
+    await expect(client.getHealth()).resolves.toMatchObject({
+      service: "ayati-git-context",
+      protocolVersion: GIT_CONTEXT_PROTOCOL_VERSION,
+      ready: true,
+      capabilities: expect.arrayContaining(["runs", "tasks", "mutations", "recovery"]),
+    });
+    const prepared = await client.prepareContextTurn({
+      requestId: "REQ-http-prepare",
+      date: "2026-07-19",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      role: "user",
+      content: "Inspect the requirements.",
+      at: "2026-07-19T12:00:00+05:30",
+    });
+    expect(prepared).toMatchObject({
+      sessionCreated: true,
+      message: { role: "user", content: "Inspect the requirements." },
+      run: {
+        sessionId: prepared.session.sessionId,
+        conversationId: prepared.conversation.conversationId,
+      },
+      persistence: {
+        database: "saved",
+        materialization: "not_requested",
+        git: "not_committed",
+      },
+    });
+    const step = await client.recordRunStep({
+      requestId: prepared.run.runId + ":step:1",
+      sessionId: prepared.session.sessionId,
+      runId: prepared.run.runId,
+      record: {
+        version: 1,
+        step: 1,
+        status: "completed",
+        summary: "Read the requirements.",
+        toolCalls: [{
+          callId: "call-http-read",
+          tool: "read_files",
+          purpose: "Read the current requirements.",
+          toolPurpose: "read",
+          toolEffect: "read_only",
+          status: "success",
+          input: { paths: ["requirements.md"] },
+          output: { files: [{ path: "requirements.md" }] },
+        }],
+        verification: { passed: true },
+        workStateAfter: { ...workState(), summary: "Requirements inspected." },
+        createdAt: "2026-07-19T12:00:01+05:30",
+      },
+    });
+    expect(step).toMatchObject({
+      run: { run: { runId: prepared.run.runId, stepCount: 1 } },
+      readContext: { evidence: [{ callId: "call-http-read" }] },
+    });
+    const finalized = await client.finalizeRun({
+      requestId: prepared.run.runId + ":finalize",
+      sessionId: prepared.session.sessionId,
+      runId: prepared.run.runId,
+      outcome: "done",
+      stopReason: "completed",
+      assistantResponse: "I inspected the requirements.",
+      conversationSummary: "The user asked for a requirements inspection.",
+      summary: "Requirements inspected.",
+      validation: "not_applicable",
+      workState: { ...workState(), status: "done", summary: "Requirements inspected." },
+      at: "2026-07-19T12:00:02+05:30",
+    });
+    expect(finalized).toMatchObject({
+      run: { status: "done", stopReason: "completed", stepCount: 1 },
+      conversation: { status: "closed" },
+      materialization: { status: "materialized" },
+      commit: { status: "not_required" },
+    });
+  });
+
+  it("round-trips same-run task creation without allocating another run", async () => {
+    const service = await createService();
+    const { client } = await startTcpServer(service);
+    const prepared = await client.prepareContextTurn({
+      requestId: "REQ-http-task-prepare",
+      date: "2026-07-19",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      role: "user",
+      content: "Create one durable task.",
+      at: "2026-07-19T12:00:00+05:30",
+    });
+
+    const selected = await client.createTaskForRun({
+      requestId: "REQ-http-task-create",
+      sessionId: prepared.session.sessionId,
+      conversationId: prepared.conversation.conversationId,
+      runId: prepared.run.runId,
+      title: "HTTP task",
+      objective: "Prove task binding over the protocol boundary.",
+      placement: { mode: "managed" },
+      at: "2026-07-19T12:00:01+05:30",
+    });
+
+    expect(selected).toMatchObject({
+      run: {
+        runId: prepared.run.runId,
+        taskBinding: {
+          taskId: selected.task.taskId,
+          taskRequestId: "R-0001",
+        },
+      },
+      taskCreated: true,
+      taskRequestDecision: "initial",
+    });
+  });
+
+  it("propagates request, session, and run correlation into transport events", async () => {
     const events: GitContextObservabilityEvent[] = [];
+    const service = await createService();
     const { client } = await startTcpServer(
-      new TestGitContextService(),
+      service,
       new GitContextObserver("git-context-http", (event) => events.push(event)),
     );
-
-    await client.appendConversation({
-      requestId: "REQ-correlated",
-      sessionId: "S-20260712-local",
+    const prepared = await client.prepareContextTurn({
+      requestId: "REQ-http-correlated-prepare",
+      date: "2026-07-19",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
       role: "user",
-      content: "hello",
-      at: "2026-07-12T10:00:00+05:30",
+      content: "Record a correlated step.",
+      at: "2026-07-19T12:00:00+05:30",
+    });
+    await client.recordRunStep({
+      requestId: "REQ-http-correlated-step",
+      sessionId: prepared.session.sessionId,
+      runId: prepared.run.runId,
+      record: {
+        version: 1,
+        step: 1,
+        status: "failed",
+        summary: "Routing did not find a task.",
+        toolCalls: [{
+          callId: "call-route",
+          tool: "git_context_activate_task",
+          purpose: "Route to an existing task.",
+          toolPurpose: "control",
+          toolEffect: "context_mutation",
+          status: "failed",
+          input: { taskId: "T-missing" },
+          error: { code: "TASK_NOT_FOUND" },
+        }],
+        verification: { passed: false },
+        workStateAfter: workState(),
+        createdAt: "2026-07-19T12:00:01+05:30",
+      },
     });
 
     expect(events.filter((event) =>
-      event.event === "http_request_started"
-      || event.event === "http_request_completed"
+      event.requestId === "REQ-http-correlated-step"
+      && (event.event === "http_request_started" || event.event === "http_request_completed")
     )).toEqual([
       expect.objectContaining({
         event: "http_request_started",
-        requestId: "REQ-correlated",
-        sessionId: "S-20260712-local",
+        sessionId: prepared.session.sessionId,
+        runId: prepared.run.runId,
       }),
       expect.objectContaining({
         event: "http_request_completed",
-        requestId: "REQ-correlated",
-        sessionId: "S-20260712-local",
+        sessionId: prepared.session.sessionId,
+        runId: prepared.run.runId,
       }),
-    ]);
-  });
-
-  it("round-trips the initial service operations over TCP", async () => {
-    const service = new TestGitContextService();
-    const { client } = await startTcpServer(service);
-
-    await expect(client.getHealth()).resolves.toEqual({
-      service: "ayati-git-context",
-      protocolVersion: GIT_CONTEXT_PROTOCOL_VERSION,
-      status: "ok",
-      ready: true,
-      capabilities: ["health", "active_context", "sessions", "conversations", "runs", "tasks"],
-    });
-
-    const ensured = await client.ensureActiveSession({
-      requestId: "REQ-1",
-      date: "2026-07-12",
-      timezone: "Asia/Kolkata",
-      agentId: "local",
-    });
-    expect(ensured.created).toBe(true);
-    expect(ensured.session.sessionId).toBe("S-20260712-local");
-
-    const appended = await client.appendConversation({
-      requestId: "REQ-2",
-      sessionId: ensured.session.sessionId,
-      role: "user",
-      content: "hello",
-      at: "2026-07-12T10:00:00+05:30",
-    });
-    expect(appended.conversation.conversationId).toBe("C-000001");
-
-    const prepared = await client.prepareContextTurn({
-      requestId: "REQ-prepare",
-      date: "2026-07-12",
-      timezone: "Asia/Kolkata",
-      agentId: "local",
-      role: "system_event",
-      content: "scheduled check",
-      at: "2026-07-12T10:00:01+05:30",
-    });
-    expect(prepared).toMatchObject({
-      session: { sessionId: ensured.session.sessionId },
-      sessionCreated: true,
-      message: { role: "system_event", content: "scheduled check" },
-      persistence: {
-        database: "saved",
-        materialization: "not_requested",
-        git: "not_committed",
-      },
-      context: { contextRevision: "sha256:test-context" },
-    });
-
-    await expect(client.completeContextTurn({
-      requestId: "REQ-complete",
-      sessionId: prepared.session.sessionId,
-      conversationId: prepared.conversation.conversationId,
-      userMessageId: prepared.message.messageId,
-      assistantContent: "scheduled check complete",
-      at: "2026-07-12T10:00:02+05:30",
-    })).resolves.toMatchObject({
-      conversation: { conversationId: prepared.conversation.conversationId },
-      message: { role: "assistant", content: "scheduled check complete" },
-      persistence: {
-        database: "saved",
-        materialization: "not_requested",
-        git: "not_committed",
-      },
-    });
-
-    await expect(client.recordSessionAttachments({
-      requestId: "REQ-attachments",
-      sessionId: ensured.session.sessionId,
-      conversationId: appended.conversation.conversationId,
-      attachments: [{
-        sessionAssetId: "SA-http-attachment",
-        kind: "file",
-        name: "brief.txt",
-        source: "local_path",
-        status: "ready",
-        originalPath: "/tmp/brief.txt",
-        storedPath: "/tmp/documents/brief.txt",
-        sizeBytes: 12,
-        checksum: "a".repeat(64),
-        createdAt: "2026-07-12T10:00:00+05:30",
-        lastUsedAt: "2026-07-12T10:00:00+05:30",
-      }],
-      at: "2026-07-12T10:00:00+05:30",
-    })).resolves.toEqual({
-      recorded: 1,
-      sessionAssetIds: ["SA-http-attachment"],
-    });
-
-    await expect(client.planTaskRequestRoute({
-      requestId: "REQ-route",
-      sessionId: ensured.session.sessionId,
-      conversationId: appended.conversation.conversationId,
-      runId: "R-20260712-0001",
-      taskId: "T-20260712-0001",
-      expectedTaskHead: "a".repeat(40),
-      route: {
-        kind: "continue_active_request",
-        requestId: "R-0001",
-        reason: "Continue the active bounded request.",
-      },
-      at: "2026-07-12T10:00:01+05:30",
-    })).resolves.toMatchObject({
-      taskId: "T-20260712-0001",
-      taskRequestId: "R-0001",
-      phase: "planned",
-    });
-
-    await expect(client.bindTaskAttachments({
-      requestId: "REQ-bind-attachments",
-      sessionId: ensured.session.sessionId,
-      conversationId: appended.conversation.conversationId,
-      runId: "R-20260712-0001",
-      taskId: "T-20260712-0001",
-      at: "2026-07-12T10:00:01+05:30",
-    })).resolves.toEqual({
-      taskId: "T-20260712-0001",
-      runId: "R-20260712-0001",
-      references: [],
-    });
-
-    await expect(client.adoptTaskReference({
-      requestId: "REQ-adopt-reference",
-      authorityId: "R-20260712-0001-M-0001",
-      lockToken: "test-token",
-      referenceId: "REF-0001",
-      destinationPath: "inputs/brief.txt",
-      at: "2026-07-12T10:00:02+05:30",
-    })).resolves.toEqual({
-      taskId: "T-20260712-0001",
-      runId: "R-20260712-0001",
-      referenceId: "REF-0001",
-      sourcePath: "/tmp/task/public/inbox/REF-0001-brief.txt",
-      destinationPath: "inputs/brief.txt",
-      sha256: "a".repeat(64),
-    });
-
-    const started = await client.startRun({
-      requestId: "REQ-3",
-      sessionId: ensured.session.sessionId,
-      conversationId: appended.conversation.conversationId,
-      trigger: "user",
-      workState: emptyRunWorkState(),
-    });
-    expect(started.run).toMatchObject({
-      runId: "R-20260712-0001",
-      runClass: "session",
-    });
-    await expect(client.recordRunStep({
-      requestId: "REQ-4",
-      sessionId: ensured.session.sessionId,
-      runId: started.run.runId,
-      step: 1,
-      tool: "read_files",
-      toolEffect: "read_only",
-      purpose: "Inspect the current files.",
-      status: "completed",
-      workState: emptyRunWorkState(),
-      at: "2026-07-12T10:00:01+05:30",
-    })).resolves.toEqual({
-      toolCall: {
-        step: 1,
-        tool: "read_files",
-        toolSchemaVersion: 1,
-        toolEffect: "read_only",
-        purpose: "Inspect the current files.",
-        status: "completed",
-      },
-      workState: {
-        runId: started.run.runId,
-        revision: 1,
-        afterStep: 1,
-        ...emptyRunWorkState(),
-        updatedAt: "2026-07-12T10:00:01+05:30",
-      },
-    });
-    await expect(client.finalizeSessionRun({
-      requestId: "REQ-finalize-session",
-      sessionId: ensured.session.sessionId,
-      runId: started.run.runId,
-      assistantResponse: "Here is what I found.",
-      workState: {
-        ...emptyRunWorkState(),
-        status: "done",
-        summary: "Explained the inspected files.",
-      },
-      at: "2026-07-12T10:00:07+05:30",
-    })).resolves.toEqual({
-      runId: started.run.runId,
-      status: "completed",
-      runFile: "runs/" + started.run.runId + "/run.json",
-      stepsFile: "runs/" + started.run.runId + "/steps.jsonl",
-      stepCount: 1,
-    });
-
-    const context = await client.getActiveContext({
-      sessionId: ensured.session.sessionId,
-    });
-    expect(context.session?.session.sessionId).toBe(ensured.session.sessionId);
-    expect(service.activeContextRequests).toEqual([
-      { sessionId: ensured.session.sessionId },
     ]);
   });
 
   it("uses structured service errors", async () => {
     const { client } = await startTcpServer(new ContractOnlyGitContextService());
-
-    await expect(client.ensureActiveSession({
-      requestId: "REQ-1",
-      date: "2026-07-12",
+    await expect(client.prepareContextTurn({
+      requestId: "REQ-not-ready",
+      date: "2026-07-19",
       timezone: "Asia/Kolkata",
       agentId: "local",
+      role: "user",
+      content: "Hello.",
+      at: "2026-07-19T12:00:00+05:30",
     })).rejects.toMatchObject({
       name: "GitContextServiceError",
       code: "SERVICE_NOT_READY",
@@ -318,368 +228,56 @@ describe("Git Context Engine HTTP transport", () => {
     });
   });
 
-  it("accepts zero-target V1 mutation authority through the HTTP boundary", async () => {
-    const { client } = await startTcpServer(new V1ZeroTargetAuthorityService());
-
+  it("accepts zero-target task-bound authority through the HTTP boundary", async () => {
+    const { client } = await startTcpServer(new ZeroTargetAuthorityService());
     await expect(client.acquireMutationAuthority({
-      requestId: "REQ-v1-zero-target-authority",
-      sessionId: "S-20260712-local",
-      runId: "RUN-20260712-0001",
-      taskId: "T-20260712-0001",
+      requestId: "REQ-zero-target-authority",
+      sessionId: "S-20260719-local",
+      runId: "R-20260719-0001",
+      taskId: "T-20260719-0001",
       taskRequestId: "R-0001",
       expectedTaskHead: "a".repeat(40),
       targets: [],
-      at: "2026-07-12T10:00:02+05:30",
+      at: "2026-07-19T12:00:00+05:30",
     })).resolves.toMatchObject({
       authority: {
-        runId: "RUN-20260712-0001",
-        taskId: "T-20260712-0001",
+        runId: "R-20260719-0001",
+        taskId: "T-20260719-0001",
         taskRequestId: "R-0001",
-        repositoryPath: "/tmp/tasks/T-20260712-0001",
         targets: [],
       },
     });
   });
 
-  it("rejects invalid request bodies at the transport boundary", async () => {
-    const { address } = await startTcpServer(new TestGitContextService());
-    if (address.kind !== "tcp") {
-      throw new Error("Expected TCP address.");
-    }
-
-    const response = await sendRawJson(address, "/sessions/ensure-active", {
-      date: "2026-07-12",
+  it("rejects invalid bodies and supports Unix socket clients", async () => {
+    const service = await createService();
+    const { address } = await startTcpServer(service);
+    if (address.kind !== "tcp") throw new Error("Expected TCP address.");
+    const response = await sendRawJson(address, "/context/turns/prepare", {
+      date: "2026-07-19",
       timezone: "Asia/Kolkata",
       agentId: "local",
     });
-    expect(response.statusCode).toBe(400);
-    expect(response.body).toMatchObject({
-      error: {
-        code: "INVALID_REQUEST",
-      },
-    });
-  });
-
-  it("supports Unix socket clients and removes its socket on stop", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "ayati-git-context-test-"));
-    temporaryDirectories.push(directory);
-    const socketPath = join(directory, "engine.sock");
-    const server = new GitContextHttpServer({
-      service: new TestGitContextService(),
-      listen: { socketPath },
-    });
-    servers.push(server);
-    await server.start();
-
-    const client = new GitContextClient({
-      connection: { socketPath },
-    });
-    await expect(client.getHealth()).resolves.toMatchObject({
-      service: "ayati-git-context",
-      ready: true,
+    expect(response).toMatchObject({
+      statusCode: 400,
+      body: { error: { code: "INVALID_REQUEST" } },
     });
 
-    await server.stop();
-    servers.splice(servers.indexOf(server), 1);
+    const root = await mkdtemp(join(tmpdir(), "ayati-http-unix-"));
+    roots.push(root);
+    const socketPath = join(root, "context.sock");
+    const unix = new GitContextHttpServer({ service, listen: { socketPath } });
+    servers.push(unix);
+    await unix.start();
+    const client = new GitContextClient({ connection: { socketPath } });
+    await expect(client.getHealth()).resolves.toMatchObject({ ready: true });
+    await unix.stop();
+    servers.splice(servers.indexOf(unix), 1);
     await expect(rm(socketPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 
-class TestGitContextService implements GitContextService {
-  readonly activeContextRequests: GetActiveContextRequest[] = [];
-  private session: EnsureActiveSessionResponse["session"] | null = null;
-  private task: TaskCatalogEntry | null = null;
-  private authority: AcquireMutationAuthorityResponse["authority"] | null = null;
-
-  async getHealth(): Promise<HealthResponse> {
-    return {
-      service: "ayati-git-context",
-      protocolVersion: GIT_CONTEXT_PROTOCOL_VERSION,
-      status: "ok",
-      ready: true,
-      capabilities: ["health", "active_context", "sessions", "conversations", "runs", "tasks"],
-    };
-  }
-
-  async getActiveContext(input: GetActiveContextRequest): Promise<ActiveContext> {
-    this.activeContextRequests.push(input);
-    return this.activeContext();
-  }
-
-  private activeContext(): ActiveContext {
-    return {
-      contextRevision: "sha256:test-context",
-      session: this.session
-        ? {
-            session: this.session,
-            summary: "",
-            pendingConversation: [],
-            pendingConversationContext: [],
-            pendingDigest: "sha256:empty",
-            recentCommits: [],
-          }
-        : null,
-      warnings: [],
-    };
-  }
-
-  async prepareContextTurn(
-    input: PrepareContextTurnRequest,
-  ): Promise<PrepareContextTurnResponse> {
-    const ensured = await this.ensureActiveSession(input);
-    const appended = await this.appendConversation({
-      requestId: input.requestId,
-      sessionId: ensured.session.sessionId,
-      role: input.role,
-      content: input.content,
-      at: input.at,
-    });
-    return {
-      session: ensured.session,
-      sessionCreated: ensured.created,
-      conversation: appended.conversation,
-      message: appended.message,
-      persistence: {
-        database: "saved",
-        materialization: "not_requested",
-        git: "not_committed",
-        plannedPath: appended.conversation.filePath,
-      },
-      context: this.activeContext(),
-    };
-  }
-
-  async completeContextTurn(
-    input: CompleteContextTurnRequest,
-  ): Promise<CompleteContextTurnResponse> {
-    const appended = await this.appendConversation({
-      requestId: input.requestId,
-      sessionId: input.sessionId,
-      role: "assistant",
-      content: input.assistantContent,
-      at: input.at,
-    });
-    return {
-      ...appended,
-      persistence: {
-        database: "saved",
-        materialization: "not_requested",
-        git: "not_committed",
-        plannedPath: appended.conversation.filePath,
-      },
-    };
-  }
-
-  async ensureActiveSession(
-    input: EnsureActiveSessionRequest,
-  ): Promise<EnsureActiveSessionResponse> {
-    this.session = {
-      sessionId: "S-" + input.date.replaceAll("-", "") + "-" + input.agentId,
-      repositoryPath: "/tmp/session",
-      head: null,
-      date: input.date,
-      timezone: input.timezone,
-      status: "open",
-    };
-    return {
-      session: this.session,
-      created: true,
-    };
-  }
-
-  async appendConversation(
-    input: AppendConversationRequest,
-  ): Promise<AppendConversationResponse> {
-    const messageId = input.sessionId + "-M-000001";
-    return {
-      conversation: {
-        conversationId: "C-000001",
-        sessionId: input.sessionId,
-        sequence: 1,
-        filePath: "conversations/000001.pending.md",
-        status: "active",
-      },
-      message: {
-        messageId,
-        conversationId: "C-000001",
-        sessionSequence: 1,
-        segmentSequence: 1,
-        sequence: 1,
-        role: input.role,
-        content: input.content,
-        at: input.at,
-      },
-      contextRevision: "sha256:" + "a".repeat(64),
-      pendingDigest: "sha256:" + "b".repeat(64),
-    };
-  }
-
-  async getTask(input: GetTaskRequest): Promise<GetTaskResponse> {
-    if (!this.task || this.task.taskId !== input.taskId) {
-      throw new Error("Task not found.");
-    }
-    return { task: this.task };
-  }
-
-  async planTaskRequestRoute(
-    input: PlanTaskRequestRouteRequest,
-  ): Promise<PlanTaskRequestRouteResponse> {
-    const taskRequestId = input.route.kind === "continue_active_request"
-      ? input.route.requestId
-      : "R-0002";
-    return {
-      run: {
-        runId: input.runId,
-        sessionId: input.sessionId,
-        conversationId: input.conversationId,
-        runClass: "task",
-        taskId: input.taskId,
-        taskRequestId,
-      },
-      taskId: input.taskId,
-      taskRequestId,
-      baseHead: input.expectedTaskHead,
-      phase: "planned",
-      requestCreated: input.route.kind === "create_active_request",
-    };
-  }
-
-  async recordSessionAttachments(
-    input: RecordSessionAttachmentsRequest,
-  ): Promise<RecordSessionAttachmentsResponse> {
-    return {
-      recorded: input.attachments.length,
-      sessionAssetIds: input.attachments.map((attachment) => attachment.sessionAssetId),
-    };
-  }
-
-  async bindTaskAttachments(
-    input: BindTaskAttachmentsRequest,
-  ): Promise<BindTaskAttachmentsResponse> {
-    return {
-      taskId: input.taskId,
-      runId: input.runId,
-      references: [],
-    };
-  }
-
-  async adoptTaskReference(
-    input: AdoptTaskReferenceRequest,
-  ): Promise<AdoptTaskReferenceResponse> {
-    return {
-      taskId: "T-20260712-0001",
-      runId: "R-20260712-0001",
-      referenceId: input.referenceId,
-      sourcePath: "/tmp/task/public/inbox/REF-0001-brief.txt",
-      destinationPath: input.destinationPath,
-      sha256: "a".repeat(64),
-    };
-  }
-
-  async acquireMutationAuthority(
-    input: AcquireMutationAuthorityRequest,
-  ): Promise<AcquireMutationAuthorityResponse> {
-    if (!this.task || this.task.taskId !== input.taskId) {
-      throw new Error("Task not found.");
-    }
-    this.authority = {
-      authorityId: input.runId + "-M-0001",
-      lockToken: "test-token",
-      sessionId: input.sessionId,
-      runId: input.runId,
-      taskId: input.taskId,
-      repositoryPath: this.task.repositoryPath,
-      branch: this.task.branch,
-      beforeHead: this.task.head,
-      targets: input.targets.map((target) => ({
-        ...target,
-        resolvedPath: "/tmp/session/tasks/" + input.taskId + "/" + target.path,
-      })),
-      status: "active",
-      expiresAt: "2026-07-12T10:15:02+05:30",
-    };
-    return { authority: this.authority };
-  }
-
-  async verifyMutation(input: VerifyMutationRequest): Promise<VerifyMutationResponse> {
-    if (!this.authority || this.authority.authorityId !== input.authorityId) {
-      throw new Error("Authority not found.");
-    }
-    return {
-      authorityId: input.authorityId,
-      status: "released",
-      verified: false,
-      outcome: "no_changes",
-      provenance: {
-        created: [],
-        modified: [],
-        deleted: [],
-        renamed: [],
-        unexpectedPaths: [],
-      },
-    };
-  }
-
-  async finalizeTaskRun(input: FinalizeTaskRunRequest): Promise<FinalizeTaskRunResponse> {
-    return {
-      runId: input.runId,
-      taskId: input.taskId,
-      outcome: input.outcome,
-      taskHeadBefore: "a".repeat(40),
-      taskHeadAfter: "b".repeat(40),
-      taskFinalizationCommit: "b".repeat(40),
-      sessionCommit: "c".repeat(40),
-      conversationHash: "sha256:" + "d".repeat(64),
-      runFile: "runs/" + input.runId + "/run.json",
-      stepsFile: "runs/" + input.runId + "/steps.jsonl",
-    };
-  }
-
-  async finalizeSessionRun(
-    input: FinalizeSessionRunRequest,
-  ): Promise<FinalizeSessionRunResponse> {
-    return {
-      runId: input.runId,
-      status: "completed",
-      runFile: "runs/" + input.runId + "/run.json",
-      stepsFile: "runs/" + input.runId + "/steps.jsonl",
-      stepCount: 1,
-    };
-  }
-
-  async startRun(input: StartRunRequest): Promise<StartRunResponse> {
-    return {
-      run: {
-        runId: "R-20260712-0001",
-        sessionId: input.sessionId,
-        conversationId: input.conversationId,
-        runClass: "session",
-      },
-    };
-  }
-
-  async recordRunStep(input: RecordRunStepRequest): Promise<RecordRunStepResponse> {
-    return {
-      toolCall: {
-        step: input.step,
-        tool: input.tool,
-        toolSchemaVersion: input.toolSchemaVersion ?? 1,
-        toolEffect: input.toolEffect,
-        purpose: input.purpose,
-        status: input.status,
-      },
-      workState: {
-        runId: input.runId,
-        revision: 1,
-        afterStep: input.step,
-        ...input.workState,
-        updatedAt: input.at,
-      },
-    };
-  }
-}
-
-class V1ZeroTargetAuthorityService extends ContractOnlyGitContextService {
+class ZeroTargetAuthorityService extends ContractOnlyGitContextService {
   override async acquireMutationAuthority(
     input: AcquireMutationAuthorityRequest,
   ): Promise<AcquireMutationAuthorityResponse> {
@@ -690,22 +288,36 @@ class V1ZeroTargetAuthorityService extends ContractOnlyGitContextService {
         sessionId: input.sessionId,
         runId: input.runId,
         taskId: input.taskId,
-        repositoryPath: "/tmp/tasks/" + input.taskId,
         taskRequestId: input.taskRequestId,
+        repositoryPath: "/tmp/tasks/" + input.taskId,
         branch: "main",
         beforeHead: input.expectedTaskHead ?? "a".repeat(40),
         targets: [],
         status: "active",
-        expiresAt: "2026-07-12T10:15:02+05:30",
+        expiresAt: "2026-07-19T12:15:00+05:30",
       },
     };
   }
 }
 
-function emptyRunWorkState() {
+async function createService(): Promise<SqliteGitContextService> {
+  const root = await mkdtemp(join(tmpdir(), "ayati-http-transport-"));
+  roots.push(root);
+  const database = await ContextDatabase.open({ path: join(root, "context.sqlite") });
+  const service = new SqliteGitContextService({
+    database,
+    dataRoot: join(root, "session-data"),
+    workspaceRoot: join(root, "workspace"),
+    now: () => "2026-07-19T12:00:00+05:30",
+  });
+  services.push(service);
+  return service;
+}
+
+function workState() {
   return {
     status: "not_done" as const,
-    summary: "",
+    summary: "Run is active.",
     openWork: [],
     blockers: [],
     facts: [],
@@ -731,9 +343,7 @@ async function startTcpServer(
   });
   servers.push(server);
   const address = await server.start();
-  if (address.kind !== "tcp") {
-    throw new Error("Expected TCP server address.");
-  }
+  if (address.kind !== "tcp") throw new Error("Expected TCP server address.");
   return {
     server,
     address,
@@ -749,7 +359,7 @@ function sendRawJson(
   value: unknown,
 ): Promise<{ statusCode: number; body: unknown }> {
   const body = JSON.stringify(value);
-  return new Promise((resolve, reject) => {
+  return new Promise((resolveResponse, reject) => {
     const request = httpRequest({
       host: "127.0.0.1",
       port: address.port,
@@ -761,18 +371,13 @@ function sendRawJson(
       },
     }, (response) => {
       const chunks: Buffer[] = [];
-      response.on("data", (chunk: Buffer | string) => {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      });
+      response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
       response.on("end", () => {
-        try {
-          resolve({
-            statusCode: response.statusCode ?? 500,
-            body: JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown,
-          });
-        } catch (error) {
-          reject(error);
-        }
+        const text = Buffer.concat(chunks).toString("utf8");
+        resolveResponse({
+          statusCode: response.statusCode ?? 0,
+          body: text ? JSON.parse(text) as unknown : undefined,
+        });
       });
     });
     request.on("error", reject);

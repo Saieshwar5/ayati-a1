@@ -75,7 +75,7 @@ export function summarizePromptStateView(
     } : undefined,
     run: run ? {
       keys: Object.keys(run),
-      status: run.status,
+      workStatus: run.workState?.status,
       toolCallCount: readArray(run.toolCalls).length,
     } : undefined,
     personal: context.personal ? {

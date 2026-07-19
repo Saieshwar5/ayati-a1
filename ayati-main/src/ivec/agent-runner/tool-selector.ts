@@ -1,11 +1,10 @@
 import type { ToolDefinition } from "../../skills/types.js";
-import type { MemoryRunHandle } from "../../memory/types.js";
 import type { LoopState } from "../types.js";
 import {
-  detectRuntimeCapabilityMode,
-  filterToolsForRuntimeMode,
-  requiredRoutingControlToolsForRuntimeMode,
-} from "./runtime-capability-mode.js";
+  deriveTaskBindingCapabilityPolicy,
+  filterToolsByTaskBinding,
+  requiredRoutingControls,
+} from "./task-binding-capability-policy.js";
 
 export const PRESSURE_MAX_SELECTED_TOOLS = 10;
 
@@ -13,18 +12,10 @@ export function selectToolsForDecision(
   state: LoopState,
   toolDefinitions: ToolDefinition[],
   limit: number,
-  input: {
-    workRunHandle?: MemoryRunHandle;
-    sessionRunHandle?: MemoryRunHandle;
-  } = {},
 ): ToolDefinition[] {
-  const mode = detectRuntimeCapabilityMode({
-    state,
-    workRunHandle: input.workRunHandle,
-    sessionRunHandle: input.sessionRunHandle,
-  });
-  const candidateTools = filterToolsForRuntimeMode(mode, toolDefinitions);
-  const requiredToolNames = new Set(requiredRoutingControlToolsForRuntimeMode(mode));
+  const policy = deriveTaskBindingCapabilityPolicy(state);
+  const candidateTools = filterToolsByTaskBinding(policy, toolDefinitions);
+  const requiredToolNames = new Set(requiredRoutingControls(policy, state));
   const requiredTools = candidateTools.filter((tool) => requiredToolNames.has(tool.name));
   const budgetedTools = candidateTools.filter((tool) => !requiredToolNames.has(tool.name));
   const selectedToolLimit = resolveSelectedToolLimit(state, limit);

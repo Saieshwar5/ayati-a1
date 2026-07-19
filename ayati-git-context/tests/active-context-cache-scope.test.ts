@@ -94,9 +94,11 @@ describe("active context cache scope", () => {
     await fixture.service.getActiveContext({ sessionId: second.session.sessionId });
     fixture.events.length = 0;
 
-    await fixture.service.appendConversation({
-      requestId: "REQ-second-session-message",
-      sessionId: second.session.sessionId,
+    await fixture.service.prepareContextTurn({
+      requestId: "REQ-second-session-turn",
+      date: "2026-07-13",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
       role: "user",
       content: "Change only the current session conversation.",
       at: currentTime,
@@ -124,21 +126,17 @@ describe("active context cache scope", () => {
 
   it("refreshes cached attachment and task-candidate projections after their owners change", async () => {
     const fixture = await createFixture(() => "2026-07-12T09:00:00+05:30");
-    const session = await ensureSession(
-      fixture.service,
-      "REQ-session",
-      "2026-07-12",
-      "2026-07-12T09:00:00+05:30",
-    );
-    const conversation = await fixture.service.appendConversation({
-      requestId: "REQ-message",
-      sessionId: session.session.sessionId,
+    const prepared = await fixture.service.prepareContextTurn({
+      requestId: "REQ-turn",
+      date: "2026-07-12",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
       role: "user",
       content: "Retain a document and create a task.",
       at: "2026-07-12T09:01:00+05:30",
     });
     const initial = await fixture.service.getActiveContext({
-      sessionId: session.session.sessionId,
+      sessionId: prepared.session.sessionId,
     });
     expect(initial.session?.attachments).toBeUndefined();
     expect(initial.taskCandidates).toEqual([]);
@@ -150,8 +148,8 @@ describe("active context cache scope", () => {
     await writeFile(retainedPath, content);
     await fixture.service.recordSessionAttachments({
       requestId: "REQ-attachment",
-      sessionId: session.session.sessionId,
-      conversationId: conversation.conversation.conversationId,
+      sessionId: prepared.session.sessionId,
+      conversationId: prepared.conversation.conversationId,
       attachments: [{
         sessionAssetId: "SA-notes",
         kind: "file",
@@ -165,13 +163,12 @@ describe("active context cache scope", () => {
       }],
       at: "2026-07-12T09:02:00+05:30",
     });
-    const task = await fixture.service.createTaskRun({
+    const task = await fixture.service.createTaskForRun({
       requestId: "REQ-task",
-      sessionId: session.session.sessionId,
-      conversationId: conversation.conversation.conversationId,
-      expectedHead: session.session.head ?? undefined,
-      trigger: "user",
-      workState: emptyWorkState(),
+      sessionId: prepared.session.sessionId,
+      conversationId: prepared.conversation.conversationId,
+      runId: prepared.run.runId,
+      expectedHead: prepared.session.head ?? undefined,
       title: "Scoped Cache Task",
       objective: "Prove that shared task candidates refresh deterministically.",
       placement: { mode: "managed" },
@@ -179,7 +176,7 @@ describe("active context cache scope", () => {
     });
 
     const refreshed = await fixture.service.getActiveContext({
-      sessionId: session.session.sessionId,
+      sessionId: prepared.session.sessionId,
     });
     expect(refreshed.session?.attachments).toMatchObject({
       count: 1,
@@ -192,53 +189,50 @@ describe("active context cache scope", () => {
 
   it("refreshes cached read context after a run step is persisted", async () => {
     const fixture = await createFixture(() => "2026-07-12T09:00:00+05:30");
-    const session = await ensureSession(
-      fixture.service,
-      "REQ-session",
-      "2026-07-12",
-      "2026-07-12T09:00:00+05:30",
-    );
-    const conversation = await fixture.service.appendConversation({
-      requestId: "REQ-message",
-      sessionId: session.session.sessionId,
+    const prepared = await fixture.service.prepareContextTurn({
+      requestId: "REQ-turn",
+      date: "2026-07-12",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
       role: "user",
       content: "Read the requirements.",
       at: "2026-07-12T09:01:00+05:30",
     });
-    const run = await fixture.service.startRun({
-      requestId: "REQ-run",
-      sessionId: session.session.sessionId,
-      conversationId: conversation.conversation.conversationId,
-      trigger: "user",
-      workState: emptyWorkState(),
-      at: "2026-07-12T09:01:01+05:30",
-    });
-    expect((await fixture.service.getActiveContext({ sessionId: session.session.sessionId }))
+    expect((await fixture.service.getActiveContext({ sessionId: prepared.session.sessionId }))
       .readContext?.evidence).toEqual([]);
 
     await fixture.service.recordRunStep({
       requestId: "REQ-step",
-      sessionId: session.session.sessionId,
-      runId: run.run.runId,
-      step: 1,
-      tool: "read_files",
-      toolEffect: "read_only",
-      purpose: "Read the current requirements.",
-      status: "completed",
-      input: { files: [{ path: "requirements.md" }] },
-      output: { files: [{ path: "requirements.md", content: "current requirements" }] },
-      verification: { passed: true },
-      workState: {
-        ...emptyWorkState(),
+      sessionId: prepared.session.sessionId,
+      runId: prepared.run.runId,
+      record: {
+        version: 1,
+        step: 1,
+        status: "completed",
         summary: "Requirements are available.",
+        toolCalls: [{
+          callId: "call-read-requirements",
+          tool: "read_files",
+          toolPurpose: "read",
+          toolEffect: "read_only",
+          purpose: "Read the current requirements.",
+          status: "success",
+          input: { files: [{ path: "requirements.md" }] },
+          output: { files: [{ path: "requirements.md", content: "current requirements" }] },
+        }],
+        verification: { passed: true },
+        workStateAfter: {
+          ...emptyWorkState(),
+          summary: "Requirements are available.",
+        },
+        createdAt: "2026-07-12T09:01:02+05:30",
       },
-      at: "2026-07-12T09:01:02+05:30",
     });
 
-    expect((await fixture.service.getActiveContext({ sessionId: session.session.sessionId }))
+    expect((await fixture.service.getActiveContext({ sessionId: prepared.session.sessionId }))
       .readContext?.evidence).toEqual([
         expect.objectContaining({
-          runId: run.run.runId,
+          runId: prepared.run.runId,
           tool: "read_files",
           resources: ["requirements.md"],
         }),

@@ -2,7 +2,6 @@ import type { LlmProvider } from "../core/contracts/provider.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { SkillActivationManager } from "../skills/activation-manager.js";
 import type { ToolLoadResult, ToolWorkingSetManager } from "./agent-runner/tool-working-set.js";
-import type { AgentAction } from "./agent-runner/decision.js";
 import type { RepairCode, RepairPromptCard } from "./agent-runner/repair-policy.js";
 import type {
   ArtifactRef,
@@ -17,7 +16,6 @@ import type {
   AgentResponseKind,
   AssistantResponseKind,
   FeedbackKind,
-  MemoryRunHandle,
   RunRecorder,
   SessionInputHandle,
 } from "../memory/types.js";
@@ -41,9 +39,9 @@ import type { AgentFeedbackLedger } from "./feedback-ledger.js";
 import type { HarnessContext, HarnessContextInput } from "./harness-context.js";
 import type { ContextPressureState } from "./context-pressure-state.js";
 import type { TimelineCheckpointCacheState } from "./agent-runner/timeline-checkpoint-cache.js";
+import type { AgentRunHandle, RunOutcome, RunStopReason } from "ayati-git-context";
 
 export type SystemEventApprovalState = "not_needed" | "pending" | "granted" | "rejected";
-export type RunClass = "interaction" | "session" | "task";
 export type TaskSummaryRunStatus = "completed" | "failed" | "stuck";
 export type TaskSummaryTaskStatus = "open" | "done" | "blocked" | "needs_user_input";
 export type TaskSummaryStopReason = "completed" | "needs_user_input" | "blocked" | "failed" | "stuck" | "context_limit" | "run_limit";
@@ -186,14 +184,6 @@ export interface ReadProgressState {
   signatures: string[];
 }
 
-export interface DeferredMutationState {
-  action: AgentAction;
-  selectedTools: ToolDefinition[];
-  deferredAtIteration: number;
-  reason: "mutation_requires_task_ownership";
-  blockedTools: string[];
-}
-
 export interface RoutingAttemptState {
   successCount: number;
   failureCount: number;
@@ -207,7 +197,6 @@ export interface LoopState {
   runId: string;
   currentSeq: number;
   currentMessageId?: string;
-  runClass: RunClass;
   inputKind?: "user_message" | "system_event";
   userMessage: string;
   systemEvent?: AyatiSystemEvent;
@@ -238,13 +227,13 @@ export interface LoopState {
   maxIterations: number;
   consecutiveFailures: number;
   completedSteps: StepSummary[];
-  deferredMutation?: DeferredMutationState;
   routingAttempts: RoutingAttemptState;
   runPath: string;
   failureHistory: FailureRecord[];
   contextPressure?: ContextPressureState;
   contextLimitReached?: boolean;
   runLimitReached?: boolean;
+  interrupted?: boolean;
   timelineCheckpointCache?: TimelineCheckpointCacheState;
   readProgress?: ReadProgressState;
   attachedDocuments?: ManagedDocumentManifest[];
@@ -394,13 +383,14 @@ export const DEFAULT_LOOP_CONFIG: LoopConfig = {
 
 export interface AgentLoopResult {
   type: AgentResponseKind;
-  runClass: RunClass;
+  runId: string;
+  outcome: RunOutcome;
+  stopReason: RunStopReason;
   content: string;
   status: "completed" | "failed" | "stuck";
   totalIterations: number;
   totalToolCalls: number;
   runPath: string;
-  workRunId?: string;
   taskSummary?: AgentTaskSummaryRecord;
   taskAssets?: TaskAssetRecord[];
   /** Exact assets accepted by deterministic task-completion verification. */
@@ -424,18 +414,6 @@ export type FinalResponseStreamEvent =
     };
 export type OnFinalResponseStreamCallback = (event: FinalResponseStreamEvent) => void;
 
-export interface CreateWorkRunRequest {
-  reason: string;
-  userMessage: string;
-}
-
-export interface CreatedWorkRun {
-  runHandle: MemoryRunHandle;
-  harnessContext?: HarnessContextInput;
-}
-
-export type CreateWorkRunResult = MemoryRunHandle | CreatedWorkRun;
-
 // --- Deps ---
 
 export interface AgentLoopDeps {
@@ -446,15 +424,7 @@ export interface AgentLoopDeps {
   toolDefinitions: ToolDefinition[];
   runRecorder?: RunRecorder;
   inputHandle?: SessionInputHandle;
-  runHandle?: MemoryRunHandle;
-  createSessionRun?: (
-    inputHandle: SessionInputHandle,
-  ) => MemoryRunHandle | Promise<MemoryRunHandle>;
-  createWorkRun?: (
-    inputHandle: SessionInputHandle,
-    request: CreateWorkRunRequest,
-  ) => CreateWorkRunResult | Promise<CreateWorkRunResult>;
-  onWorkRunCreated?: (runHandle: MemoryRunHandle) => void;
+  runHandle: AgentRunHandle;
   clientId: string;
   inputKind?: "user_message" | "system_event";
   systemEvent?: AyatiSystemEvent;
@@ -470,12 +440,9 @@ export interface AgentLoopDeps {
   uiContext?: AgentUiContext;
   onProgress?: OnProgressCallback;
   onFinalResponseStream?: OnFinalResponseStreamCallback;
-  sessionRunHandle?: MemoryRunHandle;
-  recordSessionStep?: (
+  recordRunStep?: (
     record: ContextRunStepRecord,
-  ) => void | HarnessContextInput | Promise<void | HarnessContextInput>;
-  recordTaskStep?: (
-    record: ContextRunStepRecord,
+    currentContext: HarnessContextInput,
   ) => void | HarnessContextInput | Promise<void | HarnessContextInput>;
   feedbackLedger?: AgentFeedbackLedger;
   config?: Partial<LoopConfig>;

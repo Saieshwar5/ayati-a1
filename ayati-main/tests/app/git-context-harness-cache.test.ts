@@ -66,7 +66,6 @@ describe("Git Context harness cache", () => {
           key: "evidence:read_files:requirements.md",
           runId: "R-1",
           step: 1,
-          runClass: "session",
           tool: "read_files",
           purpose: "Read requirements.",
           resources: ["requirements.md"],

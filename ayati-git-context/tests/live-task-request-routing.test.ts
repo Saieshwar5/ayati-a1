@@ -4,11 +4,12 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import type { FinalizeTaskRunRequest, SessionRef } from "../src/contracts.js";
+import type { FinalizeRunRequest, SessionRef } from "../src/contracts.js";
 import { ContextDatabase } from "../src/database/database.js";
 import { updateTaskHead } from "../src/repositories/task-records.js";
 import { SqliteGitContextService } from "../src/services/sqlite-git-context-service.js";
 import { SimpleTaskFinalizationService } from "../src/services/simple-task-finalization-service.js";
+import { MutationBoundaryService } from "../src/services/mutation-boundary-service.js";
 import { TaskLifecycleService } from "../src/services/task-lifecycle-service.js";
 import { planTaskRequestChange } from "../src/tasks/task-request-lifecycle.js";
 import { validateTaskRepository } from "../src/tasks/task-repository-validator.js";
@@ -48,7 +49,10 @@ describe("live V1 task request routing", () => {
       taskRequestId: "R-0001",
       requestCreated: false,
       phase: "planned",
-      run: { runClass: "task", taskRequestId: "R-0001" },
+      run: {
+        runId: fixture.runId,
+        taskBinding: { taskId: fixture.taskId, taskRequestId: "R-0001" },
+      },
     });
     expect(fixture.database.prepare(
       "SELECT change_plan_json FROM task_request_route_plans WHERE run_id = ?",
@@ -78,7 +82,10 @@ describe("live V1 task request routing", () => {
       baseHead: fixture.taskHead,
       phase: "planned",
       requestCreated: true,
-      run: { runId: fixture.runId, runClass: "task", taskRequestId: "R-0002" },
+      run: {
+        runId: fixture.runId,
+        taskBinding: { taskId: fixture.taskId, taskRequestId: "R-0002" },
+      },
     });
     expect(await git(fixture.repositoryPath, ["rev-parse", "HEAD"])).toBe(fixture.taskHead);
     expect(await git(fixture.repositoryPath, ["status", "--porcelain", "--untracked-files=all"]))
@@ -129,11 +136,10 @@ describe("live V1 task request routing", () => {
       at: "2026-07-17T16:03:00+05:30",
     });
 
-    const finalized = await fixture.service.finalizeTaskRun(finalizationInput(fixture, "done"));
+    const finalized = await fixture.service.finalizeRun(finalizationInput(fixture, "done"));
 
     expect(finalized).toMatchObject({
-      taskHeadBefore: fixture.taskHead,
-      taskCommitCreated: true,
+      commit: { status: "committed", headBefore: fixture.taskHead },
     });
     expect((await git(fixture.repositoryPath, [
       "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD",
@@ -155,7 +161,7 @@ describe("live V1 task request routing", () => {
       "SELECT phase, commit_head FROM task_request_route_plans WHERE run_id = ?",
     ].join(" ")).get(fixture.runId)).toEqual({
       phase: "committed",
-      commit_head: finalized.taskHeadAfter,
+      commit_head: finalized.commit.status === "committed" ? finalized.commit.headAfter : null,
     });
   });
 
@@ -180,12 +186,10 @@ describe("live V1 task request routing", () => {
       at: "2026-07-17T16:03:00+05:30",
     });
 
-    const finalized = await fixture.service.finalizeTaskRun(finalizationInput(fixture, "failed"));
+    const finalized = await fixture.service.finalizeRun(finalizationInput(fixture, "failed"));
 
     expect(finalized).toMatchObject({
-      taskHeadBefore: fixture.taskHead,
-      taskHeadAfter: fixture.taskHead,
-      taskCommitCreated: false,
+      commit: { status: "not_required" },
     });
     expect(fixture.database.prepare(
       "SELECT phase FROM task_request_route_plans WHERE run_id = ?",
@@ -228,6 +232,7 @@ describe("live V1 task request routing", () => {
     const interrupted = new SimpleTaskFinalizationService({
       database: fixture.database,
       taskRoot: fixture.taskRoot,
+      mutationBoundary: new MutationBoundaryService(fixture.database, fixture.taskRoot),
       hook: (phase) => {
         if (phase === "commit_created") throw new Error("interrupt after request commit");
       },
@@ -244,8 +249,9 @@ describe("live V1 task request routing", () => {
     const recovery = new SimpleTaskFinalizationService({
       database: fixture.database,
       taskRoot: fixture.taskRoot,
+      mutationBoundary: new MutationBoundaryService(fixture.database, fixture.taskRoot),
     });
-    await recovery.recoverCommittedFinalizations("2026-07-17T16:05:00+05:30");
+    await recovery.recover("2026-07-17T16:05:00+05:30");
 
     expect(fixture.database.prepare([
       "SELECT phase, commit_head FROM task_request_route_plans WHERE run_id = ?",
@@ -333,27 +339,21 @@ async function createFixture(input: {
     taskHead = await git(created.task.repositoryPath, ["rev-parse", "HEAD"]);
     updateTaskHead(database, created.task.taskId, created.task.head, taskHead, at);
   }
-  const conversation = await service.appendConversation({
-    requestId: "REQ-message",
-    sessionId: ensured.session.sessionId,
+  const prepared = await service.prepareContextTurn({
+    requestId: "REQ-prepare",
+    date: "2026-07-17",
+    timezone: "Asia/Kolkata",
+    agentId: "local",
     role: "user",
     content: "Add and finish the next lesson in this learning task.",
     at: "2026-07-17T16:00:01+05:30",
   });
-  const run = await service.startRun({
-    requestId: "REQ-run",
-    sessionId: ensured.session.sessionId,
-    conversationId: conversation.conversation.conversationId,
-    trigger: "user",
-    workState: emptyRunWorkState(),
-    at: "2026-07-17T16:00:02+05:30",
-  });
   return {
     service,
     database,
-    session: ensured.session,
-    conversationId: conversation.conversation.conversationId,
-    runId: run.run.runId,
+    session: prepared.session,
+    conversationId: prepared.conversation.conversationId,
+    runId: prepared.run.runId,
     taskId: created.task.taskId,
     taskHead,
     repositoryPath: created.task.repositoryPath,
@@ -384,29 +384,38 @@ function requestRouteInput(fixture: Fixture) {
 function finalizationInput(
   fixture: Fixture,
   outcome: "done" | "failed",
-): FinalizeTaskRunRequest {
+): FinalizeRunRequest {
   const done = outcome === "done";
   return {
     requestId: "REQ-finalize-" + outcome,
     sessionId: fixture.session.sessionId,
     runId: fixture.runId,
-    taskId: fixture.taskId,
     outcome,
+    stopReason: done ? "completed" : "failed",
     conversationSummary: "The planned lesson run reached a terminal outcome.",
     summary: done ? "The next lesson was created and verified." : "The lesson attempt failed.",
     validation: done ? "passed" : "failed",
     ...(done ? {} : { next: "Retry the planned lesson when ready." }),
-    completion: {
-      accepted: done,
-      assets: done ? [{
-        path: "lessons/next.md",
-        kind: "file",
-        description: "Verified next lesson.",
-        verified: true,
-      }] : [],
-      missing: done ? [] : ["Next lesson"],
-      failures: done ? [] : ["The attempt did not create a durable artifact."],
-      criteria: [{ criterion: "The next lesson is verified.", passed: done }],
+    workState: {
+      ...emptyRunWorkState(),
+      status: done ? "done" : "not_done",
+      summary: done ? "The next lesson was created and verified." : "The lesson attempt failed.",
+      artifacts: done ? ["lessons/next.md"] : [],
+      nextStep: done ? null : "Retry the planned lesson when ready.",
+    },
+    task: {
+      completion: {
+        accepted: done,
+        assets: done ? [{
+          path: "lessons/next.md",
+          kind: "file",
+          description: "Verified next lesson.",
+          verified: true,
+        }] : [],
+        missing: done ? [] : ["Next lesson"],
+        failures: done ? [] : ["The attempt did not create a durable artifact."],
+        criteria: [{ criterion: "The next lesson is verified.", passed: done }],
+      },
     },
     assistantResponse: done ? "The next lesson is complete." : "The lesson attempt failed.",
     at: "2026-07-17T16:04:00+05:30",

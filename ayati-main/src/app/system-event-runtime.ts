@@ -5,7 +5,8 @@ import type { DocumentStore } from "../documents/document-store.js";
 import type { PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
 import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
-import type { AgentResponseKind, MemoryRunHandle, RunRecorder, SessionInputHandle } from "../memory/types.js";
+import type { AgentResponseKind, RunRecorder, SessionInputHandle } from "../memory/types.js";
+import type { AgentRunHandle, FinalizeRunResponse } from "ayati-git-context";
 import type { SkillActivationManager } from "../skills/activation-manager.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition } from "../skills/types.js";
@@ -35,10 +36,9 @@ import type {
 import { buildStaticSystemContext } from "./static-prompt.js";
 import type {
   GitContextPreparedTurn,
-  GitContextRoutedTurn,
   GitContextRuntime,
 } from "./git-context-runtime.js";
-import { buildSessionRunFinalizationFields } from "./session-run-finalization.js";
+import { finalizeAgentRun, isTaskBoundRun } from "./run-finalization-coordinator.js";
 
 export interface CreateSystemEventRuntimeOptions {
   onReply?: (clientId: string, data: unknown) => void;
@@ -129,10 +129,9 @@ class AppSystemEventRuntime implements SystemEventRuntime {
   async processSystemEvent(input: SystemEventRuntimeInput): Promise<void> {
     const { clientId, event } = input;
     let inputHandle: SessionInputHandle | null = null;
-    let runHandle: MemoryRunHandle | null = null;
-    let sessionRunHandle: MemoryRunHandle | null = null;
+    let runHandle: AgentRunHandle | null = null;
     let preparedContextTurn: GitContextPreparedTurn | null = null;
-    let routedContextTurn: GitContextRoutedTurn | null = null;
+    let finalizationAttempted = false;
     const incomingMessage = event.summary;
     const systemEventPlan = this.buildSystemEventExecutionPlan(event);
     const preferredResponseKind = systemEventPlan.preferredResponseKind;
@@ -143,6 +142,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       );
       preparedContextTurn = await this.prepareSystemEventContextTurn(clientId, event, systemEventPlan);
       inputHandle = this.inputHandleFromSystemContextTurn(preparedContextTurn);
+      runHandle = preparedContextTurn.run;
       this.feedbackLedger?.record({
         clientId,
         sessionId: inputHandle.sessionId,
@@ -160,43 +160,32 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       });
 
       if (systemEventPlan.policy.mode === "log_only") {
+        finalizationAttempted = true;
+        await this.completeSystemEventContextRun(
+          clientId,
+          preparedContextTurn,
+          systemEventResult(runHandle.runId, "none", ""),
+        );
         return;
       }
 
       if (!this.provider) {
         devLog(`[${clientId}] system_event echo_mode eventId=${event.eventId}`);
-        await this.recordSystemEventAssistantMessage(clientId, preparedContextTurn, event.summary);
-        this.dispatchAgentResponse(clientId, null, {
+        const result = systemEventResult(runHandle.runId, preferredResponseKind, event.summary);
+        finalizationAttempted = true;
+        const finalized = await this.completeSystemEventContextRun(clientId, preparedContextTurn, result);
+        this.dispatchAgentResponse(clientId, runHandle, {
           type: preferredResponseKind,
           content: event.summary,
         }, {
           source: event.source,
           event: event.eventName,
           eventId: event.eventId,
-        });
+        }, finalized);
         return;
       }
 
-      sessionRunHandle = await this.startSystemEventSessionRun(clientId, preparedContextTurn, inputHandle);
       const toolDefinitions = systemEventPlan.toolDefinitions;
-      routedContextTurn = await this.routeSystemEventContextTurn(
-        clientId,
-        preparedContextTurn,
-        event,
-        systemEventPlan,
-        sessionRunHandle,
-      );
-      if (routedContextTurn?.status === "ambiguous") {
-        await this.dispatchSystemEventContextAmbiguity(clientId, preparedContextTurn, routedContextTurn);
-        return;
-      }
-      runHandle = routedContextTurn?.status === "ready"
-        ? this.runHandleFromRoutedTurn(inputHandle, routedContextTurn)
-        : null;
-      if (runHandle && sessionRunHandle?.runId === runHandle.runId) {
-        sessionRunHandle = null;
-      }
-
       devLog(
         `[${clientId}] system_event entering agentLoop eventId=${event.eventId} mode=${systemEventPlan.policy.mode} intent=${systemEventPlan.classification.intentKind} approval=${systemEventPlan.policy.approvalRequired ? "required" : "not_required"} tools=${toolDefinitions.length} payloadKeys=${Object.keys(event.payload).join(",") || "none"}`,
       );
@@ -208,25 +197,16 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         toolDefinitions,
         runRecorder: systemEventRunRecorder,
         inputHandle,
-        ...(runHandle ? { runHandle } : {}),
-        ...(sessionRunHandle ? { sessionRunHandle } : {}),
-        recordSessionStep: async (record) => {
-          const context = await this.systemEventContextRuntime.recordSessionRunStep({
+        runHandle,
+        recordRunStep: async (record, currentContext) => {
+          const context = await this.systemEventContextRuntime.recordRunStep({
             clientId,
             turn: preparedContextTurn,
             record,
+            currentContext: currentContext.contextEngine,
           });
           return context ? { contextEngine: context } : undefined;
         },
-        recordTaskStep: async (record) => {
-          const context = await this.systemEventContextRuntime.recordTaskRunStep({
-            clientId,
-            turn: preparedContextTurn,
-            record,
-          });
-          return context ? { contextEngine: context } : undefined;
-        },
-        createWorkRun: this.failMissingGitContextRun,
         clientId,
         inputKind: "system_event",
         systemEvent: event,
@@ -242,7 +222,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         config: this.loopConfig,
         dataDir: this.dataDir ?? "data",
         systemContext: buildStaticSystemContext(this.staticContext),
-        ...(routedContextTurn?.status === "ready" ? { harnessContext: routedContextTurn.harnessContext } : {}),
+        harnessContext: { contextEngine: preparedContextTurn.context },
         feedbackLedger: this.feedbackLedger,
         fileLibrary: this.fileLibrary,
         directoryLibrary: this.directoryLibrary,
@@ -250,21 +230,20 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         preparedAttachmentRegistry: this.preparedAttachmentRegistry,
         onProgress: (log, _runPath) => {
           devLog(`[${clientId}] ${log}`);
-          if (runHandle) {
-            this.sendProgress(clientId, runHandle, log);
-          }
+          this.sendProgress(clientId, runHandle!, log);
         },
       });
 
       devLog(
         `[${clientId}] system_event agentLoop completed eventId=${event.eventId} status=${result.status} runPath=${result.runPath}`,
       );
+      finalizationAttempted = true;
+      const finalized = await this.completeSystemEventContextRun(clientId, preparedContextTurn, result);
       this.dispatchAgentResponse(clientId, runHandle, result, {
         source: event.source,
         event: event.eventName,
         eventId: event.eventId,
-      });
-      await this.completeSystemEventContextRun(clientId, preparedContextTurn, routedContextTurn, result, sessionRunHandle);
+      }, finalized);
     } catch (err) {
       devError("System event processing error:", err);
       if (runHandle) {
@@ -277,6 +256,13 @@ class AppSystemEventRuntime implements SystemEventRuntime {
           event: "failed",
           data: { message },
         });
+      }
+      if (runHandle && preparedContextTurn && !finalizationAttempted) {
+        await this.completeSystemEventContextRun(
+          clientId,
+          preparedContextTurn,
+          failedSystemEventResult(runHandle.runId, err),
+        ).catch(() => undefined);
       }
       this.onReply?.(clientId, {
         type: "error",
@@ -332,298 +318,48 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     return turn;
   }
 
-  private async routeSystemEventContextTurn(
-    clientId: string,
-    turn: GitContextPreparedTurn | null,
-    event: AyatiSystemEvent,
-    plan: SystemEventExecutionPlan,
-    sessionRunHandle: MemoryRunHandle | null,
-  ): Promise<GitContextRoutedTurn | null> {
-    if (turn) {
-      this.feedbackLedger?.record({
-        clientId,
-        sessionId: turn.sessionId,
-        seq: turn.messageSeq,
-        stage: "context_engine",
-        event: "route_started",
-        data: {
-          source: "system_event",
-          context: summarizeHarnessContext({
-            contextEngine: turn.context,
-          }),
-        },
-      });
-    }
-    const routed = await this.systemEventContextRuntime.routeTaskTurn({
-      clientId,
-      turn,
-      userMessage: this.systemEventRoutingText(event, plan),
-      title: this.systemEventTaskTitle(event),
-      objective: this.systemEventTaskObjective(event, plan),
-      at: this.nowProvider().toISOString(),
-      ...(sessionRunHandle ? { sessionRunId: sessionRunHandle.runId } : {}),
-    });
-    if (!turn || !routed) {
-      if (turn) {
-        this.feedbackLedger?.record({
-          clientId,
-          sessionId: turn.sessionId,
-          seq: turn.messageSeq,
-          stage: "context_engine",
-          event: "route_result",
-          data: {
-            status: "skipped",
-            reason: "no_route",
-            routeSource: "deterministic_router",
-            contextEngine: buildContextEngineFeedbackSummary({
-              context: turn.context,
-              routeSource: "deterministic_router",
-            }),
-          },
-        });
-      }
-      return routed;
-    }
-    this.feedbackLedger?.record({
-      clientId,
-      sessionId: turn.sessionId,
-      seq: turn.messageSeq,
-      ...(routed.status === "ready" ? { runId: routed.runId } : {}),
-      stage: "context_engine",
-      event: "route_result",
-      data: routed.status === "ready"
-        ? {
-            status: routed.status,
-            mode: routed.mode,
-            taskId: routed.taskId,
-            branch: routed.branch,
-            ref: routed.ref,
-            runId: routed.runId,
-            conversationRefs: routed.conversationRefs,
-            routeSource: "deterministic_router",
-            contextEngine: buildContextEngineFeedbackSummary({
-              context: routed.harnessContext.contextEngine,
-              routeStatus: routed.status,
-              routeMode: routed.mode,
-              routeSource: "deterministic_router",
-              taskId: routed.taskId,
-              branch: routed.branch,
-              ref: routed.ref,
-              runId: routed.runId,
-              conversationRefs: routed.conversationRefs,
-            }),
-          }
-        : {
-            status: routed.status,
-            reason: routed.reason,
-            candidateCount: routed.candidates.length,
-            routeSource: "deterministic_router",
-            contextEngine: buildContextEngineFeedbackSummary({
-              context: routed.harnessContext.contextEngine,
-              routeStatus: routed.status,
-              routeSource: "deterministic_router",
-              pendingTurnStatus: "clarifying",
-            }),
-          },
-    });
-    this.feedbackLedger?.record({
-      clientId,
-      sessionId: turn.sessionId,
-      seq: turn.messageSeq,
-      ...(routed.status === "ready" ? { runId: routed.runId } : {}),
-      stage: "context_engine",
-      event: "routed",
-      data: routed.status === "ready"
-        ? {
-            status: routed.status,
-            mode: routed.mode,
-            taskId: routed.taskId,
-            branch: routed.branch,
-            ref: routed.ref,
-            runId: routed.runId,
-            conversationRefs: routed.conversationRefs,
-            contextEngine: buildContextEngineFeedbackSummary({
-              context: routed.harnessContext.contextEngine,
-              routeStatus: routed.status,
-              routeMode: routed.mode,
-              routeSource: "deterministic_router",
-              taskId: routed.taskId,
-              branch: routed.branch,
-              ref: routed.ref,
-              runId: routed.runId,
-              conversationRefs: routed.conversationRefs,
-            }),
-          }
-        : {
-            status: routed.status,
-            reason: routed.reason,
-            candidateCount: routed.candidates.length,
-            contextEngine: buildContextEngineFeedbackSummary({
-              context: routed.harnessContext.contextEngine,
-              routeStatus: routed.status,
-              routeSource: "deterministic_router",
-              pendingTurnStatus: "clarifying",
-            }),
-          },
-    });
-    return routed;
-  }
-
-  private async dispatchSystemEventContextAmbiguity(
-    clientId: string,
-    prepared: GitContextPreparedTurn | null,
-    routed: Extract<GitContextRoutedTurn, { status: "ambiguous" }>,
-  ): Promise<void> {
-    const message = formatGitContextAmbiguityMessage(routed);
-    await this.recordSystemEventAssistantMessage(clientId, prepared, message);
-    this.dispatchAgentResponse(clientId, null, {
-      type: "feedback",
-      content: message,
-    });
-  }
-
   private async completeSystemEventContextRun(
     clientId: string,
-    prepared: GitContextPreparedTurn | null,
-    routed: GitContextRoutedTurn | null,
+    prepared: GitContextPreparedTurn,
     result: AgentLoopResult,
-    sessionRunHandle?: MemoryRunHandle | null,
-  ): Promise<void> {
-    if (!prepared || routed?.status !== "ready") {
-      if (prepared && sessionRunHandle) {
-        await this.finalizeSystemEventSessionRun(clientId, prepared, sessionRunHandle, result);
-      } else if (prepared && result.content.trim()) {
-        await this.recordSystemEventAssistantMessage(clientId, prepared, result.content);
-      }
-      if (prepared) {
-        this.feedbackLedger?.record({
-          clientId,
-          sessionId: prepared.sessionId,
-          seq: prepared.messageSeq,
-          stage: "context_engine",
-          event: "finalization_skipped",
-          data: {
-            reason: routed?.status === "ambiguous" ? "ambiguous_route" : "no_ready_route",
-            contextEngine: buildContextEngineFeedbackSummary({
-              context: result.harnessContext?.contextEngine,
-              finalizationStatus: "skipped",
-              committed: false,
-            }),
-          },
-        });
-      }
-      return;
-    }
-
-    const completedAt = this.nowProvider().toISOString();
+  ): Promise<FinalizeRunResponse> {
+    const taskBound = isTaskBoundRun(prepared, result);
     this.feedbackLedger?.record({
       clientId,
       sessionId: prepared.sessionId,
       seq: prepared.messageSeq,
-      runId: routed.runId,
+      runId: prepared.run.runId,
       stage: "context_engine",
-      event: "finalization_started",
+      event: "run_finalization_started",
       data: {
-        taskId: routed.taskId,
-        runId: routed.runId,
-        conversationRefs: routed.conversationRefs,
-        resultStatus: result.status,
-        resultType: result.type,
-        contextEngine: buildContextEngineFeedbackSummary({
-          context: result.harnessContext?.contextEngine,
-          finalizationStatus: "started",
-          committed: false,
-          taskId: routed.taskId,
-          runId: routed.runId,
-          conversationRefs: routed.conversationRefs,
-          taskLifecycle: routedTaskLifecycle(routed, {
-            status: "started",
-            outcome: taskOutcome(result),
-            validation: taskValidation(result),
-          }),
-        }),
+        outcome: result.outcome,
+        stopReason: result.stopReason,
+        taskBound,
       },
     });
-    const completed = await this.systemEventContextRuntime.completeTaskRun({
-      clientId,
+    const finalized = await finalizeAgentRun({
+      runtime: this.systemEventContextRuntime,
       turn: prepared,
-      taskId: routed.taskId,
-      runId: routed.runId,
       result,
-      conversationRefs: routed.conversationRefs,
-      at: completedAt,
-      assistantMessage: result.content,
-      assistantAt: this.nowProvider().toISOString(),
+      at: this.nowProvider().toISOString(),
+      fallbackSummary: "System event recorded.",
     });
-    if (!completed) {
-      this.feedbackLedger?.record({
-        clientId,
-        sessionId: prepared.sessionId,
-        seq: prepared.messageSeq,
-        runId: routed.runId,
-        stage: "context_engine",
-        event: "finalization_failed",
-        data: {
-          taskId: routed.taskId,
-          reason: "complete_task_run_returned_null",
-          contextEngine: buildContextEngineFeedbackSummary({
-            context: result.harnessContext?.contextEngine,
-            finalizationStatus: "failed",
-            committed: false,
-            taskId: routed.taskId,
-            runId: routed.runId,
-            conversationRefs: routed.conversationRefs,
-            taskLifecycle: routedTaskLifecycle(routed, { status: "failed" }),
-          }),
-        },
-      });
-      return;
-    }
-
     this.feedbackLedger?.record({
       clientId,
       sessionId: prepared.sessionId,
       seq: prepared.messageSeq,
-      runId: completed.runId,
+      runId: finalized.run.runId,
       stage: "context_engine",
-      event: "committed",
+      event: "run_finalization_completed",
       data: {
-        taskId: completed.taskId,
-        taskCommit: completed.taskCommit,
-        ref: completed.ref,
-        taskLifecycle: completedTaskLifecycle(completed),
-        contextEngine: buildContextEngineFeedbackSummary({
-          context: result.harnessContext?.contextEngine,
-          finalizationStatus: "committed",
-          committed: true,
-          taskId: completed.taskId,
-          runId: completed.runId,
-          ref: completed.ref,
-          commit: completed.taskCommit,
-          conversationRefs: routed.conversationRefs,
-          taskLifecycle: completedTaskLifecycle(completed),
-        }),
+        outcome: finalized.run.status,
+        stopReason: finalized.run.stopReason,
+        taskBinding: finalized.run.taskBinding,
+        materialization: finalized.materialization,
+        commit: finalized.commit,
       },
     });
-  }
-
-  private async recordSystemEventAssistantMessage(
-    clientId: string,
-    turn: GitContextPreparedTurn | null,
-    message: string,
-    ids?: {
-      taskId?: string;
-      runId?: string;
-    },
-  ): Promise<void> {
-    await this.systemEventContextRuntime.recordAssistantMessage({
-      clientId,
-      turn,
-      message,
-      taskId: ids?.taskId,
-      runId: ids?.runId,
-      at: this.nowProvider().toISOString(),
-    });
+    return finalized;
   }
 
   private inputHandleFromSystemContextTurn(turn: GitContextPreparedTurn): SessionInputHandle {
@@ -631,104 +367,6 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       sessionId: turn.sessionId,
       seq: turn.messageSeq,
     };
-  }
-
-  private async startSystemEventSessionRun(
-    clientId: string,
-    turn: GitContextPreparedTurn,
-    inputHandle: SessionInputHandle,
-  ): Promise<MemoryRunHandle | null> {
-    const started = await this.systemEventContextRuntime.startSessionRun({
-      clientId,
-      turn,
-      at: this.nowProvider().toISOString(),
-    });
-    if (!started) {
-      return null;
-    }
-    const runHandle = {
-      sessionId: inputHandle.sessionId,
-      runId: started.runId,
-      triggerSeq: inputHandle.seq,
-    };
-    this.feedbackLedger?.record({
-      clientId,
-      sessionId: runHandle.sessionId,
-      seq: inputHandle.seq,
-      runId: runHandle.runId,
-      stage: "run",
-      event: "session_run_started",
-      data: {
-        runId: runHandle.runId,
-        inputKind: "system_event",
-      },
-    });
-    return runHandle;
-  }
-
-  private async finalizeSystemEventSessionRun(
-    clientId: string,
-    turn: GitContextPreparedTurn | null,
-    runHandle: MemoryRunHandle,
-    result: AgentLoopResult,
-  ): Promise<void> {
-    if (!turn) {
-      return;
-    }
-    const status = sessionRunStatusFromResult(result);
-    const runFields = buildSessionRunFinalizationFields(result, status);
-    const finalized = await this.systemEventContextRuntime.finalizeSessionRun({
-      clientId,
-      turn,
-      runId: runHandle.runId,
-      status,
-      summary: runFields.summary,
-      intent: runFields.intent,
-      routing: runFields.routing,
-      outcome: runFields.outcome,
-      workPerformed: runFields.workPerformed,
-      verification: runFields.verification,
-      decisions: runFields.decisions,
-      assistantResponse: result.content,
-      at: this.nowProvider().toISOString(),
-      blockers: runFields.blockers,
-      next: runFields.next,
-      toolsUsed: uniqueStrings(result.completedSteps?.flatMap((step) => step.toolsUsed ?? []) ?? []),
-      toolCallCount: result.totalToolCalls,
-      changedFiles: runFields.changedFiles,
-      newFacts: runFields.newFacts,
-      workState: result.workState,
-    });
-    this.feedbackLedger?.record({
-      clientId,
-      sessionId: runHandle.sessionId,
-      seq: runHandle.triggerSeq,
-      runId: runHandle.runId,
-      stage: "context_engine",
-      event: finalized ? "session_run_finalized" : "session_run_finalization_failed",
-      data: {
-        status,
-        committed: false,
-        resultStatus: result.status,
-        resultType: result.type,
-        inputKind: "system_event",
-      },
-    });
-  }
-
-  private runHandleFromRoutedTurn(
-    inputHandle: SessionInputHandle,
-    turn: Extract<GitContextRoutedTurn, { status: "ready" }>,
-  ): MemoryRunHandle {
-    return {
-      sessionId: inputHandle.sessionId,
-      runId: turn.runId,
-      triggerSeq: inputHandle.seq,
-    };
-  }
-
-  private failMissingGitContextRun(_inputHandle: SessionInputHandle): MemoryRunHandle {
-    throw new Error("Git-memory routed run is required before system-event tool execution.");
   }
 
   private formatSystemEventConversationMessage(event: AyatiSystemEvent, plan: SystemEventExecutionPlan): string {
@@ -750,31 +388,6 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         ? `Payload: ${truncateText(safeJson(event.payload), 2_000)}`
         : undefined,
     ].filter((line): line is string => typeof line === "string" && line.length > 0).join("\n");
-  }
-
-  private systemEventRoutingText(event: AyatiSystemEvent, plan: SystemEventExecutionPlan): string {
-    return [
-      event.summary,
-      plan.classification.requestedAction,
-      `${event.source}/${event.eventName}`,
-      optionalString(event.payload["title"]),
-      optionalString(event.payload["instruction"]),
-    ].filter((value): value is string => typeof value === "string" && value.trim().length > 0).join("\n");
-  }
-
-  private systemEventTaskTitle(event: AyatiSystemEvent): string {
-    const title = optionalString(event.payload["title"]);
-    return truncateText(title ?? `${event.source} ${event.eventName}: ${event.summary}`, 80);
-  }
-
-  private systemEventTaskObjective(event: AyatiSystemEvent, plan: SystemEventExecutionPlan): string {
-    const requestedAction = plan.classification.requestedAction
-      ? ` Requested action: ${plan.classification.requestedAction}.`
-      : "";
-    return truncateText(
-      `Handle system event ${event.source}/${event.eventName}: ${event.summary}.${requestedAction} Mode: ${plan.policy.mode}.`,
-      300,
-    );
   }
 
   private buildSystemEventExecutionPlan(event: AyatiSystemEvent): SystemEventExecutionPlan {
@@ -807,7 +420,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
 
   private dispatchAgentResponse(
     clientId: string,
-    runHandle: MemoryRunHandle | null,
+    runHandle: AgentRunHandle,
     result: {
       type: AgentResponseKind;
       content: string;
@@ -818,16 +431,21 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       event?: string;
       eventId?: string;
     },
+    finalized?: FinalizeRunResponse,
   ): void {
+    const terminal = {
+      runId: runHandle.runId,
+      commitStatus: finalized?.commit.status ?? "failed",
+    };
     switch (result.type) {
       case "reply":
-        this.sendAssistantReply(clientId, runHandle, result.content, result.artifacts);
+        this.sendAssistantReply(clientId, runHandle, result.content, result.artifacts, terminal);
         return;
       case "feedback":
-        this.sendAssistantFeedback(clientId, runHandle, result.content, result.artifacts);
+        this.sendAssistantFeedback(clientId, runHandle, result.content, result.artifacts, terminal);
         return;
       case "notification":
-        this.sendAssistantNotification(clientId, runHandle, result.content, result.artifacts, meta);
+        this.sendAssistantNotification(clientId, runHandle, result.content, result.artifacts, meta, terminal);
         return;
       case "none":
         return;
@@ -836,9 +454,10 @@ class AppSystemEventRuntime implements SystemEventRuntime {
 
   private sendAssistantReply(
     clientId: string,
-    runHandle: MemoryRunHandle | null,
+    runHandle: AgentRunHandle,
     content: string,
     artifacts?: AgentArtifact[],
+    terminal?: Record<string, unknown>,
   ): void {
     const artifactPayload = artifacts && artifacts.length > 0 && runHandle
       ? { artifacts, runId: runHandle.runId }
@@ -846,15 +465,17 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     this.onReply?.(clientId, {
       type: "reply",
       content,
+      ...terminal,
       ...artifactPayload,
     });
   }
 
   private sendAssistantFeedback(
     clientId: string,
-    runHandle: MemoryRunHandle | null,
+    runHandle: AgentRunHandle,
     content: string,
     artifacts?: AgentArtifact[],
+    terminal?: Record<string, unknown>,
   ): void {
     const artifactPayload = artifacts && artifacts.length > 0 && runHandle
       ? { artifacts, runId: runHandle.runId }
@@ -862,13 +483,14 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     this.onReply?.(clientId, {
       type: "feedback",
       content,
+      ...terminal,
       ...artifactPayload,
     });
   }
 
   private sendAssistantNotification(
     clientId: string,
-    runHandle: MemoryRunHandle | null,
+    runHandle: AgentRunHandle,
     content: string,
     artifacts?: AgentArtifact[],
     _meta?: {
@@ -876,6 +498,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       event?: string;
       eventId?: string;
     },
+    terminal?: Record<string, unknown>,
   ): void {
     const artifactPayload = artifacts && artifacts.length > 0 && runHandle
       ? { artifacts, runId: runHandle.runId }
@@ -884,11 +507,12 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       type: "notification",
       content,
       final: true,
+      ...terminal,
       ...artifactPayload,
     });
   }
 
-  private sendProgress(clientId: string, runHandle: MemoryRunHandle, content: string): void {
+  private sendProgress(clientId: string, runHandle: AgentRunHandle, content: string): void {
     this.onReply?.(clientId, {
       type: "progress",
       content,
@@ -897,110 +521,56 @@ class AppSystemEventRuntime implements SystemEventRuntime {
   }
 }
 
-function formatGitContextAmbiguityMessage(
-  routed: Extract<GitContextRoutedTurn, { status: "ambiguous" }>,
-): string {
-  if (routed.candidates.length === 0) {
-    return `I could not find the task referenced by the system event. ${routed.reason}. Please mention the task id or describe the task again.`;
-  }
-  const candidates = routed.candidates
-    .slice(0, 5)
-    .map((candidate) => `- ${candidate.taskId}: ${candidate.title}`)
-    .join("\n");
-  return `I found multiple matching tasks for the system event. Please mention the task id to continue.\n${candidates}`;
-}
-
-function routedTaskLifecycle(
-  routed: Extract<GitContextRoutedTurn, { status: "ready" }>,
-  finalization: {
-    status: "started" | "failed";
-    outcome?: "done" | "incomplete" | "failed" | "blocked" | "needs_user_input";
-    validation?: "passed" | "failed" | "not_run";
-  },
-) {
+function systemEventResult(
+  runId: string,
+  type: AgentResponseKind,
+  content: string,
+): AgentLoopResult {
   return {
-    repository: {
-      taskId: routed.taskId,
-      workingDirectory: routed.workingDirectory,
-      branch: routed.branch,
-      selectionMode: routed.mode,
-      taskCreated: routed.taskCreated,
-      headBefore: routed.taskHead,
+    type,
+    runId,
+    outcome: "done",
+    stopReason: "completed",
+    content,
+    status: "completed",
+    totalIterations: 0,
+    totalToolCalls: 0,
+    runPath: "",
+    workState: {
+      status: "done",
+      summary: content || "System event recorded.",
+      openWork: [],
+      blockers: [],
+      verifiedFacts: [],
+      evidence: [],
     },
-    request: {
-      decision: routed.requestDecision,
-      requestId: routed.taskRequestId,
-      status: routed.taskRequestStatus,
-      created: routed.taskRequestCreated,
-    },
-    run: {
-      runId: routed.runId,
-      startedAs: routed.sessionRunBound ? "session" as const : "none" as const,
-      selectedAs: "task" as const,
-      sessionRunBound: routed.sessionRunBound,
-    },
-    finalization,
+    completedSteps: [],
   };
 }
 
-function completedTaskLifecycle(
-  completed: NonNullable<Awaited<ReturnType<GitContextRuntime["completeTaskRun"]>>>,
-) {
+function failedSystemEventResult(runId: string, error: unknown): AgentLoopResult {
+  const message = error instanceof Error ? error.message : String(error);
   return {
-    repository: {
-      taskId: completed.taskId,
-      workingDirectory: completed.workingDirectory,
-      branch: "main",
-      headBefore: completed.taskHeadBefore,
-      headAfter: completed.taskHeadAfter,
+    type: "notification",
+    runId,
+    outcome: "failed",
+    stopReason: "failed",
+    content: "System event processing failed: " + message,
+    status: "failed",
+    totalIterations: 0,
+    totalToolCalls: 0,
+    runPath: "",
+    workState: {
+      status: "blocked",
+      summary: "System event processing failed.",
+      openWork: ["Retry the system event after resolving the failure."],
+      blockers: [message],
+      verifiedFacts: [],
+      evidence: [],
+      nextStep: "Retry the system event.",
     },
-    request: { requestId: completed.taskRequestId },
-    run: { runId: completed.runId, selectedAs: "task" as const },
-    finalization: {
-      status: "committed" as const,
-      outcome: completed.outcome,
-      validation: completed.validation,
-      commit: completed.taskCommit,
-      commitCreated: completed.taskCommitCreated,
-      headBefore: completed.taskHeadBefore,
-      headAfter: completed.taskHeadAfter,
-    },
+    completedSteps: [],
   };
-}
-
-function taskOutcome(
-  result: AgentLoopResult,
-): "done" | "incomplete" | "failed" | "blocked" | "needs_user_input" {
-  if (result.workState?.status === "done") return "done";
-  if (result.status === "failed") return "failed";
-  if (result.workState?.status === "needs_user_input") return "needs_user_input";
-  if (result.workState?.status === "blocked") return "blocked";
-  return "incomplete";
-}
-
-function taskValidation(result: AgentLoopResult): "passed" | "failed" | "not_run" {
-  if (result.workState?.status === "done") return "passed";
-  return result.status === "failed" ? "failed" : "not_run";
-}
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
-function uniqueStrings(values: Array<string | undefined>): string[] {
-  return [...new Set(values
-    .map((value) => value?.trim() ?? "")
-    .filter((value) => value.length > 0))];
-}
-
-function sessionRunStatusFromResult(result: AgentLoopResult): "completed" | "failed" | "blocked" | "needs_user_input" {
-  if (result.workState?.status === "needs_user_input") {
-    return "needs_user_input";
-  }
-  if (result.workState?.status === "blocked") {
-    return "blocked";
-  }
-  return result.status === "completed" ? "completed" : "failed";
 }
 
 function safeJson(value: unknown): string {

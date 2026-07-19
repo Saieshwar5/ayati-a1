@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTaskScopedToolExecutor } from "../../src/app/task-scoped-tool-executor.js";
 import { createToolExecutor, type ToolExecutor } from "../../src/skills/tool-executor.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
+import { listDirectoryTool } from "../../src/skills/builtins/filesystem/list-directory.js";
 import { processRunTool } from "../../src/skills/builtins/process/index.js";
 
 const temporaryDirectories: string[] = [];
@@ -17,6 +18,62 @@ afterEach(() => {
 });
 
 describe("task-scoped tool executor", () => {
+  it("maps the root shorthand to the configured workspace for an unbound read", async () => {
+    const configuredWorkspace = mkdtempSync(join(tmpdir(), "ayati-unbound-workspace-"));
+    temporaryDirectories.push(configuredWorkspace);
+    writeFileSync(join(configuredWorkspace, "workspace-only.txt"), "safe\n", "utf-8");
+    const service = {
+      getActiveContext: vi.fn(async () => unboundActiveContext("R-unbound")),
+    } as unknown as GitContextService;
+    const executor = createTaskScopedToolExecutor({
+      base: createToolExecutor([listDirectoryTool]),
+      gitContext: service,
+      workspaceRoot: configuredWorkspace,
+    });
+
+    const result = await executor.execute("list_directory", {
+      path: "/",
+      recursive: false,
+      showHidden: false,
+    }, {
+      sessionId: "S-1",
+      runId: "R-unbound",
+      callId: "call-list",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.v2?.structuredContent).toMatchObject({
+      dirPath: configuredWorkspace,
+      entries: [expect.objectContaining({ name: "workspace-only.txt" })],
+    });
+  });
+
+  it("rejects an unbound read outside the configured workspace", async () => {
+    const configuredWorkspace = mkdtempSync(join(tmpdir(), "ayati-unbound-workspace-"));
+    temporaryDirectories.push(configuredWorkspace);
+    const service = {
+      getActiveContext: vi.fn(async () => unboundActiveContext("R-unbound")),
+    } as unknown as GitContextService;
+    const executor = createTaskScopedToolExecutor({
+      base: createToolExecutor([listDirectoryTool]),
+      gitContext: service,
+      workspaceRoot: configuredWorkspace,
+    });
+
+    const result = await executor.execute("list_directory", {
+      path: join(configuredWorkspace, ".."),
+      recursive: false,
+      showHidden: false,
+    }, {
+      sessionId: "S-1",
+      runId: "R-unbound",
+      callId: "call-outside",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.v2?.code).toBe("PATH_OUTSIDE_WORKSPACE_ROOT");
+  });
+
   it("accepts absolute V1 mutation paths and leaves verified changes for finalization", async () => {
     const repositoryPath = mkdtempSync(join(tmpdir(), "ayati-task-repository-"));
     temporaryDirectories.push(repositoryPath);
@@ -50,6 +107,7 @@ describe("task-scoped tool executor", () => {
       sessionId: "S-1",
       runId: "R-1",
       stepNumber: 3,
+      callId: "call-3",
     });
 
     expect(result.ok).toBe(true);
@@ -101,6 +159,7 @@ describe("task-scoped tool executor", () => {
       sessionId: "S-1",
       runId: "R-1",
       stepNumber: 1,
+      callId: "call-1",
     });
 
     expect(result.ok).toBe(true);
@@ -171,6 +230,7 @@ describe("task-scoped tool executor", () => {
       sessionId: "S-1",
       runId: "R-1",
       stepNumber: 2,
+      callId: "call-2",
     });
 
     expect(result.ok).toBe(true);
@@ -222,6 +282,7 @@ describe("task-scoped tool executor", () => {
       sessionId: "S-1",
       runId: "R-1",
       stepNumber: 1,
+      callId: "call-1",
     });
 
     expect(result.ok).toBe(true);
@@ -263,6 +324,7 @@ describe("task-scoped tool executor", () => {
       sessionId: "S-1",
       runId: "R-1",
       stepNumber: 2,
+      callId: "call-2",
     });
 
     expect(result.ok).toBe(true);
@@ -299,6 +361,7 @@ describe("task-scoped tool executor", () => {
       sessionId: "S-1",
       runId: "R-1",
       stepNumber: 3,
+      callId: "call-3",
     });
 
     expect(result.ok).toBe(true);
@@ -336,6 +399,7 @@ describe("task-scoped tool executor", () => {
       sessionId: "S-1",
       runId: "R-1",
       stepNumber: 3,
+      callId: "call-3",
     });
 
     expect(result.ok).toBe(true);
@@ -367,6 +431,7 @@ describe("task-scoped tool executor", () => {
       sessionId: "S-1",
       runId: "R-1",
       stepNumber: 4,
+      callId: "call-4",
     };
 
     const unbounded = await executor.execute("process_send_input", {
@@ -413,6 +478,7 @@ describe("task-scoped tool executor", () => {
       sessionId: "S-1",
       runId: "R-1",
       stepNumber: 3,
+      callId: "call-3",
     });
 
     expect(result.ok).toBe(false);
@@ -444,6 +510,7 @@ describe("task-scoped tool executor", () => {
       sessionId: "S-1",
       runId: "R-1",
       stepNumber: 4,
+      callId: "call-4",
     });
 
     expect(result.ok).toBe(false);
@@ -478,6 +545,7 @@ describe("task-scoped tool executor", () => {
       sessionId: "S-1",
       runId: "R-1",
       stepNumber: 5,
+      callId: "call-5",
     });
 
     expect(result.ok).toBe(false);
@@ -548,13 +616,15 @@ function v1ActiveContext(workingDirectory: string) {
         runId: "R-1",
         sessionId: "S-1",
         conversationId: "C-1",
-        runClass: "task",
-        taskId: "T-20260713-0001",
-        taskRequestId: "R-0002",
+        taskBinding: {
+          taskId: "T-20260713-0001",
+          taskRequestId: "R-0002",
+          boundAt: "2026-07-13T09:00:01+05:30",
+        },
         trigger: "user",
         status: "running",
         startedAt: "2026-07-13T09:00:00+05:30",
-        updatedAt: "2026-07-13T09:00:00+05:30",
+        stepCount: 0,
       },
       workState: {
         runId: "R-1",
@@ -574,5 +644,16 @@ function v1ActiveContext(workingDirectory: string) {
       steps: [],
     },
     warnings: [],
+  };
+}
+
+function unboundActiveContext(runId: string) {
+  return {
+    activeTask: undefined,
+    run: {
+      run: {
+        runId,
+      },
+    },
   };
 }

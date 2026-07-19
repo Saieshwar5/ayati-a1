@@ -5,8 +5,9 @@ export type RepairCode =
   | "R_EMPTY_TOOL_LOAD_SELECTOR"
   | "R_TOOL_INPUT_INVALID"
   | "R_TOOL_INPUT_MISSING_REQUIRED_FIELD"
-  | "R_FRESH_SESSION_NEEDS_TASK"
-  | "R_NORMAL_TOOL_WITHOUT_TASK_RUN"
+  | "R_MUTATION_REQUIRES_TASK_BINDING"
+  | "R_UNBOUND_RUN_NEEDS_TASK_BINDING"
+  | "R_TOOL_REQUIRES_TASK_BINDING"
   | "R_PENDING_TURN_UNBOUND"
   | "R_PENDING_TURN_CLARIFYING"
   | "R_TASK_FEEDBACK_UNAVAILABLE"
@@ -89,8 +90,9 @@ export const REPAIR_CODES: readonly RepairCode[] = [
   "R_EMPTY_TOOL_LOAD_SELECTOR",
   "R_TOOL_INPUT_INVALID",
   "R_TOOL_INPUT_MISSING_REQUIRED_FIELD",
-  "R_FRESH_SESSION_NEEDS_TASK",
-  "R_NORMAL_TOOL_WITHOUT_TASK_RUN",
+  "R_MUTATION_REQUIRES_TASK_BINDING",
+  "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
+  "R_TOOL_REQUIRES_TASK_BINDING",
   "R_PENDING_TURN_UNBOUND",
   "R_PENDING_TURN_CLARIFYING",
   "R_TASK_FEEDBACK_UNAVAILABLE",
@@ -173,8 +175,20 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     ],
     modelFacing: true,
   },
-  R_FRESH_SESSION_NEEDS_TASK: {
-    code: "R_FRESH_SESSION_NEEDS_TASK",
+  R_MUTATION_REQUIRES_TASK_BINDING: {
+    code: "R_MUTATION_REQUIRES_TASK_BINDING",
+    severity: "repairable",
+    source: "runner.task_binding",
+    message: "Mutation requires the current run to be bound to a task.",
+    allowedNextActions: [
+      "Call git_context_activate_task or git_context_create_task for the current run.",
+      "After binding refreshes the context, make a fresh mutation decision.",
+      "Do not defer, retain, or replay the rejected mutation call.",
+    ],
+    modelFacing: true,
+  },
+  R_UNBOUND_RUN_NEEDS_TASK_BINDING: {
+    code: "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
     severity: "repairable",
     source: "runner.guard",
     message: "No active task exists yet. Normal work tools cannot run before task binding.",
@@ -185,11 +199,11 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     ],
     modelFacing: true,
   },
-  R_NORMAL_TOOL_WITHOUT_TASK_RUN: {
-    code: "R_NORMAL_TOOL_WITHOUT_TASK_RUN",
+  R_TOOL_REQUIRES_TASK_BINDING: {
+    code: "R_TOOL_REQUIRES_TASK_BINDING",
     severity: "error",
     source: "runner.guard",
-    message: "A normal executable action reached the runner before a task run existed.",
+    message: "A task-scoped executable action reached the runner before task binding existed.",
     allowedNextActions: [
       "Route the turn to a task before normal tool execution.",
       "Create or activate the correct task if durable work is required.",
@@ -223,10 +237,10 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     code: "R_TASK_FEEDBACK_UNAVAILABLE",
     severity: "repairable",
     source: "decision.tool_protocol",
-    message: "The task feedback tool is not available outside an active task run.",
+    message: "The task feedback tool is not available outside an active task-bound run.",
     allowedNextActions: [
       "Use direct assistant text for pre-task questions and final replies.",
-      "Use ask_user_feedback only when it is exposed during an active task run.",
+      "Use ask_user_feedback only when it is exposed during an active task-bound run.",
     ],
     modelFacing: true,
   },
@@ -324,7 +338,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     code: "R_DUPLICATE_READ",
     severity: "repairable",
     source: "runner.read_progress",
-    message: "The selected read repeats context that is already available in this task run.",
+    message: "The selected read repeats context that is already available in this task-bound run.",
     allowedNextActions: [
       "Use the existing observations and evidence instead of reading the same target again.",
       "If the user requested a concrete change, call patch_files or write_files next.",
@@ -336,7 +350,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     code: "R_MUTATION_EXPECTED_AFTER_CONTEXT",
     severity: "repairable",
     source: "runner.read_progress",
-    message: "This task run has already gathered enough read context before making a change.",
+    message: "This task-bound run has already gathered enough read context before making a change.",
     allowedNextActions: [
       "Use the current observations and evidence to make the requested change.",
       "Call patch_files or write_files next when the user asked to build or update files.",

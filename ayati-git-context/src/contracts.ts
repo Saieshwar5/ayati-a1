@@ -1,12 +1,29 @@
-export const GIT_CONTEXT_PROTOCOL_VERSION = 33;
+export const GIT_CONTEXT_PROTOCOL_VERSION = 34;
 
 export type SessionId = string;
 export type TaskId = string;
 export type RunId = string;
 export type ConversationId = string;
 
-export type RunClass = "session" | "task";
 export type ConversationRole = "user" | "assistant" | "system_event";
+
+export type RunOutcome =
+  | "done"
+  | "incomplete"
+  | "failed"
+  | "blocked"
+  | "needs_user_input";
+
+export type RunStatus = "running" | RunOutcome | "recovery_required";
+
+export type RunStopReason =
+  | "completed"
+  | "run_limit"
+  | "context_limit"
+  | "failed"
+  | "blocked"
+  | "needs_user_input"
+  | "interrupted";
 
 export type GitContextCapability =
   | "health"
@@ -82,6 +99,12 @@ export interface MutationAuthority {
   expiresAt: string;
 }
 
+export interface TaskBinding {
+  taskId: TaskId;
+  taskRequestId: string;
+  boundAt: string;
+}
+
 export interface MutationProvenance {
   created: string[];
   modified: string[];
@@ -94,9 +117,14 @@ export interface RunRef {
   runId: RunId;
   sessionId: SessionId;
   conversationId: ConversationId;
-  runClass: RunClass;
-  taskId?: TaskId;
-  taskRequestId?: string;
+  taskBinding?: TaskBinding;
+}
+
+export interface AgentRunHandle {
+  runId: RunId;
+  sessionId: SessionId;
+  conversationId: ConversationId;
+  triggerSeq: number;
 }
 
 export interface ConversationRef {
@@ -144,7 +172,7 @@ export interface CommitSummary {
   validation?: string;
   taskId?: string;
   requestId?: string;
-  event?: "task_created" | "task_repository_migrated" | "task_run_finalized";
+  event?: "task_created" | "task_repository_migrated" | "task_bound_run_finalized";
   runId?: string;
   sessionId?: string;
   taskTitle?: string;
@@ -158,13 +186,26 @@ export interface CommitSummary {
   }>;
 }
 
-export interface ToolCallContext {
-  step: number;
+export type ToolPurpose = "list" | "read" | "search" | "control" | "mutation";
+
+export type ToolEffect =
+  | "read_only"
+  | "workspace_mutation"
+  | "context_mutation"
+  | "external_mutation"
+  | "destructive";
+
+export interface RunStepToolCall {
+  callId?: string;
   tool: string;
-  toolSchemaVersion: number;
-  toolEffect: "read_only" | "mutating";
   purpose: string;
-  status: "completed" | "failed" | "blocked";
+  toolPurpose: ToolPurpose;
+  toolEffect: ToolEffect;
+  status: "success" | "failed";
+  input: unknown;
+  output?: unknown;
+  outputHash?: string;
+  error?: unknown;
 }
 
 export type RunWorkStatus = "not_done" | "done" | "blocked" | "needs_user_input";
@@ -188,16 +229,24 @@ export interface RunWorkState extends RunWorkStateInput {
   updatedAt: string;
 }
 
-export interface RunStepContext extends ToolCallContext {
-  input?: unknown;
-  output?: unknown;
-  outputHash?: string;
-  verification?: unknown;
+export interface RunStepRecord {
+  version: 1;
+  step: number;
+  status: "completed" | "failed" | "blocked";
+  summary: string;
+  decision?: unknown;
+  action?: unknown;
+  toolCalls: RunStepToolCall[];
+  verification: unknown;
+  workStateAfter: RunWorkStateInput;
   createdAt: string;
 }
 
+export type RunStepContext = Omit<RunStepRecord, "workStateAfter">;
+
 export interface RunContextRecord extends RunRef {
-  status: "running" | "completed" | "failed" | "blocked" | "needs_user_input";
+  status: RunStatus;
+  stopReason?: RunStopReason;
   trigger: "user" | "system_event" | "internal";
   startedAt: string;
   completedAt?: string;
@@ -312,7 +361,6 @@ export interface ReadContextEntry {
   runId: RunId;
   step: number;
   callId?: string;
-  runClass: RunClass;
   tool: string;
   purpose: string;
   resources: string[];
@@ -325,7 +373,7 @@ export interface ReadContextEntry {
 
 export interface ReadContextProjection {
   revision: string;
-  afterTaskRunId?: RunId;
+  afterCommitRunId?: RunId;
   inventory: ReadContextEntry[];
   discovery: ReadContextEntry[];
   evidence: ReadContextEntry[];
@@ -381,24 +429,9 @@ export interface PrepareContextTurnResponse {
   sessionCreated: boolean;
   conversation: ConversationRef;
   message: ConversationMessage;
+  run: RunRef;
   persistence: ConversationPersistenceState;
   context: ActiveContext;
-}
-
-export interface CompleteContextTurnRequest extends GitContextRequestEnvelope {
-  sessionId: SessionId;
-  conversationId: ConversationId;
-  userMessageId: string;
-  assistantContent: string;
-  at: string;
-}
-
-export interface CompleteContextTurnResponse {
-  conversation: ConversationRef;
-  message: ConversationMessage;
-  persistence: ConversationPersistenceState;
-  contextRevision: string;
-  pendingDigest: string;
 }
 
 export type TaskPlacement =
@@ -430,22 +463,20 @@ export interface GetTaskResponse {
   context?: TaskContextProjection;
 }
 
-export interface SelectTaskRunInput {
+export interface SelectTaskForRunInput {
   sessionId: SessionId;
   conversationId: ConversationId;
-  runId?: RunId;
-  trigger: "user" | "system_event" | "internal";
-  workState: RunWorkStateInput;
+  runId: RunId;
   at: string;
 }
 
-export interface CreateTaskRunRequest extends GitContextRequestEnvelope, SelectTaskRunInput {
+export interface CreateTaskForRunRequest extends GitContextRequestEnvelope, SelectTaskForRunInput {
   title: string;
   objective: string;
   placement: TaskPlacement;
 }
 
-export interface ActivateTaskRunRequest extends GitContextRequestEnvelope, SelectTaskRunInput {
+export interface ActivateTaskForRunRequest extends GitContextRequestEnvelope, SelectTaskForRunInput {
   taskId: TaskId;
   expectedTaskHead?: string;
   /** Explicitly continue the active request or create a new request in this V1 task. */
@@ -493,14 +524,15 @@ export interface PlanTaskRequestRouteResponse {
   requestCreated: boolean;
 }
 
-export interface SelectedTaskRunResponse {
+export interface SelectedTaskForRunResponse {
   task: TaskCatalogEntry;
   run: RunRef;
   context: TaskContextProjection;
   taskCreated: boolean;
-  sessionRunBound: boolean;
   taskRequestDecision: "initial" | "continue" | "create";
+  taskRequestStatus: "queued" | "active" | "blocked" | "done" | "dropped";
   taskRequestCreated: boolean;
+  headBeforeSelection: string;
 }
 
 export interface RecordSessionAttachmentsRequest extends GitContextRequestEnvelope {
@@ -563,7 +595,7 @@ export interface AcquireMutationAuthorityRequest extends GitContextRequestEnvelo
   sessionId: SessionId;
   runId: RunId;
   taskId: TaskId;
-  /** Required for task runs and must name the active request. */
+  /** Required for task-bound runs and must name the active request. */
   taskRequestId?: string;
   expectedTaskHead?: string;
   targets: MutationTarget[];
@@ -589,13 +621,6 @@ export interface VerifyMutationResponse {
   provenance: MutationProvenance;
 }
 
-export type TaskRunOutcome =
-  | "done"
-  | "incomplete"
-  | "failed"
-  | "blocked"
-  | "needs_user_input";
-
 export interface TaskCompletionRecord {
   accepted: boolean;
   assets: Array<{
@@ -613,99 +638,53 @@ export interface TaskCompletionRecord {
   }>;
 }
 
-export interface FinalizeTaskRunRequest extends GitContextRequestEnvelope {
+export interface FinalizeRunRequest extends GitContextRequestEnvelope {
   sessionId: SessionId;
   runId: RunId;
-  taskId: TaskId;
-  outcome: TaskRunOutcome;
+  outcome: RunOutcome;
+  stopReason: RunStopReason;
+  assistantResponse: string;
   conversationSummary: string;
-  /** Compact cumulative task state after this run, suitable for the next activation. */
   summary: string;
-  validation: "passed" | "failed" | "not_run";
+  validation: "passed" | "failed" | "not_applicable";
   next?: string;
-  completion: TaskCompletionRecord;
-  assistantResponse: string;
-  at: string;
-}
-
-export interface FinalizeTaskRunResponse {
-  runId: RunId;
-  taskId: TaskId;
-  outcome: TaskRunOutcome;
-  taskHeadBefore: string;
-  taskHeadAfter: string;
-  taskFinalizationCommit: string;
-  taskCommitCreated?: boolean;
-  sessionCommit?: string;
-  conversationHash: string;
-  runFile?: string;
-  stepsFile?: string;
-}
-
-export interface FinalizeSessionRunRequest extends GitContextRequestEnvelope {
-  sessionId: SessionId;
-  runId: RunId;
-  assistantResponse: string;
   workState: RunWorkStateInput;
+  task?: {
+    completion: TaskCompletionRecord;
+  };
   at: string;
 }
 
-export interface FinalizeSessionRunResponse {
-  runId: RunId;
-  status: "completed";
-  runFile: string;
-  stepsFile: string;
-  stepCount: number;
-}
-
-export interface AppendConversationRequest extends GitContextRequestEnvelope {
-  sessionId: SessionId;
-  role: ConversationRole;
-  content: string;
-  at: string;
-  runId?: RunId;
-  taskId?: TaskId;
-}
-
-export interface AppendConversationResponse {
+export interface FinalizeRunResponse {
+  run: RunContextRecord;
   conversation: ConversationRef;
-  message: ConversationMessage;
-  contextRevision: string;
-  pendingDigest: string;
-}
-
-export interface StartRunRequest extends GitContextRequestEnvelope {
-  sessionId: SessionId;
-  conversationId: ConversationId;
-  trigger: "user" | "system_event" | "internal";
-  workState: RunWorkStateInput;
-  at?: string;
-}
-
-export interface StartRunResponse {
-  run: RunRef;
+  persistence: ConversationPersistenceState;
+  materialization: {
+    status: "not_requested" | "materialized";
+    runFile?: string;
+    stepsFile?: string;
+  };
+  commit:
+    | { status: "not_required" }
+    | {
+        status: "no_change" | "committed";
+        taskId: TaskId;
+        taskRequestId: string;
+        headBefore: string;
+        headAfter: string;
+        commit?: string;
+      };
 }
 
 export interface RecordRunStepRequest extends GitContextRequestEnvelope {
   sessionId: SessionId;
   runId: RunId;
-  step: number;
-  tool: string;
-  toolSchemaVersion?: number;
-  toolEffect: "read_only" | "mutating";
-  purpose: string;
-  status: ToolCallContext["status"];
-  input?: unknown;
-  output?: unknown;
-  outputHash?: string;
-  verification?: unknown;
-  workState: RunWorkStateInput;
-  at: string;
+  record: RunStepRecord;
 }
 
 export interface RecordRunStepResponse {
-  toolCall: ToolCallContext;
-  workState: RunWorkState;
+  run: RunContextProjection;
+  readContext: ReadContextProjection;
 }
 
 export function isRequestEnvelope(
@@ -739,29 +718,6 @@ export function isPrepareContextTurnRequest(value: unknown): value is PrepareCon
     && isNonEmptyString(value["at"]);
 }
 
-export function isCompleteContextTurnRequest(value: unknown): value is CompleteContextTurnRequest {
-  if (!isRequestEnvelope(value)) {
-    return false;
-  }
-  return isNonEmptyString(value["sessionId"])
-    && isNonEmptyString(value["conversationId"])
-    && isNonEmptyString(value["userMessageId"])
-    && isNonEmptyString(value["assistantContent"])
-    && isNonEmptyString(value["at"]);
-}
-
-export function isAppendConversationRequest(value: unknown): value is AppendConversationRequest {
-  if (!isRequestEnvelope(value)) {
-    return false;
-  }
-  return isNonEmptyString(value["sessionId"])
-    && isConversationRole(value["role"])
-    && isNonEmptyString(value["content"])
-    && isNonEmptyString(value["at"])
-    && optionalNonEmptyString(value["runId"])
-    && optionalNonEmptyString(value["taskId"]);
-}
-
 function isCreateTaskInput(value: unknown): value is GitContextRequestEnvelope & Record<string, unknown> {
   if (!isRequestEnvelope(value)) {
     return false;
@@ -773,9 +729,9 @@ function isCreateTaskInput(value: unknown): value is GitContextRequestEnvelope &
     && isNonEmptyString(value["at"]);
 }
 
-export function isCreateTaskRunRequest(value: unknown): value is CreateTaskRunRequest {
+export function isCreateTaskForRunRequest(value: unknown): value is CreateTaskForRunRequest {
   return isCreateTaskInput(value)
-    && isTaskRunSelection(value as unknown as Record<string, unknown>);
+    && isTaskForRunSelection(value as unknown as Record<string, unknown>);
 }
 
 function isTaskPlacement(value: unknown): value is TaskPlacement {
@@ -790,7 +746,7 @@ function isTaskPlacement(value: unknown): value is TaskPlacement {
     && Object.keys(value).every((key) => key === "mode" || key === "workingDirectory");
 }
 
-export function isActivateTaskRunRequest(value: unknown): value is ActivateTaskRunRequest {
+export function isActivateTaskForRunRequest(value: unknown): value is ActivateTaskForRunRequest {
   if (!isRequestEnvelope(value)) {
     return false;
   }
@@ -799,7 +755,7 @@ export function isActivateTaskRunRequest(value: unknown): value is ActivateTaskR
     && (value["expectedTaskHead"] === undefined
       || /^[a-f0-9]{40}$/.test(String(value["expectedTaskHead"])))
     && isTaskRequestRoute(value["route"])
-    && isTaskRunSelection(value);
+    && isTaskForRunSelection(value);
 }
 
 export function isPlanTaskRequestRouteRequest(
@@ -894,52 +850,34 @@ export function isVerifyMutationRequest(value: unknown): value is VerifyMutation
     && isNonEmptyString(value["at"]);
 }
 
-export function isFinalizeTaskRunRequest(value: unknown): value is FinalizeTaskRunRequest {
+export function isFinalizeRunRequest(value: unknown): value is FinalizeRunRequest {
   if (!isRequestEnvelope(value)) {
     return false;
   }
+  const assistantResponseValid = isNonEmptyString(value["assistantResponse"])
+    || (value["outcome"] === "incomplete"
+      && value["stopReason"] === "interrupted"
+      && value["assistantResponse"] === "");
+  const task = value["task"];
+  const taskValid = task === undefined
+    || (isRecord(task)
+      && isTaskCompletionRecord(task["completion"])
+      && (value["outcome"] !== "done" || task["completion"].accepted));
   return isNonEmptyString(value["sessionId"])
     && isNonEmptyString(value["runId"])
-    && /^T-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
-    && isTaskRunOutcome(value["outcome"])
+    && isRunOutcome(value["outcome"])
+    && isRunStopReason(value["stopReason"])
+    && isTruthfulTerminalPair(value["outcome"], value["stopReason"])
+    && assistantResponseValid
     && isBoundedString(value["conversationSummary"], 2_000)
     && isBoundedString(value["summary"], 2_000)
     && (value["validation"] === "passed"
       || value["validation"] === "failed"
-      || value["validation"] === "not_run")
+      || value["validation"] === "not_applicable")
     && optionalBoundedString(value["next"], 2_000)
-    && isTaskCompletionRecord(value["completion"])
-    && (value["outcome"] === "done") === value["completion"].accepted
-    && (value["outcome"] !== "done" || value["validation"] === "passed")
-    && isNonEmptyString(value["assistantResponse"])
-    && isNonEmptyString(value["at"]);
-}
-
-export function isFinalizeSessionRunRequest(
-  value: unknown,
-): value is FinalizeSessionRunRequest {
-  if (!isRequestEnvelope(value)) {
-    return false;
-  }
-  return isNonEmptyString(value["sessionId"])
-    && isNonEmptyString(value["runId"])
-    && isNonEmptyString(value["assistantResponse"])
     && isRunWorkStateInput(value["workState"])
-    && value["workState"].status === "done"
+    && taskValid
     && isNonEmptyString(value["at"]);
-}
-
-export function isStartRunRequest(value: unknown): value is StartRunRequest {
-  if (!isRequestEnvelope(value)) {
-    return false;
-  }
-  return isNonEmptyString(value["sessionId"])
-    && isNonEmptyString(value["conversationId"])
-    && (value["trigger"] === "user"
-      || value["trigger"] === "system_event"
-      || value["trigger"] === "internal")
-    && isRunWorkStateInput(value["workState"])
-    && optionalNonEmptyString(value["at"]);
 }
 
 export function isRecordRunStepRequest(value: unknown): value is RecordRunStepRequest {
@@ -948,36 +886,17 @@ export function isRecordRunStepRequest(value: unknown): value is RecordRunStepRe
   }
   return isNonEmptyString(value["sessionId"])
     && isNonEmptyString(value["runId"])
-    && typeof value["step"] === "number"
-    && Number.isInteger(value["step"])
-    && value["step"] > 0
-    && isNonEmptyString(value["tool"])
-    && (value["toolSchemaVersion"] === undefined
-      || (typeof value["toolSchemaVersion"] === "number"
-        && Number.isInteger(value["toolSchemaVersion"])
-        && value["toolSchemaVersion"] > 0))
-    && (value["toolEffect"] === "read_only" || value["toolEffect"] === "mutating")
-    && isBoundedString(value["purpose"], 500)
-    && (value["status"] === "completed"
-      || value["status"] === "failed"
-      || value["status"] === "blocked")
-    && isRunWorkStateInput(value["workState"])
-    && optionalNonEmptyString(value["outputHash"])
-    && isNonEmptyString(value["at"]);
+    && isRunStepRecord(value["record"]);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isTaskRunSelection(value: Record<string, unknown>): boolean {
+function isTaskForRunSelection(value: Record<string, unknown>): boolean {
   return isNonEmptyString(value["sessionId"])
     && isNonEmptyString(value["conversationId"])
-    && optionalNonEmptyString(value["runId"])
-    && (value["trigger"] === "user"
-      || value["trigger"] === "system_event"
-      || value["trigger"] === "internal")
-    && isRunWorkStateInput(value["workState"])
+    && isNonEmptyString(value["runId"])
     && isNonEmptyString(value["at"]);
 }
 
@@ -1025,16 +944,90 @@ function isSessionAttachmentRecord(value: unknown): value is SessionAttachmentRe
     && optionalNonEmptyString(value["lastUsedAt"]);
 }
 
-function isConversationRole(value: unknown): value is ConversationRole {
-  return value === "user" || value === "assistant" || value === "system_event";
-}
-
-function isTaskRunOutcome(value: unknown): value is TaskRunOutcome {
+function isRunOutcome(value: unknown): value is RunOutcome {
   return value === "done"
     || value === "incomplete"
     || value === "failed"
     || value === "blocked"
     || value === "needs_user_input";
+}
+
+function isRunStopReason(value: unknown): value is RunStopReason {
+  return value === "completed"
+    || value === "run_limit"
+    || value === "context_limit"
+    || value === "failed"
+    || value === "blocked"
+    || value === "needs_user_input"
+    || value === "interrupted";
+}
+
+function isTruthfulTerminalPair(outcome: unknown, stopReason: unknown): boolean {
+  if (outcome === "done") return stopReason === "completed";
+  if (outcome === "failed") return stopReason === "failed";
+  if (outcome === "blocked") return stopReason === "blocked";
+  if (outcome === "needs_user_input") return stopReason === "needs_user_input";
+  return outcome === "incomplete"
+    && (stopReason === "run_limit"
+      || stopReason === "context_limit"
+      || stopReason === "interrupted");
+}
+
+function isRunStepRecord(value: unknown): value is RunStepRecord {
+  if (!isRecord(value)
+    || value["version"] !== 1
+    || typeof value["step"] !== "number"
+    || !Number.isInteger(value["step"])
+    || value["step"] <= 0
+    || (value["status"] !== "completed"
+      && value["status"] !== "failed"
+      && value["status"] !== "blocked")
+    || !isBoundedString(value["summary"], 2_000)
+    || !Array.isArray(value["toolCalls"])
+    || value["toolCalls"].length > 64
+    || !value["toolCalls"].every(isRunStepToolCall)
+    || !("verification" in value)
+    || !isRunWorkStateInput(value["workStateAfter"])
+    || !isNonEmptyString(value["createdAt"])) {
+    return false;
+  }
+  return true;
+}
+
+function isRunStepToolCall(value: unknown): value is RunStepToolCall {
+  if (!isRecord(value)
+    || !isNonEmptyString(value["tool"])
+    || !isBoundedString(value["purpose"], 500)
+    || !isToolPurpose(value["toolPurpose"])
+    || !isToolEffect(value["toolEffect"])
+    || (value["status"] !== "success" && value["status"] !== "failed")
+    || !("input" in value)
+    || !optionalNonEmptyString(value["callId"])
+    || !optionalNonEmptyString(value["outputHash"])) {
+    return false;
+  }
+  const observational = value["toolPurpose"] === "list"
+    || value["toolPurpose"] === "read"
+    || value["toolPurpose"] === "search";
+  if (observational) return value["toolEffect"] === "read_only";
+  if (value["toolPurpose"] === "control") return value["toolEffect"] === "context_mutation";
+  return value["toolEffect"] !== "read_only";
+}
+
+function isToolPurpose(value: unknown): value is ToolPurpose {
+  return value === "list"
+    || value === "read"
+    || value === "search"
+    || value === "control"
+    || value === "mutation";
+}
+
+function isToolEffect(value: unknown): value is ToolEffect {
+  return value === "read_only"
+    || value === "workspace_mutation"
+    || value === "context_mutation"
+    || value === "external_mutation"
+    || value === "destructive";
 }
 
 function isRunWorkStateInput(value: unknown): value is RunWorkStateInput {

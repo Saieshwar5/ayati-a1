@@ -97,9 +97,10 @@ function renderReport(path, input) {
     `- New-task selections: ${lifecycles.filter((item) => item.taskCreated === true).length}`,
     `- Continued requests: ${lifecycles.filter((item) => item.requestDecision === "continue").length}`,
     `- New requests: ${lifecycles.filter((item) => item.requestDecision === "create").length}`,
-    `- Session runs bound to tasks: ${counts.get("session_run_bound") ?? 0}`,
+    `- Task-bound runs: ${counts.get("run_task_bound") ?? 0}`,
     `- Verified task mutations staged: ${counts.get("task_mutation_staged") ?? 0}`,
-    `- Task finalizations: ${counts.get("task_finalization_completed") ?? 0}`,
+    `- Run finalizations: ${counts.get("run_finalization_completed") ?? 0}`,
+    `- Task commits created: ${counts.get("task_commit_created") ?? 0}`,
     `- Child restarts: ${counts.get("child_restart_completed") ?? 0}`,
     "",
     "## Task lifecycle",
@@ -139,7 +140,7 @@ function validate(events, lifecycles) {
     }
   }
   pair(events, "run_step_persistence_queued", "run_step_persistence_acknowledged", (event) => `${event.runId}:${event.data?.step}`, findings);
-  pair(events, "task_finalization_started", "task_finalization_completed", (event) => event.runId, findings, new Set(["task_finalization_failed"]));
+  pair(events, "run_finalization_started", "run_finalization_completed", (event) => event.runId, findings, new Set(["run_finalization_failed"]));
   pair(events, "mutation_authority_acquired", "mutation_verified", (event) => event.data?.authorityId, findings);
   const verifiedMutations = events.filter((event) =>
     event.event === "mutation_verified" && event.data?.verified === true);
@@ -150,7 +151,7 @@ function validate(events, lifecycles) {
   for (const verified of verifiedMutations) {
     const authorityId = verified.data?.authorityId;
     if (authorityId && !stagedMutations.has(authorityId)) {
-      findings.push(`verified mutation was not staged for task-run finalization: ${authorityId}`);
+      findings.push(`verified mutation was not staged for task-bound finalization: ${authorityId}`);
     }
   }
   for (const lifecycle of lifecycles) {
@@ -202,7 +203,8 @@ function buildTaskLifecycles(events) {
     const request = nested.request ?? {};
     const run = nested.run ?? {};
     const finalization = nested.finalization ?? {};
-    const taskId = event.taskId ?? data.taskId ?? repository.taskId;
+    const commitResult = data.commit ?? {};
+    const taskId = event.taskId ?? data.taskId ?? repository.taskId ?? commitResult.taskId;
     const runId = event.runId ?? data.runId ?? run.runId;
     if (!taskId && !runId) continue;
     if (!isTaskLifecycleEvent(event.event, data, nested)) continue;
@@ -219,14 +221,16 @@ function buildTaskLifecycles(events) {
       requestStatus: data.taskRequestStatus ?? request.status,
       requestCreated: data.taskRequestCreated ?? request.created,
       finalizationStatus: finalization.status
-        ?? (event.event === "task_finalization_started" ? "started" : undefined)
-        ?? (event.event === "task_finalization_completed" ? "committed" : undefined)
-        ?? (event.event === "task_finalization_failed" ? "failed" : undefined),
+        ?? (event.event === "run_finalization_started" ? "started" : undefined)
+        ?? (event.event === "run_finalization_completed" ? commitResult.status : undefined)
+        ?? (event.event === "run_finalization_failed" ? "failed" : undefined),
       outcome: data.outcome ?? data.requestedOutcome ?? finalization.outcome,
       validation: data.validation ?? finalization.validation,
-      commit: data.taskCommit ?? finalization.commit,
-      commitCreated: data.taskCommitCreated ?? finalization.commitCreated,
-      headAfter: data.taskHeadAfter ?? repository.headAfter ?? finalization.headAfter,
+      commit: data.taskCommit ?? commitResult.commit ?? finalization.commit,
+      commitCreated: data.taskCommitCreated
+        ?? (commitResult.status === "committed" ? true : undefined)
+        ?? finalization.commitCreated,
+      headAfter: data.taskHeadAfter ?? commitResult.headAfter ?? repository.headAfter ?? finalization.headAfter,
     }));
   }
   return [...records.values()]
@@ -236,13 +240,12 @@ function buildTaskLifecycles(events) {
 
 function isTaskLifecycleEvent(name, data, nested) {
   return [
-    "task_run_started",
-    "session_run_bound",
+    "run_task_bound",
     "agent_routed",
-    "task_finalization_started",
-    "task_finalization_completed",
-    "task_finalization_failed",
-    "committed",
+    "run_finalization_started",
+    "run_finalization_completed",
+    "run_finalization_failed",
+    "task_commit_created",
   ].includes(name) || Boolean(nested.repository);
 }
 

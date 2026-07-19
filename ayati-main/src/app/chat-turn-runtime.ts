@@ -12,11 +12,11 @@ import type { DirectoryAttachmentRecord, ManagedFileRecord } from "../files/type
 import type {
   AgentResponseKind,
   ConversationTurn,
-  MemoryRunHandle,
   PromptMemoryContext,
   RunRecorder,
   SessionInputHandle,
 } from "../memory/types.js";
+import type { AgentRunHandle, FinalizeRunResponse } from "ayati-git-context";
 import {
   appendPulseProposalQuestion,
   PulseProposalReflectionService,
@@ -38,7 +38,6 @@ import {
   buildContextEngineFeedbackSummary,
   type AgentFeedbackLedger,
 } from "../ivec/feedback-ledger.js";
-import { isGitContextReadOnlyToolName } from "../skills/builtins/git-context/tool-policy.js";
 import type { ChatTurnRuntime, ChatTurnRuntimeInput } from "../ivec/chat-turn-runtime.js";
 import type { ToolWorkingSetManager } from "../ivec/agent-runner/tool-working-set.js";
 import { summarizeHarnessContext } from "../ivec/agent-runner/feedback-summary.js";
@@ -54,15 +53,13 @@ import type {
 import { buildStaticSystemContext } from "./static-prompt.js";
 import type {
   GitContextPreparedTurn,
-  GitContextConversationSeqRange,
-  GitContextRoutedTurn,
   GitContextRuntime,
 } from "./git-context-runtime.js";
-import { buildSessionRunFinalizationFields } from "./session-run-finalization.js";
 import {
-  ChatTaskRunFinalizationScheduler,
-  type FinalTaskRunCommitStatus,
-} from "./chat-task-run-finalization.js";
+  finalizeAgentRun,
+  isTaskBoundResult,
+  isTaskBoundRun,
+} from "./run-finalization-coordinator.js";
 
 export interface CreateChatTurnRuntimeOptions {
   onReply?: (clientId: string, data: unknown) => void;
@@ -90,7 +87,7 @@ interface RegisteredChatAttachments {
   managedDirectories: DirectoryAttachmentRecord[];
 }
 
-type ReplyCommitStatus = "committed" | "skipped" | "failed" | "finalizing";
+type ReplyCommitStatus = "not_required" | "no_change" | "committed" | "failed";
 
 interface LiveReplyStream {
   turnId: string;
@@ -140,7 +137,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   private readonly chatContextRuntime: GitContextRuntime;
   private readonly pulseProposalReflectionService = new PulseProposalReflectionService();
   private readonly turnSerializer = new AsyncKeySerializer();
-  private readonly taskRunFinalizations = new ChatTaskRunFinalizationScheduler();
 
   constructor(options: CreateChatTurnRuntimeOptions) {
     this.onReply = options.onReply;
@@ -164,8 +160,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
 
   async processChat(input: ChatTurnRuntimeInput): Promise<void> {
     const serializationKey = this.chatTurnSerializationKey(input);
-    const queued = this.turnSerializer.isBusy(serializationKey)
-      || this.taskRunFinalizations.isPending(serializationKey);
+    const queued = this.turnSerializer.isBusy(serializationKey);
     if (queued) {
       this.feedbackLedger?.record({
         clientId: input.clientId,
@@ -178,16 +173,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       });
     }
     return await this.turnSerializer.enqueue(serializationKey, async () => {
-      const waitingForFinalization = this.taskRunFinalizations.isPending(serializationKey);
-      if (waitingForFinalization) {
-        this.feedbackLedger?.record({
-          clientId: input.clientId,
-          stage: "context_engine",
-          event: "chat_turn_waiting_for_finalization",
-          data: { serializationKey },
-        });
-      }
-      await this.taskRunFinalizations.wait(serializationKey);
       if (queued) {
         this.feedbackLedger?.record({
           clientId: input.clientId,
@@ -203,20 +188,20 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   }
 
   async drain(): Promise<void> {
-    await this.taskRunFinalizations.drain();
+    return;
   }
 
   private async processChatUnlocked(input: ChatTurnRuntimeInput): Promise<void> {
     let inputHandle: SessionInputHandle | null = null;
-    let runHandle: MemoryRunHandle | null = null;
-    let sessionRunHandle: MemoryRunHandle | null = null;
+    let runHandle: AgentRunHandle | null = null;
     let chatContextTurn: GitContextPreparedTurn | null = null;
-    let routedContextTurn: GitContextRoutedTurn | null = null;
     let liveFinalResponseStream: LiveReplyStream | null = null;
+    let finalizationAttempted = false;
 
     try {
       chatContextTurn = await this.prepareChatContextTurn(input.clientId, input.content);
       inputHandle = this.inputHandleFromChatContextTurn(chatContextTurn);
+      runHandle = chatContextTurn.run;
       this.feedbackLedger?.record({
         clientId: input.clientId,
         sessionId: inputHandle.sessionId,
@@ -231,7 +216,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         },
       });
 
-      const attachmentScopeId = this.inputScopeId(inputHandle);
+      const attachmentScopeId = runHandle.runId;
       const registeredAttachments = await this.registerIncomingDocuments(
         input.attachments,
         attachmentScopeId,
@@ -242,23 +227,9 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         registeredAttachments,
       );
 
-      routedContextTurn = await this.routeChatContextTurn(input.clientId, chatContextTurn, input.content, sessionRunHandle);
-      if (routedContextTurn?.status === "ambiguous") {
-        await this.dispatchChatContextAmbiguity(input.clientId, chatContextTurn, routedContextTurn);
-        return;
-      }
-
       if (this.provider) {
-        runHandle = routedContextTurn?.status === "ready"
-          ? this.runHandleFromRoutedTurn(inputHandle, routedContextTurn)
-          : null;
-        const attachmentRunId = runHandle?.runId ?? attachmentScopeId;
-        if (runHandle) {
-          await this.associateRegisteredAttachmentsWithRun(registeredAttachments, runHandle.runId);
-        }
-        let harnessContext = routedContextTurn?.status === "ready"
-          ? routedContextTurn.harnessContext
-          : this.harnessContextFromPreparedTurn(chatContextTurn);
+        await this.associateRegisteredAttachmentsWithRun(registeredAttachments, runHandle.runId);
+        let harnessContext = this.harnessContextFromPreparedTurn(chatContextTurn);
         if (recordedAttachments && chatContextTurn) {
           harnessContext = {
             contextEngine: await this.chatContextRuntime.buildActiveContext(chatContextTurn.sessionId),
@@ -266,7 +237,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         }
         const toolDefinitions = this.toolExecutor?.definitions({
           clientId: input.clientId,
-          runId: attachmentRunId,
+          runId: runHandle.runId,
           sessionId: inputHandle.sessionId,
         }) ?? [];
         let result = await agentLoop({
@@ -277,46 +248,15 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           toolDefinitions,
           runRecorder: chatRunRecorder,
           inputHandle,
-          ...(runHandle ? { runHandle } : {}),
-          ...(sessionRunHandle ? { sessionRunHandle } : {}),
-          createSessionRun: async (requestedInputHandle) => {
-            if (sessionRunHandle?.runId) {
-              return sessionRunHandle;
-            }
-            if (!chatContextTurn) {
-              throw new Error("Git-memory prepared turn is required before session run creation.");
-            }
-            sessionRunHandle = await this.startChatContextSessionRun(
-              input.clientId,
-              chatContextTurn,
-              requestedInputHandle,
-            );
-            if (!sessionRunHandle) {
-              throw new Error("Git-memory session run could not be created before session tool execution.");
-            }
-            return sessionRunHandle;
-          },
-          recordSessionStep: async (record) => {
-            const context = await this.chatContextRuntime.recordSessionRunStep?.({
+          runHandle,
+          recordRunStep: async (record, currentContext) => {
+            const context = await this.chatContextRuntime.recordRunStep({
               clientId: input.clientId,
               turn: chatContextTurn,
               record,
+              currentContext: currentContext.contextEngine,
             });
             return context ? { contextEngine: context } : undefined;
-          },
-          recordTaskStep: async (record) => {
-            const context = await this.chatContextRuntime.recordTaskRunStep({
-              clientId: input.clientId,
-              turn: chatContextTurn,
-              record,
-            });
-            return context ? { contextEngine: context } : undefined;
-          },
-          onWorkRunCreated: (created) => {
-            runHandle = created;
-            if (sessionRunHandle?.runId === created.runId) {
-              sessionRunHandle = null;
-            }
           },
           clientId: input.clientId,
           uiContext: input.uiContext,
@@ -326,7 +266,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           systemContext: buildStaticSystemContext(this.staticContext),
           harnessContext,
           feedbackLedger: this.feedbackLedger,
-          attachedDocuments: runHandle ? registeredAttachments.documents : [],
+          attachedDocuments: registeredAttachments.documents,
           attachmentWarnings: registeredAttachments.warnings,
           managedFiles: registeredAttachments.managedFiles,
           managedDirectories: registeredAttachments.managedDirectories,
@@ -336,9 +276,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           preparedAttachmentRegistry: this.preparedAttachmentRegistry,
           onProgress: (log, _runPath) => {
             devLog(`[${input.clientId}] ${log}`);
-            if (runHandle) {
-              this.sendProgress(input.clientId, runHandle, log);
-            }
+            this.sendProgress(input.clientId, runHandle!, log);
           },
           ...(this.clientSupportsReplyStreaming(input.clientId)
             ? {
@@ -358,19 +296,14 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           input.content,
           result,
           toolDefinitions,
-          routedContextTurn,
         );
+        finalizationAttempted = true;
         const commitStatus = await this.finalizeChatContextRun(
           input.clientId,
           chatContextTurn,
-          routedContextTurn,
           result,
-          sessionRunHandle,
         );
         this.dispatchAgentResponse(input.clientId, runHandle, result, commitStatus, liveFinalResponseStream);
-        if (commitStatus === "finalizing") {
-          await this.taskRunFinalizations.wait(this.chatTurnSerializationKey(input));
-        }
         this.feedbackLedger?.record({
           clientId: input.clientId,
           sessionId: inputHandle.sessionId,
@@ -388,13 +321,17 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         });
       } else {
         const echoContent = `Received: "${input.content}"`;
-        this.dispatchAgentResponse(input.clientId, null, {
+        const result = directReplyResult(runHandle.runId, echoContent);
+        finalizationAttempted = true;
+        const commitStatus = await this.finalizeChatContextRun(
+          input.clientId,
+          chatContextTurn,
+          result,
+        );
+        this.dispatchAgentResponse(input.clientId, runHandle, {
           type: "reply",
           content: echoContent,
-        }, "skipped");
-        await this.recordChatContextAssistantMessage(input.clientId, chatContextTurn, echoContent, {
-          taskId: routedContextTurn?.status === "ready" ? routedContextTurn.taskId : undefined,
-        });
+        }, commitStatus);
       }
     } catch (err) {
       devError("Provider error:", err);
@@ -419,11 +356,10 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           data: { message },
         });
       }
-      if (runHandle) {
+      if (runHandle && chatContextTurn && !finalizationAttempted) {
         await this.completeFailedChatContextRun(
           input.clientId,
           chatContextTurn,
-          routedContextTurn?.status === "ready" ? routedContextTurn : null,
           runHandle,
           err,
         );
@@ -494,633 +430,78 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     return turn;
   }
 
-  private async routeChatContextTurn(
-    clientId: string,
-    turn: GitContextPreparedTurn | null,
-    userMessage: string,
-    sessionRunHandle: MemoryRunHandle | null,
-  ): Promise<GitContextRoutedTurn | null> {
-    if (!turn) {
-      return null;
-    }
-    this.feedbackLedger?.record({
-      clientId,
-      sessionId: turn.sessionId,
-      seq: turn.messageSeq,
-      stage: "context_engine",
-      event: "auto_route_started",
-      data: {
-        autoOnly: true,
-        messagePreview: userMessage,
-        context: summarizeHarnessContext({
-          contextEngine: turn.context,
-        }),
-      },
-    });
-    const routed = await this.chatContextRuntime.routeTaskTurn({
-      clientId,
-      turn,
-      userMessage,
-      at: this.nowProvider().toISOString(),
-      ...(sessionRunHandle ? { sessionRunId: sessionRunHandle.runId } : {}),
-      autoOnly: true,
-    });
-    if (!routed) {
-      this.feedbackLedger?.record({
-        clientId,
-        sessionId: turn.sessionId,
-        seq: turn.messageSeq,
-        stage: "context_engine",
-        event: "auto_route_result",
-        data: {
-          status: "skipped",
-          reason: "auto_only_no_route",
-          contextEngine: buildContextEngineFeedbackSummary({
-            context: turn.context,
-            routeSource: "auto",
-          }),
-        },
-      });
-      return null;
-    }
-
-    this.feedbackLedger?.record({
-      clientId,
-      sessionId: turn.sessionId,
-      seq: turn.messageSeq,
-      ...(routed.status === "ready" ? { runId: routed.runId } : {}),
-      stage: "context_engine",
-      event: "auto_route_result",
-      data: routed.status === "ready"
-        ? {
-            status: routed.status,
-            mode: routed.mode,
-            taskId: routed.taskId,
-            branch: routed.branch,
-            ref: routed.ref,
-            runId: routed.runId,
-            conversationRefs: routed.conversationRefs,
-            contextEngine: buildContextEngineFeedbackSummary({
-              context: routed.harnessContext.contextEngine,
-              routeStatus: routed.status,
-              routeMode: routed.mode,
-              routeSource: "auto",
-              taskId: routed.taskId,
-              branch: routed.branch,
-              ref: routed.ref,
-              runId: routed.runId,
-              conversationRefs: routed.conversationRefs,
-            }),
-          }
-        : {
-            status: routed.status,
-            reason: routed.reason,
-            candidateCount: routed.candidates.length,
-            contextEngine: buildContextEngineFeedbackSummary({
-              context: routed.harnessContext.contextEngine,
-              routeStatus: routed.status,
-              routeSource: "deterministic_router",
-              pendingTurnStatus: "clarifying",
-            }),
-          },
-    });
-
-    this.feedbackLedger?.record({
-      clientId,
-      sessionId: turn.sessionId,
-      seq: turn.messageSeq,
-      ...(routed.status === "ready" ? { runId: routed.runId } : {}),
-      stage: "context_engine",
-      event: "routed",
-      data: routed.status === "ready"
-        ? {
-            status: routed.status,
-            mode: routed.mode,
-            taskId: routed.taskId,
-            branch: routed.branch,
-            ref: routed.ref,
-            runId: routed.runId,
-            conversationRefs: routed.conversationRefs,
-            contextEngine: buildContextEngineFeedbackSummary({
-              context: routed.harnessContext.contextEngine,
-              routeStatus: routed.status,
-              routeMode: routed.mode,
-              routeSource: "auto",
-              taskId: routed.taskId,
-              branch: routed.branch,
-              ref: routed.ref,
-              runId: routed.runId,
-              conversationRefs: routed.conversationRefs,
-            }),
-          }
-        : {
-            status: routed.status,
-            reason: routed.reason,
-            candidateCount: routed.candidates.length,
-            contextEngine: buildContextEngineFeedbackSummary({
-              context: routed.harnessContext.contextEngine,
-              routeStatus: routed.status,
-              routeSource: "deterministic_router",
-              pendingTurnStatus: "clarifying",
-            }),
-          },
-    });
-    return routed;
-  }
-
-  private async dispatchChatContextAmbiguity(
-    clientId: string,
-    prepared: GitContextPreparedTurn | null,
-    routed: Extract<GitContextRoutedTurn, { status: "ambiguous" }>,
-  ): Promise<void> {
-    const message = formatGitContextAmbiguityMessage(routed);
-    await this.recordChatContextAssistantMessage(clientId, prepared, message);
-    this.dispatchAgentResponse(clientId, null, {
-      type: "feedback",
-      content: message,
-    }, "skipped");
-  }
-
   private async finalizeChatContextRun(
     clientId: string,
-    prepared: GitContextPreparedTurn | null,
-    routed: GitContextRoutedTurn | null,
+    prepared: GitContextPreparedTurn,
     result: AgentLoopResult,
-    sessionRunHandle?: MemoryRunHandle | null,
   ): Promise<ReplyCommitStatus> {
-    const normalizedResult = this.normalizeTaskWaitingResult(result);
-    const binding = this.taskRunBindingFromRoutedOrResult(routed, normalizedResult);
-    const skipReason = this.chatContextFinalizationSkipReason(
-      prepared,
-      routed,
-      normalizedResult,
-      binding,
-    );
-    if (skipReason || !prepared || !binding) {
-      return await this.completeChatContextRun(
-        clientId,
-        prepared,
-        routed,
-        normalizedResult,
-        sessionRunHandle,
-      );
-    }
-
-    const serializationKey = chatTurnSerializationKeyForClient(clientId);
-    this.taskRunFinalizations.schedule({
-      key: serializationKey,
-      finalize: async () => await this.completeChatContextRun(
-        clientId,
-        prepared,
-        routed,
-        normalizedResult,
-        sessionRunHandle,
-      ),
-      recover: async (error) => await this.completeFailedChatContextRun(
-        clientId,
-        prepared,
-        routed?.status === "ready" ? routed : null,
-        {
-          sessionId: prepared.sessionId,
-          runId: binding.runId,
-          triggerSeq: prepared.messageSeq,
-        },
-        error,
-      ),
-      onScheduled: () => {
-        this.feedbackLedger?.record({
-          clientId,
-          sessionId: prepared.sessionId,
-          seq: prepared.messageSeq,
-          runId: binding.runId,
-          stage: "context_engine",
-          event: "finalization_scheduled",
-          data: { taskId: binding.taskId, serializationKey },
-        });
-      },
-      onStatus: (commitStatus) => this.onReply?.(clientId, {
-        type: "reply_commit_status",
-        runId: binding.runId,
-        commitStatus,
-      }),
-      onError: (error) => {
-        devWarn(`[${clientId}] background task-run finalization failed: ${errMessage(error)}`);
-        this.feedbackLedger?.record({
-          clientId,
-          sessionId: prepared.sessionId,
-          seq: prepared.messageSeq,
-          runId: binding.runId,
-          stage: "context_engine",
-          event: "finalization_failed",
-          data: {
-            taskId: binding.taskId,
-            reason: "background_finalization_threw",
-            message: errMessage(error),
-          },
-        });
-      },
-    });
-    return "finalizing";
-  }
-
-  private async completeChatContextRun(
-    clientId: string,
-    prepared: GitContextPreparedTurn | null,
-    routed: GitContextRoutedTurn | null,
-    result: AgentLoopResult,
-    sessionRunHandle?: MemoryRunHandle | null,
-  ): Promise<FinalTaskRunCommitStatus> {
-    const normalizedResult = this.normalizeTaskWaitingResult(result);
-    const binding = this.taskRunBindingFromRoutedOrResult(routed, normalizedResult);
-    const skipReason = this.chatContextFinalizationSkipReason(prepared, routed, normalizedResult, binding);
-    if (skipReason) {
-      if (prepared && sessionRunHandle) {
-        await this.finalizeChatContextSessionRun(clientId, prepared, sessionRunHandle, normalizedResult);
-      } else if (prepared && result.content.trim()) {
-        await this.recordChatContextAssistantMessage(clientId, prepared, result.content);
-      }
-      let commitStatus: FinalTaskRunCommitStatus = "skipped";
-      if (prepared) {
-        const disposition = this.noBindingFinalizationDisposition(prepared, skipReason, normalizedResult);
-        commitStatus = disposition.finalizationStatus === "failed" ? "failed" : "skipped";
-        this.feedbackLedger?.record({
-          clientId,
-          sessionId: prepared.sessionId,
-          seq: prepared.messageSeq,
-          stage: "context_engine",
-          event: disposition.event,
-          data: {
-            reason: disposition.reason,
-            skipReason,
-            resultClass: normalizedResult.runClass,
-            resultStatus: normalizedResult.status,
-            resultType: normalizedResult.type,
-            contextEngine: buildContextEngineFeedbackSummary({
-              context: normalizedResult.harnessContext?.contextEngine,
-              finalizationStatus: disposition.finalizationStatus,
-              committed: false,
-            }),
-          },
-        });
-      }
-      return commitStatus;
-    }
-
-    if (!prepared || !binding) {
-      return "skipped";
-    }
-
-    const finalizationResult = this.normalizeChatContextFinalizationResult(normalizedResult, routed);
-    const completedAt = this.nowProvider().toISOString();
+    const taskBound = isTaskBoundRun(prepared, result);
     this.feedbackLedger?.record({
       clientId,
       sessionId: prepared.sessionId,
       seq: prepared.messageSeq,
-      runId: binding.runId,
+      runId: prepared.run.runId,
       stage: "context_engine",
-      event: "finalization_started",
+      event: "run_finalization_started",
       data: {
-        taskId: binding.taskId,
-        runId: binding.runId,
-        conversationRefs: binding.conversationRefs,
-        resultStatus: finalizationResult.status,
-        resultType: finalizationResult.type,
-        ...(finalizationResult.status === result.status ? {} : { originalResultStatus: result.status }),
-        contextEngine: buildContextEngineFeedbackSummary({
-          context: finalizationResult.harnessContext?.contextEngine,
-          finalizationStatus: "started",
-          committed: false,
-          taskId: binding.taskId,
-          runId: binding.runId,
-          conversationRefs: binding.conversationRefs,
-          taskLifecycle: {
-            repository: { taskId: binding.taskId },
-            run: { runId: binding.runId, selectedAs: "task" },
-            finalization: {
-              status: "started",
-              outcome: finalizationOutcome(finalizationResult),
-              validation: finalizationValidation(finalizationResult),
-            },
-          },
-        }),
+        outcome: result.outcome,
+        stopReason: result.stopReason,
+        taskBound,
       },
     });
-    const completed = await this.chatContextRuntime.completeTaskRun({
-      clientId,
+    const finalized = await finalizeAgentRun({
+      runtime: this.chatContextRuntime,
       turn: prepared,
-      taskId: binding.taskId,
-      runId: binding.runId,
-      result: finalizationResult,
-      conversationRefs: binding.conversationRefs,
-      at: completedAt,
-      assistantMessage: finalizationResult.content,
-      assistantMessageKind: finalizationResult.workState?.status === "needs_user_input" ? "feedback_question" : "message",
-      assistantAt: this.nowProvider().toISOString(),
+      result,
+      at: this.nowProvider().toISOString(),
     });
-    if (!completed) {
-      this.feedbackLedger?.record({
-        clientId,
-        sessionId: prepared.sessionId,
-        seq: prepared.messageSeq,
-        runId: binding.runId,
-        stage: "context_engine",
-        event: "finalization_failed",
-        data: {
-          taskId: binding.taskId,
-          reason: "complete_task_run_returned_null",
-            contextEngine: buildContextEngineFeedbackSummary({
-            context: finalizationResult.harnessContext?.contextEngine,
-            finalizationStatus: "failed",
-            committed: false,
-            taskId: binding.taskId,
-            runId: binding.runId,
-              conversationRefs: binding.conversationRefs,
-              taskLifecycle: {
-                repository: { taskId: binding.taskId },
-                run: { runId: binding.runId, selectedAs: "task" },
-                finalization: { status: "failed" },
-              },
-            }),
-        },
-      });
-      return "failed";
-    }
+    this.recordFinalizationCompleted(clientId, prepared, finalized);
+    return replyCommitStatus(finalized);
+  }
 
+  private recordFinalizationCompleted(
+    clientId: string,
+    prepared: GitContextPreparedTurn,
+    finalized: FinalizeRunResponse,
+  ): void {
     this.feedbackLedger?.record({
       clientId,
       sessionId: prepared.sessionId,
       seq: prepared.messageSeq,
-      runId: completed.runId,
+      runId: finalized.run.runId,
       stage: "context_engine",
-      event: "committed",
+      event: "run_finalization_completed",
       data: {
-        taskId: completed.taskId,
-        taskCommit: completed.taskCommit,
-        ref: completed.ref,
-        taskLifecycle: {
-          repository: {
-            taskId: completed.taskId,
-            workingDirectory: completed.workingDirectory,
-            branch: "main",
-            headBefore: completed.taskHeadBefore,
-            headAfter: completed.taskHeadAfter,
-          },
-          request: { requestId: completed.taskRequestId },
-          run: { runId: completed.runId, selectedAs: "task" },
-          finalization: {
-            status: "committed",
-            outcome: completed.outcome,
-            validation: completed.validation,
-            commit: completed.taskCommit,
-            commitCreated: completed.taskCommitCreated,
-            headBefore: completed.taskHeadBefore,
-            headAfter: completed.taskHeadAfter,
-          },
-        },
-        contextEngine: buildContextEngineFeedbackSummary({
-          context: finalizationResult.harnessContext?.contextEngine,
-          finalizationStatus: "committed",
-          committed: true,
-          taskId: completed.taskId,
-          runId: completed.runId,
-          ref: completed.ref,
-          commit: completed.taskCommit,
-          conversationRefs: binding.conversationRefs,
-          taskLifecycle: {
-            repository: {
-              taskId: completed.taskId,
-              workingDirectory: completed.workingDirectory,
-              branch: "main",
-              headBefore: completed.taskHeadBefore,
-              headAfter: completed.taskHeadAfter,
-            },
-            request: { requestId: completed.taskRequestId },
-            run: { runId: completed.runId, selectedAs: "task" },
-            finalization: {
-              status: "committed",
-              outcome: completed.outcome,
-              validation: completed.validation,
-              commit: completed.taskCommit,
-              commitCreated: completed.taskCommitCreated,
-              headBefore: completed.taskHeadBefore,
-              headAfter: completed.taskHeadAfter,
-            },
-          },
-        }),
+        outcome: finalized.run.status,
+        stopReason: finalized.run.stopReason,
+        taskBinding: finalized.run.taskBinding,
+        materialization: finalized.materialization,
+        commit: finalized.commit,
       },
     });
-    return "committed";
-  }
-
-  private normalizeChatContextFinalizationResult(
-    result: AgentLoopResult,
-    routed: GitContextRoutedTurn | null,
-  ): AgentLoopResult {
-    if (!this.isCompletionWithoutTaskEvidence(result, routed)) {
-      return result;
-    }
-
-    const { taskSummary: _taskSummary, taskAssets: _taskAssets, ...rest } = result;
-    return {
-      ...rest,
-      status: "stuck",
-      workState: {
-        status: "blocked",
-        summary: "Task run stopped without durable work evidence.",
-        openWork: ["Retry or continue the task with concrete work."],
-        blockers: ["The run completed without tool calls or durable evidence."],
-        verifiedFacts: result.workState?.verifiedFacts ?? [],
-        evidence: result.workState?.evidence ?? [],
-        artifacts: result.workState?.artifacts ?? [],
-        nextStep: "Retry or continue the task with concrete work.",
-      },
-    };
-  }
-
-  private isCompletionWithoutTaskEvidence(
-    result: AgentLoopResult,
-    routed: GitContextRoutedTurn | null,
-  ): boolean {
-    if (routed?.status !== "ready" || result.status !== "completed") {
-      return false;
-    }
-    if (result.type === "feedback" || result.workState?.status === "needs_user_input" || result.taskSummary?.taskStatus === "needs_user_input") {
-      return false;
-    }
-    if (isRoutingOnlyTaskRun(result)) {
-      return true;
-    }
-    return !hasDurableTaskEvidence(result)
-      && (result.taskAssets ?? []).length === 0
-      && (result.artifacts ?? []).length === 0;
-  }
-
-  private normalizeTaskWaitingResult(result: AgentLoopResult): AgentLoopResult {
-    const userInputNeeded = firstNonEmptyString([
-      result.workState?.userInputNeeded,
-      result.taskSummary?.userInputNeeded,
-      result.type === "feedback" ? result.content : undefined,
-    ]);
-    const shouldWait = Boolean(userInputNeeded)
-      || result.type === "feedback"
-      || result.workState?.status === "needs_user_input"
-      || result.taskSummary?.taskStatus === "needs_user_input";
-    if (!shouldWait) {
-      return result;
-    }
-
-    const next = userInputNeeded || result.workState?.nextStep || result.taskSummary?.nextAction || result.content;
-    return {
-      ...result,
-      workState: {
-        status: "needs_user_input",
-        summary: result.workState?.summary || result.taskSummary?.summary || result.content || "User input is needed before the task can continue.",
-        openWork: uniqueStrings([
-          next,
-          ...(result.workState?.openWork ?? []),
-        ]),
-        blockers: result.workState?.blockers ?? [],
-        verifiedFacts: result.workState?.verifiedFacts ?? [],
-        evidence: result.workState?.evidence ?? [],
-        artifacts: result.workState?.artifacts ?? [],
-        nextStep: next,
-        userInputNeeded: next,
-      },
-      taskSummary: result.taskSummary
-        ? {
-            ...result.taskSummary,
-            taskStatus: "needs_user_input",
-            userInputNeeded: next,
-            nextAction: next,
-            openWork: uniqueStrings([
-              next,
-              ...(result.taskSummary.openWork ?? []),
-            ]),
-            stopReason: "needs_user_input",
-          }
-        : result.taskSummary,
-    };
-  }
-
-  private isTaskFinalizationRequired(result: AgentLoopResult): boolean {
-    return result.runClass === "task"
-      || Boolean(result.workRunId)
-      || result.totalToolCalls > 0
-      || (result.completedSteps ?? []).length > 0
-      || (result.taskAssets ?? []).length > 0
-      || (result.artifacts ?? []).length > 0
-      || result.workState?.status === "done"
-      || result.workState?.status === "needs_user_input"
-      || result.workState?.status === "blocked";
-  }
-
-  private noBindingFinalizationDisposition(
-    prepared: GitContextPreparedTurn,
-    skipReason: string,
-    result: AgentLoopResult,
-  ): {
-    event: "conversation_enquiry_recorded" | "finalization_failed" | "finalization_skipped";
-    finalizationStatus: "skipped" | "failed";
-    reason: string;
-  } {
-    if (skipReason !== "no_task_run_binding") {
-      const taskFinalizationRequired = this.isTaskFinalizationRequired(result);
-      return {
-        event: taskFinalizationRequired ? "finalization_failed" : "finalization_skipped",
-        finalizationStatus: taskFinalizationRequired ? "failed" : "skipped",
-        reason: skipReason,
-      };
-    }
-
-    if (this.isTaskfulResultWithoutBinding(prepared, result)) {
-      return {
-        event: "finalization_failed",
-        finalizationStatus: "failed",
-        reason: "taskful_result_without_task_run_binding",
-      };
-    }
-
-    return {
-      event: "conversation_enquiry_recorded",
-      finalizationStatus: "skipped",
-      reason: "conversation_or_enquiry_without_task_run",
-    };
-  }
-
-  private isTaskfulResultWithoutBinding(
-    prepared: GitContextPreparedTurn,
-    result: AgentLoopResult,
-  ): boolean {
-    if (result.runClass === "task" || Boolean(result.workRunId) || Boolean(result.taskSummary)) {
-      return true;
-    }
-    if ((result.taskAssets ?? []).length > 0 || (result.artifacts ?? []).length > 0) {
-      return true;
-    }
-    if (hasMutatingOrDurableTaskStep(result)) {
-      return true;
-    }
-    return isDurableWorkRequest(this.preparedUserMessageText(prepared))
-      && hasDurableCompletionClaim(result.content);
-  }
-
-  private preparedUserMessageText(prepared: GitContextPreparedTurn): string {
-    if (prepared.currentMessageId) {
-      return prepared.context.session.conversationTail
-        .find((record) => record.role === "user" && record.messageId === prepared.currentMessageId)
-        ?.text
-        ?.trim() ?? "";
-    }
-    return [...prepared.context.session.conversationTail]
-      .reverse()
-      .find((record) => record.role === "user" && record.seq === prepared.messageSeq)
-      ?.text
-      ?.trim() ?? "";
   }
 
   private async completeFailedChatContextRun(
     clientId: string,
-    prepared: GitContextPreparedTurn | null,
-    routed: Extract<GitContextRoutedTurn, { status: "ready" }> | null,
-    runHandle: MemoryRunHandle,
+    prepared: GitContextPreparedTurn,
+    runHandle: AgentRunHandle,
     error: unknown,
   ): Promise<void> {
-    if (!prepared || (routed && runHandle.runId !== routed.runId)) {
-      return;
-    }
-
     const message = errMessage(error);
     try {
-      const harnessContext = routed
-        ? createInitialHarnessContext(routed.harnessContext)
-        : await this.failedRunHarnessContextFromPendingTurn(prepared, runHandle);
-      if (!harnessContext) {
-        this.feedbackLedger?.record({
-          clientId,
-          sessionId: runHandle.sessionId,
-          seq: runHandle.triggerSeq,
-          runId: runHandle.runId,
-          stage: "context_engine",
-          event: "finalization_failed",
-          data: {
-            reason: "missing_bound_pending_turn",
-            message,
-          },
-        });
-        return;
-      }
-      await this.completeChatContextRun(clientId, prepared, routed, {
+      await this.finalizeChatContextRun(clientId, prepared, {
         type: "reply",
-        runClass: "task",
-        content: `Runtime failed before the task run could complete: ${message}`,
+        runId: runHandle.runId,
+        outcome: "failed",
+        stopReason: "failed",
+        content: `Runtime failed before the task-bound run could complete: ${message}`,
         status: "failed",
         totalIterations: 0,
         totalToolCalls: 0,
         runPath: "",
-        workRunId: runHandle.runId,
         workState: {
           status: "blocked",
-          summary: "Task run failed before completion.",
+          summary: "Run failed before completion.",
           openWork: ["Retry or continue the task after resolving the runtime failure."],
           blockers: [message],
           verifiedFacts: [],
@@ -1128,113 +509,10 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           nextStep: "Retry or continue the task.",
         },
         completedSteps: [],
-        harnessContext,
+        harnessContext: createInitialHarnessContext(this.harnessContextFromPreparedTurn(prepared)),
       });
     } catch (finalizationError) {
       devWarn(`[${clientId}] git memory failed-run finalization failed: ${errMessage(finalizationError)}`);
-    }
-  }
-
-  private async failedRunHarnessContextFromPendingTurn(
-    prepared: GitContextPreparedTurn,
-    runHandle: MemoryRunHandle,
-  ): Promise<ReturnType<typeof createInitialHarnessContext> | null> {
-    const context = await this.chatContextRuntime.buildActiveContext(prepared.sessionId);
-    const pendingTurn = context.pendingTurn;
-    if (
-      pendingTurn?.routingStatus !== "bound"
-      || pendingTurn.runId !== runHandle.runId
-      || !pendingTurn.workId
-    ) {
-      return null;
-    }
-    return createInitialHarnessContext({
-      contextEngine: context,
-    });
-  }
-
-  private chatContextFinalizationSkipReason(
-    prepared: GitContextPreparedTurn | null,
-    routed: GitContextRoutedTurn | null,
-    result: AgentLoopResult,
-    binding: {
-      taskId: string;
-      runId: string;
-      conversationRefs: GitContextConversationSeqRange[];
-    } | null,
-  ): string | null {
-    if (!prepared) {
-      return "missing_prepared_turn";
-    }
-    if (!binding) {
-      return "no_task_run_binding";
-    }
-    if (result.runClass !== "task" && routed?.status !== "ready") {
-      return "non_task_result";
-    }
-    if (result.workRunId && binding.runId !== result.workRunId) {
-      return "binding_run_mismatch";
-    }
-    return null;
-  }
-
-  private async recordChatContextAssistantMessage(
-    clientId: string,
-    turn: GitContextPreparedTurn | null,
-    message: string,
-    ids: {
-      taskId?: string;
-      runId?: string;
-      kind?: "message" | "feedback_question";
-    } = {},
-  ): Promise<void> {
-    if (!turn) {
-      return;
-    }
-    const startedAt = Date.now();
-    this.feedbackLedger?.record({
-      clientId,
-      sessionId: turn.sessionId,
-      seq: turn.messageSeq,
-      stage: "context_engine",
-      event: "assistant_persistence_started",
-      data: { conversationId: turn.conversationId },
-    });
-    try {
-      await this.chatContextRuntime.recordAssistantMessage({
-        clientId,
-        turn,
-        message,
-        kind: ids.kind,
-        at: this.nowProvider().toISOString(),
-        taskId: ids.taskId,
-        runId: ids.runId,
-      });
-      this.feedbackLedger?.record({
-        clientId,
-        sessionId: turn.sessionId,
-        seq: turn.messageSeq,
-        stage: "context_engine",
-        event: "assistant_persistence_completed",
-        data: {
-          conversationId: turn.conversationId,
-          durationMs: Date.now() - startedAt,
-        },
-      });
-    } catch (error) {
-      this.feedbackLedger?.record({
-        clientId,
-        sessionId: turn.sessionId,
-        seq: turn.messageSeq,
-        stage: "context_engine",
-        event: "assistant_persistence_failed",
-        data: {
-          conversationId: turn.conversationId,
-          durationMs: Date.now() - startedAt,
-          message: error instanceof Error ? error.message : String(error),
-        },
-      });
-      throw error;
     }
   }
 
@@ -1283,105 +561,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     };
   }
 
-  private async startChatContextSessionRun(
-    clientId: string,
-    turn: GitContextPreparedTurn,
-    inputHandle: SessionInputHandle,
-  ): Promise<MemoryRunHandle | null> {
-    if (typeof this.chatContextRuntime.startSessionRun !== "function") {
-      return null;
-    }
-    const started = await this.chatContextRuntime.startSessionRun({
-      clientId,
-      turn,
-      at: this.nowProvider().toISOString(),
-    });
-    if (!started) {
-      return null;
-    }
-    const runHandle = {
-      sessionId: inputHandle.sessionId,
-      runId: started.runId,
-      triggerSeq: inputHandle.seq,
-    };
-    this.feedbackLedger?.record({
-      clientId,
-      sessionId: runHandle.sessionId,
-      seq: inputHandle.seq,
-      runId: runHandle.runId,
-      stage: "run",
-      event: "session_run_started",
-      data: {
-        runId: runHandle.runId,
-      },
-    });
-    return runHandle;
-  }
-
-  private async finalizeChatContextSessionRun(
-    clientId: string,
-    turn: GitContextPreparedTurn | null,
-    runHandle: MemoryRunHandle,
-    result: AgentLoopResult,
-  ): Promise<void> {
-    if (!turn || typeof this.chatContextRuntime.finalizeSessionRun !== "function") {
-      return;
-    }
-    const status = sessionRunStatusFromResult(result);
-    const runFields = buildSessionRunFinalizationFields(result, status);
-    const finalized = await this.chatContextRuntime.finalizeSessionRun({
-      clientId,
-      turn,
-      runId: runHandle.runId,
-      status,
-      summary: runFields.summary,
-      intent: runFields.intent,
-      routing: runFields.routing,
-      outcome: runFields.outcome,
-      workPerformed: runFields.workPerformed,
-      verification: runFields.verification,
-      decisions: runFields.decisions,
-      assistantResponse: result.content,
-      at: this.nowProvider().toISOString(),
-      blockers: runFields.blockers,
-      next: runFields.next,
-      toolsUsed: uniqueStrings(result.completedSteps?.flatMap((step) => step.toolsUsed ?? []) ?? []),
-      toolCallCount: result.totalToolCalls,
-      changedFiles: runFields.changedFiles,
-      newFacts: runFields.newFacts,
-      workState: result.workState,
-    });
-    this.feedbackLedger?.record({
-      clientId,
-      sessionId: runHandle.sessionId,
-      seq: runHandle.triggerSeq,
-      runId: runHandle.runId,
-      stage: "context_engine",
-      event: finalized ? "session_run_finalized" : "session_run_finalization_failed",
-      data: {
-        status,
-        committed: false,
-        resultStatus: result.status,
-        resultType: result.type,
-      },
-    });
-  }
-
-  private runHandleFromRoutedTurn(
-    inputHandle: SessionInputHandle,
-    turn: Extract<GitContextRoutedTurn, { status: "ready" }>,
-  ): MemoryRunHandle {
-    return {
-      sessionId: inputHandle.sessionId,
-      runId: turn.runId,
-      triggerSeq: inputHandle.seq,
-    };
-  }
-
-  private inputScopeId(inputHandle: SessionInputHandle): string {
-    return `input:${inputHandle.sessionId}:${inputHandle.seq}`;
-  }
-
   private harnessContextFromPreparedTurn(
     turn: GitContextPreparedTurn | null,
   ): HarnessContextInput {
@@ -1393,43 +572,13 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     };
   }
 
-  private taskRunBindingFromRoutedOrResult(
-    routed: GitContextRoutedTurn | null,
-    result: AgentLoopResult,
-  ): {
-    taskId: string;
-    runId: string;
-    conversationRefs: GitContextConversationSeqRange[];
-  } | null {
-    if (routed?.status === "ready") {
-      return {
-        taskId: routed.taskId,
-        runId: routed.runId,
-        conversationRefs: routed.conversationRefs,
-      };
-    }
-    const pendingTurn = result.harnessContext?.contextEngine?.pendingTurn;
-    if (!pendingTurn?.workId || !pendingTurn.runId || pendingTurn.routingStatus !== "bound") {
-      return null;
-    }
-    return {
-      taskId: pendingTurn.workId,
-      runId: pendingTurn.runId,
-      conversationRefs: [{
-        fromSeq: pendingTurn.fromSeq,
-        toSeq: pendingTurn.toSeq,
-      }],
-    };
-  }
-
   private async applyPulseProposalReflection(
     clientId: string,
     userMessage: string,
     result: AgentLoopResult,
     toolDefinitions: ToolDefinition[],
-    routedContextTurn: GitContextRoutedTurn | null,
   ): Promise<AgentLoopResult> {
-    if (!this.provider || result.type !== "reply" || result.status !== "completed" || result.runClass !== "task" || !result.taskSummary) {
+    if (!this.provider || result.type !== "reply" || result.outcome !== "done" || !isTaskBoundResult(result) || !result.taskSummary) {
       return result;
     }
 
@@ -1439,7 +588,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         currentUserMessage: userMessage,
         assistantResponse: result.content,
         taskSummary: result.taskSummary,
-        memoryContext: promptMemoryContextFromGitContext(routedContextTurn),
+        memoryContext: promptMemoryContextFromGitContext(result.harnessContext?.contextEngine),
         toolDefinitions,
         now: this.nowProvider(),
       });
@@ -1473,7 +622,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
 
   private dispatchAgentResponse(
     clientId: string,
-    runHandle: MemoryRunHandle | null,
+    runHandle: AgentRunHandle | null,
     result: {
       type: AgentResponseKind;
       content: string;
@@ -1499,101 +648,107 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
 
   private sendAssistantReply(
     clientId: string,
-    runHandle: MemoryRunHandle | null,
+    runHandle: AgentRunHandle | null,
     content: string,
     commitStatus: ReplyCommitStatus,
     artifacts?: AgentArtifact[],
     liveStream?: LiveReplyStream | null,
   ): void {
-    const artifactPayload = artifacts && artifacts.length > 0 && runHandle
-      ? { artifacts, runId: runHandle.runId }
-      : {};
+    const terminalPayload = {
+      ...(runHandle ? { runId: runHandle.runId } : {}),
+      commitStatus,
+      ...(artifacts && artifacts.length > 0 ? { artifacts } : {}),
+    };
     if (liveStream) {
       this.finishLiveFinalResponseStream(clientId, runHandle, liveStream, {
         kind: "reply",
         content,
         commitStatus,
-        extraPayload: artifactPayload,
+        extraPayload: terminalPayload,
       });
       return;
     }
     if (this.clientSupportsReplyStreaming(clientId)) {
-      this.sendStreamedAssistantResponse(clientId, runHandle, "reply", content, commitStatus, artifactPayload);
+      this.sendStreamedAssistantResponse(clientId, runHandle, "reply", content, commitStatus, terminalPayload);
       return;
     }
     this.onReply?.(clientId, {
       type: "reply",
       content,
-      ...artifactPayload,
+      ...terminalPayload,
     });
   }
 
   private sendAssistantFeedback(
     clientId: string,
-    runHandle: MemoryRunHandle | null,
+    runHandle: AgentRunHandle | null,
     content: string,
     commitStatus: ReplyCommitStatus,
     artifacts?: AgentArtifact[],
     liveStream?: LiveReplyStream | null,
   ): void {
-    const artifactPayload = artifacts && artifacts.length > 0 && runHandle
-      ? { artifacts, runId: runHandle.runId }
-      : {};
+    const terminalPayload = {
+      ...(runHandle ? { runId: runHandle.runId } : {}),
+      commitStatus,
+      ...(artifacts && artifacts.length > 0 ? { artifacts } : {}),
+    };
     if (liveStream) {
       this.finishLiveFinalResponseStream(clientId, runHandle, liveStream, {
         kind: "feedback",
         content,
         commitStatus,
-        extraPayload: artifactPayload,
+        extraPayload: terminalPayload,
       });
       return;
     }
     if (this.clientSupportsReplyStreaming(clientId)) {
-      this.sendStreamedAssistantResponse(clientId, runHandle, "feedback", content, commitStatus, artifactPayload);
+      this.sendStreamedAssistantResponse(clientId, runHandle, "feedback", content, commitStatus, terminalPayload);
       return;
     }
     this.onReply?.(clientId, {
       type: "feedback",
       content,
-      ...artifactPayload,
+      ...terminalPayload,
     });
   }
 
   private sendAssistantNotification(
     clientId: string,
-    runHandle: MemoryRunHandle | null,
+    runHandle: AgentRunHandle | null,
     content: string,
     commitStatus: ReplyCommitStatus,
     artifacts?: AgentArtifact[],
     liveStream?: LiveReplyStream | null,
   ): void {
-    const artifactPayload = artifacts && artifacts.length > 0 && runHandle
-      ? { artifacts, runId: runHandle.runId }
-      : {};
+    const terminalPayload = {
+      ...(runHandle ? { runId: runHandle.runId } : {}),
+      commitStatus,
+      ...(artifacts && artifacts.length > 0 ? { artifacts } : {}),
+    };
     if (liveStream) {
       this.finishLiveFinalResponseStream(clientId, runHandle, liveStream, {
         kind: "notification",
         content,
         commitStatus,
-        extraPayload: artifactPayload,
+        extraPayload: terminalPayload,
       });
       return;
     }
     if (this.clientSupportsReplyStreaming(clientId)) {
-      this.sendStreamedAssistantResponse(clientId, runHandle, "notification", content, commitStatus, artifactPayload);
+      this.sendStreamedAssistantResponse(clientId, runHandle, "notification", content, commitStatus, terminalPayload);
       return;
     }
     this.onReply?.(clientId, {
       type: "notification",
       content,
       final: true,
-      ...artifactPayload,
+      ...terminalPayload,
     });
   }
 
   private handleLiveFinalResponseStreamEvent(
     clientId: string,
-    runHandle: MemoryRunHandle | null,
+    runHandle: AgentRunHandle | null,
     current: LiveReplyStream | null,
     event: FinalResponseStreamEvent,
   ): LiveReplyStream | null {
@@ -1642,7 +797,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
 
   private finishLiveFinalResponseStream(
     clientId: string,
-    runHandle: MemoryRunHandle | null,
+    runHandle: AgentRunHandle | null,
     stream: LiveReplyStream,
     result: {
       kind: "reply" | "feedback" | "notification";
@@ -1664,7 +819,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
 
   private sendStreamedAssistantResponse(
     clientId: string,
-    runHandle: MemoryRunHandle | null,
+    runHandle: AgentRunHandle | null,
     kind: "reply" | "feedback" | "notification",
     content: string,
     commitStatus: ReplyCommitStatus,
@@ -1699,7 +854,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     });
   }
 
-  private sendProgress(clientId: string, runHandle: MemoryRunHandle, content: string): void {
+  private sendProgress(clientId: string, runHandle: AgentRunHandle, content: string): void {
     this.onReply?.(clientId, {
       type: "progress",
       content,
@@ -2013,10 +1168,10 @@ function formatAttachmentLabel(attachment: ChatAttachmentInput): string {
 }
 
 function promptMemoryContextFromGitContext(
-  routed: GitContextRoutedTurn | null,
+  context: ContextEngineMachineContext | undefined,
 ): PromptMemoryContext {
-  const sessionId = readGitContextSessionId(routed?.context.session);
-  const conversationTurns: ConversationTurn[] = (routed?.context.session.conversationTail ?? [])
+  const sessionId = readGitContextSessionId(context?.session);
+  const conversationTurns: ConversationTurn[] = (context?.session.conversationTail ?? [])
     .filter(isUserAssistantGitContextMessage)
     .map((message) => ({
       role: message.role,
@@ -2045,24 +1200,11 @@ function readGitContextSessionId(
 }
 
 function isUserAssistantGitContextMessage(
-  message: NonNullable<GitContextRoutedTurn["context"]["session"]["conversationTail"]>[number],
-): message is NonNullable<GitContextRoutedTurn["context"]["session"]["conversationTail"]>[number] & {
+  message: ContextEngineMachineContext["session"]["conversationTail"][number],
+): message is ContextEngineMachineContext["session"]["conversationTail"][number] & {
   role: "user" | "assistant";
 } {
   return message.role === "user" || message.role === "assistant";
-}
-
-function formatGitContextAmbiguityMessage(
-  routed: Extract<GitContextRoutedTurn, { status: "ambiguous" }>,
-): string {
-  if (routed.candidates.length === 0) {
-    return `I could not find the task you referenced. ${routed.reason}. Please mention the task id or describe the task again.`;
-  }
-  const candidates = routed.candidates
-    .slice(0, 5)
-    .map((candidate) => `- ${candidate.taskId}: ${candidate.title}`)
-    .join("\n");
-  return `I found multiple matching tasks. Please mention the task id you want to continue.\n${candidates}`;
 }
 
 function formatChatRuntimeError(error: unknown): string {
@@ -2072,110 +1214,31 @@ function formatChatRuntimeError(error: unknown): string {
   return "Failed to generate a response.";
 }
 
-function firstNonEmptyString(values: Array<string | undefined>): string | undefined {
-  return values.find((value): value is string => typeof value === "string" && value.trim().length > 0)?.trim();
+function replyCommitStatus(response: FinalizeRunResponse): ReplyCommitStatus {
+  return response.commit.status;
 }
 
-function uniqueStrings(values: Array<string | undefined>): string[] {
-  return [...new Set(values
-    .map((value) => value?.trim() ?? "")
-    .filter((value) => value.length > 0))];
-}
-
-function sessionRunStatusFromResult(result: AgentLoopResult): "completed" | "failed" | "blocked" | "needs_user_input" {
-  if (result.workState?.status === "needs_user_input") {
-    return "needs_user_input";
-  }
-  if (result.workState?.status === "blocked") {
-    return "blocked";
-  }
-  return result.status === "completed" ? "completed" : "failed";
-}
-
-function finalizationOutcome(
-  result: AgentLoopResult,
-): "done" | "incomplete" | "failed" | "blocked" | "needs_user_input" {
-  if (result.workState?.status === "done") return "done";
-  if (result.status === "failed") return "failed";
-  if (result.workState?.status === "needs_user_input") return "needs_user_input";
-  if (result.workState?.status === "blocked") return "blocked";
-  return "incomplete";
-}
-
-function finalizationValidation(result: AgentLoopResult): "passed" | "failed" | "not_run" {
-  if (result.workState?.status === "done") return "passed";
-  return result.status === "failed" ? "failed" : "not_run";
-}
-
-const TASK_ROUTING_TOOL_NAMES = new Set([
-  "git_context_activate_task",
-  "git_context_create_task",
-]);
-
-const CONVERSATION_READ_ONLY_TOOL_NAMES = new Set([
-  "read_files",
-  "list_directory",
-  "find_files",
-  "search_in_files",
-  "attachment_list",
-  "attachment_inspect",
-  "attachment_read",
-  "attachment_query",
-  "attachment_query_table",
-  "directory_search",
-  "dataset_profile",
-  "dataset_query",
-  "document_list_sections",
-  "document_read_section",
-  "document_query",
-  "calculator",
-]);
-
-function hasDurableTaskEvidence(result: AgentLoopResult): boolean {
-  return (result.completedSteps ?? []).some(stepHasMutatingOrDurableTaskEvidence);
-}
-
-function hasMutatingOrDurableTaskStep(result: AgentLoopResult): boolean {
-  return (result.completedSteps ?? []).some(stepHasMutatingOrDurableTaskEvidence);
-}
-
-function stepHasMutatingOrDurableTaskEvidence(step: NonNullable<AgentLoopResult["completedSteps"]>[number]): boolean {
-  const toolsUsed = step.toolsUsed ?? [];
-  const hasMutatingTool = toolsUsed.some((tool) => !isConversationReadOnlyTool(tool) && !TASK_ROUTING_TOOL_NAMES.has(tool));
-  if (hasMutatingTool) {
-    return true;
-  }
-  return toolsUsed.length === 0 && (step.artifacts ?? []).length > 0;
-}
-
-function isConversationReadOnlyTool(tool: string): boolean {
-  return CONVERSATION_READ_ONLY_TOOL_NAMES.has(tool) || isGitContextReadOnlyToolName(tool);
-}
-
-function isDurableWorkRequest(message: string): boolean {
-  const normalized = message.trim().toLowerCase();
-  if (!normalized) {
-    return false;
-  }
-  if (/^(what|where|why|how|when|which|who|show|explain|describe|summarize|tell me|did|is|are|was|were)\b/.test(normalized)) {
-    return false;
-  }
-  return /\b(build|create|make|write|save|edit|update|change|fix|implement|generate|add|remove|delete|move|rename|apply|run|test|set up|setup)\b/.test(normalized);
-}
-
-function hasDurableCompletionClaim(message: string): boolean {
-  return /\b(done|completed|created|built|wrote|saved|edited|updated|changed|fixed|implemented|generated|added|removed|deleted|moved|renamed|applied|ran|tested|set up)\b/i.test(message);
-}
-
-function isRoutingOnlyTaskRun(result: AgentLoopResult): boolean {
-  const completedSteps = result.completedSteps ?? [];
-  if (completedSteps.length === 0) {
-    return false;
-  }
-  return completedSteps.every((step) => {
-    const toolsUsed = step.toolsUsed ?? [];
-    return toolsUsed.length > 0 && toolsUsed.every((tool) => TASK_ROUTING_TOOL_NAMES.has(tool));
-  });
+function directReplyResult(runId: string, content: string): AgentLoopResult {
+  return {
+    type: "reply",
+    runId,
+    outcome: "done",
+    stopReason: "completed",
+    content,
+    status: "completed",
+    totalIterations: 0,
+    totalToolCalls: 0,
+    runPath: "",
+    workState: {
+      status: "done",
+      summary: content,
+      openWork: [],
+      blockers: [],
+      verifiedFacts: [],
+      evidence: [],
+    },
+    completedSteps: [],
+  };
 }
 
 function chunkReplyContent(content: string): string[] {

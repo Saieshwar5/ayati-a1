@@ -1,4 +1,4 @@
-import type { MemoryRunHandle, SessionInputHandle } from "../../memory/types.js";
+import type { SessionInputHandle } from "../../memory/types.js";
 import type {
   AgentLoopDeps,
   AgentLoopResult,
@@ -10,19 +10,18 @@ import type {
 import { measureJson } from "../state-compaction.js";
 import { buildContextEngineFeedbackSummary } from "../feedback-ledger.js";
 import { isObservationalTool } from "../../skills/tool-taxonomy.js";
-import { isGitContextAllowedDuringPendingRouting } from "../../skills/builtins/git-context/tool-policy.js";
 import type { ToolDefinition } from "../../skills/types.js";
-import type { AgentAction, AgentDecision } from "./decision.js";
+import type { AgentAction } from "./decision.js";
 import type { ExecuteActionStepResult } from "./step-lifecycle.js";
 import type { ToolLoadResult } from "./tool-working-set.js";
 import { repairSignalToFeedbackData } from "./repair-policy.js";
 import { createRepairSignalFromStepSummary } from "./repair-feedback.js";
 import { type AgentStateView } from "./state-view.js";
 import {
-  detectRuntimeCapabilityMode,
+  deriveTaskBindingCapabilityPolicy,
   isGitContextRoutingToolName,
-  summarizeRuntimeCapabilityTools,
-} from "./runtime-capability-mode.js";
+  summarizeCapabilityTools,
+} from "./task-binding-capability-policy.js";
 import {
   summarizeStep,
   summarizeToolDefinitions,
@@ -61,32 +60,26 @@ export function recordToolWorkingSetFeedback(input: {
   deterministicToolLoad: ToolLoadResult | undefined;
   visibleTools: ToolDefinition[];
   selectedTools: ToolDefinition[];
-  workRunHandle: MemoryRunHandle | undefined;
-  sessionRunHandle: MemoryRunHandle | undefined;
+  runHandle: AgentLoopDeps["runHandle"];
 }): void {
-  const warningCodes = buildToolExposureWarningCodes(input.state, input.selectedTools, input.workRunHandle, input.sessionRunHandle);
-  const runtimeMode = detectRuntimeCapabilityMode({
-    state: input.state,
-    workRunHandle: input.workRunHandle,
-    sessionRunHandle: input.sessionRunHandle,
-  });
+  const warningCodes = buildToolExposureWarningCodes(input.state, input.selectedTools);
+  const policy = deriveTaskBindingCapabilityPolicy(input.state);
   const toolPolicyAudit = auditToolPolicy({
-    mode: runtimeMode,
+    policy,
     selectedTools: input.selectedTools,
   });
-  const toolMode = summarizeRuntimeCapabilityTools({
-    mode: runtimeMode,
+  const capabilities = summarizeCapabilityTools({
+    policy,
     visibleTools: input.visibleTools,
     selectedTools: input.selectedTools,
   });
   recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "working_set_prepared", {
     iteration: input.iteration,
     toolContextRunId: input.toolContextRunId,
-    workRunId: input.workRunHandle?.runId,
-    sessionRunId: input.sessionRunHandle?.runId,
-    runHandlePresent: Boolean(input.workRunHandle || input.sessionRunHandle || input.state.runId),
+    runId: input.runHandle.runId,
+    taskBound: policy.taskBound,
     pendingTurnStatus: input.state.harnessContext.contextEngine?.pendingTurn?.routingStatus,
-    toolMode,
+    capabilities,
     deterministicLoad: summarizeToolLoadResult(input.deterministicToolLoad),
     visible: summarizeToolDefinitions(input.visibleTools),
     selected: summarizeToolDefinitions(input.selectedTools),
@@ -97,67 +90,23 @@ export function recordToolWorkingSetFeedback(input: {
     }),
     ...(warningCodes.length > 0 ? { warningCodes } : {}),
   });
-  recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "tool_mode_selected", {
+  recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "capabilities_derived", {
     iteration: input.iteration,
     toolContextRunId: input.toolContextRunId,
-    ...toolMode,
+    ...capabilities,
     toolPolicyAudit,
-    ...(runtimeMode.routingWindow ? { routingWindow: runtimeMode.routingWindow } : {}),
     ...(warningCodes.length > 0 ? { warningCodes } : {}),
   });
-  if (runtimeMode.routingWindow) {
-    const routingWindowFeedback = {
+  if (!policy.taskBound && capabilities.visibleRoutingTools.length > 0) {
+    recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "task_routing_tools_visible", {
       iteration: input.iteration,
       toolContextRunId: input.toolContextRunId,
-      mode: toolMode.mode,
-      hasWorkRun: toolMode.hasWorkRun,
-      hasSessionRun: toolMode.hasSessionRun,
-      focusStatus: toolMode.focusStatus,
-      pendingTurnStatus: toolMode.pendingTurnStatus,
-      step: runtimeMode.routingWindow.step,
-      maxSteps: runtimeMode.routingWindow.maxSteps,
-      remaining: runtimeMode.routingWindow.remaining,
-      open: runtimeMode.routingWindow.open,
-      expired: runtimeMode.routingWindow.expired ?? false,
-      expiresAfterThisDecision: runtimeMode.routingWindow.expiresAfterThisDecision,
-      readToolsVisible: toolMode.visibleReadTools,
-      routingToolsVisible: toolMode.visibleTaskRoutingTools,
-      readToolsAvailable: runtimeMode.routingWindow.readToolsAvailable,
-      routingToolsAvailable: runtimeMode.routingWindow.routingToolsAvailable,
-      readToolsRemainAfterExpiry: runtimeMode.routingWindow.readToolsRemainAfterExpiry,
-      guidance: runtimeMode.routingWindow.guidance,
-    };
-    if (runtimeMode.routingWindow.open) {
-      recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "routing_window_visible", routingWindowFeedback);
-      if (runtimeMode.routingWindow.expiresAfterThisDecision) {
-        recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "routing_window_expiring", routingWindowFeedback);
-      }
-    } else {
-      recordFeedback(
-        input.deps,
-        input.inputHandle,
-        input.runId,
-        "tools",
-        runtimeMode.routingSuppressedForConversation
-          ? "routing_window_suppressed"
-          : "routing_window_expired",
-        routingWindowFeedback,
-      );
-    }
-  }
-  if (!toolMode.hasWorkRun && toolMode.visibleRoutingTools.length > 0) {
-    recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "pre_task_routing_tools_visible", {
-      iteration: input.iteration,
-      toolContextRunId: input.toolContextRunId,
-      mode: toolMode.mode,
-      visibleRoutingTools: toolMode.visibleRoutingTools,
-      selectedRoutingTools: toolMode.selectedRoutingTools,
-      visibleReadTools: toolMode.visibleReadTools,
-      visibleTaskRoutingTools: toolMode.visibleTaskRoutingTools,
-      visibleNormalTools: toolMode.visibleNormalTools,
-      pendingTurnStatus: toolMode.pendingTurnStatus,
-      focusStatus: toolMode.focusStatus,
-      ...(runtimeMode.routingWindow ? { routingWindow: runtimeMode.routingWindow } : {}),
+      visibleRoutingTools: capabilities.visibleRoutingTools,
+      selectedRoutingTools: capabilities.selectedRoutingTools,
+      visibleReadTools: capabilities.visibleReadTools,
+      pendingTurnStatus: capabilities.pendingTurnStatus,
+      routingSuppressed: capabilities.routingSuppressed,
+      routingAvailable: capabilities.routingAvailable,
     });
   }
 }
@@ -205,31 +154,19 @@ export function recordReducerFeedback(
 export function buildToolExposureWarningCodes(
   state: LoopState,
   selectedTools: ToolDefinition[],
-  workRunHandle: MemoryRunHandle | undefined,
-  sessionRunHandle: MemoryRunHandle | undefined,
 ): string[] {
   const warningCodes: string[] = [];
-  const mode = detectRuntimeCapabilityMode({ state, workRunHandle, sessionRunHandle });
+  const policy = deriveTaskBindingCapabilityPolicy(state);
   const pendingTurnStatus = state.harnessContext.contextEngine?.pendingTurn?.routingStatus;
   const normalTools = normalTaskToolNames(selectedTools);
   const unsafeNormalTools = normalTools.filter((tool) => !isObservationalTool(tool));
   if ((pendingTurnStatus === "unbound" || pendingTurnStatus === "clarifying") && unsafeNormalTools.length > 0) {
     warningCodes.push("normal_tool_visible_during_pending_routing", "routing_state_mismatch");
   }
-  if (!state.runId && !workRunHandle && mode.name !== "active_task_ready" && unsafeNormalTools.length > 0) {
-    warningCodes.push("normal_tools_selected_without_work_run");
+  if (!policy.taskBound && unsafeNormalTools.length > 0) {
+    warningCodes.push("mutation_tools_selected_without_task_binding");
   }
   return uniqueStrings(warningCodes);
-}
-
-export function missingWorkRunWarningCodes(decision: AgentDecision | undefined): string[] {
-  if (decision?.kind !== "act") {
-    return [];
-  }
-  const normalTools = decision.action.calls
-    .map((call) => call.tool)
-    .filter((tool) => !isGitContextAllowedDuringPendingRouting(tool));
-  return normalTools.length > 0 ? ["normal_tool_before_routing"] : [];
 }
 
 export function latestCompletedTaskRoutingToolNames(state: LoopState): string[] {
@@ -350,7 +287,7 @@ export function buildFinalFeedbackWarnings(input: {
   if (
     input.status === "completed"
     && input.totalToolCalls === 0
-    && (input.toolLoadDecisionCount > 0 || input.actionStepCount > 0 || input.state.runClass === "task")
+    && (input.toolLoadDecisionCount > 0 || input.actionStepCount > 0 || isTaskBound(input.state))
   ) {
     warnings.push("completed_without_tool_calls");
   }
@@ -386,7 +323,11 @@ export function summarizeTaskSummary(taskSummary: AgentTaskSummaryRecord | undef
 function normalTaskToolNames(tools: ToolDefinition[]): string[] {
   return tools
     .map((tool) => tool.name)
-    .filter((tool) => !isGitContextAllowedDuringPendingRouting(tool));
+    .filter((tool) => !isGitContextRoutingToolName(tool));
+}
+
+function isTaskBound(state: LoopState): boolean {
+  return state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "bound";
 }
 
 function readContextSessionId(

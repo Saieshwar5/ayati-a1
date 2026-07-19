@@ -25,7 +25,8 @@ function tool(name: string, priority = 0): ToolDefinition {
 function state(userMessage: string): LoopState {
   return {
     runId: "run-1",
-    runClass: "task",
+    currentSeq: 1,
+    inputKind: "user_message",
     userMessage,
     workState: {
       status: "not_done",
@@ -41,9 +42,38 @@ function state(userMessage: string): LoopState {
     maxIterations: 15,
     consecutiveFailures: 0,
     completedSteps: [],
+    routingAttempts: {
+      successCount: 0,
+      failureCount: 0,
+      maxFailures: 2,
+      resolved: false,
+    },
     runPath: "/tmp/run-1",
     failureHistory: [],
-    harnessContext: createInitialHarnessContext(),
+    harnessContext: createInitialHarnessContext({
+      contextEngine: {
+        session: {
+          meta: { sessionId: "S-1", assetCount: 0 },
+          conversationTail: [],
+          activityTail: [],
+        },
+        pendingTurn: {
+          fromSeq: 1,
+          toSeq: 1,
+          text: userMessage,
+          at: "2026-07-19T10:00:00.000Z",
+          routingStatus: "bound",
+          workId: "T-1",
+          branch: "task/T-1",
+          runId: "run-1",
+        },
+        focus: {
+          status: "active",
+          ref: "refs/heads/task/T-1",
+          workId: "T-1",
+        },
+      },
+    }),
   };
 }
 
@@ -57,10 +87,9 @@ function pendingGitContext(
 ): ContextEngineMachineContext {
   return {
     session: {
-      sessionId: "S-20260630-local",
+      meta: { sessionId: "S-20260630-local", assetCount: 0 },
       conversationTail: [],
       activityTail: [],
-      assetCount: 0,
     },
     pendingTurn: {
       fromSeq: 1,
@@ -97,7 +126,6 @@ describe("selectToolsForDecision", () => {
 
   it("limits selected tools to git-context routing tools for unbound pending turns", () => {
     const current = state("build a website and run it");
-    current.runId = "";
     current.harnessContext = {
       ...current.harnessContext,
       contextEngine: pendingGitContext("unbound"),
@@ -117,7 +145,6 @@ describe("selectToolsForDecision", () => {
 
   it("selects safe read and first-task routing tools when a fresh session has no active task", () => {
     const current = state("build a website and run it");
-    current.runId = "";
     current.harnessContext = {
       ...current.harnessContext,
       contextEngine: pendingGitContext("unbound", { status: "none" }),
@@ -138,10 +165,8 @@ describe("selectToolsForDecision", () => {
     expect(selectedNames).not.toContain("write_files");
   });
 
-  it("selects observational tools during a session run before task binding", () => {
+  it("selects observational tools on an unbound run", () => {
     const current = state("where is upload handling implemented?");
-    current.runId = "";
-    current.runClass = "interaction";
     current.harnessContext = {
       ...current.harnessContext,
       contextEngine: pendingGitContext("unbound", { status: "none" }),
@@ -153,21 +178,18 @@ describe("selectToolsForDecision", () => {
       tool("search_in_files", 80),
       tool("document_query", 70),
       tool("git_context_create_task", 1),
-    ], 3, {
-      sessionRunHandle: { sessionId: "S-20260630-local", runId: "R-20260630-0001" },
-    });
+    ], 3);
 
     const selectedNames = selected.map((entry) => entry.name);
     expect(selectedNames).toEqual([
       "read_files",
       "search_in_files",
-      "git_context_create_task",
+      "document_query",
     ]);
   });
 
   it("counts required first-task routing tools inside the selected tool cap", () => {
     const current = state("create a small website and run it");
-    current.runId = "";
     current.harnessContext = {
       ...current.harnessContext,
       contextEngine: pendingGitContext("unbound", { status: "none" }),
@@ -197,7 +219,6 @@ describe("selectToolsForDecision", () => {
 
   it("reserves the selected tool cap for required active-task routing tools", () => {
     const current = state("continue the website and add dark mode");
-    current.runId = "";
     current.harnessContext = {
       ...current.harnessContext,
       contextEngine: pendingGitContext("unbound"),
@@ -224,7 +245,6 @@ describe("selectToolsForDecision", () => {
 
   it("selects no executable tools while a pending turn is clarifying", () => {
     const current = state("build a website");
-    current.runId = "";
     current.harnessContext = {
       ...current.harnessContext,
       contextEngine: pendingGitContext("clarifying"),
@@ -251,7 +271,23 @@ describe("selectToolsForDecision", () => {
 
   it("reduces the executable tool surface from fifteen to ten after pressure", () => {
     const current = state("continue implementation");
-    const tools = Array.from({ length: 15 }, (_, index) => tool(`tool_${index + 1}`, 15 - index));
+    const tools = [
+      "read_files",
+      "search_in_files",
+      "find_files",
+      "inspect_paths",
+      "list_directory",
+      "write_files",
+      "patch_files",
+      "create_directory",
+      "move",
+      "delete",
+      "process_run",
+      "process_start",
+      "process_poll",
+      "process_send_input",
+      "process_stop",
+    ].map((name, index) => tool(name, 15 - index));
 
     expect(selectToolsForDecision(current, tools, 15)).toHaveLength(15);
 

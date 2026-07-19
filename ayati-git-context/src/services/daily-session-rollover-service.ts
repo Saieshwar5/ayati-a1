@@ -20,6 +20,11 @@ export interface DailySessionRolloverInput {
   at: string;
 }
 
+export type DailySessionRolloverAction =
+  | "reuse"
+  | "mark_pending"
+  | "seal_and_create";
+
 export class DailySessionRolloverService {
   constructor(private readonly options: {
     database: ContextDatabase;
@@ -34,14 +39,23 @@ export class DailySessionRolloverService {
     existing: SessionRecord,
     input: DailySessionRolloverInput,
   ): Promise<EnsureActiveSessionResponse> {
-    if (existing.date === input.date) {
+    const action = await this.assess(existing, input);
+    if (action === "reuse") {
       return { session: this.options.sessionRegistry.toRef(existing), created: false };
     }
+    return action === "mark_pending"
+      ? this.markPending(existing, input)
+      : this.sealAndCreate(existing, input);
+  }
+
+  /** Performs read-only rollover checks so turn acceptance can apply DB changes atomically. */
+  async assess(
+    existing: SessionRecord,
+    input: DailySessionRolloverInput,
+  ): Promise<DailySessionRolloverAction> {
+    if (existing.date === input.date) return "reuse";
     this.verifyTimezone(existing, input);
-    if (!await this.isReadyToSeal(existing)) {
-      return this.markPending(existing, input);
-    }
-    return this.sealAndCreate(existing, input);
+    return await this.isReadyToSeal(existing) ? "seal_and_create" : "mark_pending";
   }
 
   private verifyTimezone(existing: SessionRecord, input: DailySessionRolloverInput): void {
@@ -94,7 +108,7 @@ export class DailySessionRolloverService {
       data: {
         activeDate: pending.date,
         requestedDate: input.date,
-        reason: "waiting_for_task_run_commit",
+        reason: "waiting_for_task_bound_run_commit",
       },
     });
     return { session: this.options.sessionRegistry.toRef(pending), created: false };

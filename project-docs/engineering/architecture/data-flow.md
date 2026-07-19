@@ -7,10 +7,13 @@
 2. The CLI sends `{ type: "chat", content, attachments? }` over WebSocket.
    HTTP handles uploads, artifact access, and Pulse endpoints.
 3. The chat runtime serializes turns for the same client/session.
-4. The daemon records the message through the typed Git Context client. The
-   independent local server owns context SQLite and all Git writes.
-5. The daemon starts a session run and requests a bounded context projection.
-   Read-only reasoning does not require selecting a task.
+4. One `prepareContextTurn` request asks Git Context to ensure the daily
+   session, create the conversation segment, append the message or event,
+   create one run and initial WorkState, bind the conversation to that run,
+   and store the idempotency receipt in one transaction. The independent local
+   server owns context SQLite and all Git writes.
+5. The same preparation response returns the run and bounded context
+   projection. Read-only reasoning does not require selecting a task.
 6. `IVecEngine` builds the context pack and runs the stable harness:
 
    ```text
@@ -21,19 +24,20 @@
    creates a task, asks for necessary feedback, or calls one executable tool.
 8. The action executor validates the selected tool and input, executes it, and
    converts its result into verified facts and evidence.
-9. The progress reducer updates sparse run state. The daemon sends the final
-   reply through the originating transport.
-10. The Git Context service finalizes lifecycle records. For V1 task work, it
-    commits verified changes and the request outcome in the selected
-    repository. Raw run evidence remains in SQLite/session journals.
+9. The progress reducer updates sparse run state, and the complete ordered
+   action record plus resulting WorkState are persisted as one run step.
+10. The daemon finalizes the run and waits for database, materialization, and
+    task-commit acknowledgement before sending the terminal response envelope.
+    Raw run evidence remains in SQLite and optional unbound-run files.
 
 Clients remain communication surfaces. They do not own agent intelligence,
 memory policy, task selection, provider choice, or long-running state.
 
 ## Task Selection and Mutation
 
-Every provider-handled turn begins as a session run. The prompt projection can
-show task candidates, but a candidate is not implicit permission to mutate it.
+Every accepted provider-handled turn begins with one unbound run. The prompt
+projection can show task candidates, but a candidate is not implicit permission
+to mutate it.
 
 For durable work the model uses these public tools:
 
@@ -42,8 +46,9 @@ For durable work the model uses these public tools:
   the call must explicitly pass `requestDecision.kind="continue"` or
   `requestDecision.kind="create"`.
 
-Successful responses return the selected task/run identity, stable working
-directory, and refreshed harness context containing the request.
+Successful responses bind the existing run without changing its id and return
+the selected task/request identity, stable working directory, and refreshed
+harness context.
 
 Once selected, task-scoped tools receive the stable task working directory.
 The runtime—not the model—updates `.ayati/`, finalizes the request, and creates
@@ -52,11 +57,11 @@ task in another session or turn.
 
 ## Session and Context Flow
 
-1. A daily session is a normal Git repository.
-2. Session metadata lives at `session/meta.json`; conversation records live
-   under `conversations/`.
-3. Session commits checkpoint conversation continuity independently of task
-   repositories.
+1. A daily session is the operational boundary for accepted turns.
+2. SQLite owns authoritative conversations, runs, steps, WorkState, and
+   finalization journals.
+3. Step-bearing unbound runs may materialize run and step evidence in the
+   session repository; zero-step replies create no run files or Git commit.
 4. Git Context builds a bounded projection containing conversation tail,
    pending-turn state, task candidates or selection, current request, compact
    task state, recent activity, and useful evidence pointers.

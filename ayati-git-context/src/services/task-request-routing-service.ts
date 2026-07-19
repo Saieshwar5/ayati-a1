@@ -50,14 +50,14 @@ export class TaskRequestRoutingService {
     const run = readRunEvidence(this.options.database, input.runId);
     if (!run || run.status !== "running" || run.sessionId !== input.sessionId
       || run.conversationId !== input.conversationId
-      || (run.taskId && run.taskId !== input.taskId)) {
-      throw invalid("Request planning requires the matching active session run.", input);
+      || (run.taskBinding && run.taskBinding.taskId !== input.taskId)) {
+      throw invalid("Request planning requires the matching active run.", input);
     }
     const existingPlan = readTaskRequestRoutePlan(this.options.database, input.runId);
     if (existingPlan && existingPlan.requestId !== input.requestId) {
       throw invalid("Active run already owns a different task request plan.", input);
     }
-    if (run.taskRequestId && !existingPlan) {
+    if (run.taskBinding && !existingPlan) {
       throw invalid("Active run is already bound without a recoverable request plan.", input);
     }
     const validation = await validateTaskRepository({
@@ -149,13 +149,14 @@ export class TaskRequestRoutingService {
           ...(changePlan ? { changePlan } : {}),
           at: input.at,
         });
-        const boundRun = bindActiveRunToTask(
-          this.options.database,
-          input.sessionId,
-          input.runId,
-          input.taskId,
+        const boundRun = bindActiveRunToTask(this.options.database, {
+          sessionId: input.sessionId,
+          conversationId: input.conversationId,
+          runId: input.runId,
+          taskId: input.taskId,
           taskRequestId,
-        );
+          at: input.at,
+        });
         return taskRequestRoutePlanResponse(record, boundRun);
       },
     });

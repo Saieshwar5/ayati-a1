@@ -25,15 +25,16 @@ Main runtime flow:
 5. `IVecEngine` builds static decision context and enters the decision-action-reducer runner.
 6. The decision model returns direct assistant text for normal terminal
    replies, or chooses exactly one native tool call for tool loading,
-   task-run feedback, or selected executable work. Tool loading uses the
+   task-bound-run feedback, or selected executable work. Tool loading uses the
    taxonomy and working-set policy so file creation, process commands, reads,
    routing, and repair capabilities are prepared deterministically.
 7. Executable tool calls run through the shared action executor and are verified
    through tool contracts, assertions, and local failure policy.
-8. Verified facts update WorkState. Runtime-owned V1 finalization commits the
-   verified deliverable, request outcome, task card, and references once in the
-   task repository. SQLite retains the run journal.
-9. Replies, feedback, notifications, or actions are sent back through the appropriate transport.
+8. Verified facts update WorkState. Runtime-owned finalization closes the run;
+   task-bound work commits the verified deliverable, request outcome, task
+   card, and references at most once. SQLite retains the run journal.
+9. Only after finalization is acknowledged are terminal replies, feedback, or
+   notifications sent through the originating transport.
 
 Current agent harness:
 

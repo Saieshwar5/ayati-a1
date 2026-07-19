@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { IVecEngine } from "../../src/ivec/index.js";
@@ -13,33 +13,59 @@ import {
 } from "../../src/app/system-event-runtime.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnInput, LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
-import type { StaticContext } from "../../src/context/static-context-cache.js";
 import type { SystemEventPolicyConfig } from "../../src/ivec/system-event-policy.js";
+import type {
+  GitContextPreparedTurn,
+  GitContextRuntime,
+} from "../../src/app/git-context-runtime.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
-import type {
-  GitContextPreparedTurn,
-  GitContextRoutedTurn,
-  GitContextRuntime,
-} from "../../src/app/git-context-runtime.js";
-import { DocumentStore } from "../../src/documents/document-store.js";
 import { nativeDecisionFixture } from "../ivec/native-decision-fixture.js";
 
-function createMockProvider(overrides?: Partial<LlmProvider>): LlmProvider {
+const originalWorkspaceDir = process.env["AYATI_WORKSPACE_DIR"];
+
+afterEach(() => {
+  if (originalWorkspaceDir === undefined) {
+    delete process.env["AYATI_WORKSPACE_DIR"];
+  } else {
+    process.env["AYATI_WORKSPACE_DIR"] = originalWorkspaceDir;
+  }
+});
+
+function makeTmpDir(prefix = "ayati-engine-"): string {
+  const path = mkdtempSync(join(tmpdir(), prefix));
+  process.env["AYATI_WORKSPACE_DIR"] = path;
+  return path;
+}
+
+function createProvider(responses: unknown[]): LlmProvider {
+  const queue = responses.map(nativeDecisionFixture);
+  return {
+    name: "mock",
+    version: "1.0.0",
+    capabilities: {
+      nativeToolCalling: true,
+      structuredOutput: { jsonObject: true, jsonSchema: true },
+    },
+    start: vi.fn(),
+    stop: vi.fn(),
+    generateTurn: vi.fn(async (): Promise<LlmTurnOutput> => {
+      const response = queue.shift();
+      if (!response) throw new Error("No queued provider response.");
+      return response;
+    }),
+  };
+}
+
+function createThrowingProvider(error: Error): LlmProvider {
   return {
     name: "mock",
     version: "1.0.0",
     capabilities: { nativeToolCalling: true },
     start: vi.fn(),
     stop: vi.fn(),
-    generateTurn: vi
-      .fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
-      .mockResolvedValue({
-        type: "assistant",
-        content: "mock reply",
-      }),
-    ...overrides,
+    generateTurn: vi.fn().mockRejectedValue(error),
   };
 }
 
@@ -52,242 +78,150 @@ function createSystemEventPolicy(): SystemEventPolicyConfig {
       contextVisibility: "summary",
       approvalRequired: false,
     },
-    rules: [
-      {
-        source: "pulse",
-        eventClass: "trigger_fired",
-        createdBy: "user",
-        mode: "auto_execute_notify",
-      },
-      {
-        source: "pulse",
-        eventClass: "trigger_fired",
-        createdBy: "user",
-        mode: "auto_execute_notify",
-      },
-      {
-        source: "custom-system",
-        eventName: "task.requested",
-        requestedAction: "send_report",
-        mode: "draft_then_approve",
-      },
-      {
-        source: "gmail-cli",
-        eventName: "new_messages",
-        mode: "analyze_ask",
-      },
-    ],
+    rules: [{
+      source: "pulse",
+      eventClass: "trigger_fired",
+      createdBy: "user",
+      mode: "auto_execute_notify",
+    }],
   };
 }
 
-function createStaticContext(): StaticContext {
+function createPreparedTurn(input: {
+  role: "user" | "system_event";
+  runId?: string;
+  messageSeq?: number;
+}): GitContextPreparedTurn {
+  const runId = input.runId ?? "R-20260719-0001";
+  const messageSeq = input.messageSeq ?? 1;
+  const sessionId = "S-20260719-local";
+  const conversationId = `C-${runId}`;
   return {
-    basePrompt: "You are Ayati.",
-    soul: {
-      version: 3,
-      identity: {
-        name: "Ayati",
-        role: "General-purpose AI teammate",
-        responsibility: "Help the user complete useful work.",
-      },
-      behavior: {
-        traits: ["calm"],
-        working_style: ["verify important facts"],
-        communication: ["warm and direct"],
-      },
-      boundaries: ["invent facts"],
+    status: "ready",
+    sessionId,
+    repoPath: "/tmp/ayati-git-context/S-20260719-local",
+    initialized: false,
+    messageSeq,
+    currentMessageId: `M-${runId}`,
+    currentMessageSessionSequence: messageSeq,
+    conversationId,
+    inputRole: input.role,
+    run: {
+      runId,
+      sessionId,
+      conversationId,
+      triggerSeq: messageSeq,
     },
-    skillBlocks: [
-      { id: "process", content: "Use process_run for focused project execution." },
-    ],
-    toolDirectory: "process_run: Run one project executable.",
+    context: {
+      session: {
+        meta: { sessionId, assetCount: 0 },
+        conversationTail: [],
+        activityTail: [],
+      },
+      pendingTurn: {
+        fromSeq: messageSeq,
+        toSeq: messageSeq,
+        text: "",
+        at: "2026-07-19T10:00:00.000Z",
+        routingStatus: "unbound",
+        runId,
+      },
+      focus: { status: "none" },
+    },
   };
 }
 
-function findReplyContent(onReply: ReturnType<typeof vi.fn>, type = "reply"): string {
-  const call = onReply.mock.calls.find(([, message]) => {
-    return typeof message === "object"
-      && message !== null
-      && (message as { type?: unknown }).type === type;
+function createContextRuntime(prepared: GitContextPreparedTurn): GitContextRuntime {
+  const prepareUserTurn = vi.fn(async (
+    input: Parameters<GitContextRuntime["prepareUserTurn"]>[0],
+  ) => {
+    setCurrentMessage(prepared, input.userMessage, input.at, "user");
+    return prepared;
   });
-  const message = call?.[1] as { content?: unknown } | undefined;
-  return typeof message?.content === "string" ? message.content : "";
-}
-
-function createFeedbackRecorder(): {
-  ledger: NonNullable<CreateChatTurnRuntimeOptions["feedbackLedger"]>;
-  events: Array<{ stage?: string; event?: string; data?: Record<string, unknown> }>;
-} {
-  const events: Array<{ stage?: string; event?: string; data?: Record<string, unknown> }> = [];
+  const prepareSystemEventTurn = vi.fn(async (
+    input: Parameters<GitContextRuntime["prepareSystemEventTurn"]>[0],
+  ) => {
+    setCurrentMessage(prepared, input.systemMessage, input.at, "system");
+    return prepared;
+  });
+  const finalizeRun = vi.fn(async (
+    input: Parameters<GitContextRuntime["finalizeRun"]>[0],
+  ) => {
+    const taskBound = Boolean(input.taskCompletion);
+    return {
+      run: {
+        runId: prepared.run.runId,
+        sessionId: prepared.sessionId,
+        conversationId: prepared.conversationId,
+        ...(taskBound ? {
+          taskBinding: {
+            taskId: "T-20260719-0001",
+            taskRequestId: "REQ-20260719-0001",
+            boundAt: "2026-07-19T10:00:01.000Z",
+          },
+        } : {}),
+        status: input.outcome,
+        trigger: prepared.inputRole === "user" ? "user" : "system_event",
+        startedAt: "2026-07-19T10:00:00.000Z",
+        completedAt: input.at,
+        stopReason: input.stopReason,
+        stepCount: 0,
+      },
+      conversation: {
+        conversationId: prepared.conversationId,
+        sessionId: prepared.sessionId,
+        sequence: prepared.messageSeq,
+        filePath: `conversations/${prepared.messageSeq}.md`,
+        status: "committed",
+      },
+      persistence: {
+        database: "saved",
+        materialization: "not_requested",
+        git: taskBound ? "not_committed" : "not_required",
+      },
+      materialization: { status: "not_requested" },
+      commit: taskBound
+        ? {
+            status: "no_change",
+            taskId: "T-20260719-0001",
+            taskRequestId: "REQ-20260719-0001",
+            headBefore: "a".repeat(40),
+            headAfter: "a".repeat(40),
+          }
+        : { status: "not_required" },
+    };
+  });
   return {
-    events,
-    ledger: {
-      enabled: true,
-      record(event) {
-        events.push(event as { stage?: string; event?: string; data?: Record<string, unknown> });
-      },
-      async flush() {
-        return;
-      },
-      async close() {
-        return;
-      },
-    },
-  };
-}
-
-function createChatContextRuntime(
-  routedTurn: GitContextRoutedTurn = readyGitContextRoutedTurn(),
-): GitContextRuntime {
-  const prepared = readyGitContextPreparedTurn();
-  return {
-    prepareUserTurn: vi.fn().mockResolvedValue(prepared),
-    startSessionRun: vi.fn().mockResolvedValue({ runId: "R-20260627-0001" }),
-    routeTaskTurn: vi.fn().mockResolvedValue(routedTurn),
-    activateTaskTurn: vi.fn().mockResolvedValue(routedTurn.status === "ready" ? routedTurn : null),
-    finalizeSessionRun: vi.fn().mockResolvedValue({
-      sessionId: prepared.sessionId,
-      runId: "R-20260627-0001",
-    }),
-    completeTaskRun: vi.fn().mockResolvedValue({
-      taskId: routedTurn.status === "ready" ? routedTurn.taskId : "T-20260627-0001",
-      branch: routedTurn.status === "ready" ? routedTurn.branch : "task/T-20260627-0001-analyze-invoice",
-      ref: routedTurn.status === "ready" ? routedTurn.ref : "refs/heads/task/T-20260627-0001-analyze-invoice",
-      runId: "R-20260627-0001",
-      taskCommit: "task-commit",
-      event: {
-        v: 1,
-        seq: 1,
-        eventId: "E-20260627-000001",
-        type: "run_completed",
-        at: "2026-06-27T10:05:00+05:30",
-        taskId: routedTurn.status === "ready" ? routedTurn.taskId : "T-20260627-0001",
-        runId: "R-20260627-0001",
-        branch: routedTurn.status === "ready" ? routedTurn.branch : "task/T-20260627-0001-analyze-invoice",
-        commit: "task-commit",
-      },
-    }),
-    recordSessionRunStep: vi.fn().mockResolvedValue(undefined),
-    recordTaskRunStep: vi.fn().mockResolvedValue(undefined),
-    recordSessionAttachments: vi.fn().mockResolvedValue({
-      recorded: 1,
-      sessionAssetIds: ["SA-test-attachment"],
-    }),
-    recordAssistantMessage: vi.fn().mockResolvedValue({
-      v: 1,
-      seq: 2,
-      role: "assistant",
-      at: "2026-06-27T10:05:01+05:30",
-      text: "mock reply",
-    }),
-    buildActiveContext: vi.fn().mockResolvedValue(routedTurn.context),
-  };
-}
-
-function createUnboundChatContextRuntime(): GitContextRuntime {
-  const prepared = unboundGitContextPreparedTurn();
-  return {
-    prepareUserTurn: vi.fn().mockResolvedValue(prepared),
-    startSessionRun: vi.fn().mockResolvedValue({ runId: "R-20260627-0004" }),
-    routeTaskTurn: vi.fn().mockResolvedValue(null),
-    activateTaskTurn: vi.fn().mockResolvedValue(null),
-    finalizeSessionRun: vi.fn().mockResolvedValue({
-      sessionId: prepared.sessionId,
-      runId: "R-20260627-0004",
-    }),
-    completeTaskRun: vi.fn().mockResolvedValue({
-      taskId: "T-20260627-0002",
-      branch: "task/T-20260627-0002-upload-ui",
-      ref: "refs/heads/task/T-20260627-0002-upload-ui",
-      runId: "R-20260627-0004",
-      taskCommit: "task-commit",
-    }),
-    recordSessionRunStep: vi.fn().mockResolvedValue(undefined),
-    recordTaskRunStep: vi.fn().mockResolvedValue(undefined),
-    recordAssistantMessage: vi.fn().mockResolvedValue({
-      v: 1,
-      seq: 2,
-      role: "assistant",
-      at: "2026-06-27T10:05:01+05:30",
-      text: "mock reply",
-    }),
+    warmActiveContext: vi.fn().mockResolvedValue(undefined),
+    prepareUserTurn,
+    prepareSystemEventTurn,
+    finalizeRun,
+    recordRunStep: vi.fn().mockResolvedValue(null),
+    recordSessionAttachments: vi.fn().mockResolvedValue(null),
     buildActiveContext: vi.fn().mockResolvedValue(prepared.context),
   };
 }
 
-function createActiveUnroutedChatContextRuntime(): GitContextRuntime {
-  const prepared = activeGitContextPreparedTurn();
-  const routed = readyGitContextRoutedTurn();
-  return {
-    prepareUserTurn: vi.fn().mockResolvedValue(prepared),
-    startSessionRun: vi.fn().mockResolvedValue({ runId: routed.runId }),
-    routeTaskTurn: vi.fn().mockResolvedValue(null),
-    activateTaskTurn: vi.fn().mockResolvedValue(routed),
-    finalizeSessionRun: vi.fn().mockResolvedValue({
-      sessionId: prepared.sessionId,
-      runId: routed.runId,
-    }),
-    completeTaskRun: vi.fn().mockResolvedValue({
-      taskId: routed.taskId,
-      branch: routed.branch,
-      ref: routed.ref,
-      runId: routed.runId,
-      taskCommit: "task-commit",
-    }),
-    recordSessionRunStep: vi.fn().mockResolvedValue(undefined),
-    recordTaskRunStep: vi.fn().mockResolvedValue(undefined),
-    recordAssistantMessage: vi.fn().mockResolvedValue({
-      v: 1,
-      seq: 2,
-      role: "assistant",
-      at: "2026-06-27T10:05:01+05:30",
-      text: "mock reply",
-    }),
-    buildActiveContext: vi.fn().mockResolvedValue(routed.context),
-  };
-}
-
-function createSystemEventContextRuntime(
-  routedTurn: GitContextRoutedTurn = readyGitContextSystemEventRoutedTurn(),
-): GitContextRuntime {
-  const prepared = readyGitContextSystemEventPreparedTurn();
-  return {
-    prepareSystemEventTurn: vi.fn().mockResolvedValue(prepared),
-    startSessionRun: vi.fn().mockResolvedValue({ runId: "R-20260627-0001" }),
-    routeTaskTurn: vi.fn().mockResolvedValue(routedTurn),
-    finalizeSessionRun: vi.fn().mockResolvedValue({
-      sessionId: prepared.sessionId,
-      runId: "R-20260627-0001",
-    }),
-    completeTaskRun: vi.fn().mockResolvedValue({
-      taskId: routedTurn.status === "ready" ? routedTurn.taskId : "T-20260627-0001",
-      branch: routedTurn.status === "ready" ? routedTurn.branch : "task/T-20260627-0001-analyze-invoice",
-      ref: routedTurn.status === "ready" ? routedTurn.ref : "refs/heads/task/T-20260627-0001-analyze-invoice",
-      runId: "R-20260627-0001",
-      taskCommit: "task-commit",
-      event: {
-        v: 1,
-        seq: 1,
-        eventId: "E-20260627-000001",
-        type: "run_completed",
-        at: "2026-06-27T10:05:00+05:30",
-        taskId: routedTurn.status === "ready" ? routedTurn.taskId : "T-20260627-0001",
-        runId: "R-20260627-0001",
-        branch: routedTurn.status === "ready" ? routedTurn.branch : "task/T-20260627-0001-analyze-invoice",
-        commit: "task-commit",
-      },
-    }),
-    recordSessionRunStep: vi.fn().mockResolvedValue(undefined),
-    recordTaskRunStep: vi.fn().mockResolvedValue(undefined),
-    recordAssistantMessage: vi.fn().mockResolvedValue({
-      v: 1,
-      seq: 2,
-      role: "assistant",
-      at: "2026-06-27T10:05:01+05:30",
-      text: "mock reply",
-    }),
-    buildActiveContext: vi.fn().mockResolvedValue(routedTurn.context),
-  };
+function setCurrentMessage(
+  prepared: GitContextPreparedTurn,
+  text: string,
+  at: string,
+  role: "user" | "system",
+): void {
+  prepared.context.session.conversationTail = [{
+    seq: prepared.currentMessageSessionSequence,
+    messageId: prepared.currentMessageId,
+    conversationId: prepared.conversationId,
+    conversationSequence: prepared.messageSeq,
+    segmentSequence: 1,
+    role,
+    at,
+    text,
+  }];
+  if (prepared.context.pendingTurn) {
+    prepared.context.pendingTurn.text = text;
+    prepared.context.pendingTurn.at = at;
+  }
 }
 
 type TestEngineOptions =
@@ -301,365 +235,92 @@ type TestEngineOptions =
   };
 
 function createEngine(options: TestEngineOptions = {}): IVecEngine {
-  const chatContextRuntime = options.chatContextRuntime ?? createChatContextRuntime();
-  const systemEventContextRuntime = options.systemEventContextRuntime ?? createSystemEventContextRuntime();
-  const provider = options.provider ? withNativeDecisionFixtures(options.provider) : undefined;
+  const chatContextRuntime = options.chatContextRuntime
+    ?? createContextRuntime(createPreparedTurn({ role: "user" }));
+  const systemEventContextRuntime = options.systemEventContextRuntime
+    ?? createContextRuntime(createPreparedTurn({ role: "system_event" }));
+  const provider = options.provider ? withNativeDecisions(options.provider) : undefined;
   const chatTurnRuntime = createChatTurnRuntime({
     onReply: options.onReply,
     provider,
-    staticContext: options.staticContext,
     toolExecutor: options.toolExecutor,
-    skillActivationManager: options.skillActivationManager,
-    toolWorkingSetManager: options.toolWorkingSetManager,
     loopConfig: options.loopConfig,
     now: options.now,
     dataDir: options.dataDir,
-    documentStore: options.documentStore,
-    preparedAttachmentRegistry: options.preparedAttachmentRegistry,
-    fileLibrary: options.fileLibrary,
-    directoryLibrary: options.directoryLibrary,
     feedbackLedger: options.feedbackLedger,
     chatContextRuntime,
   });
   const systemEventRuntime = createSystemEventRuntime({
     onReply: options.onReply,
     provider,
-    staticContext: options.staticContext,
     systemEventContextRuntime,
     toolExecutor: options.toolExecutor,
-    skillActivationManager: options.skillActivationManager,
-    toolWorkingSetManager: options.toolWorkingSetManager,
     loopConfig: options.loopConfig,
     now: options.now,
     dataDir: options.dataDir,
-    documentStore: options.documentStore,
-    preparedAttachmentRegistry: options.preparedAttachmentRegistry,
-    fileLibrary: options.fileLibrary,
-    directoryLibrary: options.directoryLibrary,
     systemEventPolicy: options.systemEventPolicy,
     feedbackLedger: options.feedbackLedger,
   });
   return new IVecEngine({
     provider,
-    staticContext: options.staticContext,
     now: options.now,
     chatTurnRuntime,
     systemEventRuntime,
   });
 }
 
-function withNativeDecisionFixtures(provider: LlmProvider): LlmProvider {
+function withNativeDecisions(provider: LlmProvider): LlmProvider {
   return {
     ...provider,
-    async generateTurn(input) {
+    async generateTurn(input: LlmTurnInput): Promise<LlmTurnOutput> {
       const turn = await provider.generateTurn(input);
       return turn.type === "assistant" ? nativeDecisionFixture(turn.content) : turn;
     },
   };
 }
 
-function readyGitContextPreparedTurn(): GitContextPreparedTurn {
+function createReadTool(): ToolDefinition {
   return {
-    status: "ready",
-    sessionId: "S-20260627-local",
-    repoPath: "/tmp/ayati-git-context/S-20260627-local",
-    initialized: false,
-    messageSeq: 1,
-    context: {
-      session: {
-        meta: { sessionId: "S-20260627-local", assetCount: 0 },
-        conversationTail: [],
-        activityTail: [],
-      },
-      focus: { status: "none" },
-    },
-  };
-}
-
-function unboundGitContextPreparedTurn(): GitContextPreparedTurn {
-  return {
-    status: "ready",
-    sessionId: "S-20260627-local",
-    repoPath: "/tmp/ayati-git-context/S-20260627-local",
-    initialized: false,
-    messageSeq: 3,
-    context: {
-      session: {
-        meta: { sessionId: "S-20260627-local", assetCount: 0 },
-        conversationTail: [{
-          v: 1,
-          seq: 3,
-          role: "user",
-          at: "2026-06-27T10:10:00+05:30",
-          text: "continue upload UI redesign",
-        }],
-        activityTail: [],
-        recentCommits: [],
-      },
-      pendingTurn: {
-        fromSeq: 3,
-        toSeq: 3,
-        text: "continue upload UI redesign",
-        at: "2026-06-27T10:10:00+05:30",
-        routingStatus: "unbound",
-      },
-      focus: {
-        status: "active",
-        taskId: "T-20260627-0001",
-        branch: "task/T-20260627-0001-reminders",
-        ref: "refs/heads/task/T-20260627-0001-reminders",
-      },
-      task: {
-        ref: "refs/heads/task/T-20260627-0001-reminders",
-        taskId: "T-20260627-0001",
-        branch: "task/T-20260627-0001-reminders",
-        title: "Fix reminders",
-        objective: "Fix reminders",
-        status: "in_progress",
-        summary: "Fix reminders",
-        completed: [],
-        open: ["Inspect reminder drift"],
-        blockers: [],
-        facts: [],
-        next: "Inspect reminder drift",
-        assets: [],
-        recentRuns: [],
-        recentCommits: [],
-        recentEvidence: [],
-      },
-    },
-  } as GitContextPreparedTurn;
-}
-
-function activeGitContextPreparedTurn(): GitContextPreparedTurn {
-  return {
-    status: "ready",
-    sessionId: "S-20260627-local",
-    repoPath: "/tmp/ayati-git-context/S-20260627-local",
-    initialized: false,
-    messageSeq: 4,
-    context: {
-      session: {
-        meta: { sessionId: "S-20260627-local", assetCount: 0 },
-        conversationTail: [{
-          v: 1,
-          seq: 4,
-          role: "user",
-          at: "2026-06-27T10:12:00+05:30",
-          text: "add a follow-up invoice note",
-        }],
-        activityTail: [],
-        recentCommits: [],
-      },
-      focus: {
-        status: "active",
-        taskId: "T-20260627-0001",
-        branch: "task/T-20260627-0001-analyze-invoice",
-        ref: "refs/heads/task/T-20260627-0001-analyze-invoice",
-      },
-      task: {
-        ref: "refs/heads/task/T-20260627-0001-analyze-invoice",
-        taskId: "T-20260627-0001",
-        branch: "task/T-20260627-0001-analyze-invoice",
-        title: "Analyze invoice",
-        objective: "Analyze invoice",
-        status: "in_progress",
-        summary: "Analyze invoice",
-        completed: [],
-        open: ["Read invoice"],
-        blockers: [],
-        facts: [],
-        next: "Read invoice",
-        assets: [],
-        recentRuns: [],
-        recentCommits: [],
-        recentEvidence: [],
-      },
-    },
-  } as GitContextPreparedTurn;
-}
-
-function readyGitContextSystemEventPreparedTurn(): GitContextPreparedTurn {
-  return {
-    status: "ready",
-    sessionId: "S-20260627-local",
-    repoPath: "/tmp/ayati-git-context/S-20260627-local",
-    initialized: false,
-    messageSeq: 1,
-    context: {
-      session: {
-        meta: { sessionId: "S-20260627-local", assetCount: 0 },
-        conversationTail: [],
-        activityTail: [],
-      },
-      focus: { status: "none" },
-    },
-  };
-}
-
-function readyGitContextRoutedTurn(): Extract<GitContextRoutedTurn, { status: "ready" }> {
-  const context = {
-    session: {
-      meta: { sessionId: "S-20260627-local", assetCount: 0 },
-      conversationTail: [{
-        v: 1,
-        seq: 1,
-        role: "user" as const,
-        at: "2026-06-27T10:00:00+05:30",
-        text: "Analyze invoice",
-      }],
-      activityTail: [],
-    },
-    focus: {
-      status: "active" as const,
-      taskId: "T-20260627-0001",
-      branch: "task/T-20260627-0001-analyze-invoice",
-      ref: "refs/heads/task/T-20260627-0001-analyze-invoice",
-    },
-    task: {
-      ref: "refs/heads/task/T-20260627-0001-analyze-invoice",
-      taskId: "T-20260627-0001",
-      branch: "task/T-20260627-0001-analyze-invoice",
-      title: "Analyze invoice",
-      objective: "Analyze invoice",
-      status: "in_progress",
-      summary: "Analyze invoice",
-      completed: [],
-      open: ["Read invoice"],
-      blockers: [],
-      facts: [],
-      next: "Read invoice",
-      recentRuns: [],
-      recentCommits: [],
-    },
-  };
-  return {
-    status: "ready",
-    mode: "activated",
-    sessionId: "S-20260627-local",
-    taskId: "T-20260627-0001",
-    runId: "R-20260627-0001",
-    branch: "task/T-20260627-0001-analyze-invoice",
-    ref: "refs/heads/task/T-20260627-0001-analyze-invoice",
-    conversationRefs: [{ fromSeq: 1, toSeq: 1 }],
-    confidence: "deterministic",
-    reason: "test fixture",
-    context,
-    harnessContext: {
-      contextEngine: {
-        session: {
-          meta: { sessionId: "S-20260627-local", assetCount: 0 },
-          conversationTail: [{
-            seq: 1,
-            role: "user",
-            at: "2026-06-27T10:00:00+05:30",
-            text: "Analyze invoice",
-          }],
-          activityTail: [],
-        },
-        focus: {
-          status: "active",
-          ref: "refs/heads/task/T-20260627-0001-analyze-invoice",
-          workId: "T-20260627-0001",
-        },
-        task: {
-          ref: "refs/heads/task/T-20260627-0001-analyze-invoice",
-          workId: "T-20260627-0001",
-          title: "Analyze invoice",
-          objective: "Analyze invoice",
-          status: "in_progress",
-          completed: [],
-          open: ["Read invoice"],
-          blockers: [],
-          facts: [],
-          assets: [],
-          recentRuns: [],
-          recentCommits: [],
-          recentEvidence: [],
-        },
-      },
-    },
-  };
-}
-
-function readyGitContextSystemEventRoutedTurn(): Extract<GitContextRoutedTurn, { status: "ready" }> {
-  return readyGitContextRoutedTurn();
-}
-
-function ambiguousGitContextRoutedTurn(): Extract<GitContextRoutedTurn, { status: "ambiguous" }> {
-  const context = {
-    session: {
-      meta: { sessionId: "S-20260627-local", assetCount: 0 },
-      conversationTail: [],
-      activityTail: [],
-    },
-    focus: { status: "none" as const },
-  };
-  return {
-    status: "ambiguous",
-    sessionId: "S-20260627-local",
-    candidates: [
-      {
-        taskId: "T-20260627-0001",
-        branch: "task/T-20260627-0001-upload-bug",
-        ref: "refs/heads/task/T-20260627-0001-upload-bug",
-        title: "Upload bug",
-        status: "in_progress",
-        score: 55,
-        reasons: ["task title token matched: upload"],
-      },
-      {
-        taskId: "T-20260627-0002",
-        branch: "task/T-20260627-0002-upload-ui",
-        ref: "refs/heads/task/T-20260627-0002-upload-ui",
-        title: "Upload UI",
-        status: "in_progress",
-        score: 55,
-        reasons: ["task title token matched: upload"],
-      },
-    ],
-    reason: "multiple existing tasks matched partially",
-    context,
-    harnessContext: {
-      contextEngine: {
-        session: {
-          meta: { sessionId: "S-20260627-local", assetCount: 0 },
-          conversationTail: [],
-          activityTail: [],
-        },
-        focus: { status: "none" },
-      },
-    },
-  };
-}
-
-function extractStateViewFromProvider(provider: LlmProvider): any {
-  return extractStateViewFromProviderCall(provider, 0);
-}
-
-function extractStateViewFromProviderCall(provider: LlmProvider, callIndex: number): any {
-  const callInput = (provider.generateTurn as any).mock.calls[0]?.[0];
-  const indexedInput = (provider.generateTurn as any).mock.calls[callIndex]?.[0] ?? callInput;
-  const userPrompt = indexedInput.messages.find((message: { role: string }) => message.role === "user").content as string;
-  const marker = "State view:\n";
-  const start = userPrompt.indexOf(marker);
-  if (start < 0) {
-    throw new Error("State view section missing from decision prompt.");
-  }
-  return JSON.parse(userPrompt.slice(start + marker.length).trim());
-}
-
-function activateTaskForTurnFixtureTool(): ToolDefinition {
-  return {
-    name: "git_context_activate_task",
-    description: "Fixture turn-aware task activation tool.",
+    name: "read_files",
+    description: "Read a fixture file.",
     inputSchema: {
       type: "object",
+      required: ["path"],
+      properties: { path: { type: "string" } },
+      additionalProperties: false,
+    },
+    annotations: {
+      domain: "filesystem",
+      readOnly: true,
+      mutatesWorkspace: false,
+      mutatesExternalWorld: false,
+      destructive: false,
+      idempotent: true,
+      retrySafe: true,
+      longRunning: false,
+    },
+    async execute() {
+      return { ok: true, output: "upload handling lives in src/upload.ts" };
+    },
+  };
+}
+
+function createTaskBindingTool(
+  prepared: GitContextPreparedTurn,
+  workingDirectory: string,
+): ToolDefinition {
+  return {
+    name: "git_context_create_task",
+    description: "Bind the current run to a fixture task.",
+    inputSchema: {
+      type: "object",
+      required: ["title", "objective", "createReason"],
       properties: {
-        sessionId: { type: "string" },
-        taskId: { type: "string" },
-        reason: { type: "string" },
+        title: { type: "string" },
+        objective: { type: "string" },
+        createReason: { type: "string" },
       },
+      additionalProperties: false,
     },
     outputSchema: { type: "object" },
     annotations: {
@@ -673,67 +334,63 @@ function activateTaskForTurnFixtureTool(): ToolDefinition {
       longRunning: false,
     },
     async execute() {
-      const harnessContext = {
-        contextEngine: {
-          session: {
-            meta: { sessionId: "S-20260627-local", assetCount: 0 },
-            conversationTail: [{
-              seq: 3,
-              role: "user",
-              at: "2026-06-27T10:10:00+05:30",
-              text: "continue upload UI redesign",
-            }],
-            activityTail: [],
-          },
-          pendingTurn: {
-            fromSeq: 3,
-            toSeq: 3,
-            text: "continue upload UI redesign",
-            at: "2026-06-27T10:10:00+05:30",
-            routingStatus: "bound",
-            workId: "T-20260627-0002",
-            branch: "task/T-20260627-0002-upload-ui",
-            runId: "R-20260627-0004",
-          },
-          focus: {
-            status: "active",
-            ref: "refs/heads/task/T-20260627-0002-upload-ui",
-            workId: "T-20260627-0002",
-          },
-          task: {
-            ref: "refs/heads/task/T-20260627-0002-upload-ui",
-            workId: "T-20260627-0002",
-            title: "Upload UI redesign",
-            objective: "Redesign upload UI",
-            status: "in_progress",
-            completed: [],
-            open: ["Continue upload UI redesign"],
-            blockers: [],
-            facts: [],
-            assets: [],
-            recentRuns: [],
-            recentCommits: [],
-            recentEvidence: [],
-          },
+      const taskId = "T-20260719-0001";
+      const branch = "task/T-20260719-0001-one-run";
+      const contextEngine = {
+        ...prepared.context,
+        pendingTurn: {
+          ...prepared.context.pendingTurn!,
+          routingStatus: "bound" as const,
+          workId: taskId,
+          branch,
+          runId: prepared.run.runId,
+        },
+        focus: {
+          status: "active" as const,
+          ref: `refs/heads/${branch}`,
+          workId: taskId,
+        },
+        task: {
+          workingDirectory,
+          ref: `refs/heads/${branch}`,
+          workId: taskId,
+          title: "One run integration",
+          objective: "Create the requested file.",
+          status: "active",
+          completed: [],
+          open: ["Create the requested file."],
+          blockers: [],
+          facts: [],
+          next: "Create the requested file.",
+          assets: [],
+          recentRuns: [],
+          recentCommits: [],
+          recentEvidence: [],
         },
       };
       return {
         ok: true,
-        output: "Pending turn activated on existing git-context task.",
+        output: "Bound the existing run to a new task.",
         v2: {
           transportOk: true,
           operationStatus: "succeeded",
-          code: "GIT_CONTEXT_TURN_TASK_ACTIVATED",
-          message: "Pending turn activated on existing git-context task.",
+          code: "GIT_CONTEXT_TURN_TASK_CREATED",
+          message: "Bound the existing run to a new task.",
           structuredContent: {
             status: "ready",
-            sessionId: "S-20260627-local",
-            taskId: "T-20260627-0002",
-            branch: "task/T-20260627-0002-upload-ui",
-            ref: "refs/heads/task/T-20260627-0002-upload-ui",
-            runId: "R-20260627-0004",
-            conversationRefs: [{ fromSeq: 3, toSeq: 3 }],
-            harnessContext,
+            mode: "created",
+            sessionId: prepared.sessionId,
+            taskId,
+            taskRequestId: "REQ-20260719-0001",
+            taskRequestStatus: "active",
+            taskRequestCreated: true,
+            requestDecision: "initial",
+            taskCreated: true,
+            branch,
+            workingDirectory,
+            taskHead: "a".repeat(40),
+            runId: prepared.run.runId,
+            harnessContext: { contextEngine },
           },
         },
       };
@@ -741,1325 +398,421 @@ function activateTaskForTurnFixtureTool(): ToolDefinition {
   };
 }
 
-describe("IVecEngine", () => {
-  it("is constructible without options", () => {
+function pulseEvent(eventId = "evt-1") {
+  return {
+    type: "system_event" as const,
+    source: "pulse",
+    eventName: "reminder_due",
+    eventId,
+    receivedAt: "2026-07-19T10:00:05.000Z",
+    summary: "Reminder due: Review health notes",
+    payload: {
+      occurrenceId: `occ-${eventId}`,
+      reminderId: "rem-1",
+      title: "Review health notes",
+      instruction: "Review health notes now",
+      scheduledFor: "2026-07-19T10:00:00.000Z",
+      triggeredAt: "2026-07-19T10:00:05.000Z",
+      timezone: "UTC",
+    },
+  };
+}
+
+describe("IVecEngine one-run integration", () => {
+  it("is constructible and starts without a provider", async () => {
     const engine = createEngine();
     expect(engine).toBeInstanceOf(IVecEngine);
-  });
-
-  it("starts and stops without provider", async () => {
-    const engine = createEngine();
     await engine.start();
     await engine.stop();
   });
 
-  it("echoes chat without provider", async () => {
+  it("prepares and finalizes one zero-step echo run before dispatch", async () => {
     const onReply = vi.fn();
-    const engine = createEngine({ onReply });
+    const runtime = createContextRuntime(createPreparedTurn({ role: "user" }));
+    const engine = createEngine({ onReply, chatContextRuntime: runtime });
 
     engine.handleMessage("c1", { type: "chat", content: "hello" });
 
-    await vi.waitFor(() => {
-      expect(onReply).toHaveBeenCalledWith("c1", {
-        type: "reply",
-        content: 'Received: "hello"',
-      });
+    await vi.waitFor(() => expect(onReply).toHaveBeenCalledOnce());
+    expect(runtime.prepareUserTurn).toHaveBeenCalledOnce();
+    expect(runtime.recordRunStep).not.toHaveBeenCalled();
+    expect(runtime.finalizeRun).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: "done",
+      stopReason: "completed",
+      assistantResponse: 'Received: "hello"',
+    }));
+    expect(vi.mocked(runtime.finalizeRun).mock.invocationCallOrder[0])
+      .toBeLessThan(onReply.mock.invocationCallOrder[0]!);
+    expect(onReply).toHaveBeenCalledWith("c1", {
+      type: "reply",
+      content: 'Received: "hello"',
+      runId: "R-20260719-0001",
+      commitStatus: "not_required",
     });
   });
 
-  it("calls provider.generateTurn and returns reply", async () => {
-      const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-"));
+  it("finalizes a provider direct reply on the prepared run", async () => {
+    const dataDir = makeTmpDir();
     try {
-      const provider = createMockProvider();
+      const provider = createProvider([
+        { kind: "reply", status: "completed", message: "Upload handling is in src/upload.ts." },
+      ]);
       const onReply = vi.fn();
-      const engine = createEngine({
-        onReply,
-        provider,
-        dataDir,
-        systemEventPolicy: createSystemEventPolicy(),
-      });
+      const runtime = createContextRuntime(createPreparedTurn({ role: "user", runId: "R-direct" }));
+      const engine = createEngine({ onReply, provider, dataDir, chatContextRuntime: runtime });
 
       await engine.start();
-      engine.handleMessage("c1", { type: "chat", content: "hello" });
+      engine.handleMessage("c1", { type: "chat", content: "Where is upload handling?" });
 
-      await vi.waitFor(() => {
-        expect(provider.generateTurn).toHaveBeenCalled();
-        expect(onReply).toHaveBeenCalledWith("c1", {
-          type: "reply",
-          content: "mock reply",
-        });
-      });
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("records unbound direct replies without creating a session run", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-session-run-"));
-    try {
-      const provider = createMockProvider({
-        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
-          .mockResolvedValue({
-            type: "assistant",
-            content: JSON.stringify({
-              kind: "reply",
-              message: "Upload handling lives in the upload service.",
-              status: "completed",
-            }),
-          }),
-      });
-      const onReply = vi.fn();
-      const chatContextRuntime = createUnboundChatContextRuntime();
-      const engine = createEngine({
-        onReply,
-        provider,
-        dataDir,
-        chatContextRuntime,
-        systemEventPolicy: createSystemEventPolicy(),
-      });
-
-      await engine.start();
-      engine.handleMessage("c1", { type: "chat", content: "where is upload handling?" });
-
-      await vi.waitFor(() => {
-        expect(chatContextRuntime.recordAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({
-          message: "Upload handling lives in the upload service.",
-        }));
-      });
-      expect(chatContextRuntime.startSessionRun).not.toHaveBeenCalled();
-      expect(chatContextRuntime.finalizeSessionRun).not.toHaveBeenCalled();
-      expect(chatContextRuntime.completeTaskRun).not.toHaveBeenCalled();
-      expect(chatContextRuntime.recordAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({
-        message: "Upload handling lives in the upload service.",
+      await vi.waitFor(() => expect(onReply).toHaveBeenCalledOnce());
+      expect(provider.generateTurn).toHaveBeenCalledOnce();
+      expect(runtime.recordRunStep).not.toHaveBeenCalled();
+      expect(runtime.finalizeRun).toHaveBeenCalledOnce();
+      expect(runtime.finalizeRun).toHaveBeenCalledWith(expect.objectContaining({
+        turn: expect.objectContaining({ run: expect.objectContaining({ runId: "R-direct" }) }),
+        outcome: "done",
+        stopReason: "completed",
       }));
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "reply",
-        content: "Upload handling lives in the upload service.",
+        content: "Upload handling is in src/upload.ts.",
+        runId: "R-direct",
+        commitStatus: "not_required",
       });
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
 
-  it("asks the user when context engine task resolution is ambiguous", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-ambiguous-attachment-"));
-    const attachmentPath = join(dataDir, "input.txt");
-    writeFileSync(attachmentPath, "keep this attachment even when routing is ambiguous\n");
+  it("persists focused clarification as needs_user_input", async () => {
+    const dataDir = makeTmpDir();
     try {
-      const provider = createMockProvider();
+      const provider = createProvider([
+        { kind: "reply", status: "completed", message: "Which file should I inspect? Please provide the file path." },
+      ]);
       const onReply = vi.fn();
-      const chatContextRuntime = createChatContextRuntime(ambiguousGitContextRoutedTurn());
-      const engine = createEngine({
-        onReply,
-        provider,
-        dataDir,
-        documentStore: new DocumentStore({ dataDir: join(dataDir, "documents"), preferCli: false }),
-        chatContextRuntime,
-        systemEventPolicy: createSystemEventPolicy(),
-      });
+      const runtime = createContextRuntime(createPreparedTurn({ role: "user", runId: "R-clarify" }));
+      const engine = createEngine({ onReply, provider, dataDir, chatContextRuntime: runtime });
 
       await engine.start();
-      engine.handleMessage("c1", {
-        type: "chat",
-        content: "upload",
-        attachments: [{ source: "cli", path: attachmentPath, name: "input.txt" }],
-      });
+      engine.handleMessage("c1", { type: "chat", content: "Inspect it" });
 
-      await vi.waitFor(() => {
-        expect(onReply).toHaveBeenCalledWith("c1", {
-          type: "feedback",
-          content: expect.stringContaining("I found multiple matching tasks"),
-        });
-      });
-      expect(provider.generateTurn).not.toHaveBeenCalled();
-      expect(chatContextRuntime.recordSessionAttachments).toHaveBeenCalledWith(expect.objectContaining({
-        clientId: "c1",
-        turn: expect.objectContaining({ sessionId: "S-20260627-local" }),
-        attachments: [expect.objectContaining({
-          kind: "document",
-          name: "input.txt",
-          storedPath: expect.stringContaining("documents"),
-          checksum: expect.stringMatching(/^[a-f0-9]{64}$/),
-        })],
+      await vi.waitFor(() => expect(onReply).toHaveBeenCalledOnce());
+      expect(runtime.finalizeRun).toHaveBeenCalledWith(expect.objectContaining({
+        outcome: "needs_user_input",
+        stopReason: "needs_user_input",
       }));
-      expect(chatContextRuntime.recordSessionAttachments.mock.invocationCallOrder[0])
-        .toBeLessThan(chatContextRuntime.routeTaskTurn.mock.invocationCallOrder[0]);
-      expect(chatContextRuntime.recordAssistantMessage).toHaveBeenCalledWith({
-        clientId: "c1",
-        turn: expect.objectContaining({
-          sessionId: "S-20260627-local",
-        }),
-        message: expect.stringContaining("T-20260627-0001"),
-        at: expect.any(String),
-      });
-      expect(chatContextRuntime.completeTaskRun).not.toHaveBeenCalled();
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("passes ready context engine context into the loop and commits the completed run", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-git-context-"));
-    try {
-      const provider = createMockProvider();
-      const chatContextRuntime = createChatContextRuntime();
-      const engine = createEngine({
-        onReply: vi.fn(),
-        provider,
-        dataDir,
-        chatContextRuntime,
-        systemEventPolicy: createSystemEventPolicy(),
-      });
-
-      await engine.start();
-      engine.handleMessage("c1", { type: "chat", content: "Analyze invoice" });
-
-      await vi.waitFor(() => {
-        expect(chatContextRuntime.completeTaskRun).toHaveBeenCalled();
-      });
-      const stateView = extractStateViewFromProvider(provider);
-      expect(stateView.context.git.current.task).toMatchObject({
-        identity: {
-          workId: "T-20260627-0001",
-        },
-        state: {
-          open: ["Read invoice"],
-        },
-      });
-      expect(chatContextRuntime.completeTaskRun).toHaveBeenCalledWith(expect.objectContaining({
-        clientId: "c1",
-        turn: expect.objectContaining({
-          sessionId: "S-20260627-local",
-          messageSeq: 1,
-        }),
-        taskId: "T-20260627-0001",
-        runId: "R-20260627-0001",
-        conversationRefs: [{ fromSeq: 1, toSeq: 1 }],
-        result: expect.objectContaining({
-          content: "mock reply",
-        }),
-        at: expect.any(String),
-      }));
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("commits task clarification as needs_user_input", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-needs-user-"));
-    try {
-      const provider = createMockProvider({
-        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
-          .mockResolvedValue({
-            type: "assistant",
-            content: JSON.stringify({
-              kind: "ask_user",
-              question: "What should the note helper actually do?",
-              reason: "The task exists but the deliverable is unclear.",
-            }),
-          }),
-      });
-      const onReply = vi.fn();
-      const chatContextRuntime = createChatContextRuntime();
-      const engine = createEngine({
-        onReply,
-        provider,
-        dataDir,
-        chatContextRuntime,
-        systemEventPolicy: createSystemEventPolicy(),
-      });
-
-      await engine.start();
-      engine.handleMessage("c1", { type: "chat", content: "Maybe build some helper for my notes." });
-
-      await vi.waitFor(() => {
-        expect(chatContextRuntime.completeTaskRun).toHaveBeenCalled();
-      });
-      expect(onReply).toHaveBeenCalledWith("c1", {
-        type: "feedback",
-        content: "What should the note helper actually do?",
-      });
-      expect(chatContextRuntime.completeTaskRun).toHaveBeenCalledWith(expect.objectContaining({
-        assistantMessageKind: "feedback_question",
-        result: expect.objectContaining({
-          type: "feedback",
-          workState: expect.objectContaining({
-            status: "needs_user_input",
-            userInputNeeded: "What should the note helper actually do?",
-            nextStep: "What should the note helper actually do?",
-          }),
-          taskSummary: expect.objectContaining({
-            taskStatus: "needs_user_input",
-            userInputNeeded: "What should the note helper actually do?",
-            nextAction: "What should the note helper actually do?",
-            stopReason: "needs_user_input",
-          }),
-        }),
-      }));
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("records finalization_failed when task-like waiting output has no task binding", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-finalization-required-"));
-    try {
-      const feedback = createFeedbackRecorder();
-      const chatContextRuntime = createUnboundChatContextRuntime();
-      const runtime = createChatTurnRuntime({
-        provider: createMockProvider(),
-        dataDir,
-        chatContextRuntime,
-        feedbackLedger: feedback.ledger,
-      });
-
-      await (runtime as unknown as {
-        completeChatContextRun(
-          clientId: string,
-          prepared: GitContextPreparedTurn,
-          routed: null,
-          result: {
-            type: "feedback";
-            runClass: "task";
-            content: string;
-            status: "completed";
-            totalIterations: number;
-            totalToolCalls: number;
-            runPath: string;
-            workState: {
-              status: "needs_user_input";
-              summary: string;
-              openWork: string[];
-              blockers: string[];
-              verifiedFacts: string[];
-              evidence: string[];
-              userInputNeeded: string;
-            };
-          },
-        ): Promise<void>;
-      }).completeChatContextRun("c1", unboundGitContextPreparedTurn(), null, {
-        type: "feedback",
-        runClass: "task",
-        content: "Which task should I continue?",
-        status: "completed",
-        totalIterations: 1,
-        totalToolCalls: 0,
-        runPath: "",
-        workState: {
-          status: "needs_user_input",
-          summary: "Task binding is required.",
-          openWork: [],
-          blockers: [],
-          verifiedFacts: [],
-          evidence: [],
-          userInputNeeded: "Which task should I continue?",
-        },
-      });
-
-      expect(chatContextRuntime.completeTaskRun).not.toHaveBeenCalled();
-      expect(feedback.events.some((event) => event.stage === "context_engine" && event.event === "finalization_skipped")).toBe(false);
-      expect(feedback.events.find((event) => event.stage === "context_engine" && event.event === "finalization_failed")?.data)
-        .toMatchObject({
-          reason: "taskful_result_without_task_run_binding",
-          skipReason: "no_task_run_binding",
-        });
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("does not mark routing-only task work as done", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-routing-only-"));
-    try {
-      const routed = readyGitContextRoutedTurn();
-      const chatContextRuntime = createChatContextRuntime(routed);
-      const runtime = createChatTurnRuntime({
-        provider: createMockProvider(),
-        dataDir,
-        chatContextRuntime,
-      });
-
-      await (runtime as unknown as {
-        completeChatContextRun(
-          clientId: string,
-          prepared: GitContextPreparedTurn,
-          routed: Extract<GitContextRoutedTurn, { status: "ready" }>,
-          result: {
-            type: "reply";
-            runClass: "task";
-            content: string;
-            status: "completed";
-            totalIterations: number;
-            totalToolCalls: number;
-            runPath: string;
-            artifacts: Array<{ kind: "image"; name: string; relativePath: string; urlPath: string; mimeType: string }>;
-            completedSteps: Array<{
-              step: number;
-              outcome: string;
-              summary: string;
-              newFacts: string[];
-              artifacts: string[];
-              toolsUsed: string[];
-              toolSuccessCount: number;
-              toolFailureCount: number;
-            }>;
-          },
-        ): Promise<void>;
-      }).completeChatContextRun("c1", readyGitContextPreparedTurn(), routed, {
+      expect(vi.mocked(runtime.finalizeRun).mock.calls[0]?.[0]).not.toHaveProperty("taskCompletion");
+      expect(onReply).toHaveBeenCalledWith("c1", expect.objectContaining({
         type: "reply",
-        runClass: "task",
-        content: "I created the helper.",
-        status: "completed",
-        totalIterations: 2,
-        totalToolCalls: 1,
-        runPath: "",
-        artifacts: [{
-          kind: "image",
-          name: "routing-placeholder",
-          relativePath: "routing-placeholder.txt",
-          urlPath: "/runs/routing-placeholder.txt",
-          mimeType: "text/plain",
-        }],
-        completedSteps: [{
-          step: 1,
-          outcome: "success",
-          summary: "Pending-turn routing tools executed successfully.",
-          newFacts: ["Pending-turn routing tools executed successfully."],
-          artifacts: [],
-          toolsUsed: ["git_context_create_task"],
-          toolSuccessCount: 1,
-          toolFailureCount: 0,
-        }],
-      });
-
-      expect(chatContextRuntime.completeTaskRun).toHaveBeenCalledWith(expect.objectContaining({
-        result: expect.objectContaining({
-          status: "stuck",
-          workState: expect.objectContaining({
-            status: "blocked",
-            blockers: ["The run completed without tool calls or durable evidence."],
-          }),
-        }),
+        content: "Which file should I inspect? Please provide the file path.",
+        runId: "R-clarify",
+        commitStatus: "not_required",
       }));
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
 
-  it("binds an unbound pending turn without falsely completing routing-only work", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-git-routing-"));
+  it("rejects an unbound mutation without execution or step replay", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "must-not-exist.txt");
     try {
-      const provider = createMockProvider({
-        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
-          .mockResolvedValueOnce({
-            type: "assistant",
-            content: JSON.stringify({
-              kind: "act",
-              action: {
-                mode: "single",
-                calls: [{
-                  id: "route_upload",
-                  tool: "git_context_activate_task",
-                  input: {
-                    sessionId: "S-20260627-local",
-                    taskId: "T-20260627-0002",
-                    reason: "switch_to_existing_task",
-                  },
-                  dependsOn: [],
-                  purpose: "Bind the pending user turn to the upload UI task.",
-                }],
-                allowedTools: ["git_context_activate_task"],
-                assertions: [],
-              },
-            }),
-          })
-          .mockResolvedValueOnce({
-            type: "assistant",
-            content: JSON.stringify({
-              kind: "act",
-              action: {
-                mode: "single",
-                calls: [{
-                  id: "activate_invoice",
-                  tool: "git_context_activate_task",
-                  input: {
-                    taskId: "T-20260627-0001",
-                    reason: "activated",
-                  },
-                  dependsOn: [],
-                  purpose: "Bind the deferred invoice note write to the active invoice task.",
-                }],
-                allowedTools: ["git_context_activate_task"],
-                assertions: [],
-              },
-            }),
-          })
-          .mockResolvedValueOnce({
-            type: "assistant",
-            content: JSON.stringify({
-              kind: "task_completion",
-              request: { summary: "Bound the requested upload UI task.", assets: [] },
-            }),
-          })
-          .mockResolvedValueOnce({
-            type: "assistant",
-            content: JSON.stringify({
-              kind: "ask_user",
-              question: "What should I change in the upload UI?",
-            }),
-          }),
-      });
-      const chatContextRuntime = createUnboundChatContextRuntime();
-      const toolExecutor = createToolExecutor([activateTaskForTurnFixtureTool()]);
-      const engine = createEngine({
-        onReply: vi.fn(),
-        provider,
-        toolExecutor,
-        dataDir,
-        chatContextRuntime,
-        systemEventPolicy: createSystemEventPolicy(),
-      });
-
-      await engine.start();
-      engine.handleMessage("c1", { type: "chat", content: "continue upload UI redesign" });
-
-      await vi.waitFor(() => {
-        expect(provider.generateTurn).toHaveBeenCalledTimes(4);
-      });
-      expect(chatContextRuntime.completeTaskRun).toHaveBeenCalledWith(expect.objectContaining({
-        taskId: "T-20260627-0002",
-        runId: "R-20260627-0004",
-        result: expect.objectContaining({
-          workState: expect.objectContaining({ status: "needs_user_input" }),
-        }),
-      }));
-      expect(chatContextRuntime.routeTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
-        autoOnly: true,
-      }));
-      const secondStateView = extractStateViewFromProviderCall(provider, 1);
-      expect(secondStateView.context.git.current.pendingTurn).toMatchObject({
-        routingStatus: "bound",
-        workId: "T-20260627-0002",
-        runId: "R-20260627-0004",
-      });
-      expect(secondStateView.context.git.current.task).toMatchObject({
-        identity: {
-          workId: "T-20260627-0002",
-          title: "Upload UI redesign",
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "stale-write",
+              tool: "write_files",
+              input: { files: [{ path: outputPath, content: "unsafe" }] },
+              dependsOn: [],
+              purpose: "Create the requested file",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [],
+          },
         },
-      });
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("requires explicit task activation before a deferred mutation executes", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-active-autobind-"));
-    try {
-      const outputPath = join(dataDir, "invoice-note.txt");
-      const provider = createMockProvider({
-        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
-          .mockResolvedValueOnce({
-            type: "assistant",
-            content: JSON.stringify({
-              kind: "act",
-              action: {
-                mode: "single",
-                calls: [{
-                  id: "write_note",
-                  tool: "write_files",
-	                  input: {
-	                    createDirs: true,
-	                    allowExternalPath: true,
-	                    files: [{ path: outputPath, content: "Invoice follow-up note." }],
-	                  },
-	                  dependsOn: [],
-	                  purpose: "Write the follow-up note for the active invoice task.",
-	                }],
-	                allowedTools: ["write_files"],
-	                assertions: [{ kind: "file_exists", path: "$.files[0].path" }],
-	              },
-	            }),
-	          })
-	          .mockResolvedValueOnce({
-	            type: "assistant",
-	            content: JSON.stringify({
-	              kind: "act",
-	              action: {
-	                mode: "single",
-	                calls: [{
-	                  id: "activate_invoice",
-	                  tool: "git_context_activate_task",
-	                  input: {
-	                    taskId: "T-20260627-0001",
-	                    reason: "activated",
-	                  },
-	                  dependsOn: [],
-	                  purpose: "Bind the deferred invoice note write to the active invoice task.",
-	                }],
-	                allowedTools: ["git_context_activate_task"],
-	                assertions: [],
-	              },
-	            }),
-	          })
-	          .mockResolvedValueOnce({
-            type: "assistant",
-            content: JSON.stringify({
-              kind: "task_completion",
-              request: {
-                summary: "Created the requested invoice follow-up note.",
-                assets: [],
-              },
-            }),
-          })
-	          .mockResolvedValueOnce({
-            type: "assistant",
-            content: JSON.stringify({
-              kind: "reply",
-              status: "completed",
-              message: `I wrote the invoice follow-up note at ${outputPath}.`,
-            }),
-          }),
-      });
-      const chatContextRuntime = createActiveUnroutedChatContextRuntime();
-      const toolExecutor = createToolExecutor([activateTaskForTurnFixtureTool(), writeFilesTool]);
+        { kind: "reply", status: "completed", message: "I need to bind this run before mutation." },
+      ]);
       const onReply = vi.fn();
+      const runtime = createContextRuntime(createPreparedTurn({ role: "user", runId: "R-unbound-write" }));
       const engine = createEngine({
         onReply,
         provider,
-        toolExecutor,
         dataDir,
-        chatContextRuntime,
-        systemEventPolicy: createSystemEventPolicy(),
+        chatContextRuntime: runtime,
+        toolExecutor: createToolExecutor([writeFilesTool]),
       });
 
       await engine.start();
-      engine.handleMessage("c1", { type: "chat", content: "add a follow-up invoice note" });
+      engine.handleMessage("c1", { type: "chat", content: "Create a file" });
 
       await vi.waitFor(() => {
-        expect(onReply).toHaveBeenCalledWith("c1", {
-          type: "reply",
-          content: expect.stringContaining(outputPath),
-        });
+        expect(onReply.mock.calls.some(([, response]) => (
+          response as { type?: string }
+        ).type === "reply")).toBe(true);
       });
-      expect(chatContextRuntime.completeTaskRun).toHaveBeenCalled();
-      expect(chatContextRuntime.routeTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
-        autoOnly: true,
-      }));
-      expect(readFileSync(outputPath, "utf-8")).toBe("Invoice follow-up note.");
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("lets the agent ask direct clarification without committing task work", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-git-clarify-"));
-    try {
-      const provider = createMockProvider({
-        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
-          .mockResolvedValueOnce({
-            type: "assistant",
-            content: "Which upload task do you mean: upload API or upload UI redesign?",
-          }),
-      });
-      const onReply = vi.fn();
-      const chatContextRuntime = createUnboundChatContextRuntime();
-      const toolExecutor = createToolExecutor([]);
-      const engine = createEngine({
-        onReply,
-        provider,
-        toolExecutor,
-        dataDir,
-        chatContextRuntime,
-        systemEventPolicy: createSystemEventPolicy(),
-      });
-
-      await engine.start();
-      engine.handleMessage("c1", { type: "chat", content: "continue upload" });
-
-      await vi.waitFor(() => {
-	        expect(onReply).toHaveBeenCalledWith("c1", {
-	          type: "reply",
-	          content: "Which upload task do you mean: upload API or upload UI redesign?",
-	        });
-      });
-      expect(chatContextRuntime.routeTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
-        autoOnly: true,
-      }));
-      expect(chatContextRuntime.completeTaskRun).not.toHaveBeenCalled();
-      expect(provider.generateTurn).toHaveBeenCalledTimes(1);
-      const stateView = extractStateViewFromProviderCall(provider, 0);
-      expect(stateView.context.git.current.pendingTurn).toMatchObject({
-        routingStatus: "unbound",
-      });
-      expect(stateView.context.git.current.pendingTurn).not.toHaveProperty("workId");
-      expect(stateView.context.git.current.pendingTurn).not.toHaveProperty("runId");
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("forwards chat progress events to the client", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-progress-"));
-    try {
-      const outputPath = join(dataDir, "workspace.txt");
-      const provider = createMockProvider({
-        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
-          .mockResolvedValueOnce({
-            type: "assistant",
-            content: JSON.stringify({
-              kind: "act",
-              action: {
-                mode: "single",
-                calls: [{
-                  id: "call_1",
-                  tool: "write_files",
-                  input: { files: [{ path: outputPath, content: "workspace inspected" }] },
-                  dependsOn: [],
-                  purpose: "Record workspace inspection",
-                }],
-                allowedTools: ["write_files"],
-                assertions: [],
-              },
-            }),
-          })
-          .mockResolvedValueOnce({
-            type: "assistant",
-            content: JSON.stringify({
-              kind: "reply",
-              status: "completed",
-              message: `I inspected the workspace and saved the result at ${outputPath}.`,
-            }),
-          }),
-      });
-      const toolExecutor = createToolExecutor([writeFilesTool]);
-      const onReply = vi.fn();
-      const engine = createEngine({
-        onReply,
-        provider,
-        toolExecutor,
-        dataDir,
-        systemEventPolicy: createSystemEventPolicy(),
-      });
-
-      await engine.start();
-      engine.handleMessage("c1", { type: "chat", content: "inspect workspace" });
-
-      await vi.waitFor(() => {
-        expect(onReply).toHaveBeenCalledWith("c1", {
-          type: "reply",
-          content: expect.stringContaining(outputPath),
-        });
-      });
-      const replyContent = findReplyContent(onReply);
-      expect(replyContent).not.toContain("Done -");
-      expect(replyContent).not.toContain("deterministic verification");
-      expect(replyContent).not.toContain("Evidence:");
+      expect(existsSync(outputPath)).toBe(false);
+      expect(runtime.recordRunStep).not.toHaveBeenCalled();
+      expect(runtime.finalizeRun).toHaveBeenCalledOnce();
       expect(provider.generateTurn).toHaveBeenCalledTimes(2);
-
-      expect(onReply).toHaveBeenCalledWith("c1", {
-        type: "progress",
-        content: expect.stringContaining("Step 1"),
-        runId: "R-20260627-0001",
-      });
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
 
-  it("does not publish completed task summaries to old session task memory", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-task-"));
-    try {
-      const outputPath = join(dataDir, "config.txt");
-      const provider = createMockProvider({
-        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
-          .mockResolvedValueOnce({
-            type: "assistant",
-            content: JSON.stringify({
-              kind: "act",
-              action: {
-                mode: "single",
-                calls: [{
-                  id: "call_1",
-                  tool: "write_files",
-                  input: { files: [{ path: outputPath, content: "config=true" }] },
-                  dependsOn: [],
-                  purpose: "Create config file",
-                }],
-                allowedTools: ["write_files"],
-                assertions: [],
-              },
-            }),
-          })
-          .mockResolvedValueOnce({
-            type: "assistant",
-            content: JSON.stringify({
-              kind: "reply",
-              status: "completed",
-              message: `I created the config file at ${outputPath}.`,
-            }),
-          }),
-      });
-      const toolExecutor = createToolExecutor([writeFilesTool]);
-      const onReply = vi.fn();
-      const engine = createEngine({
-        onReply,
-        provider,
-        toolExecutor,
-        dataDir,
-        systemEventPolicy: createSystemEventPolicy(),
-      });
-
-      await engine.start();
-      engine.handleMessage("c1", { type: "chat", content: "find config files" });
-
-      await vi.waitFor(() => {
-        expect(onReply).toHaveBeenCalledWith("c1", {
-          type: "reply",
-          content: expect.stringContaining(outputPath),
-        });
-      });
-      const replyContent = findReplyContent(onReply);
-      expect(replyContent).not.toContain("tool call");
-      expect(replyContent).not.toContain("deterministic verification");
-      expect(replyContent).not.toContain("Evidence:");
-      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
-
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("sends the user response without old task summary queueing", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-task-async-"));
-    try {
-      const outputPath = join(dataDir, "notes.txt");
-      const provider = createMockProvider({
-        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
-          .mockResolvedValueOnce({
-            type: "assistant",
-            content: JSON.stringify({
-              kind: "act",
-              action: {
-                mode: "single",
-                calls: [{
-                  id: "call_1",
-                  tool: "write_files",
-                  input: { files: [{ path: outputPath, content: "latest notes" }] },
-                  dependsOn: [],
-                  purpose: "Collect notes",
-                }],
-                allowedTools: ["write_files"],
-                assertions: [],
-              },
-            }),
-          })
-          .mockResolvedValueOnce({
-            type: "assistant",
-            content: JSON.stringify({
-              kind: "reply",
-              status: "completed",
-              message: `I collected the notes and saved them at ${outputPath}.`,
-            }),
-          }),
-      });
-      const toolExecutor = createToolExecutor([writeFilesTool]);
-      const onReply = vi.fn();
-
-      const engine = createEngine({
-        onReply,
-        provider,
-        toolExecutor,
-        dataDir,
-        systemEventPolicy: createSystemEventPolicy(),
-      });
-
-      await engine.start();
-      engine.handleMessage("c1", { type: "chat", content: "collect notes" });
-
-      await vi.waitFor(() => {
-        expect(onReply).toHaveBeenCalledWith("c1", {
-          type: "reply",
-          content: expect.stringContaining(outputPath),
-        });
-      });
-
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("ignores non-chat messages", () => {
+  it("binds and mutates on the same run, then acknowledges finalization", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "one-run.txt");
+    const prepared = createPreparedTurn({ role: "user", runId: "R-route-and-write" });
+    const runtime = createContextRuntime(prepared);
+    const routeTool = createTaskBindingTool(prepared, dataDir);
+    const provider = createProvider([
+      {
+        kind: "act",
+        action: {
+          mode: "single",
+          calls: [{
+            id: "bind-task",
+            tool: "git_context_create_task",
+            input: {
+              title: "One run file",
+              objective: "Create one-run.txt",
+              createReason: "No task owns this deliverable.",
+            },
+            dependsOn: [],
+            purpose: "Bind the durable work",
+          }],
+          allowedTools: ["git_context_create_task"],
+          assertions: [],
+        },
+      },
+      {
+        kind: "act",
+        action: {
+          mode: "single",
+          calls: [{
+            id: "write-after-binding",
+            tool: "write_files",
+            input: { files: [{ path: outputPath, content: "same durable run" }] },
+            dependsOn: [],
+            purpose: "Create the file after binding",
+          }],
+          allowedTools: ["write_files"],
+          assertions: [],
+        },
+      },
+      {
+        kind: "task_completion",
+        request: { summary: "Created and verified one-run.txt.", assets: [] },
+      },
+      { kind: "reply", status: "completed", message: "Created one-run.txt." },
+    ]);
     const onReply = vi.fn();
-    const engine = createEngine({ onReply });
+    const engine = createEngine({
+      onReply,
+      provider,
+      dataDir,
+      chatContextRuntime: runtime,
+      toolExecutor: createToolExecutor([routeTool, writeFilesTool]),
+    });
 
-    engine.handleMessage("c1", { type: "ping" });
-    engine.handleMessage("c1", { foo: "bar" });
-    engine.handleMessage("c1", "raw string");
-
-    expect(onReply).not.toHaveBeenCalled();
-  });
-
-  it("sends error reply when provider throws", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-err-"));
     try {
-      const provider = createMockProvider({
-        generateTurn: vi.fn().mockRejectedValue(new Error("API down")),
-      });
-      const onReply = vi.fn();
-      const engine = createEngine({ onReply, provider, dataDir });
-
       await engine.start();
-      engine.handleMessage("c1", { type: "chat", content: "hello" });
+      engine.handleMessage("c1", { type: "chat", content: "Create one-run.txt" });
 
       await vi.waitFor(() => {
-        expect(onReply).toHaveBeenCalledWith("c1", {
-          type: "error",
-          content: "Failed to generate a response.",
-        });
+        expect(onReply.mock.calls.some(([, response]) => (
+          response as { type?: string }
+        ).type === "reply")).toBe(true);
       });
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("processes pulse system_event through git-context system context", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-system-event-"));
-    try {
-      const provider = createMockProvider();
-      const onReply = vi.fn();
-      const systemEventContextRuntime = createSystemEventContextRuntime();
-      const engine = createEngine({
-        onReply,
-        provider,
-        systemEventContextRuntime,
-        dataDir,
-        systemEventPolicy: createSystemEventPolicy(),
-      });
-
-      await engine.start();
-
-      await engine.handleSystemEvent("c1", {
-        type: "system_event",
-        source: "pulse",
-        eventName: "reminder_due",
-        eventId: "evt-1",
-        receivedAt: "2026-03-01T10:00:05.000Z",
-        summary: "Reminder due: Health",
-        payload: {
-          occurrenceId: "occ-1",
-          reminderId: "rem-1",
-          title: "Health",
-          instruction: "Check system health now",
-          scheduledFor: "2026-03-01T10:00:00.000Z",
-          triggeredAt: "2026-03-01T10:00:05.000Z",
-          timezone: "UTC",
-        },
-      });
-
-      expect(systemEventContextRuntime.prepareSystemEventTurn).toHaveBeenCalledWith(expect.objectContaining({
-        clientId: "c1",
-        systemMessage: expect.stringContaining("System event: pulse/reminder_due"),
-        at: "2026-03-01T10:00:05.000Z",
-      }));
-      expect(systemEventContextRuntime.routeTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
-        clientId: "c1",
-        userMessage: expect.stringContaining("Reminder due: Health"),
+      expect(readFileSync(outputPath, "utf8")).toBe("same durable run");
+      expect(runtime.recordRunStep).toHaveBeenCalledTimes(2);
+      for (const [input] of vi.mocked(runtime.recordRunStep).mock.calls) {
+        expect(input.turn?.run.runId).toBe("R-route-and-write");
+        expect(input.record.runId).toBe("R-route-and-write");
+      }
+      expect(runtime.finalizeRun).toHaveBeenCalledWith(expect.objectContaining({
+        turn: expect.objectContaining({ run: expect.objectContaining({ runId: "R-route-and-write" }) }),
+        outcome: "done",
+        stopReason: "completed",
+        taskCompletion: expect.objectContaining({ accepted: true }),
       }));
       expect(onReply).toHaveBeenCalledWith("c1", {
-        type: "notification",
-        content: "mock reply",
-        final: true,
+        type: "reply",
+        content: "Created one-run.txt.",
+        runId: "R-route-and-write",
+        commitStatus: "no_change",
       });
-      expect(systemEventContextRuntime.completeTaskRun).toHaveBeenCalledWith(expect.objectContaining({
-        clientId: "c1",
-        taskId: "T-20260627-0001",
-        runId: "R-20260627-0001",
-        result: expect.objectContaining({ content: "mock reply" }),
-        assistantMessage: "mock reply",
-      }));
-      expect(systemEventContextRuntime.recordAssistantMessage).not.toHaveBeenCalled();
+      const terminalReplyIndex = onReply.mock.calls.findIndex(([, response]) => (
+        response as { type?: string }
+      ).type === "reply");
+      expect(vi.mocked(runtime.finalizeRun).mock.invocationCallOrder[0])
+        .toBeLessThan(onReply.mock.invocationCallOrder[terminalReplyIndex]!);
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
 
-  it("finalizes an unbound system event as a session run", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-system-session-run-"));
+  it("does not send a successful terminal envelope when finalization fails", async () => {
+    const dataDir = makeTmpDir();
     try {
-      const provider = createMockProvider({
-        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>().mockResolvedValue({
-          type: "assistant",
-          content: JSON.stringify({
-            kind: "reply",
-            status: "completed",
-            message: "The reminder was reviewed; no task update is needed.",
-          }),
-        }),
-      });
+      const runtime = createContextRuntime(createPreparedTurn({ role: "user", runId: "R-finalize-fails" }));
+      vi.mocked(runtime.finalizeRun).mockRejectedValue(new Error("commit identity is uncertain"));
       const onReply = vi.fn();
-      const systemEventContextRuntime = createSystemEventContextRuntime();
-      vi.mocked(systemEventContextRuntime.routeTaskTurn).mockResolvedValue(null);
       const engine = createEngine({
         onReply,
-        provider,
-        systemEventContextRuntime,
+        provider: createProvider([{ kind: "reply", status: "completed", message: "Finished." }]),
         dataDir,
+        chatContextRuntime: runtime,
+      });
+
+      await engine.start();
+      engine.handleMessage("c1", { type: "chat", content: "Finish it" });
+
+      await vi.waitFor(() => expect(onReply).toHaveBeenCalledOnce());
+      expect(runtime.finalizeRun).toHaveBeenCalledOnce();
+      expect(onReply).toHaveBeenCalledWith("c1", {
+        type: "error",
+        content: "Failed to generate a response.",
+      });
+      expect(onReply.mock.calls.some(([, response]) => (
+        response as { type?: string; commitStatus?: string }
+      ).type === "reply" || (
+        response as { commitStatus?: string }
+      ).commitStatus === "committed")).toBe(false);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("finalizes an unbound system event exactly once", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const runtime = createContextRuntime(createPreparedTurn({
+        role: "system_event",
+        runId: "R-system-direct",
+      }));
+      const onReply = vi.fn();
+      const engine = createEngine({
+        onReply,
+        provider: createProvider([
+          { kind: "reply", status: "completed", message: "Health notes are current." },
+        ]),
+        dataDir,
+        systemEventContextRuntime: runtime,
         systemEventPolicy: createSystemEventPolicy(),
       });
 
       await engine.start();
-      await engine.handleSystemEvent("c1", {
-        type: "system_event",
-        source: "pulse",
-        eventName: "reminder_due",
-        eventId: "evt-session-run-1",
-        receivedAt: "2026-03-01T10:00:05.000Z",
-        summary: "Reminder due: Review notes",
-        payload: {
-          occurrenceId: "occ-session-run-1",
-          reminderId: "rem-session-run-1",
-          title: "Review notes",
-          instruction: "Review notes only",
-          scheduledFor: "2026-03-01T10:00:00.000Z",
-          triggeredAt: "2026-03-01T10:00:05.000Z",
-          timezone: "UTC",
-        },
-      });
+      await engine.handleSystemEvent("c1", pulseEvent("system-direct"));
 
-      expect(systemEventContextRuntime.startSessionRun).toHaveBeenCalledWith(expect.objectContaining({
-        clientId: "c1",
+      expect(runtime.prepareSystemEventTurn).toHaveBeenCalledOnce();
+      expect(runtime.recordRunStep).not.toHaveBeenCalled();
+      expect(runtime.finalizeRun).toHaveBeenCalledOnce();
+      expect(runtime.finalizeRun).toHaveBeenCalledWith(expect.objectContaining({
+        outcome: "done",
+        stopReason: "completed",
       }));
-      expect(systemEventContextRuntime.completeTaskRun).not.toHaveBeenCalled();
-      expect(systemEventContextRuntime.finalizeSessionRun).toHaveBeenCalledWith(expect.objectContaining({
-        clientId: "c1",
-        runId: "R-20260627-0001",
-        status: "completed",
-        assistantResponse: "The reminder was reviewed; no task update is needed.",
-      }));
-      expect(systemEventContextRuntime.recordAssistantMessage).not.toHaveBeenCalled();
+      expect(vi.mocked(runtime.finalizeRun).mock.calls[0]?.[0]).not.toHaveProperty("taskCompletion");
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "notification",
-        content: "The reminder was reviewed; no task update is needed.",
+        content: "Health notes are current.",
         final: true,
+        runId: "R-system-direct",
+        commitStatus: "not_required",
       });
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
 
-  it("records read-only system event tool steps on the session run", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-system-read-session-"));
+  it("records an observational system-event step on its prepared run", async () => {
+    const dataDir = makeTmpDir();
     try {
-      const readTool: ToolDefinition = {
-        name: "read_files",
-        description: "Read a file for system-event inspection.",
-        annotations: {
-          domain: "filesystem",
-          readOnly: true,
-          mutatesWorkspace: false,
-          mutatesExternalWorld: false,
-          destructive: false,
-          idempotent: true,
-          retrySafe: true,
-          longRunning: false,
-        },
-        async execute() {
-          return {
-            ok: true,
-            output: "health notes are already current",
-          };
-        },
-      };
-      const provider = createMockProvider({
-        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
-          .mockResolvedValueOnce({
-            type: "assistant",
-            content: JSON.stringify({
-              kind: "act",
-              action: {
-                mode: "single",
-                calls: [{
-                  id: "call_1",
-                  tool: "read_files",
-                  input: { files: [{ path: "health-notes.md" }] },
-                  dependsOn: [],
-                  purpose: "Inspect health notes",
-                }],
-                allowedTools: ["read_files"],
-                assertions: [],
-              },
-            }),
-          })
-          .mockResolvedValueOnce({
-            type: "assistant",
-            content: JSON.stringify({
-              kind: "reply",
-              status: "completed",
-              message: "Health notes are already current.",
-            }),
-          }),
-      });
-      const toolExecutor = createToolExecutor([readTool]);
-      const systemEventContextRuntime = createSystemEventContextRuntime();
-      vi.mocked(systemEventContextRuntime.routeTaskTurn).mockResolvedValue(null);
+      const runtime = createContextRuntime(createPreparedTurn({
+        role: "system_event",
+        runId: "R-system-read",
+      }));
+      const readTool = createReadTool();
       const engine = createEngine({
-        provider,
-        toolExecutor,
-        systemEventContextRuntime,
+        provider: createProvider([
+          {
+            kind: "act",
+            action: {
+              mode: "single",
+              calls: [{
+                id: "read-health",
+                tool: "read_files",
+                input: { path: "health-notes.md" },
+                dependsOn: [],
+                purpose: "Inspect health notes",
+              }],
+              allowedTools: ["read_files"],
+              assertions: [],
+            },
+          },
+          { kind: "reply", status: "completed", message: "Health notes are current." },
+        ]),
+        toolExecutor: createToolExecutor([readTool]),
         dataDir,
+        systemEventContextRuntime: runtime,
         systemEventPolicy: createSystemEventPolicy(),
       });
 
       await engine.start();
-      await engine.handleSystemEvent("c1", {
-        type: "system_event",
-        source: "pulse",
-        eventName: "reminder_due",
-        eventId: "evt-system-read-1",
-        receivedAt: "2026-03-01T10:00:05.000Z",
-        summary: "Reminder due: Inspect health notes",
-        payload: {
-          occurrenceId: "occ-system-read-1",
-          reminderId: "rem-system-read-1",
-          title: "Inspect health notes",
-          instruction: "Inspect health notes only",
-          scheduledFor: "2026-03-01T10:00:00.000Z",
-          triggeredAt: "2026-03-01T10:00:05.000Z",
-          timezone: "UTC",
-        },
-      });
+      await engine.handleSystemEvent("c1", pulseEvent("system-read"));
 
-      expect(systemEventContextRuntime.recordSessionRunStep).toHaveBeenCalledWith(expect.objectContaining({
-        clientId: "c1",
+      expect(runtime.recordRunStep).toHaveBeenCalledOnce();
+      expect(runtime.recordRunStep).toHaveBeenCalledWith(expect.objectContaining({
+        turn: expect.objectContaining({ run: expect.objectContaining({ runId: "R-system-read" }) }),
         record: expect.objectContaining({
-          sessionId: "S-20260627-local",
-          runId: "R-20260627-0001",
-          status: "completed",
+          runId: "R-system-read",
+          step: 1,
           toolCalls: [expect.objectContaining({
+            callId: "read-health",
             tool: "read_files",
             status: "success",
           })],
         }),
       }));
-      expect(systemEventContextRuntime.recordTaskRunStep).not.toHaveBeenCalled();
-      expect(systemEventContextRuntime.completeTaskRun).not.toHaveBeenCalled();
-      expect(systemEventContextRuntime.finalizeSessionRun).toHaveBeenCalledWith(expect.objectContaining({
-        runId: "R-20260627-0001",
-        toolCallCount: 1,
-        toolsUsed: ["read_files"],
-      }));
+      expect(runtime.finalizeRun).toHaveBeenCalledOnce();
+      expect(vi.mocked(runtime.finalizeRun).mock.calls[0]?.[0]).not.toHaveProperty("taskCompletion");
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
 
-  it("forwards system event progress events to the client", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-system-progress-"));
+  it("finalizes a provider crash as failed before sending the error", async () => {
+    const dataDir = makeTmpDir();
     try {
-      const outputPath = join(dataDir, "health.txt");
-      const provider = createMockProvider({
-        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
-          .mockResolvedValueOnce({
-            type: "assistant",
-            content: JSON.stringify({
-              kind: "act",
-              action: {
-                mode: "single",
-                calls: [{
-                  id: "call_1",
-                  tool: "write_files",
-                  input: { files: [{ path: outputPath, content: "health checked" }] },
-                  dependsOn: [],
-                  purpose: "Record health check",
-                }],
-                allowedTools: ["write_files"],
-                assertions: [],
-              },
-            }),
-          })
-          .mockResolvedValueOnce({
-            type: "assistant",
-            content: JSON.stringify({
-              kind: "reply",
-              status: "completed",
-              message: `I checked system health and wrote the result to ${outputPath}.`,
-            }),
-          }),
-      });
-      const toolExecutor = createToolExecutor([writeFilesTool]);
+      const runtime = createContextRuntime(createPreparedTurn({ role: "user", runId: "R-provider-fails" }));
       const onReply = vi.fn();
       const engine = createEngine({
         onReply,
-        provider,
-        toolExecutor,
+        provider: createThrowingProvider(new Error("API down")),
         dataDir,
-        systemEventPolicy: createSystemEventPolicy(),
+        chatContextRuntime: runtime,
       });
 
       await engine.start();
-      await engine.handleSystemEvent("c1", {
-        type: "system_event",
-        source: "pulse",
-        eventName: "reminder_due",
-        eventId: "evt-progress-1",
-        receivedAt: "2026-03-01T10:00:05.000Z",
-        summary: "Reminder due: Health",
-        payload: {
-          occurrenceId: "occ-progress-1",
-          reminderId: "rem-progress-1",
-          title: "Health",
-          instruction: "Check system health now",
-          scheduledFor: "2026-03-01T10:00:00.000Z",
-          triggeredAt: "2026-03-01T10:00:05.000Z",
-          timezone: "UTC",
-        },
-      });
+      engine.handleMessage("c1", { type: "chat", content: "hello" });
 
+      await vi.waitFor(() => expect(onReply).toHaveBeenCalledOnce());
+      expect(runtime.finalizeRun).toHaveBeenCalledOnce();
+      expect(runtime.finalizeRun).toHaveBeenCalledWith(expect.objectContaining({
+        outcome: "failed",
+        stopReason: "failed",
+        validation: "failed",
+      }));
+      expect(vi.mocked(runtime.finalizeRun).mock.invocationCallOrder[0])
+        .toBeLessThan(onReply.mock.invocationCallOrder[0]!);
       expect(onReply).toHaveBeenCalledWith("c1", {
-        type: "progress",
-        content: expect.stringContaining("Step 1"),
-        runId: "R-20260627-0001",
+        type: "error",
+        content: "Failed to generate a response.",
       });
-      expect(onReply).toHaveBeenCalledWith("c1", {
-        type: "notification",
-        content: expect.stringContaining(outputPath),
-        final: true,
-      });
-      expect(findReplyContent(onReply, "notification")).not.toContain("deterministic verification");
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("processes pulse scheduled task system_event through git-context system context", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-system-task-event-"));
-    try {
-      const provider = createMockProvider();
-      const onReply = vi.fn();
-      const systemEventContextRuntime = createSystemEventContextRuntime();
-      const engine = createEngine({
-        onReply,
-        provider,
-        systemEventContextRuntime,
-        dataDir,
-        systemEventPolicy: createSystemEventPolicy(),
-      });
-
-      await engine.start();
-
-      await engine.handleSystemEvent("c1", {
-        type: "system_event",
-        source: "pulse",
-        eventName: "task_due",
-        eventId: "evt-task-1",
-        receivedAt: "2026-03-01T10:00:05.000Z",
-        summary: "Scheduled task due: Health",
-        intent: {
-          kind: "task",
-          requestedAction: "check_system_health",
-          createdBy: "user",
-        },
-        payload: {
-          occurrenceId: "occ-task-1",
-          scheduledItemId: "task-1",
-          taskId: "task-1",
-          title: "Health",
-          instruction: "Check system health",
-          scheduledFor: "2026-03-01T10:00:00.000Z",
-          triggeredAt: "2026-03-01T10:00:05.000Z",
-          timezone: "UTC",
-          intentKind: "task",
-          requestedAction: "check_system_health",
-        },
-      });
-
-      expect(systemEventContextRuntime.prepareSystemEventTurn).toHaveBeenCalledWith(expect.objectContaining({
-        clientId: "c1",
-        systemMessage: expect.stringContaining("System event: pulse/task_due"),
-      }));
-      expect(systemEventContextRuntime.routeTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
-        clientId: "c1",
-        userMessage: expect.stringContaining("check_system_health"),
-      }));
-      expect(onReply).toHaveBeenCalledWith("c1", {
-        type: "notification",
-        content: "mock reply",
-        final: true,
-      });
-      expect(systemEventContextRuntime.completeTaskRun).toHaveBeenCalledWith(expect.objectContaining({
-        clientId: "c1",
-        taskId: "T-20260627-0001",
-        runId: "R-20260627-0001",
-        result: expect.objectContaining({ content: "mock reply" }),
-        assistantMessage: "mock reply",
-      }));
-      expect(systemEventContextRuntime.recordAssistantMessage).not.toHaveBeenCalled();
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("parses raw system_event intent metadata and routes approval-gated work as feedback", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-external-event-"));
-    try {
-      const provider = createMockProvider({
-        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>().mockResolvedValue({
-          type: "assistant",
-          content: JSON.stringify({
-            kind: "ask_user",
-            question: "mock reply",
-            reason: "Approval is required before sending the report.",
-          }),
-        }),
-      });
-      const onReply = vi.fn();
-      const systemEventContextRuntime = createSystemEventContextRuntime();
-      const engine = createEngine({
-        onReply,
-        provider,
-        systemEventContextRuntime,
-        dataDir,
-        systemEventPolicy: createSystemEventPolicy(),
-      });
-
-      await engine.start();
-
-      engine.handleMessage("c1", {
-        type: "system_event",
-        source: "custom-system",
-        eventName: "task.requested",
-        eventId: "evt-approval-1",
-        receivedAt: "2026-03-01T10:00:05.000Z",
-        summary: "Please send the status report",
-        intentKind: "task",
-        requestedAction: "send report",
-        createdBy: "external",
-        payload: {},
-      });
-
-      await vi.waitFor(() => {
-        expect(onReply).toHaveBeenCalledWith("c1", {
-          type: "feedback",
-          content: "mock reply",
-        });
-      });
-      expect(systemEventContextRuntime.prepareSystemEventTurn).toHaveBeenCalledWith(expect.objectContaining({
-        clientId: "c1",
-        systemMessage: expect.stringContaining("System event: custom-system/task.requested"),
-      }));
-      expect(systemEventContextRuntime.routeTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
-        clientId: "c1",
-        userMessage: expect.stringContaining("send_report"),
-      }));
-      expect(systemEventContextRuntime.completeTaskRun).toHaveBeenCalledWith(expect.objectContaining({
-        clientId: "c1",
-        taskId: "T-20260627-0001",
-        runId: "R-20260627-0001",
-        result: expect.objectContaining({ content: "mock reply" }),
-        assistantMessage: "mock reply",
-      }));
-      expect(systemEventContextRuntime.recordAssistantMessage).not.toHaveBeenCalled();
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }

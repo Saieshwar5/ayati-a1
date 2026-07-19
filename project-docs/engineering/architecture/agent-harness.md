@@ -40,7 +40,7 @@ Each decision call exposes two classes of native provider tools:
 ```text
 control tools:
   decision_load_tools({ query?, toolNames?, groups? })
-  ask_user_feedback({ question, reason }) only during an active task run
+  ask_user_feedback({ question, reason }) only during an active task-bound run
 
 selected executable tools:
   write_files({ files, createDirs? })
@@ -71,7 +71,7 @@ it is not copied into WorkState through a secondary task-note cache. Verified
 completion asset descriptions are carried directly into persisted task assets.
 
 Individual tool calls perform only their concrete operation and do not predict whole-task completion. During an
-active task run, the separate `task_completion({ summary, assets })` control
+active task-bound run, the separate `task_completion({ summary, assets })` control
 asks the runtime to verify that the requested work is complete. The runtime
 checks declared file/directory assets, accumulated verified tool evidence, and
 unresolved failures before it deterministically updates `WorkState`.
@@ -82,21 +82,21 @@ is needed, the model must call exactly one tool. A model response can be:
 
 - direct assistant text: terminal user-facing answer.
 - `decision_load_tools`: request missing tools for a later decision.
-- `ask_user_feedback`: pause an active task run for required user feedback
+- `ask_user_feedback`: pause an active task-bound run for required user feedback
   when progress is genuinely blocked and no safe default exists.
 - `task_completion`: request independent deterministic completion verification
-  for an active task run after normal tool work appears complete.
+  for an active task-bound run after normal tool work appears complete.
 - a selected executable tool: concrete work to run through the action executor.
 
 Unknown native tools, multiple native tool calls, missing executable tools,
-task feedback outside an active task run, and invalid tool inputs are rejected
+task feedback outside an active task-bound run, and invalid tool inputs are rejected
 deterministically and repaired when possible.
 
-Every provider-handled chat turn and provider-handled system event starts as a
-session run. Observational read/search tools may execute without selecting a
-task. Tools with mutation effects cannot execute from an unbound session run;
-the model must first select a task explicitly. Unknown taxonomy also fails
-closed before a task boundary.
+Every accepted provider-handled chat turn and system event atomically creates
+exactly one run with initial WorkState. Direct replies are valid zero-step
+runs. Observational list/read/search tools may execute while the run is
+unbound. Tools with mutation effects require the same run to gain an explicit
+task/request binding. Unknown taxonomy fails closed.
 
 The model-facing routing surface is intentionally small:
 
@@ -112,16 +112,16 @@ direct clarification question. The answer is a fresh turn and makes its own
 selection decision.
 
 Routing tools are controls, not ordinary domain work. After selection succeeds,
-the runner refreshes context using the returned task id, run id, stable working
-directory, and harness context containing the selected request, then prepares
-normal work tools for the original request. V1 selection does not mount a
-repository or update session Git.
+the run id remains unchanged and its task binding cannot be switched. The
+runner refreshes context using the returned task/request identity and stable
+working directory, then asks the model for a fresh decision. Rejected mutation
+calls are never deferred or replayed.
 
 Representative flows are:
 
 ```text
 new durable work -> git_context_create_task -> normal work tool -> final reply
-observational question -> read_files -> final reply as a session run
+observational question -> read_files -> final reply as an unbound run
 continue current request -> git_context_activate_task(requestDecision.kind=continue) -> work -> final reply
 new request in known task -> git_context_activate_task(requestDecision.kind=create) -> work -> final reply
 ambiguous ownership -> direct clarification reply -> fresh answer turn -> explicit selection
@@ -129,12 +129,12 @@ ambiguous ownership -> direct clarification reply -> fresh answer turn -> explic
 
 There is no model-facing `update_work_state` control. Verified executable
 steps update WorkState through the deterministic progress reducer. A successful
-terminal reply finalizes a session-run WorkState as `done`, uses the reply as
+terminal reply finalizes an unbound-run WorkState as `done`, uses the reply as
 its bounded summary, and clears open work, blockers, next step, and required
-user input. Task runs remain stricter: only accepted `task_completion`
+user input. Task-bound runs remain stricter: only accepted `task_completion`
 verification can mark their WorkState `done`.
 
-`maxIterations` is the normal work-decision budget. When a task run consumes
+`maxIterations` is the normal work-decision budget. When a task-bound run consumes
 that budget, the runner reserves one completion-only decision followed by one
 final-response-only decision. The completion-only surface exposes only
 `task_completion`; normal tools, tool loading, feedback controls, and direct
@@ -143,19 +143,21 @@ verification preserves verified partial assets and unfinished WorkState before
 the final response reports what remains. These two reserved decisions do not
 reduce the normal work budget.
 
-Every terminal task run is committed and sealed; later continuation always
-allocates a new run id. Run/context capacity exhaustion persists as
+Every terminal run is sealed; later continuation always allocates a new run id.
+A task-bound read-only run with no task-state change needs no commit, while
+verified mutation creates at most one final commit. Run/context capacity
+exhaustion persists as
 `run.status=incomplete` with `stopReason=run_limit` or `context_limit`, while
 the durable task remains `in_progress` with its verified progress, assets,
 open work, and next step. Only a genuine permanent blocker maps both the run
 and task to `blocked`.
 
 Clarification is not a deferred task selection. Once the assistant asks the
-question and the session run finalizes, that run is sealed. The user's answer
-starts a fresh session run and must select a task before mutation.
+question and the unbound run finalizes, that run is sealed. The user's answer
+starts a fresh run and must establish its own task binding before mutation.
 
-Task selection can happen only while the session run is active. Session-run
-lifecycle and raw evidence remain in Git Context SQLite/session journals; V1
+Task selection can happen only while the unbound run is active. Run lifecycle
+and raw evidence remain in Git Context SQLite and optional session evidence; V1
 task finalization writes compact request/task outcomes and one commit to the
 independent task repository. The runtime must not copy the raw run transcript
 into task Git.
@@ -212,7 +214,7 @@ native tools:
 
 Stable decision rules live in the system message so repeated decisions share a
 cache-friendly prefix. Dynamic state remains in the user message. Do not move
-work-run ids, tool observations, current input, personal memory snapshots, git
+run ids, tool observations, current input, personal memory snapshots, git
 context, or working feedback ahead of the stable decision
 contract.
 
@@ -277,11 +279,11 @@ below the soft limit:
 
 1. Deterministically compact eligible older tool-call inputs and outputs while
    keeping the latest six calls, pinned failures, and unrecoverable calls full.
-2. Remove the session summary, older four task-run checkpoint bodies, and
+2. Remove the session summary, older four task-bound-run checkpoint bodies, and
    duplicate recent session activity. Keep session metadata, attachments, the
-   newest task-run checkpoint, the exact timeline, durable task state, and run
+   newest task-bound-run checkpoint, the exact timeline, durable task state, and run
    work state.
-3. Generate one structured continuity checkpoint from the newest task-run
+3. Generate one structured continuity checkpoint from the newest task-bound-run
    checkpoint plus the minimum eligible old prefix of the exact timeline. Keep
    at least four recent events, the current input, and the assistant question
    that the current input answers exact.
@@ -291,7 +293,7 @@ below the soft limit:
    run can continue it.
 
 Timeline checkpoint planning is deterministic before any summarizer is called.
-It selects the newest task-run checkpoint and at least one eligible event from
+It selects the newest task-bound-run checkpoint and at least one eligible event from
 the older contiguous timeline prefix, then adds only as much old timeline as
 needed for estimated recovery. It keeps at least four recent events exact,
 protects the current input and latest assistant question awaiting
@@ -301,7 +303,7 @@ corrections, facts, unresolved questions, and external references.
 
 When deterministic tool compaction and session shedding still leave the request
 at or above the soft limit, the compiler asks the active provider for a strict
-structured summary of only the newest task-run checkpoint and selected timeline
+structured summary of only the newest task-bound-run checkpoint and selected timeline
 prefix. It sends no tools, task state, work state, tool history, personal
 memory, or unrelated session context. Runtime code supplies the trusted
 coverage range and source hash, validates every referenced sequence, and
@@ -425,11 +427,10 @@ selectors, missing selectors, and a short recovery message. The repair should
 help the model make a better `decision_load_tools` call instead of forcing a new
 classification step.
 
-Tool-mode feedback is operator-facing and compact. The runner records
-`tools.tool_mode_selected`, `tools.pre_task_routing_tools_visible`,
-`tools.normal_tools_enabled_for_work_run`, and
-`tools.routing_tools_deactivated` so live logs explain why routing tools or
-normal tools were visible.
+Capability feedback is operator-facing and compact. The runner records
+`tools.working_set_prepared` with derived binding/routing capability facts and
+`tools.routing_tools_deactivated` after successful binding, so live logs
+explain why routing, observational, or task-scoped tools were visible.
 
 The working set is cleared at task finalization. Decisions use native control
 tools plus selected native executable tools; assistant text is reserved for a
@@ -441,17 +442,18 @@ The decision model receives a compact `State view` each iteration. The model
 prompt is projected to a deduplicated grouped payload:
 
 - `context.timeline`: every exact conversation record after the latest valid
-  task-run checkpoint, ending with the exact current input. Before the first
-  task-run checkpoint it contains the complete session conversation. The agent
+  task-bound-run checkpoint, ending with the exact current input. Before the first
+  task-bound-run checkpoint it contains the complete session conversation. The agent
   context pack does not apply another event-count or per-message character cap.
 - `context.git.session`: session metadata, optional compressed session summary,
-  the latest five task-run checkpoints, up to ten recent session attachment
+  the latest five task-bound-run checkpoints, up to ten recent session attachment
   metadata records, and recent session activity.
 - `context.git.current`: focus, pending-turn routing state, and selected task
   context when a task is resolved.
 - `context.tools`: active tool names and the latest tool-load result.
-- `context.run`: current-run status and the ordered tool-call memory for
-  this run.
+- `context.run`: only current WorkState, ordered tool-call memory, and context
+  pressure for this run. It does not expose run ids, storage paths, binding
+  modes, routing counters, or deferred mutation state.
 - `context.harness`: harness repair feedback for the current decision.
 - `context.personal`: long-lived user memory snapshot when present.
 
@@ -484,8 +486,9 @@ Current repair codes cover implemented deterministic repairs only:
 - `R_EMPTY_TOOL_LOAD_SELECTOR`
 - `R_TOOL_INPUT_INVALID`
 - `R_TOOL_INPUT_MISSING_REQUIRED_FIELD`
-- `R_FRESH_SESSION_NEEDS_TASK`
-- `R_NORMAL_TOOL_WITHOUT_TASK_RUN`
+- `R_MUTATION_REQUIRES_TASK_BINDING`
+- `R_UNBOUND_RUN_NEEDS_TASK_BINDING`
+- `R_TOOL_REQUIRES_TASK_BINDING`
 - `R_PENDING_TURN_UNBOUND`
 - `R_PENDING_TURN_CLARIFYING`
 - `R_TASK_FEEDBACK_UNAVAILABLE`
@@ -518,7 +521,7 @@ metadata.
 
 Reusable verified tool context is projected separately at
 `context.git.current.readContext`. It retains the current contract boundary
-(`revision` and optional `afterTaskRunId`) and organizes full reusable entries
+(`revision` and optional `afterCommitRunId`) and organizes full reusable entries
 as `inventory`, `discovery`, `evidence`, and `actions`. The first supported
 mapping is list tools to inventory, search tools to discovery, inspect/read
 tools to evidence, and focused filesystem mutations to actions. Raw
@@ -638,7 +641,7 @@ The action stage records starts, completions, individual tool results,
 artifacts, and failures. Final feedback records the summary used by
 `latest-summary.json`.
 
-The runner also records read/search progress signals for active task runs.
+The runner also records read/search progress signals for active task-bound runs.
 These signals help detect loops where the model keeps selecting observational
 tools after enough context is available for a requested write or edit. The
 guard should prefer a useful next action: write/edit when the requested work is concrete,
@@ -646,13 +649,12 @@ ask a specific clarification question when required information is missing, or
 stop with a blocked state when progress cannot be made.
 
 Context-engine feedback events are operator-facing observability, not
-model-facing control. They record compact lifecycle facts such as
-`context_engine.prepared`, `context_engine.routed`,
-`context_engine.agent_routed`, `context_engine.clarification_requested`,
-`context_engine.finalization_skipped`, `context_engine.finalization_failed`,
-and `context_engine.committed`. Developer agents should use those events to
-follow the owning task repository, request/run ids, commit, and evidence pointers when
-debugging Ayati behavior.
+model-facing control. They record `run_started`, `run_task_bound`,
+`run_step_persisted`, `run_finalization_started`,
+`run_finalization_completed`, `run_finalization_failed`, and
+`task_commit_created`. Developer agents should use those events to follow run
+outcome, stop reason, optional task/request binding, materialization, commit,
+and evidence pointers when debugging Ayati behavior.
 
 ## Completion
 

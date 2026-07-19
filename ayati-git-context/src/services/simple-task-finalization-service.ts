@@ -1,11 +1,13 @@
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type {
-  FinalizeTaskRunRequest,
-  FinalizeTaskRunResponse,
+  FinalizeRunRequest,
+  FinalizeRunResponse,
   MutationProvenance,
+  RunOutcome,
+  RunWorkState,
   SessionRef,
-  TaskRunOutcome,
+  TaskCompletionRecord,
 } from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
 import {
@@ -14,30 +16,33 @@ import {
   markRecoverableIdempotencyFailed,
 } from "../database/idempotency.js";
 import { GitContextServiceError } from "../errors.js";
-import {
-  assertCommittableMutationPaths,
-  verifiedMutationPaths,
-} from "../mutations/verified-mutation-paths.js";
 import { readMutationProvenance } from "../git/mutation-provenance.js";
 import {
   commitSimpleTaskPlan,
   contentHash,
-  recognizeCommittedSimpleTaskPlan,
   readSimpleTaskMutationState,
 } from "../git/simple-task-repository-transaction.js";
+import {
+  assertCommittableMutationPaths,
+  verifiedMutationPaths,
+} from "../mutations/verified-mutation-paths.js";
 import { conversationContentHash, renderConversation } from "../conversations/conversation-renderer.js";
 import {
-  closeTaskConversationWithAssistant,
+  closeRunConversationWithAssistant,
+  closeRunConversationWithoutAssistant,
+  readConversation,
   readConversationMessages,
   updateConversationContentHash,
 } from "../repositories/conversation-records.js";
+import { readConversationPersistenceState } from "../repositories/conversation-persistence-records.js";
 import {
   readMutationAuthorityForRun,
   releaseVerifiedMutationAuthority,
   type MutationAuthorityRecord,
 } from "../repositories/mutation-authority-records.js";
 import {
-  completeTaskRun,
+  finalizeRunRecord,
+  markRunRecoveryRequired,
   readRunEvidence,
 } from "../repositories/run-records.js";
 import {
@@ -53,6 +58,11 @@ import {
   type SimpleTaskFinalizationRecord,
 } from "../repositories/simple-task-finalization-records.js";
 import {
+  markRunTaskAttachmentsCommitted,
+  markRunTaskAttachmentsRecoveryRequired,
+  readRunTaskAttachmentBindings,
+} from "../repositories/task-attachment-records.js";
+import {
   readTaskInitialization,
   updateTaskHead,
 } from "../repositories/task-records.js";
@@ -60,74 +70,78 @@ import {
   readTaskRequestRoutePlan,
   updateTaskRequestRoutePlan,
 } from "../repositories/task-request-route-plan-records.js";
-import {
-  markRunTaskAttachmentsCommitted,
-  markRunTaskAttachmentsRecoveryRequired,
-  readRunTaskAttachmentBindings,
-} from "../repositories/task-attachment-records.js";
-import { renderTaskRunCommit, type TaskRunCommitOutcome } from "../tasks/task-commit-metadata.js";
+import { resolvePlannedTaskRequestState } from "../tasks/planned-task-request.js";
+import { renderTaskCommit, type TaskCommitOutcome } from "../tasks/task-commit-metadata.js";
 import { reduceSimpleTaskContext } from "../tasks/simple-task-context-reducer.js";
 import { renderTaskReferences } from "../tasks/task-references.js";
 import { TASK_REFERENCES_PATH } from "../tasks/task-repository-layout.js";
 import { validateTaskRepository } from "../tasks/task-repository-validator.js";
-import { resolvePlannedTaskRequestState } from "../tasks/planned-task-request.js";
+import type { MutationBoundaryService } from "./mutation-boundary-service.js";
 
 export type SimpleTaskFinalizationHook = (
   phase: "plan_persisted" | "commit_created",
   record: SimpleTaskFinalizationRecord,
 ) => void | Promise<void>;
 
+interface TaskFinalizeInput extends Omit<FinalizeRunRequest, "task"> {
+  taskId: string;
+  taskRequestId: string;
+  completion: TaskCompletionRecord;
+}
+
 export class SimpleTaskFinalizationService {
   constructor(private readonly options: {
     database: ContextDatabase;
     taskRoot: string;
+    mutationBoundary: MutationBoundaryService;
     hook?: SimpleTaskFinalizationHook;
   }) {}
 
   async finalize(
-    input: FinalizeTaskRunRequest,
+    request: FinalizeRunRequest,
     session: SessionRef,
-  ): Promise<FinalizeTaskRunResponse> {
+  ): Promise<FinalizeRunResponse> {
+    const input = this.normalize(request);
     const existing = readSimpleTaskFinalization(this.options.database, input.runId);
     if (existing) {
       assertMatchingRetry(existing, input);
-      const pending = beginRecoverableIdempotent<FinalizeTaskRunResponse | { runId: string }>({
+      const pending = beginRecoverableIdempotent<FinalizeRunResponse | { runId: string }>({
         database: this.options.database,
         requestId: input.requestId,
-        operation: "finalize_task_run",
-        payload: input,
+        operation: "finalize_run",
+        payload: request,
         now: input.at,
         execute: () => ({ runId: input.runId }),
       });
-      if (pending.completed && "taskHeadAfter" in pending.result) return pending.result;
+      if (pending.completed && "run" in pending.result) return pending.result;
       if (existing.phase === "completed" && existing.commitHead) {
         return completeRecoverableIdempotent({
           database: this.options.database,
           requestId: input.requestId,
-          result: response(existing, existing.commitHead),
+          result: response(this.options.database, existing, existing.commitHead),
           now: input.at,
         });
       }
       return await this.execute(existing, input);
     }
 
-    const prepared = await this.prepare(input, session);
-    const pending = beginRecoverableIdempotent<FinalizeTaskRunResponse | { runId: string }>({
+    let prepared: Awaited<ReturnType<SimpleTaskFinalizationService["prepare"]>>;
+    try {
+      prepared = await this.prepare(input, session);
+    } catch (error) {
+      if (error instanceof GitContextServiceError && error.code === "RECOVERY_REQUIRED") {
+        this.markPreflightRecoveryRequired(input.runId, error, input.at);
+      }
+      throw error;
+    }
+    const pending = beginRecoverableIdempotent<FinalizeRunResponse | { runId: string }>({
       database: this.options.database,
       requestId: input.requestId,
-      operation: "finalize_task_run",
-      payload: input,
+      operation: "finalize_run",
+      payload: request,
       now: input.at,
       execute: () => {
-        const conversation = closeTaskConversationWithAssistant(this.options.database, {
-          requestId: input.requestId,
-          sessionId: input.sessionId,
-          conversationId: prepared.run.conversationId,
-          runId: input.runId,
-          taskId: input.taskId,
-          content: input.assistantResponse,
-          at: input.at,
-        });
+        const conversation = closeConversation(this.options.database, input, prepared.run.conversationId);
         const conversationHash = conversationContentHash(renderConversation(
           conversation,
           readConversationMessages(this.options.database, conversation.conversationId),
@@ -139,10 +153,10 @@ export class SimpleTaskFinalizationService {
         );
         const plan: SimpleTaskCommitPlan = {
           ...prepared.plan,
-          commitMessage: renderTaskRunCommit({
-            subject: "finalize " + prepared.authority.taskRequestId!.toLowerCase() + " task run",
+          commitMessage: renderTaskCommit({
+            subject: "finalize " + input.taskRequestId.toLowerCase() + " run",
             taskId: input.taskId,
-            requestId: prepared.authority.taskRequestId!,
+            requestId: input.taskRequestId,
             runId: input.runId,
             sessionId: input.sessionId,
             outcome: commitOutcome(input.outcome),
@@ -155,98 +169,90 @@ export class SimpleTaskFinalizationService {
         insertSimpleTaskFinalization(this.options.database, {
           runId: input.runId,
           requestId: input.requestId,
-          authorityId: prepared.authority.authorityId,
+          ...(prepared.authority ? { authorityId: prepared.authority.authorityId } : {}),
           sessionId: input.sessionId,
           taskId: input.taskId,
-          taskRequestId: prepared.authority.taskRequestId!,
+          taskRequestId: input.taskRequestId,
           conversationId: conversation.conversationId,
           outcome: input.outcome,
+          stopReason: input.stopReason,
           validation: input.validation,
           summary: prepared.finalSummary,
           ...(input.next ? { next: normalize(input.next) } : {}),
           completion: input.completion,
           assistantResponse: input.assistantResponse,
-          baseHead: prepared.authority.beforeHead,
+          baseHead: prepared.baseHead,
           conversationHash,
           plan,
+          at: input.at,
+        });
+        replaceRunWorkState(this.options.database, {
+          runId: input.runId,
+          afterStep: prepared.run.stepCount,
+          state: input.workState,
           at: input.at,
         });
         return { runId: input.runId };
       },
     });
-    if (pending.completed && "taskHeadAfter" in pending.result) return pending.result;
+    if (pending.completed && "run" in pending.result) return pending.result;
     const record = readSimpleTaskFinalization(this.options.database, input.runId);
     if (!record) throw new Error("Prepared V1 finalization could not be read.");
     await this.options.hook?.("plan_persisted", record);
     return await this.execute(record, input);
   }
 
-  async recoverCommittedFinalizations(at: string): Promise<void> {
+  async recover(at: string): Promise<void> {
     for (const record of readRecoverableSimpleTaskFinalizations(this.options.database)) {
-      const task = readTaskInitialization(this.options.database, record.taskId);
-      if (!task?.head) continue;
       try {
-        const head = await recognizeCommittedSimpleTaskPlan({
-          repositoryPath: task.repositoryPath,
-          branch: task.branch,
-          baseHead: record.baseHead,
-          plan: record.plan,
-        });
-        if (!head) continue;
-        await this.validateCommittedContext(record, task.repositoryPath, head);
-        this.acknowledge(record, { head, created: true }, at);
+        await this.executeRecord(record, at);
         const completed = readSimpleTaskFinalization(this.options.database, record.runId);
-        if (!completed) throw new Error("Recovered V1 finalization journal is missing.");
+        if (!completed?.commitHead) throw new Error("Recovered task finalization is incomplete.");
         completeRecoverableIdempotent({
           database: this.options.database,
           requestId: record.requestId,
-          result: response(completed, head),
+          result: response(this.options.database, completed, completed.commitHead),
           now: at,
         });
       } catch (error) {
-        updateSimpleTaskFinalization(this.options.database, {
-          runId: record.runId,
-          phase: "recovery_required",
-          error: error instanceof Error ? error.message : String(error),
-          at,
-        });
-        const routePlan = readTaskRequestRoutePlan(this.options.database, record.runId);
-        if (routePlan) {
-          updateTaskRequestRoutePlan(this.options.database, {
-            runId: record.runId,
-            phase: "recovery_required",
-            error: error instanceof Error ? error.message : String(error),
-            at,
-          });
-        }
+        this.markRecoveryRequired(record, error, at);
       }
     }
   }
 
-  private async prepare(input: FinalizeTaskRunRequest, session: SessionRef) {
+  private normalize(input: FinalizeRunRequest): TaskFinalizeInput {
     const run = readRunEvidence(this.options.database, input.runId);
-    if (!run || run.status !== "running" || run.runClass !== "task"
-      || run.sessionId !== input.sessionId || run.taskId !== input.taskId) {
-      throw invalid("V1 finalization requires the matching active task run.");
+    const binding = run?.taskBinding;
+    const completion = input.task?.completion;
+    if (!run
+      || run.sessionId !== input.sessionId
+      || !binding
+      || !completion) {
+      throw invalid("Task-bound finalization requires the run binding and completion evidence.");
+    }
+    if (input.outcome === "done" && !completion.accepted) {
+      throw invalid("A done task-bound run requires accepted completion evidence.");
+    }
+    return {
+      ...input,
+      taskId: binding.taskId,
+      taskRequestId: binding.taskRequestId,
+      completion,
+    };
+  }
+
+  private async prepare(input: TaskFinalizeInput, _session: SessionRef) {
+    const run = readRunEvidence(this.options.database, input.runId);
+    if (!run
+      || run.status !== "running"
+      || run.sessionId !== input.sessionId
+      || run.taskBinding?.taskId !== input.taskId
+      || run.taskBinding.taskRequestId !== input.taskRequestId) {
+      throw invalid("V1 finalization requires the matching active task-bound run.");
     }
     const task = readTaskInitialization(this.options.database, input.taskId);
     if (!task?.head) {
       throw invalid("V1 finalization requires an active simple task repository.");
-    }
-    const authority = readMutationAuthorityForRun(this.options.database, input.runId);
-    if (!authority || authority.sessionId !== input.sessionId || authority.taskId !== input.taskId
-      || !authority.taskRequestId || run.taskRequestId !== authority.taskRequestId) {
-      throw recovery("V1 finalization is missing matching task/request mutation authority.");
-    }
-    if (authority.status !== "verified"
-      && !(authority.status === "released" && input.outcome === "failed")) {
-      throw recovery("V1 finalization requires verified mutation state.", {
-        authorityId: authority.authorityId,
-        authorityStatus: authority.status,
-      });
-    }
-    if (task.head !== authority.beforeHead) {
-      throw headMismatch(input.taskId, authority.beforeHead, task.head);
     }
     const validation = await validateTaskRepository({
       taskRoot: this.options.taskRoot,
@@ -254,13 +260,13 @@ export class SimpleTaskFinalizationService {
       expectedTaskId: input.taskId,
       requestReadMode: "all",
     });
-    if (validation.head !== authority.beforeHead || validation.branch !== authority.branch) {
-      throw headMismatch(input.taskId, authority.beforeHead, validation.head);
+    if (validation.head !== task.head || validation.branch !== task.branch) {
+      throw headMismatch(input.taskId, task.head, validation.head);
     }
     const routePlan = readTaskRequestRoutePlan(this.options.database, input.runId);
-    if (routePlan && (routePlan.authorityId !== authority.authorityId
-      || routePlan.phase !== "authority_acquired")) {
-      throw recovery("V1 finalization request plan does not match mutation authority.", {
+    if (routePlan?.phase === "recovery_required" || routePlan?.phase === "discarded"
+      || routePlan?.phase === "committed") {
+      throw recovery("V1 finalization request plan is not active.", {
         routePlanPhase: routePlan.phase,
       });
     }
@@ -273,34 +279,39 @@ export class SimpleTaskFinalizationService {
             requestCreated: false,
           }
         : undefined;
-    if (!planned || planned.taskRequest.id !== authority.taskRequestId) {
-      throw recovery("V1 finalization request no longer matches task context.");
+    if (!planned || planned.taskRequest.id !== input.taskRequestId) {
+      throw recovery("V1 finalization request no longer matches the run binding.");
     }
-    const provenance = await readMutationProvenance(
-      authority.repositoryPath,
-      authority.targets,
-      "head",
-      {
-        excludedPathPrefixes: [".ayati/inbox/"],
-        includedPaths: [".ayati/inbox/.gitkeep"],
-      },
-    );
-    const verifiedState = await requireExpectedProvenance(authority, provenance);
-    const workState = readRunWorkState(this.options.database, input.runId);
-    if (!workState) throw recovery("V1 finalization requires persisted WorkState.");
-    const verifiedPaths = verifiedMutationPaths(provenance);
-    assertCommittableMutationPaths(verifiedPaths);
-    await verifyCompletionAssets(authority.repositoryPath, input.completion);
+
+    let authority = readMutationAuthorityForRun(this.options.database, input.runId);
+    assertAuthorityIdentity(authority, input, task.repositoryPath);
+    const mutation = await this.readVerifiedMutation(authority, task.repositoryPath);
+    if (validation.health !== "ready" && mutation.paths.length === 0) {
+      throw recovery("Task finalization found repository changes without verified mutation authority.", {
+        taskId: input.taskId,
+        workingTreeChanges: validation.workingTreeChanges,
+      });
+    }
+    const currentWorkState = readRunWorkState(this.options.database, input.runId);
+    if (!currentWorkState) throw recovery("V1 finalization requires persisted WorkState.");
+    const finalWorkState: RunWorkState = {
+      ...input.workState,
+      runId: input.runId,
+      revision: currentWorkState.revision + 1,
+      afterStep: run.stepCount,
+      updatedAt: input.at,
+    };
+    await verifyCompletionAssets(task.repositoryPath, input.completion);
     const context = reduceSimpleTaskContext({
       taskCard: planned.taskCard,
       taskRequest: planned.taskRequest,
-      workState,
+      workState: finalWorkState,
       outcome: input.outcome,
       validation: input.validation,
       summary: input.summary,
       ...(input.next ? { next: input.next } : {}),
       completion: input.completion,
-      hasVerifiedChanges: verifiedPaths.length > 0,
+      hasVerifiedChanges: mutation.paths.length > 0,
     });
     const attachmentBindings = readRunTaskAttachmentBindings(
       this.options.database,
@@ -308,7 +319,7 @@ export class SimpleTaskFinalizationService {
     );
     const invalidBinding = attachmentBindings.find((binding) =>
       binding.taskId !== input.taskId
-      || binding.taskRequestId !== authority.taskRequestId
+      || binding.taskRequestId !== input.taskRequestId
       || binding.phase === "recovery_required"
     );
     if (invalidBinding) {
@@ -320,23 +331,18 @@ export class SimpleTaskFinalizationService {
     const references = new Map(
       validation.references.map((reference) => [reference.id, reference]),
     );
-    for (const binding of attachmentBindings) {
-      references.set(binding.referenceId, binding.reference);
-    }
+    for (const binding of attachmentBindings) references.set(binding.referenceId, binding.reference);
     const renderedReferences = renderTaskReferences(
       [...references.values()].sort((left, right) => left.id.localeCompare(right.id)),
     );
-    const currentReferences = renderTaskReferences(validation.references);
-    const referenceWrites = renderedReferences === currentReferences
+    const referenceWrites = renderedReferences === renderTaskReferences(validation.references)
       ? []
       : [{ path: TASK_REFERENCES_PATH, content: renderedReferences }];
     const applyRoutePlan = Boolean(routePlan?.changePlan)
-      && (context.commitRequired || verifiedPaths.length > 0 || referenceWrites.length > 0);
+      && !(input.outcome === "failed" && mutation.paths.length === 0);
     const desiredWrites = new Map<string, string>();
     if (applyRoutePlan) {
-      for (const write of routePlan!.changePlan!.writes) {
-        desiredWrites.set(write.path, write.content);
-      }
+      for (const write of routePlan!.changePlan!.writes) desiredWrites.set(write.path, write.content);
     }
     for (const write of [...context.contextWrites, ...referenceWrites]) {
       desiredWrites.set(write.path, write.content);
@@ -344,64 +350,112 @@ export class SimpleTaskFinalizationService {
     const contextWrites = [...desiredWrites.entries()]
       .map(([path, content]) => ({ path, content }))
       .sort((left, right) => left.path.localeCompare(right.path));
+    const commitRequired = contextWrites.length > 0 || mutation.paths.length > 0;
+
+    if (commitRequired && (!authority || authority.status === "released")) {
+      authority = await this.acquireContextAuthority(input, task.head);
+      const refreshedMutation = await this.readVerifiedMutation(authority, task.repositoryPath);
+      if (refreshedMutation.paths.length > 0) {
+        throw recovery("Context-only authority unexpectedly observed repository changes.");
+      }
+    }
+    if (commitRequired && authority?.status !== "verified") {
+      throw recovery("Committing task state requires verified mutation authority.");
+    }
+
     const stagedPaths = [...new Set([
-      ...verifiedPaths,
+      ...mutation.paths,
       ...contextWrites.map((write) => write.path),
     ])].sort();
     const contextBefore = await Promise.all(contextWrites.map(async (write) => ({
       path: write.path,
-      sha256: await readContextHash(authority.repositoryPath, write.path),
+      sha256: await readContextHash(task.repositoryPath, write.path),
     })));
     return {
       run,
       task,
+      baseHead: task.head,
       authority,
       plan: {
-        commitRequired: context.commitRequired || verifiedPaths.length > 0
-          || referenceWrites.length > 0 || applyRoutePlan,
-        verifiedPaths,
-        verifiedState,
+        commitRequired,
+        verifiedPaths: mutation.paths,
+        verifiedState: mutation.state,
         contextWrites,
         contextBefore,
         stagedPaths,
         commitMessage: "",
       },
-      finalSummary: context.commitRequired
+      finalSummary: context.contextWrites.length > 0
         ? context.taskCard.currentSnapshot
         : normalize(input.summary),
-      session,
     };
+  }
+
+  private async acquireContextAuthority(
+    input: TaskFinalizeInput,
+    head: string,
+  ): Promise<MutationAuthorityRecord> {
+    const acquired = await this.options.mutationBoundary.acquire({
+      requestId: input.runId + ":finalization-authority",
+      sessionId: input.sessionId,
+      runId: input.runId,
+      taskId: input.taskId,
+      taskRequestId: input.taskRequestId,
+      expectedTaskHead: head,
+      targets: [],
+      at: input.at,
+    });
+    await this.options.mutationBoundary.verify({
+      requestId: input.runId + ":finalization-verification",
+      authorityId: acquired.authority.authorityId,
+      lockToken: acquired.authority.lockToken,
+      toolStatus: "completed",
+      at: input.at,
+    });
+    const authority = readMutationAuthorityForRun(this.options.database, input.runId);
+    if (!authority || authority.status !== "verified") {
+      throw recovery("Context-only authority could not be verified.");
+    }
+    return authority;
+  }
+
+  private async readVerifiedMutation(
+    authority: MutationAuthorityRecord | undefined,
+    repositoryPath: string,
+  ): Promise<{ paths: string[]; state: string }> {
+    if (!authority || authority.status === "released") {
+      return { paths: [], state: await readSimpleTaskMutationState(repositoryPath, []) };
+    }
+    if (authority.status !== "verified") {
+      throw recovery("V1 finalization requires verified mutation state.", {
+        authorityId: authority.authorityId,
+        authorityStatus: authority.status,
+      });
+    }
+    const provenance = await readMutationProvenance(
+      authority.repositoryPath,
+      authority.targets,
+      "head",
+      {
+        excludedPathPrefixes: [".ayati/inbox/"],
+        includedPaths: [".ayati/inbox/.gitkeep"],
+      },
+    );
+    const state = await requireExpectedProvenance(authority, provenance);
+    const paths = verifiedMutationPaths(provenance);
+    assertCommittableMutationPaths(paths);
+    return { paths, state };
   }
 
   private async execute(
     record: SimpleTaskFinalizationRecord,
-    input: FinalizeTaskRunRequest,
-  ): Promise<FinalizeTaskRunResponse> {
-    const task = readTaskInitialization(this.options.database, record.taskId);
-    if (!task?.head) {
-      throw recovery("Journaled V1 task repository is unavailable.");
-    }
+    input: TaskFinalizeInput,
+  ): Promise<FinalizeRunResponse> {
     try {
-      const committed = await commitSimpleTaskPlan({
-        repositoryPath: task.repositoryPath,
-        branch: task.branch,
-        baseHead: record.baseHead,
-        plan: record.plan,
-        at: record.createdAt,
-      });
-      if (committed.created) await this.options.hook?.("commit_created", record);
-      updateSimpleTaskFinalization(this.options.database, {
-        runId: record.runId,
-        phase: "committed",
-        commitHead: committed.head,
-        commitCreated: committed.created,
-        at: input.at,
-      });
-      await this.validateCommittedContext(record, task.repositoryPath, committed.head);
-      this.acknowledge(record, committed, input.at);
+      await this.executeRecord(record, input.at);
       const completed = readSimpleTaskFinalization(this.options.database, record.runId);
-      if (!completed) throw new Error("Completed V1 finalization journal is missing.");
-      const result = response(completed, committed.head);
+      if (!completed?.commitHead) throw new Error("Completed task finalization is missing.");
+      const result = response(this.options.database, completed, completed.commitHead);
       return completeRecoverableIdempotent({
         database: this.options.database,
         requestId: input.requestId,
@@ -409,33 +463,35 @@ export class SimpleTaskFinalizationService {
         now: input.at,
       });
     } catch (error) {
-      updateSimpleTaskFinalization(this.options.database, {
-        runId: record.runId,
-        phase: "recovery_required",
-        error: error instanceof Error ? error.message : String(error),
-        at: input.at,
-      });
+      this.markRecoveryRequired(record, error, input.at);
       markRecoverableIdempotencyFailed({
         database: this.options.database,
         requestId: input.requestId,
       });
-      markRunTaskAttachmentsRecoveryRequired(
-        this.options.database,
-        record.runId,
-        error instanceof Error ? error.message : String(error),
-        input.at,
-      );
-      const routePlan = readTaskRequestRoutePlan(this.options.database, record.runId);
-      if (routePlan) {
-        updateTaskRequestRoutePlan(this.options.database, {
-          runId: record.runId,
-          phase: "recovery_required",
-          error: error instanceof Error ? error.message : String(error),
-          at: input.at,
-        });
-      }
       throw error;
     }
+  }
+
+  private async executeRecord(record: SimpleTaskFinalizationRecord, at: string): Promise<void> {
+    const task = readTaskInitialization(this.options.database, record.taskId);
+    if (!task?.head) throw recovery("Journaled V1 task repository is unavailable.");
+    const committed = await commitSimpleTaskPlan({
+      repositoryPath: task.repositoryPath,
+      branch: task.branch,
+      baseHead: record.baseHead,
+      plan: record.plan,
+      at: record.createdAt,
+    });
+    if (committed.created) await this.options.hook?.("commit_created", record);
+    updateSimpleTaskFinalization(this.options.database, {
+      runId: record.runId,
+      phase: "committed",
+      commitHead: committed.head,
+      commitCreated: committed.created,
+      at,
+    });
+    await this.validateCommittedContext(record, task.repositoryPath, committed.head);
+    this.acknowledge(record, committed, at);
   }
 
   private async validateCommittedContext(
@@ -478,29 +534,20 @@ export class SimpleTaskFinalizationService {
           throw new Error("V1 task catalog HEAD cannot acknowledge the finalization commit.");
         }
       }
-      persistFinalWorkState(this.options.database, record, at);
       const run = readRunEvidence(this.options.database, record.runId);
-      if (run?.status === "running") {
-        completeTaskRun(this.options.database, {
+      if (run?.status === "running" || run?.status === "recovery_required") {
+        finalizeRunRecord(this.options.database, {
           runId: record.runId,
           outcome: record.outcome,
+          stopReason: record.stopReason,
           at,
         });
       }
       const authority = readMutationAuthorityForRun(this.options.database, record.runId);
       if (authority?.status === "verified") {
-        releaseVerifiedMutationAuthority(
-          this.options.database,
-          authority.authorityId,
-          at,
-        );
+        releaseVerifiedMutationAuthority(this.options.database, authority.authorityId, at);
       }
-      markRunTaskAttachmentsCommitted(
-        this.options.database,
-        record.runId,
-        commit.head,
-        at,
-      );
+      markRunTaskAttachmentsCommitted(this.options.database, record.runId, commit.head, at);
       const routePlan = readTaskRequestRoutePlan(this.options.database, record.runId);
       if (routePlan) {
         updateTaskRequestRoutePlan(this.options.database, {
@@ -519,6 +566,83 @@ export class SimpleTaskFinalizationService {
       });
     });
   }
+
+  private markRecoveryRequired(
+    record: SimpleTaskFinalizationRecord,
+    error: unknown,
+    at: string,
+  ): void {
+    const message = error instanceof Error ? error.message : String(error);
+    this.options.database.transaction(() => {
+      markRunRecoveryRequired(this.options.database, record.runId);
+      updateSimpleTaskFinalization(this.options.database, {
+        runId: record.runId,
+        phase: "recovery_required",
+        error: message,
+        at,
+      });
+      markRunTaskAttachmentsRecoveryRequired(this.options.database, record.runId, message, at);
+      const routePlan = readTaskRequestRoutePlan(this.options.database, record.runId);
+      if (routePlan) {
+        updateTaskRequestRoutePlan(this.options.database, {
+          runId: record.runId,
+          phase: "recovery_required",
+          error: message,
+          at,
+        });
+      }
+    });
+  }
+
+  private markPreflightRecoveryRequired(runId: string, error: Error, at: string): void {
+    this.options.database.transaction(() => {
+      markRunRecoveryRequired(this.options.database, runId);
+      markRunTaskAttachmentsRecoveryRequired(this.options.database, runId, error.message, at);
+      const routePlan = readTaskRequestRoutePlan(this.options.database, runId);
+      if (routePlan) {
+        updateTaskRequestRoutePlan(this.options.database, {
+          runId,
+          phase: "recovery_required",
+          error: error.message,
+          at,
+        });
+      }
+    });
+  }
+}
+
+function assertAuthorityIdentity(
+  authority: MutationAuthorityRecord | undefined,
+  input: TaskFinalizeInput,
+  repositoryPath: string,
+): void {
+  if (!authority) return;
+  if (authority.sessionId !== input.sessionId
+    || authority.taskId !== input.taskId
+    || authority.taskRequestId !== input.taskRequestId
+    || authority.repositoryPath !== repositoryPath) {
+    throw recovery("V1 finalization authority does not match the run binding.");
+  }
+}
+
+function closeConversation(
+  database: ContextDatabase,
+  input: TaskFinalizeInput,
+  conversationId: string,
+) {
+  const common = {
+    sessionId: input.sessionId,
+    conversationId,
+    runId: input.runId,
+    taskId: input.taskId,
+    at: input.at,
+  };
+  return input.assistantResponse
+    ? closeRunConversationWithAssistant(database, {
+        ...common,
+        content: input.assistantResponse,
+      })
+    : closeRunConversationWithoutAssistant(database, common);
 }
 
 async function readContextHash(repositoryPath: string, path: string): Promise<string> {
@@ -539,12 +663,6 @@ async function requireExpectedProvenance(
     stateFingerprint?: string;
   } | undefined;
   const expected = verification?.provenance;
-  if (authority.status === "released") {
-    if (verifiedMutationPaths(actual).length === 0) {
-      return await readSimpleTaskMutationState(authority.repositoryPath, []);
-    }
-    throw recovery("Released V1 authority unexpectedly has repository changes.");
-  }
   if (!expected || expected.unexpectedPaths.length > 0
     || JSON.stringify(actual) !== JSON.stringify(expected)) {
     throw recovery("V1 task changes no longer match verified mutation provenance.", {
@@ -565,7 +683,7 @@ async function requireExpectedProvenance(
 
 async function verifyCompletionAssets(
   repositoryPath: string,
-  completion: FinalizeTaskRunRequest["completion"],
+  completion: TaskCompletionRecord,
 ): Promise<void> {
   const root = await realpath(repositoryPath);
   for (const asset of completion.assets.filter((entry) => entry.verified)) {
@@ -590,65 +708,47 @@ async function verifyCompletionAssets(
   }
 }
 
-function persistFinalWorkState(
+function response(
   database: ContextDatabase,
   record: SimpleTaskFinalizationRecord,
-  at: string,
-): void {
-  const current = readRunWorkState(database, record.runId);
-  const run = readRunEvidence(database, record.runId);
-  if (!current || !run) throw new Error("V1 finalization WorkState is unavailable.");
-  const done = record.outcome === "done";
-  const blocked = record.outcome === "blocked" || record.outcome === "needs_user_input";
-  replaceRunWorkState(database, {
-    runId: record.runId,
-    afterStep: run.stepCount,
-    state: {
-      status: done ? "done" : blocked
-        ? record.outcome === "needs_user_input" ? "needs_user_input" : "blocked"
-        : "not_done",
-      summary: record.summary,
-      openWork: done ? [] : unique([...current.openWork, ...record.completion.missing]),
-      blockers: blocked ? unique([...current.blockers, ...record.completion.failures]) : [],
-      facts: current.facts,
-      evidence: current.evidence,
-      artifacts: unique([
-        ...current.artifacts,
-        ...record.completion.assets.filter((asset) => asset.verified).map((asset) => asset.path),
-      ]),
-      nextStep: done ? null : record.next ?? current.nextStep,
-      userInputNeeded: record.outcome === "needs_user_input"
-        ? current.userInputNeeded
-        : [],
-    },
-    at,
-  });
-}
-
-function response(
-  record: SimpleTaskFinalizationRecord,
   head: string,
-): FinalizeTaskRunResponse {
-  return {
-    runId: record.runId,
+): FinalizeRunResponse {
+  const run = readRunEvidence(database, record.runId);
+  const conversation = readConversation(database, record.conversationId);
+  const persistence = readConversationPersistenceState(database, record.conversationId);
+  if (!run || !conversation || !persistence) {
+    throw new Error("Finalized task-bound run response cannot be reconstructed.");
+  }
+  const identity = {
     taskId: record.taskId,
-    outcome: record.outcome,
-    taskHeadBefore: record.baseHead,
-    taskHeadAfter: head,
-    taskFinalizationCommit: head,
-    taskCommitCreated: record.commitCreated,
-    conversationHash: record.conversationHash,
+    taskRequestId: record.taskRequestId,
+    headBefore: record.baseHead,
+    headAfter: head,
+  };
+  return {
+    run,
+    conversation,
+    persistence,
+    materialization: { status: "not_requested" },
+    commit: !record.plan.commitRequired
+      ? { status: "not_required" }
+      : record.commitCreated
+        ? { status: "committed", ...identity, commit: head }
+        : { status: "no_change", ...identity },
   };
 }
 
 function assertMatchingRetry(
   record: SimpleTaskFinalizationRecord,
-  input: FinalizeTaskRunRequest,
+  input: TaskFinalizeInput,
 ): void {
-  const matches = record.sessionId === input.sessionId
+  const matches = record.requestId === input.requestId
+    && record.sessionId === input.sessionId
     && record.taskId === input.taskId
+    && record.taskRequestId === input.taskRequestId
     && record.runId === input.runId
     && record.outcome === input.outcome
+    && record.stopReason === input.stopReason
     && record.validation === input.validation
     && record.summary === normalize(input.summary)
     && (record.next ?? null) === (input.next ? normalize(input.next) : null)
@@ -663,7 +763,7 @@ function assertMatchingRetry(
   }
 }
 
-function commitOutcome(outcome: TaskRunOutcome): TaskRunCommitOutcome {
+function commitOutcome(outcome: RunOutcome): TaskCommitOutcome {
   if (outcome === "done") return "completed";
   if (outcome === "needs_user_input") return "blocked";
   return outcome;
@@ -671,10 +771,6 @@ function commitOutcome(outcome: TaskRunOutcome): TaskRunCommitOutcome {
 
 function normalize(value: string): string {
   return value.trim().replace(/\s+/g, " ");
-}
-
-function unique(values: string[]): string[] {
-  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
 function invalid(message: string, details?: Record<string, unknown>): GitContextServiceError {

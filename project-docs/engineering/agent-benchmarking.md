@@ -219,7 +219,7 @@ full extracted PDF text as a top-level benchmark artifact. Runtime data under
 Each benchmark case should score:
 
 - task status: completed, failed, or stuck
-- run class: interaction or task
+- run outcome, stop reason, and optional task binding
 - total iterations
 - total tool calls
 - provider token usage

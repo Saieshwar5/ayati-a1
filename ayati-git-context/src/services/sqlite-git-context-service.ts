@@ -3,23 +3,17 @@ import {
   GIT_CONTEXT_PROTOCOL_VERSION,
   type AdoptTaskReferenceRequest,
   type AdoptTaskReferenceResponse,
-  type ActivateTaskRunRequest,
+  type ActivateTaskForRunRequest,
   type AcquireMutationAuthorityRequest,
   type AcquireMutationAuthorityResponse,
   type BindTaskAttachmentsRequest,
   type BindTaskAttachmentsResponse,
   type ActiveContext,
-  type CompleteContextTurnRequest,
-  type CompleteContextTurnResponse,
-  type AppendConversationRequest,
-  type AppendConversationResponse,
-  type CreateTaskRunRequest,
+  type CreateTaskForRunRequest,
   type EnsureActiveSessionRequest,
   type EnsureActiveSessionResponse,
-  type FinalizeSessionRunRequest,
-  type FinalizeSessionRunResponse,
-  type FinalizeTaskRunRequest,
-  type FinalizeTaskRunResponse,
+  type FinalizeRunRequest,
+  type FinalizeRunResponse,
   type GetActiveContextRequest,
   type GetTaskRequest,
   type GetTaskResponse,
@@ -35,9 +29,7 @@ import {
   type RecordSessionAttachmentsRequest,
   type RecordSessionAttachmentsResponse,
   type SessionRef,
-  type StartRunRequest,
-  type StartRunResponse,
-  type SelectedTaskRunResponse,
+  type SelectedTaskForRunResponse,
   type VerifyMutationRequest,
   type VerifyMutationResponse,
 } from "../contracts.js";
@@ -48,10 +40,8 @@ import {
   hasRecoverableIdempotencyRequest,
   markRecoverableIdempotencyFailed,
 } from "../database/idempotency.js";
-import { synchronizePendingConversationFiles } from "../conversations/conversation-synchronizer.js";
 import { GitContextServiceError } from "../errors.js";
 import {
-  appendConversationMessage,
   readConversation,
   readConversationMessage,
 } from "../repositories/conversation-records.js";
@@ -59,11 +49,14 @@ import { readConversationPersistenceState } from "../repositories/conversation-p
 import {
   insertSession,
   readLatestSealedSessionId,
+  readLiveSessionRecords,
   readSessionRecord,
+  sessionRecordRef,
+  updateSessionStatus,
 } from "../repositories/session-records.js";
 import type { GitContextService } from "../service.js";
 import { SerializedWriteQueue } from "../write-queue.js";
-import { ActiveContextCache, activeContextRevision } from "./active-context-cache.js";
+import { ActiveContextCache } from "./active-context-cache.js";
 import { ActiveContextProjectionService } from "./active-context-projection-service.js";
 import {
   ActiveContextDataCache,
@@ -75,11 +68,10 @@ import {
 } from "./active-context-invalidation.js";
 import { MutationBoundaryService } from "./mutation-boundary-service.js";
 import { TaskLifecycleService } from "./task-lifecycle-service.js";
-import { TaskRunFinalizationService } from "./task-run-finalization-service.js";
+import { TaskBoundFinalizationService } from "./task-bound-finalization-service.js";
 import { TaskAttachmentService } from "./task-attachment-service.js";
 import { SessionRegistryCache } from "./session-registry-cache.js";
 import { ConversationHotCache } from "./conversation-hot-cache.js";
-import { ContextTurnCompletionService } from "./context-turn-completion-service.js";
 import {
   normalizeAgentId,
   validateSessionInput,
@@ -90,14 +82,12 @@ import {
   DEFAULT_SESSION_REPOSITORY_VALIDATION_INTERVAL_MS,
   SessionRepositoryValidationService,
 } from "./session-repository-validation-service.js";
-import { SessionRunLifecycleService } from "./session-run-lifecycle-service.js";
+import { RunLifecycleService } from "./run-lifecycle-service.js";
 import {
   completePreparedContextTurnReceipt,
-  createPreparedContextTurnReceipt,
   requirePreparedContextTurnReceipt,
-  type PreparedContextTurnReceipt,
 } from "./prepared-context-turn-receipt.js";
-import { TaskRunSelectionService } from "./task-run-selection-service.js";
+import { TaskBindingService } from "./task-binding-service.js";
 import { TaskRequestRoutingService } from "./task-request-routing-service.js";
 import { readMutationAuthority } from "../repositories/mutation-authority-records.js";
 import { readRun } from "../repositories/run-records.js";
@@ -107,7 +97,12 @@ import { buildReadContext } from "./read-context-builder.js";
 import {
   DailySessionRolloverService,
   localDate,
+  type DailySessionRolloverAction,
 } from "./daily-session-rollover-service.js";
+import { TurnPreparationService } from "./turn-preparation-service.js";
+import { UnboundRunFinalizationService } from "./unbound-run-finalization-service.js";
+import { RunFinalizationService } from "./run-finalization-service.js";
+import { StartupRunRecoveryService } from "./startup-run-recovery-service.js";
 
 export interface SqliteGitContextServiceOptions {
   database: ContextDatabase;
@@ -118,6 +113,11 @@ export interface SqliteGitContextServiceOptions {
   rolloverCheckIntervalMs?: number;
   sessionRepositoryValidationIntervalMs?: number;
   taskCandidateCacheIntervalMs?: number;
+}
+
+interface TurnRolloverAssessment {
+  sessionId: string;
+  action: DailySessionRolloverAction;
 }
 
 export class SqliteGitContextService implements GitContextService {
@@ -133,15 +133,16 @@ export class SqliteGitContextService implements GitContextService {
   private readonly contextInvalidation: ActiveContextInvalidation;
   private readonly sessionRegistry: SessionRegistryCache;
   private readonly conversationCache: ConversationHotCache;
-  private readonly contextTurnCompletion: ContextTurnCompletionService;
+  private readonly turnPreparation: TurnPreparationService;
   private readonly sessionSummaryCache = new SessionSummaryHotCache();
   private readonly sessionRepositoryValidation: SessionRepositoryValidationService;
-  private readonly sessionRuns: SessionRunLifecycleService;
+  private readonly runs: RunLifecycleService;
   private readonly taskLifecycle: TaskLifecycleService;
-  private readonly taskSelection: TaskRunSelectionService;
+  private readonly taskBinding: TaskBindingService;
   private readonly taskRequestRouting: TaskRequestRoutingService;
   private readonly mutationBoundary: MutationBoundaryService;
-  private readonly taskRunFinalization: TaskRunFinalizationService;
+  private readonly runFinalization: RunFinalizationService;
+  private readonly startupRunRecovery: StartupRunRecoveryService;
   private readonly taskAttachments: TaskAttachmentService;
   private readonly dailySessionRollover: DailySessionRolloverService;
   private readonly rolloverCheckIntervalMs: number;
@@ -170,7 +171,8 @@ export class SqliteGitContextService implements GitContextService {
         ?? DEFAULT_SESSION_REPOSITORY_VALIDATION_INTERVAL_MS,
       now: this.now,
     });
-    this.sessionRuns = new SessionRunLifecycleService(this.database);
+    this.runs = new RunLifecycleService(this.database);
+    this.turnPreparation = new TurnPreparationService(this.database);
     const workspaceRoot = options.workspaceRoot ?? join(this.dataRoot, "workspace");
     const taskRoot = join(workspaceRoot, "tasks");
     this.taskLifecycle = new TaskLifecycleService({
@@ -183,10 +185,9 @@ export class SqliteGitContextService implements GitContextService {
       database: this.database,
       taskRoot,
     });
-    this.taskSelection = new TaskRunSelectionService(
+    this.taskBinding = new TaskBindingService(
       this.database,
       this.taskLifecycle,
-      this.sessionRuns,
       this.taskRequestRouting,
       this.observer,
     );
@@ -194,11 +195,24 @@ export class SqliteGitContextService implements GitContextService {
       this.database,
       taskRoot,
     );
-    this.taskRunFinalization = new TaskRunFinalizationService(
+    const taskBoundFinalization = new TaskBoundFinalizationService(
       this.database,
       taskRoot,
+      this.mutationBoundary,
       async (phase, record) => {
-        if (phase !== "plan_persisted") return;
+        if (phase === "commit_created") {
+          this.events.emit({
+            level: "info",
+            event: "task_commit_created",
+            requestId: record.requestId,
+            sessionId: record.sessionId,
+            runId: record.runId,
+            taskId: record.taskId,
+            outcome: "succeeded",
+            data: { baseHead: record.baseHead, stagedPaths: record.plan.stagedPaths },
+          });
+          return;
+        }
         this.events.emit({
           level: "info",
           event: "task_mutation_staged",
@@ -215,6 +229,12 @@ export class SqliteGitContextService implements GitContextService {
         });
       },
     );
+    this.runFinalization = new RunFinalizationService({
+      database: this.database,
+      unbound: new UnboundRunFinalizationService(this.database),
+      taskBound: taskBoundFinalization,
+    });
+    this.startupRunRecovery = new StartupRunRecoveryService(this.database);
     this.taskAttachments = new TaskAttachmentService({
       database: this.database,
       taskRoot,
@@ -244,28 +264,15 @@ export class SqliteGitContextService implements GitContextService {
         session.sessionId,
         session.head,
       ) ?? await this.sessionSummaryCache.refresh(session),
-      loadActiveRun: (sessionId) => this.sessionRuns.getActive(sessionId),
-      loadActiveTask: async (_sessionId, run) => run.run.taskId
+      loadActiveRun: (sessionId) => this.runs.getActive(sessionId),
+      loadActiveTask: async (_sessionId, run) => run.run.taskBinding
         ? await this.taskRequestRouting.projectContext(
             run.run.runId,
             await this.taskLifecycle.readContext(
-              (await this.taskLifecycle.getTask({ taskId: run.run.taskId })).task,
+              (await this.taskLifecycle.getTask({ taskId: run.run.taskBinding.taskId })).task,
             ),
           )
         : undefined,
-    });
-    this.contextTurnCompletion = new ContextTurnCompletionService({
-      database: this.database,
-      contextCache: this.contextCache,
-      contextDataCache: this.contextDataCache,
-      conversationCache: this.conversationCache,
-      events: this.events,
-      requireSession: (sessionId) => this.requireSession(sessionId),
-      requireWritableSession: (sessionId) => this.requireWritableSession(sessionId),
-      loadActiveRun: (sessionId) => this.sessionRuns.getActive(sessionId),
-      invalidateContext: (reason, sessionId) => {
-        this.invalidateContext(reason, { sessionId });
-      },
     });
     this.dailySessionRollover = new DailySessionRolloverService({
       database: this.database,
@@ -329,38 +336,20 @@ export class SqliteGitContextService implements GitContextService {
       });
       const rollover = existingRequest
         ? undefined
-        : await this.reconcileRequestedDailySession(input, input.at);
-      const pending = beginRecoverableIdempotent<PreparedContextTurnReceipt>({
-        database: this.database,
-        requestId: input.requestId,
-        operation: "prepare_context_turn",
-        payload: input,
-        now: input.at,
-        execute: () => {
-          const ensured = this.ensureSession(input, input.at, rollover?.created === true);
-          const appended = appendConversationMessage(this.database, {
-            requestId: input.requestId,
-            sessionId: ensured.session.sessionId,
-            role: input.role,
-            content: input.content,
-            at: input.at,
-          });
-          return createPreparedContextTurnReceipt({
-            sessionId: ensured.session.sessionId,
-            sessionCreated: ensured.created || rollover?.created === true,
-            conversationId: appended.conversation.conversationId,
-            messageId: appended.message.messageId,
-          });
-        },
+        : await this.assessRequestedTurnRollover(input, input.at);
+      const pending = this.turnPreparation.prepare(input, {
+        ensureSession: () => this.ensureSessionForTurn(input, input.at, rollover),
       });
       try {
         const receipt = requirePreparedContextTurnReceipt(pending.result);
+        this.refreshPreparedSessionCache(receipt.sessionId, rollover?.sessionId);
         const session = await this.sessionRepositoryValidation.ensure(
           receipt.sessionId,
           "request",
         );
         const conversation = readConversation(this.database, receipt.conversationId);
         const message = readConversationMessage(this.database, receipt.messageId);
+        const run = readRun(this.database, receipt.runId);
         const persistence = readConversationPersistenceState(
           this.database,
           receipt.conversationId,
@@ -369,6 +358,8 @@ export class SqliteGitContextService implements GitContextService {
           || conversation.sessionId !== receipt.sessionId
           || !message
           || message.conversationId !== receipt.conversationId
+          || !run
+          || run.conversationId !== receipt.conversationId
           || !persistence) {
           throw new Error("Prepared context turn receipt does not resolve to durable records.");
         }
@@ -385,12 +376,14 @@ export class SqliteGitContextService implements GitContextService {
         if (!sessionRecord) {
           throw new Error("Prepared context turn could not be reconstructed.");
         }
+        this.runs.refresh(run.runId);
         const context = await this.activeContextProjection.build(sessionRecord);
         const result: PrepareContextTurnResponse = {
           session,
           sessionCreated: receipt.sessionCreated,
           conversation,
           message,
+          run,
           persistence,
           context,
         };
@@ -416,6 +409,7 @@ export class SqliteGitContextService implements GitContextService {
           result: completePreparedContextTurnReceipt(receipt, context.contextRevision),
           now: input.at,
         });
+        this.emitTurnRollover(rollover, result.session, input);
         this.events.emit({
           level: "info",
           event: "session_ensured",
@@ -447,10 +441,11 @@ export class SqliteGitContextService implements GitContextService {
         });
         this.events.emit({
           level: "info",
-          event: "context_turn_prepared",
+          event: "run_started",
           requestId: input.requestId,
           sessionId: session.sessionId,
           conversationId: result.conversation.conversationId,
+          runId: result.run.runId,
           outcome: "succeeded",
           data: {
             role: input.role,
@@ -466,15 +461,6 @@ export class SqliteGitContextService implements GitContextService {
         });
         throw error;
       }
-    });
-  }
-
-  async completeContextTurn(
-    input: CompleteContextTurnRequest,
-  ): Promise<CompleteContextTurnResponse> {
-    return await this.queue.enqueue(async () => {
-      await this.ensureStartupRecovery();
-      return await this.contextTurnCompletion.complete(input);
     });
   }
 
@@ -535,99 +521,14 @@ export class SqliteGitContextService implements GitContextService {
     });
   }
 
-  async appendConversation(
-    input: AppendConversationRequest,
-  ): Promise<AppendConversationResponse> {
-    return await this.queue.enqueue(async () => {
-      await this.ensureStartupRecovery();
-      const pending = beginRecoverableIdempotent({
-        database: this.database,
-        requestId: input.requestId,
-        operation: "append_conversation",
-        payload: input,
-        now: input.at,
-        execute: () => {
-          const session = this.requireWritableSession(input.sessionId);
-          verifyExpectedHead(session, input.expectedHead);
-          return appendConversationMessage(this.database, input);
-        },
-      });
-      const conversations = this.conversationCache.append(
-        input.sessionId,
-        pending.result.conversation,
-        pending.result.message,
-      );
-      const currentConversations = conversations.length > 0
-        ? conversations
-        : this.conversationCache.refreshSession(this.database, input.sessionId);
-      this.invalidateContext("conversation_persisted", { sessionId: input.sessionId });
-      try {
-        const conversation = readConversation(
-          this.database,
-          pending.result.conversation.conversationId,
-        );
-        if (!conversation) {
-          throw new Error("Persisted conversation could not be read.");
-        }
-        const session = this.requireWritableSession(input.sessionId);
-        const run = this.sessionRuns.getActive(input.sessionId);
-        const taskCandidates = await this.contextDataCache.taskCandidates(20);
-        const readContext = this.contextDataCache.readContext(input.sessionId);
-        const attachments = this.contextDataCache.attachments(input.sessionId);
-        const revision = activeContextRevision({
-          head: session.head,
-          status: session.status,
-          conversations: currentConversations,
-          readContext,
-          ...(attachments ? { attachments } : {}),
-          ...(run ? { run } : {}),
-          taskCandidates,
-        });
-        const result: AppendConversationResponse = {
-          conversation,
-          message: pending.result.message,
-          contextRevision: revision.revision,
-          pendingDigest: revision.pendingDigest,
-        };
-        const completed = completeRecoverableIdempotent({
-          database: this.database,
-          requestId: input.requestId,
-          result,
-          now: input.at,
-        });
-        this.events.emit({
-          level: "info",
-          event: "conversation_persisted",
-          requestId: input.requestId,
-          sessionId: input.sessionId,
-          conversationId: completed.conversation.conversationId,
-          outcome: "succeeded",
-          data: {
-            role: input.role,
-            conversationSequence: completed.conversation.sequence,
-            status: completed.conversation.status,
-            contentBytes: Buffer.byteLength(input.content),
-          },
-        });
-        return completed;
-      } catch (error) {
-        markRecoverableIdempotencyFailed({
-          database: this.database,
-          requestId: input.requestId,
-        });
-        throw error;
-      }
-    });
-  }
-
-  async createTaskRun(input: CreateTaskRunRequest): Promise<SelectedTaskRunResponse> {
+  async createTaskForRun(input: CreateTaskForRunRequest): Promise<SelectedTaskForRunResponse> {
     return await this.queue.enqueue(async () => {
       await this.ensureStartupRecovery();
       const session = this.requireWritableSession(input.sessionId);
       verifyExpectedHead(session, input.expectedHead);
-      const result = await this.taskSelection.create(input);
-      this.sessionRuns.refresh(result.run.runId);
-      this.invalidateContext("task_run_created", {
+      const result = await this.taskBinding.create(input);
+      this.runs.refresh(result.run.runId);
+      this.invalidateContext("run_task_bound", {
         sessionId: input.sessionId,
         runId: result.run.runId,
         taskId: result.task.taskId,
@@ -639,14 +540,14 @@ export class SqliteGitContextService implements GitContextService {
     });
   }
 
-  async activateTaskRun(input: ActivateTaskRunRequest): Promise<SelectedTaskRunResponse> {
+  async activateTaskForRun(input: ActivateTaskForRunRequest): Promise<SelectedTaskForRunResponse> {
     return await this.queue.enqueue(async () => {
       await this.ensureStartupRecovery();
       const session = this.requireWritableSession(input.sessionId);
       verifyExpectedHead(session, input.expectedHead);
-      const result = await this.taskSelection.activate(input);
-      this.sessionRuns.refresh(result.run.runId);
-      this.invalidateContext("task_run_activated", {
+      const result = await this.taskBinding.activate(input);
+      this.runs.refresh(result.run.runId);
+      this.invalidateContext("run_task_bound", {
         sessionId: input.sessionId,
         runId: result.run.runId,
         taskId: result.task.taskId,
@@ -665,7 +566,7 @@ export class SqliteGitContextService implements GitContextService {
       await this.ensureStartupRecovery();
       this.requireWritableSession(input.sessionId);
       const result = await this.taskRequestRouting.plan(input);
-      this.sessionRuns.refresh(input.runId);
+      this.runs.refresh(input.runId);
       this.invalidateContext("task_request_route_planned", {
         sessionId: input.sessionId,
         runId: input.runId,
@@ -746,7 +647,7 @@ export class SqliteGitContextService implements GitContextService {
       const session = this.requireWritableSession(input.sessionId);
       verifyExpectedHead(session, input.expectedHead);
       const result = await this.mutationBoundary.acquire(input);
-      this.sessionRuns.refresh(input.runId);
+      this.runs.refresh(input.runId);
       this.invalidateContext("mutation_authority_acquired", {
         sessionId: input.sessionId,
         runId: input.runId,
@@ -797,49 +698,61 @@ export class SqliteGitContextService implements GitContextService {
     });
   }
 
-  async finalizeTaskRun(input: FinalizeTaskRunRequest): Promise<FinalizeTaskRunResponse> {
+  async finalizeRun(input: FinalizeRunRequest): Promise<FinalizeRunResponse> {
     return await this.queue.enqueue(async () => {
       await this.ensureStartupRecovery();
       const session = this.requireSession(input.sessionId);
       const selectedRun = readRun(this.database, input.runId);
-      const selectedTask = await this.taskLifecycle.getTask({ taskId: input.taskId });
-      let result: FinalizeTaskRunResponse;
+      const taskId = selectedRun?.taskBinding?.taskId;
+      const selectedTask = taskId
+        ? await this.taskLifecycle.getTask({ taskId })
+        : undefined;
+      let result: FinalizeRunResponse;
+      let completed = false;
       this.events.emit({
         level: "info",
-        event: "task_finalization_started",
+        event: "run_finalization_started",
         requestId: input.requestId,
         sessionId: input.sessionId,
         runId: input.runId,
-        taskId: input.taskId,
+        ...(taskId ? { taskId } : {}),
         outcome: "started",
         data: {
-          workingDirectory: selectedTask.task.workingPath,
-          taskRequestId: selectedRun?.taskRequestId,
+          workingDirectory: selectedTask?.task.workingPath,
+          taskRequestId: selectedRun?.taskBinding?.taskRequestId,
           requestedOutcome: input.outcome,
           validation: input.validation,
         },
       });
       try {
-        result = await this.taskRunFinalization.finalize(input, session);
+        result = await this.runFinalization.finalize(input, session);
+        completed = true;
       } catch (error) {
         this.events.emit({
           level: "error",
-          event: "task_finalization_failed",
+          event: "run_finalization_failed",
           requestId: input.requestId,
           sessionId: input.sessionId,
           runId: input.runId,
-          taskId: input.taskId,
+          ...(taskId ? { taskId } : {}),
           outcome: "failed",
           message: error instanceof Error ? error.message : String(error),
         });
         throw error;
       } finally {
-        this.sessionRuns.remove(input.runId);
+        if (completed) this.runs.remove(input.runId);
+        else {
+          try {
+            this.runs.refresh(input.runId);
+          } catch {
+            this.runs.remove(input.runId);
+          }
+        }
         this.conversationCache.refreshSession(this.database, input.sessionId);
-        this.invalidateContext("task_finalization", {
+        this.invalidateContext("run_finalization", {
           sessionId: input.sessionId,
           runId: input.runId,
-          taskId: input.taskId,
+          ...(taskId ? { taskId } : {}),
           allSessions: true,
           readContext: true,
           taskCandidates: true,
@@ -856,72 +769,23 @@ export class SqliteGitContextService implements GitContextService {
       }
       this.events.emit({
         level: "info",
-        event: "task_finalization_completed",
+        event: "run_finalization_completed",
         requestId: input.requestId,
         sessionId: input.sessionId,
         runId: input.runId,
-        taskId: input.taskId,
+        ...(taskId ? { taskId } : {}),
         outcome: "succeeded",
         data: {
-          outcome: result.outcome,
-          workingDirectory: selectedTask.task.workingPath,
-          taskRequestId: selectedRun?.taskRequestId,
-          taskHeadBefore: result.taskHeadBefore,
-          taskHeadAfter: result.taskHeadAfter,
-          taskCommit: result.taskFinalizationCommit,
-          taskCommitCreated: result.taskCommitCreated,
-          sessionCommit: result.sessionCommit,
-          readContextReset: true,
+          outcome: result.run.status,
+          stopReason: result.run.stopReason,
+          workingDirectory: selectedTask?.task.workingPath,
+          taskRequestId: selectedRun?.taskBinding?.taskRequestId,
+          materialization: result.materialization,
+          commit: result.commit,
+          readContextReset: result.commit.status === "committed",
         },
       });
       await this.reconcileLatestDailySession(input.at);
-      return result;
-    });
-  }
-
-  async finalizeSessionRun(
-    input: FinalizeSessionRunRequest,
-  ): Promise<FinalizeSessionRunResponse> {
-    return await this.queue.enqueue(async () => {
-      await this.ensureStartupRecovery();
-      const session = this.requireWritableSession(input.sessionId);
-      verifyExpectedHead(session, input.expectedHead);
-      try {
-        const result = await this.sessionRuns.finalize(input, session);
-        this.events.emit({
-          level: "info",
-          event: "session_run_finalized",
-          requestId: input.requestId,
-          sessionId: input.sessionId,
-          runId: input.runId,
-          outcome: "succeeded",
-          data: { stepCount: result.stepCount, status: result.status },
-        });
-        return result;
-      } finally {
-        this.conversationCache.refreshSession(this.database, input.sessionId);
-        this.invalidateContext("session_run_finalized", { sessionId: input.sessionId, runId: input.runId });
-      }
-    });
-  }
-
-  async startRun(input: StartRunRequest): Promise<StartRunResponse> {
-    return await this.queue.enqueue(async () => {
-      await this.ensureStartupRecovery();
-      const session = this.requireWritableSession(input.sessionId);
-      verifyExpectedHead(session, input.expectedHead);
-      const result = this.sessionRuns.start(input, input.at ?? this.now());
-      this.invalidateContext("session_run_started", { sessionId: input.sessionId, runId: result.run.runId });
-      this.events.emit({
-        level: "info",
-        event: "session_run_started",
-        requestId: input.requestId,
-        sessionId: input.sessionId,
-        conversationId: input.conversationId,
-        runId: result.run.runId,
-        outcome: "succeeded",
-        data: { runClass: result.run.runClass, trigger: input.trigger },
-      });
       return result;
     });
   }
@@ -931,7 +795,7 @@ export class SqliteGitContextService implements GitContextService {
       await this.ensureStartupRecovery();
       const session = this.requireWritableSession(input.sessionId);
       verifyExpectedHead(session, input.expectedHead);
-      const result = this.sessionRuns.recordStep(input);
+      const result = this.runs.recordStep(input);
       this.invalidateContext("run_step_persisted", {
         sessionId: input.sessionId,
         runId: input.runId,
@@ -952,7 +816,7 @@ export class SqliteGitContextService implements GitContextService {
       this.rolloverTimer = undefined;
     }
     await this.queue.close();
-    this.sessionRuns.clear();
+    this.runs.clear();
     this.contextDataCache.clear();
     this.sessionRepositoryValidation.clear();
     this.database.close();
@@ -967,15 +831,41 @@ export class SqliteGitContextService implements GitContextService {
       if (session) {
         await this.sessionRepositoryValidation.ensure(session.sessionId, "startup");
       }
-      await synchronizePendingConversationFiles({
-        database: this.database,
-        now: this.now,
-      });
       if (session) {
         this.conversationCache.refreshSession(this.database, session.sessionId);
       }
       await this.taskLifecycle.recoverInitializingState();
-      await this.taskRunFinalization.recoverSimpleTaskFinalizations(this.now());
+      await this.runFinalization.recover(this.now());
+      const runRecovery = this.startupRunRecovery.recover(this.now());
+      for (const runId of runRecovery.interruptedRunIds) {
+        const run = readRun(this.database, runId);
+        this.events.emit({
+          level: "warn",
+          event: "run_finalization_completed",
+          sessionId: run?.sessionId,
+          runId,
+          outcome: "succeeded",
+          data: {
+            outcome: "incomplete",
+            stopReason: "interrupted",
+            recoveredAtStartup: true,
+            commit: { status: "not_required" },
+          },
+        });
+      }
+      for (const runId of runRecovery.recoveryRequiredRunIds) {
+        const run = readRun(this.database, runId);
+        this.events.emit({
+          level: "error",
+          event: "run_finalization_failed",
+          sessionId: run?.sessionId,
+          runId,
+          taskId: run?.taskBinding?.taskId,
+          outcome: "failed",
+          message: "Startup recovery requires manual resolution before another run can start.",
+          data: { recoveredAtStartup: true, runStatus: "recovery_required" },
+        });
+      }
       await this.reconcileLatestDailySession(this.now());
       this.startupRecovered = true;
       this.startRolloverTimer();
@@ -1062,6 +952,143 @@ export class SqliteGitContextService implements GitContextService {
       session,
       created: true,
     };
+  }
+
+  private async assessRequestedTurnRollover(
+    input: PrepareContextTurnRequest,
+    at: string,
+  ): Promise<TurnRolloverAssessment | undefined> {
+    validateSessionInput(input);
+    const agentId = normalizeAgentId(input.agentId);
+    const existing = readLiveSessionRecords(this.database)
+      .find((session) => session.agentId === agentId);
+    if (!existing || existing.date === input.date) return undefined;
+    verifyExpectedHead(sessionRecordRef(existing), input.expectedHead);
+    const action = await this.dailySessionRollover.assess(existing, {
+      date: input.date,
+      timezone: input.timezone,
+      at,
+    });
+    return { sessionId: existing.sessionId, action };
+  }
+
+  /** Runs inside the preparation transaction and intentionally avoids cache mutation. */
+  private ensureSessionForTurn(
+    input: PrepareContextTurnRequest,
+    createdAt: string,
+    rollover: TurnRolloverAssessment | undefined,
+  ): EnsureActiveSessionResponse {
+    validateSessionInput(input);
+    const agentId = normalizeAgentId(input.agentId);
+    const existing = readLiveSessionRecords(this.database)
+      .find((session) => session.agentId === agentId);
+    if (existing) {
+      if (existing.timezone !== input.timezone) {
+        throw new GitContextServiceError({
+          code: "INVALID_REQUEST",
+          message: "Active session timezone does not match the requested timezone.",
+          details: {
+            sessionId: existing.sessionId,
+            activeTimezone: existing.timezone,
+            requestedTimezone: input.timezone,
+          },
+        });
+      }
+      verifyExpectedHead(sessionRecordRef(existing), input.expectedHead);
+      if (existing.date === input.date) {
+        return { session: sessionRecordRef(existing), created: false };
+      }
+      if (!rollover || rollover.sessionId !== existing.sessionId) {
+        throw new GitContextServiceError({
+          code: "INVALID_REQUEST",
+          message: "Daily session rollover changed before turn preparation.",
+          details: { sessionId: existing.sessionId, requestedDate: input.date },
+        });
+      }
+      if (rollover.action === "mark_pending") {
+        const pending = existing.status === "open"
+          ? updateSessionStatus(this.database, existing.sessionId, "rollover_pending", createdAt)
+          : existing;
+        return { session: sessionRecordRef(pending), created: false };
+      }
+      if (rollover.action === "seal_and_create") {
+        updateSessionStatus(this.database, existing.sessionId, "sealed", createdAt);
+        const nextSessionId = "S-" + input.date.replaceAll("-", "") + "-" + agentId;
+        return {
+          session: insertSession(this.database, {
+            sessionId: nextSessionId,
+            date: input.date,
+            timezone: input.timezone,
+            agentId,
+            repositoryPath: join(this.dataRoot, "sessions", nextSessionId),
+            previousSessionId: existing.sessionId,
+            createdAt,
+          }),
+          created: true,
+        };
+      }
+      throw new Error("Unexpected daily session rollover action for a new date.");
+    }
+
+    const sessionId = "S-" + input.date.replaceAll("-", "") + "-" + agentId;
+    const previousSessionId = readLatestSealedSessionId(this.database, agentId);
+    return {
+      session: insertSession(this.database, {
+        sessionId,
+        date: input.date,
+        timezone: input.timezone,
+        agentId,
+        repositoryPath: join(this.dataRoot, "sessions", sessionId),
+        ...(previousSessionId ? { previousSessionId } : {}),
+        createdAt,
+      }),
+      created: true,
+    };
+  }
+
+  private refreshPreparedSessionCache(
+    sessionId: string,
+    previousSessionId?: string,
+  ): void {
+    for (const id of new Set([sessionId, previousSessionId].filter(
+      (value): value is string => Boolean(value),
+    ))) {
+      const record = readSessionRecord(this.database, id);
+      if (record) this.sessionRegistry.set(record);
+    }
+  }
+
+  private emitTurnRollover(
+    rollover: TurnRolloverAssessment | undefined,
+    session: SessionRef,
+    input: PrepareContextTurnRequest,
+  ): void {
+    if (!rollover || rollover.action === "reuse") return;
+    if (rollover.action === "mark_pending") {
+      this.events.emit({
+        level: "info",
+        event: "session_rollover_pending",
+        sessionId: rollover.sessionId,
+        outcome: "succeeded",
+        data: {
+          requestedDate: input.date,
+          reason: "waiting_for_run_finalization",
+        },
+      });
+      return;
+    }
+    this.conversationCache.refreshSession(this.database, rollover.sessionId);
+    this.events.emit({
+      level: "info",
+      event: "session_rollover_completed",
+      sessionId: session.sessionId,
+      outcome: "succeeded",
+      data: {
+        previousSessionId: rollover.sessionId,
+        currentDate: session.date,
+        closingCommitCreated: false,
+      },
+    });
   }
 
   private requireWritableSession(sessionId: string): SessionRef {

@@ -7,7 +7,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ContextDatabase } from "../src/database/database.js";
 import { readMutationAuthority } from "../src/repositories/mutation-authority-records.js";
 import { SqliteGitContextService } from "../src/services/sqlite-git-context-service.js";
-import { TaskLifecycleService } from "../src/services/task-lifecycle-service.js";
 
 const execFileAsync = promisify(execFile);
 const temporaryDirectories: string[] = [];
@@ -21,7 +20,7 @@ afterEach(async () => {
   }));
 });
 
-describe("simple task direct mutation authority", () => {
+describe("task-bound mutation authority", () => {
   it("binds one run and request directly to the task repository", async () => {
     const fixture = await createFixture();
     const input = authorityInput(fixture, [{ path: "src/app.ts", kind: "file" }]);
@@ -54,15 +53,14 @@ describe("simple task direct mutation authority", () => {
       branch: "main",
     });
     expect(fixture.database.prepare([
-      "SELECT task_id, task_request_id, run_class FROM runs WHERE run_id = ?",
+      "SELECT task_id, task_request_id FROM runs WHERE run_id = ?",
     ].join(" ")).get(fixture.runId)).toEqual({
       task_id: fixture.taskId,
       task_request_id: "R-0001",
-      run_class: "task",
     });
   });
 
-  it("requires matching HEAD and active request identity before task binding", async () => {
+  it("requires matching HEAD and the immutable bound request identity", async () => {
     const fixture = await createFixture();
 
     await expect(fixture.service.acquireMutationAuthority({
@@ -73,13 +71,12 @@ describe("simple task direct mutation authority", () => {
       ...authorityInput(fixture, [{ path: "src/app.ts", kind: "file" }]),
       requestId: "REQ-wrong-task-request",
       taskRequestId: "R-9999",
-    })).rejects.toMatchObject({ code: "TASK_CURRENT_REQUEST_INVALID" });
+    })).rejects.toMatchObject({ code: "MUTATION_REQUIRES_TASK_BINDING" });
     expect(fixture.database.prepare([
-      "SELECT task_id, task_request_id, run_class FROM runs WHERE run_id = ?",
+      "SELECT task_id, task_request_id FROM runs WHERE run_id = ?",
     ].join(" ")).get(fixture.runId)).toEqual({
-      task_id: null,
-      task_request_id: null,
-      run_class: "session",
+      task_id: fixture.taskId,
+      task_request_id: "R-0001",
     });
   });
 
@@ -97,8 +94,11 @@ describe("simple task direct mutation authority", () => {
     expect(await git(fixture.repositoryPath, ["status", "--porcelain", "--untracked-files=all"]))
       .toBe("?? keep-me.txt");
     expect(fixture.database.prepare(
-      "SELECT run_class FROM runs WHERE run_id = ?",
-    ).get(fixture.runId)).toEqual({ run_class: "session" });
+      "SELECT task_id, task_request_id FROM runs WHERE run_id = ?",
+    ).get(fixture.runId)).toEqual({
+      task_id: fixture.taskId,
+      task_request_id: "R-0001",
+    });
     expect(fixture.database.prepare(
       "SELECT COUNT(*) AS count FROM task_mutation_authorities",
     ).get()).toEqual({ count: 0 });
@@ -242,8 +242,11 @@ describe("simple task direct mutation authority", () => {
       })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
     }
     expect(fixture.database.prepare(
-      "SELECT run_class FROM runs WHERE run_id = ?",
-    ).get(fixture.runId)).toEqual({ run_class: "session" });
+      "SELECT task_id, task_request_id FROM runs WHERE run_id = ?",
+    ).get(fixture.runId)).toEqual({
+      task_id: fixture.taskId,
+      task_request_id: "R-0001",
+    });
   });
 
   it("detects external HEAD changes", async () => {
@@ -284,51 +287,34 @@ async function createFixture(): Promise<Fixture> {
     now: () => at,
   });
   services.push(service);
-  const session = await service.ensureActiveSession({
-    requestId: "REQ-session",
+  const prepared = await service.prepareContextTurn({
+    requestId: "REQ-prepare",
     date: "2026-07-17",
     timezone: "Asia/Kolkata",
     agentId: "local",
-    at,
-  });
-  const conversation = await service.appendConversation({
-    requestId: "REQ-message",
-    sessionId: session.session.sessionId,
     role: "user",
     content: "Modify the simple task repository.",
     at: "2026-07-17T10:00:01+05:30",
   });
-  const run = await service.startRun({
-    requestId: "REQ-run",
-    sessionId: session.session.sessionId,
-    conversationId: conversation.conversation.conversationId,
-    trigger: "user",
-    workState: emptyRunWorkState(),
-    at: "2026-07-17T10:00:02+05:30",
-  });
-  const lifecycle = new TaskLifecycleService({
-    database,
-    dataRoot: root,
-    workspaceRoot,
-    now: () => at,
-  });
-  const task = await lifecycle.createSimpleTask({
-    requestId: "REQ-simple-task",
-    sessionId: session.session.sessionId,
+  const selected = await service.createTaskForRun({
+    requestId: "REQ-create-task",
+    sessionId: prepared.session.sessionId,
+    conversationId: prepared.conversation.conversationId,
+    runId: prepared.run.runId,
     title: "Direct mutation task",
     objective: "Safely mutate one normal Git task repository.",
     placement: { mode: "managed" },
-    at,
+    at: "2026-07-17T10:00:02+05:30",
   });
   return {
     service,
     database,
-    sessionId: session.session.sessionId,
-    conversationId: conversation.conversation.conversationId,
-    runId: run.run.runId,
-    taskId: task.task.taskId,
-    taskHead: task.task.head,
-    repositoryPath: task.task.repositoryPath,
+    sessionId: prepared.session.sessionId,
+    conversationId: prepared.conversation.conversationId,
+    runId: prepared.run.runId,
+    taskId: selected.task.taskId,
+    taskHead: selected.task.head,
+    repositoryPath: selected.task.repositoryPath,
   };
 }
 
@@ -355,20 +341,6 @@ function verificationInput(authority: { authorityId: string; lockToken: string }
     lockToken: authority.lockToken,
     toolStatus: "completed" as const,
     at: "2026-07-17T10:02:00+05:30",
-  };
-}
-
-function emptyRunWorkState() {
-  return {
-    status: "not_done" as const,
-    summary: "",
-    openWork: [],
-    blockers: [],
-    facts: [],
-    evidence: [],
-    artifacts: [],
-    nextStep: null,
-    userInputNeeded: [],
   };
 }
 

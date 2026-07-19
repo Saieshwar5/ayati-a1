@@ -211,9 +211,9 @@ function buildCheckpointMessages(
     {
       role: "system",
       content: [
-        "Create a structured continuity checkpoint from the previous task-run checkpoint and older open-timeline events.",
+        "Create a structured continuity checkpoint from the previous task-bound-run checkpoint and older open-timeline events.",
         "Use only the supplied checkpoint and events. Do not invent facts, decisions, constraints, or references.",
-        "Every array item must cite an exact source event seq or a seq inside the supplied task-run checkpoint coverage.",
+        "Every array item must cite an exact source event seq or a seq inside the supplied task-bound-run checkpoint coverage.",
         "Preserve user requests, corrections, constraints, decisions, important facts, unresolved questions, and literal references such as paths, URLs, ids, commands, and error strings.",
         "Do not summarize tool results, task state, work state, or personal memory because they are not part of this input.",
         `The complete checkpoint event must remain within ${plan.estimatedCheckpointTokens} estimated tokens.`,
@@ -229,7 +229,7 @@ function buildCheckpointMessages(
         coveredFromSeq: plan.coveredFromSeq,
         coveredToSeq: plan.coveredToSeq,
         sourceEventCount: plan.selectedEvents.length + (plan.continuityCheckpoint ? 1 : 0),
-        previousTaskRunCheckpoint: plan.continuityCheckpoint ?? null,
+        previousTaskBoundRunCheckpoint: plan.continuityCheckpoint ?? null,
         events: plan.selectedEvents,
       }, null, 2),
     },

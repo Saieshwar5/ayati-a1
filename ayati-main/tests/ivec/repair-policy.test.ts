@@ -31,7 +31,7 @@ describe("repair policy", () => {
   });
 
   it("creates a repair signal with catalog defaults and compact detail fields", () => {
-    const signal = createRepairSignal("R_FRESH_SESSION_NEEDS_TASK", {
+    const signal = createRepairSignal("R_UNBOUND_RUN_NEEDS_TASK_BINDING", {
       blockedTargets: [" write_files ", "write_files", "", " process_run  "],
       operatorDetails: {
         seq: 31,
@@ -40,7 +40,7 @@ describe("repair policy", () => {
     });
 
     expect(signal).toMatchObject({
-      code: "R_FRESH_SESSION_NEEDS_TASK",
+      code: "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
       severity: "repairable",
       source: "runner.guard",
       message: "No active task exists yet. Normal work tools cannot run before task binding.",

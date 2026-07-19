@@ -2,8 +2,8 @@ import { GitContextServiceError } from "../errors.js";
 import { requireRequestId, requireTaskId } from "./task-repository-layout.js";
 import { requireSingleLine } from "./task-markdown.js";
 
-export type TaskRunCommitOutcome = "completed" | "incomplete" | "blocked" | "failed";
-export type TaskRunCommitValidation = "passed" | "failed" | "not_run";
+export type TaskCommitOutcome = "completed" | "incomplete" | "blocked" | "failed";
+export type TaskCommitValidation = "passed" | "failed" | "not_applicable";
 
 export interface TaskIdentityCommitInput {
   subject: string;
@@ -11,11 +11,11 @@ export interface TaskIdentityCommitInput {
   requestId: string;
 }
 
-export interface TaskRunCommitInput extends TaskIdentityCommitInput {
+export interface TaskCommitInput extends TaskIdentityCommitInput {
   runId: string;
   sessionId: string;
-  outcome: TaskRunCommitOutcome;
-  validation: TaskRunCommitValidation;
+  outcome: TaskCommitOutcome;
+  validation: TaskCommitValidation;
   next?: string;
   conversationId?: string;
   conversationHash?: string;
@@ -31,14 +31,14 @@ export type SimpleTaskCommitMetadata =
       schema: "task/v1";
     }
   | {
-      event: "task_run_finalized";
+      event: "task_bound_run_finalized";
       subject: string;
       taskId: string;
       requestId: string;
       runId: string;
       sessionId: string;
-      outcome: TaskRunCommitOutcome;
-      validation: TaskRunCommitValidation;
+      outcome: TaskCommitOutcome;
+      validation: TaskCommitValidation;
       next?: string;
       conversationId?: string;
       conversationHash?: string;
@@ -57,7 +57,7 @@ export function renderTaskIdentityCommit(input: TaskIdentityCommitInput): string
   ].join("\n");
 }
 
-export function renderTaskRunCommit(input: TaskRunCommitInput): string {
+export function renderTaskCommit(input: TaskCommitInput): string {
   const lines = [
     subject(input.subject),
     "",
@@ -75,7 +75,7 @@ export function renderTaskRunCommit(input: TaskRunCommitInput): string {
       ? ["Conversation-Hash: " + hash(input.conversationHash)]
       : []),
     "Ayati-Schema: task/v1",
-    "Ayati-Event: task_run_finalized",
+    "Ayati-Event: task_bound_run_finalized",
   ];
   return lines.join("\n");
 }
@@ -108,7 +108,7 @@ export function parseSimpleTaskCommit(message: string): SimpleTaskCommitMetadata
       schema: "task/v1",
     };
   }
-  if (event !== "task_run_finalized") {
+  if (event !== "task_bound_run_finalized") {
     invalid("Task commit contains an unsupported Ayati event.", { event });
   }
   rejectUnsupportedFields(fields, FINALIZATION_FIELDS);
@@ -201,19 +201,19 @@ function identity(value: string, field: string): string {
   return normalized;
 }
 
-function outcome(value: string): TaskRunCommitOutcome {
+function outcome(value: string): TaskCommitOutcome {
   if (value === "completed" || value === "incomplete" || value === "blocked"
     || value === "failed") {
     return value;
   }
-  invalid("Task run commit outcome is invalid.", { value });
+  invalid("Task-bound run commit outcome is invalid.", { value });
 }
 
-function validation(value: string): TaskRunCommitValidation {
-  if (value === "passed" || value === "failed" || value === "not_run") {
+function validation(value: string): TaskCommitValidation {
+  if (value === "passed" || value === "failed" || value === "not_applicable") {
     return value;
   }
-  invalid("Task run commit validation is invalid.", { value });
+  invalid("Task-bound run commit validation is invalid.", { value });
 }
 
 function hash(value: string): string {

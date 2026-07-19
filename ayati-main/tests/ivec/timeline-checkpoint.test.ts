@@ -89,7 +89,7 @@ describe("timeline checkpoint planning", () => {
       sourceHash: "a".repeat(64),
       strategy: "llm" as const,
       at: "2026-07-10T00:00:02.000Z",
-      summary: `Previous task-run context: ${"x".repeat(8_000)}`,
+      summary: `Previous task-bound-run context: ${"x".repeat(8_000)}`,
     };
     const plan = planTimelineCheckpoint({
       events,
@@ -99,7 +99,9 @@ describe("timeline checkpoint planning", () => {
     });
 
     expect(plan.triggered).toBe(true);
-    expect(plan.continuityCheckpoint).toEqual(continuityCheckpoint);
+    const { runId: _runId, ...promptContinuityCheckpoint } = continuityCheckpoint;
+    expect(plan.continuityCheckpoint).toEqual(promptContinuityCheckpoint);
+    expect(plan.continuityCheckpoint).not.toHaveProperty("runId");
     expect(plan.selectedEvents.map((event) => event.seq)).toEqual([3]);
     expect(plan.coveredFromSeq).toBe(1);
     expect(plan.coveredToSeq).toBe(3);

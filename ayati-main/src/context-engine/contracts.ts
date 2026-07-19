@@ -258,7 +258,6 @@ export interface ContextReadEntry {
   runId: string;
   step: number;
   callId?: string;
-  runClass: "session" | "task";
   tool: string;
   purpose: string;
   resources: string[];
@@ -271,7 +270,7 @@ export interface ContextReadEntry {
 
 export interface ContextReadContext {
   revision: string;
-  afterTaskRunId?: string;
+  afterCommitRunId?: string;
   inventory: ContextReadEntry[];
   discovery: ContextReadEntry[];
   evidence: ContextReadEntry[];
@@ -330,64 +329,4 @@ export interface ContextEngineMachineContext {
     recentCommits: ContextCommitSummary[];
     recentEvidence: ContextTaskEvidenceSummary[];
   };
-}
-
-export type HarnessRunStatus = "completed" | "failed" | "stuck";
-export type HarnessResponseKind = "reply" | "feedback" | "notification" | "none";
-export type HarnessWorkStatus = "not_done" | "done" | "blocked" | "needs_user_input";
-
-export interface HarnessWorkStateForContext {
-  status: HarnessWorkStatus;
-  summary: string;
-  openWork?: string[];
-  blockers?: string[];
-  verifiedFacts: string[];
-  evidence: string[];
-  artifacts?: string[];
-  nextStep?: string;
-  userInputNeeded?: string;
-}
-
-export interface HarnessTaskSummaryForContext {
-  stopReason?: string;
-  summary?: string;
-  completedMilestones?: string[];
-  openWork?: string[];
-  blockers?: string[];
-  keyFacts?: string[];
-  evidence?: string[];
-  nextAction?: string;
-}
-
-export interface HarnessStepSummaryForContext {
-  step: number;
-  outcome: "success" | "failed" | string;
-  summary: string;
-  newFacts: string[];
-  artifacts: string[];
-  toolsUsed?: string[];
-  executionContract?: string;
-  evidenceSummary?: string;
-  evidenceItems?: string[];
-  evidenceSource?: Record<string, unknown>;
-  outputSize?: number;
-  lineCount?: number;
-  truncated?: boolean;
-  workState?: HarnessWorkStateForContext;
-}
-
-export interface HarnessRunResultForContext {
-  type: HarnessResponseKind;
-  status: HarnessRunStatus;
-  content: string;
-  totalIterations: number;
-  totalToolCalls: number;
-  runPath: string;
-  workRunId?: string;
-  taskSummary?: HarnessTaskSummaryForContext;
-  workState?: HarnessWorkStateForContext;
-  completedSteps?: HarnessStepSummaryForContext[];
-  taskAssets?: TaskAssetRecord[];
-  /** Exact assets accepted by deterministic task-completion verification. */
-  verifiedCompletionAssets?: TaskAssetRecord[];
 }

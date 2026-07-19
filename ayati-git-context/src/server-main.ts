@@ -17,6 +17,8 @@ const databasePath = process.env["AYATI_GIT_CONTEXT_DATABASE"]?.trim()
   || join(dataRoot, "context.db");
 const socketPath = process.env["AYATI_GIT_CONTEXT_SOCKET"]?.trim()
   || "/tmp/ayati-git-context.sock";
+const timezone = process.env["AYATI_GIT_CONTEXT_TIMEZONE"]?.trim() || "UTC";
+const agentId = process.env["AYATI_GIT_CONTEXT_AGENT_ID"]?.trim() || "local";
 const parentPid = positiveInteger(process.env["AYATI_GIT_CONTEXT_PARENT_PID"]);
 const observabilitySink = createJsonLineObservabilitySink(process.stdout);
 const observer = new GitContextObserver("git-context-engine", observabilitySink);
@@ -25,6 +27,8 @@ const runtime = await startGitContextServerRuntime({
   dataRoot,
   workspaceRoot,
   socketPath,
+  timezone,
+  agentId,
   ...(parentPid ? { parentPid } : {}),
   observabilitySink,
 });

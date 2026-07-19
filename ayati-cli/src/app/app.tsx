@@ -148,17 +148,12 @@ export function App(): React.JSX.Element {
       return;
     }
 
-    if (msg.type === "reply_commit_status" && typeof msg.runId === "string") {
-      setMessages((prev) => prev.map((message) => (
-        message.runId === msg.runId
-          ? { ...message, commitStatus: msg.commitStatus }
-          : message
-      )));
-      return;
-    }
-
     if (msg.type === "reply" && typeof msg.content === "string") {
-      const reply = createMessage("assistant", msg.content, "reply");
+      const reply = {
+        ...createMessage("assistant", msg.content, "reply"),
+        runId: msg.runId,
+        commitStatus: msg.commitStatus,
+      };
       setMessages((prev) => [...prev, reply]);
       setProgressLines([]);
       setIsLoading(false);
@@ -166,7 +161,11 @@ export function App(): React.JSX.Element {
     }
 
     if (msg.type === "feedback" && typeof msg.content === "string") {
-      const feedback = createMessage("assistant", msg.content, "feedback");
+      const feedback = {
+        ...createMessage("assistant", msg.content, "feedback"),
+        runId: msg.runId,
+        commitStatus: msg.commitStatus,
+      };
       setMessages((prev) => [...prev, feedback]);
       setProgressLines([]);
       setIsLoading(false);
@@ -174,7 +173,11 @@ export function App(): React.JSX.Element {
     }
 
     if (msg.type === "notification" && typeof msg.content === "string") {
-      const notification = createMessage("assistant", msg.content, "notification");
+      const notification = {
+        ...createMessage("assistant", msg.content, "notification"),
+        runId: msg.runId,
+        commitStatus: msg.commitStatus,
+      };
       setMessages((prev) => [...prev, notification]);
       if (msg.final === true) {
         setProgressLines([]);

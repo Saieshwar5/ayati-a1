@@ -1,4 +1,5 @@
-import type { MemoryRunHandle, SessionInputHandle } from "../../memory/types.js";
+import type { SessionInputHandle } from "../../memory/types.js";
+import type { AgentRunHandle } from "ayati-git-context";
 import type {
   AgentLoopDeps,
   LoopConfig,
@@ -19,14 +20,13 @@ export function buildInitialState(
   deps: AgentLoopDeps,
   config: LoopConfig,
   inputHandle: SessionInputHandle,
-  runHandle: MemoryRunHandle | undefined,
+  runHandle: AgentRunHandle,
 ): LoopState {
   const harnessContext = createInitialHarnessContext(harnessContextInputFromDeps(deps));
   return {
-    runId: runHandle?.runId ?? "",
+    runId: runHandle.runId,
     currentSeq: inputHandle.seq,
     ...(inputHandle.currentMessageId ? { currentMessageId: inputHandle.currentMessageId } : {}),
-    runClass: "interaction",
     inputKind: deps.inputKind ?? (deps.systemEvent ? "system_event" : "user_message"),
     userMessage: "",
     systemEvent: deps.systemEvent,
@@ -75,14 +75,7 @@ export function resolveInputHandle(deps: AgentLoopDeps): SessionInputHandle {
   throw new Error("Agent loop requires a session input handle.");
 }
 
-export function decisionScopeId(inputHandle: SessionInputHandle): string {
-  return `decision:${inputHandle.sessionId}:${inputHandle.seq}`;
-}
-
-export function requireWorkRunHandle(deps: AgentLoopDeps): MemoryRunHandle {
-  if (!deps.runHandle) {
-    throw new Error("Action execution requires a work run.");
-  }
+export function requireRunHandle(deps: AgentLoopDeps): AgentRunHandle {
   return deps.runHandle;
 }
 

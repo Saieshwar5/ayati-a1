@@ -20,7 +20,7 @@ import {
   type ExecuteActionStepResult,
 } from "./step-lifecycle.js";
 import type { ToolDefinition } from "../../skills/types.js";
-import { requireWorkRunHandle } from "./runner-state.js";
+import { requireRunHandle } from "./runner-state.js";
 
 const noopRunRecorder: RunRecorder = {
   recordToolCall(): void {
@@ -49,13 +49,11 @@ export interface ExecuteActionStepInput {
   decision: Extract<AgentDecision, { kind: "act" }>;
   stepNumber: number;
   runHandle?: MemoryRunHandle;
-  runClass?: LoopState["runClass"];
 }
 
 export async function executeActionStep(input: ExecuteActionStepInput): Promise<ExecuteActionStepResult> {
-  input.state.runClass = input.runClass ?? "task";
-  const runHandle = input.runHandle ?? requireWorkRunHandle(input.deps);
-  const taskAssets = input.state.runClass === "task"
+  const runHandle = input.runHandle ?? requireRunHandle(input.deps);
+  const taskAssets = isTaskBound(input.state)
     ? input.state.harnessContext.contextEngine?.task?.assets
     : undefined;
   let execution = await executeAgentAction(
@@ -112,6 +110,10 @@ export async function executeActionStep(input: ExecuteActionStepInput): Promise<
     execution,
     stepSummary,
   };
+}
+
+function isTaskBound(state: LoopState): boolean {
+  return state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "bound";
 }
 
 export async function applyToolStateUpdates(state: LoopState, deps: AgentLoopDeps, calls: ActToolCallRecord[]): Promise<void> {

@@ -1,10 +1,11 @@
 export interface PreparedContextTurnReceipt {
-  v: 1;
+  v: 2;
   kind: "prepared_context_turn";
   sessionId: string;
   sessionCreated: boolean;
   conversationId: string;
   messageId: string;
+  runId: string;
   contextRevision?: string;
 }
 
@@ -13,9 +14,10 @@ export function createPreparedContextTurnReceipt(input: {
   sessionCreated: boolean;
   conversationId: string;
   messageId: string;
+  runId: string;
 }): PreparedContextTurnReceipt {
   return {
-    v: 1,
+    v: 2,
     kind: "prepared_context_turn",
     ...input,
   };
@@ -33,12 +35,13 @@ export function requirePreparedContextTurnReceipt(value: unknown): PreparedConte
     throw invalidReceipt();
   }
   const receipt = value as Record<string, unknown>;
-  if (receipt["v"] !== 1
+  if (receipt["v"] !== 2
     || receipt["kind"] !== "prepared_context_turn"
     || !isNonEmptyString(receipt["sessionId"])
     || typeof receipt["sessionCreated"] !== "boolean"
     || !isNonEmptyString(receipt["conversationId"])
     || !isNonEmptyString(receipt["messageId"])
+    || !isNonEmptyString(receipt["runId"])
     || (receipt["contextRevision"] !== undefined
       && !isNonEmptyString(receipt["contextRevision"]))) {
     throw invalidReceipt();

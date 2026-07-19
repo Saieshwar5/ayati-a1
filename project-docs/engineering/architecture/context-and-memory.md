@@ -56,19 +56,18 @@ selection semantics, commit ownership, and known gaps.
 
 ## Run-First Routing
 
-Every provider-handled turn begins as a session run. Read-only exploration can
-continue without selecting a task. Durable mutation requires an explicit task
-selection:
+Every accepted provider-handled turn atomically creates one unbound run.
+Read-only exploration can continue without selecting a task. Durable mutation
+requires an explicit task binding:
 
 - `git_context_create_task` creates and selects a new V1 task and initial
   request.
 - `git_context_activate_task` selects an existing task. V1 calls explicitly
   choose whether to continue its active request or create a new request.
 
-The response returns the selected task/run identity, stable working directory,
-and refreshed harness context containing the request. The model-facing tools
-use internally generated operation identities today, so stable retry identity
-across a fresh repeated model call remains a reliability gap.
+The response returns the unchanged run id, selected task/request identity,
+stable working directory, and refreshed harness context. A run already bound
+to one task/request cannot be rebound or switched.
 
 Pending-turn projections may be `unbound`, `bound`, or `clarifying`. These are
 runtime context states, not durable task branches. If ownership is ambiguous,
@@ -81,7 +80,7 @@ recent task, or prior selection is useful context only.
 ## Requests and Runs
 
 A task is long-lived; a request is a bounded user intention within that task;
-a run is one execution attempt. A learning task may contain many requests over
+a run is one compute, audit, and recovery boundary. A learning task may contain many requests over
 months. A website task may be completed once and later receive redesign,
 maintenance, or feature requests without becoming a new task.
 
@@ -103,7 +102,7 @@ The context pack is a bounded, machine-readable view prepared for the current
 decision. Depending on the turn it can include:
 
 - recent conversation tail;
-- pending-turn and session-run state;
+- pending-turn and optional task-binding state;
 - task candidates or the explicitly selected task;
 - active request and compact task card;
 - recent Git activity and useful evidence pointers;
@@ -116,7 +115,7 @@ It should not include every task repository, every old conversation, full Git
 logs, or unrestricted raw outputs. Search and read operations retrieve deeper
 context only when needed.
 
-The compatibility projection currently groups context into areas such as
+The prompt projection groups context into areas such as
 `timeline`, `git`, `tools`, `harness`, `run`, and `personal`. These are prompt
 organization boundaries, not separate sources of durable truth.
 

@@ -11,7 +11,7 @@ export interface FeedbackExecutionTriageFinding {
 export interface FeedbackExecutionTriageInput {
   execution?: FeedbackExecutionOutcome;
   actionSteps?: number;
-  taskRun: boolean;
+  taskBound: boolean;
   commitIdentity?: string;
 }
 
@@ -41,16 +41,7 @@ export function buildExecutionOutcomeFindings(
       "Use not_applicable for tool-free conversation and control-only turns.",
     ));
   }
-  if (input.taskRun && execution.finalization === "skipped") {
-    findings.push(finding(
-      "task_finalization_skipped",
-      "error",
-      "Task finalization was skipped",
-      "The turn selected a task run but its required finalization was marked skipped.",
-      "Ensure every selected task run reaches completed or failed finalization.",
-    ));
-  }
-  if (input.taskRun
+  if (input.taskBound
     && (execution.finalization === "pending" || execution.finalization === "started")
     && execution.commit !== "pending") {
     findings.push(finding(
@@ -70,12 +61,12 @@ export function buildExecutionOutcomeFindings(
       "Preserve final commit identity through finalization and feedback projection.",
     ));
   }
-  if (!input.taskRun && execution.commit === "committed") {
+  if (!input.taskBound && execution.commit === "committed") {
     findings.push(finding(
       "unexpected_conversation_commit",
       "error",
       "Conversation-only turn created a task commit",
-      "Feedback reports a committed execution even though no task run was selected.",
+      "Feedback reports a committed execution even though the run had no task binding.",
       "Keep direct conversations commit-free or report the missing task binding.",
     ));
   }
@@ -88,7 +79,7 @@ export function buildExecutionOutcomeFindings(
       "Reduce both outcomes from the same finalization failure event.",
     ));
   }
-  if (input.taskRun
+  if (input.taskBound
     && execution.finalization === "completed"
     && execution.verification === "failed") {
     findings.push(finding(
@@ -104,11 +95,12 @@ export function buildExecutionOutcomeFindings(
 }
 
 export function isHealthyConversationOutcome(input: FeedbackExecutionTriageInput): boolean {
-  return input.taskRun === false
-    && validCount(input.actionSteps) === 0
-    && input.execution?.verification === "not_applicable"
-    && (input.execution.finalization === "skipped"
-      || input.execution.finalization === "not_required")
+  const actionSteps = validCount(input.actionSteps);
+  return input.taskBound === false
+    && (actionSteps === 0
+      ? input.execution?.verification === "not_applicable"
+      : input.execution?.verification === "passed")
+    && input.execution?.finalization === "completed"
     && input.execution.commit === "not_required";
 }
 

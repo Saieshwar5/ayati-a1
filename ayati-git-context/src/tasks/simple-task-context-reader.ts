@@ -26,7 +26,7 @@ export async function readSimpleTaskContext(
   ], { cwd: validation.repositoryPath });
   const recentCommits = parseCommits(logOutput);
   const latestFinalization = recentCommits.find(
-    (commit) => commit.event === "task_run_finalized",
+    (commit) => commit.event === "task_bound_run_finalized",
   );
   const missing = new Set(validation.missingImportantPaths);
   const card = validation.taskCard;
@@ -104,7 +104,7 @@ function parseCommits(output: string): CommitSummary[] {
           taskId: metadata.taskId,
           requestId: metadata.requestId,
           outcome: metadata.outcome,
-          ...(metadata.event === "task_run_finalized" ? {
+          ...(metadata.event === "task_bound_run_finalized" ? {
             runId: metadata.runId,
             sessionId: metadata.sessionId,
             validation: metadata.validation,

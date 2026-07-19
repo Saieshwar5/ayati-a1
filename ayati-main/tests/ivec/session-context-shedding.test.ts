@@ -56,8 +56,9 @@ describe("session context shedding", () => {
 
     expect(stateView).toEqual(sourceBefore);
     expect(projected.context.git?.session).not.toHaveProperty("summary");
-    expect(projected.context.git?.session.recentTaskRuns?.map((item) => item.runId)).toEqual(["run-5"]);
-    expect(projected.context.git?.session.recentCommits?.map((item) => item.runId)).toEqual(["run-5"]);
+    expect(projected.context.git?.session.recentTaskRuns?.map((item) => item.checkpointId)).toEqual(["checkpoint-5"]);
+    expect(projected.context.git?.session.recentCommits?.map((item) => item.commit)).toEqual(["commit-5"]);
+    expect(JSON.stringify(projected.context)).not.toContain('"runId"');
     expect(projected.context.git?.session.activity.recent).toEqual([]);
     expect(projected.context.git?.session.attachments).toEqual(
       stateView.context.git?.session.attachments,
@@ -145,6 +146,6 @@ function checkpoint(sequence: number): ContextSessionTaskRunCheckpoint {
     sourceHash: String(sequence).repeat(64),
     strategy: "llm",
     at: `2026-07-10T09:0${sequence}:00.000Z`,
-    summary: `Task-run checkpoint ${sequence}.`,
+    summary: `Task-bound-run checkpoint ${sequence}.`,
   };
 }

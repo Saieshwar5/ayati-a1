@@ -51,7 +51,7 @@ export function evaluateReadProgressGuard(
   if (duplicate?.signature) {
     return {
       code: "R_DUPLICATE_READ",
-      message: "The selected read repeats context that is already available in this task run.",
+      message: "The selected read repeats context that is already available in this task-bound run.",
       blockedTargets: [duplicate.call.tool],
       allowedNextActions: [
         "Use the current observations/evidence instead of reading the same target again.",
@@ -71,7 +71,7 @@ export function evaluateReadProgressGuard(
   if (progress.observationalStepCount >= MAX_OBSERVATIONAL_STEPS_BEFORE_MUTATION) {
     return {
       code: "R_MUTATION_EXPECTED_AFTER_CONTEXT",
-      message: "This task run has already gathered enough read context before making a change.",
+      message: "This task-bound run has already gathered enough read context before making a change.",
       blockedTargets: readCalls.map(({ call }) => call.tool),
       allowedNextActions: [
         "Use the current observations/evidence to make the requested change.",

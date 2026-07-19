@@ -4,22 +4,16 @@ import type {
   ActiveContext,
   AdoptTaskReferenceRequest,
   AdoptTaskReferenceResponse,
-  ActivateTaskRunRequest,
+  ActivateTaskForRunRequest,
   AcquireMutationAuthorityRequest,
   AcquireMutationAuthorityResponse,
   BindTaskAttachmentsRequest,
   BindTaskAttachmentsResponse,
-  CompleteContextTurnRequest,
-  CompleteContextTurnResponse,
-  AppendConversationRequest,
-  AppendConversationResponse,
-  CreateTaskRunRequest,
+  CreateTaskForRunRequest,
   EnsureActiveSessionRequest,
   EnsureActiveSessionResponse,
-  FinalizeSessionRunRequest,
-  FinalizeSessionRunResponse,
-  FinalizeTaskRunRequest,
-  FinalizeTaskRunResponse,
+  FinalizeRunRequest,
+  FinalizeRunResponse,
   GetActiveContextRequest,
   GetTaskRequest,
   GetTaskResponse,
@@ -34,9 +28,7 @@ import type {
   RecordRunStepResponse,
   RecordSessionAttachmentsRequest,
   RecordSessionAttachmentsResponse,
-  StartRunRequest,
-  StartRunResponse,
-  SelectedTaskRunResponse,
+  SelectedTaskForRunResponse,
   VerifyMutationRequest,
   VerifyMutationResponse,
 } from "./contracts.js";
@@ -107,16 +99,6 @@ export class GitContextClient implements GitContextService {
     );
   }
 
-  async completeContextTurn(
-    input: CompleteContextTurnRequest,
-  ): Promise<CompleteContextTurnResponse> {
-    return await this.requestJson<CompleteContextTurnResponse>(
-      "POST",
-      "/context/turns/complete",
-      input,
-    );
-  }
-
   async ensureActiveSession(input: EnsureActiveSessionRequest): Promise<EnsureActiveSessionResponse> {
     return await this.requestJson<EnsureActiveSessionResponse>(
       "POST",
@@ -125,20 +107,20 @@ export class GitContextClient implements GitContextService {
     );
   }
 
-  async appendConversation(input: AppendConversationRequest): Promise<AppendConversationResponse> {
-    return await this.requestJson<AppendConversationResponse>(
+  async createTaskForRun(input: CreateTaskForRunRequest): Promise<SelectedTaskForRunResponse> {
+    return await this.requestJson<SelectedTaskForRunResponse>(
       "POST",
-      "/conversations/append",
+      "/runs/" + encodeURIComponent(input.runId) + "/tasks/create",
       input,
     );
   }
 
-  async createTaskRun(input: CreateTaskRunRequest): Promise<SelectedTaskRunResponse> {
-    return await this.requestJson<SelectedTaskRunResponse>("POST", "/task-runs/create", input);
-  }
-
-  async activateTaskRun(input: ActivateTaskRunRequest): Promise<SelectedTaskRunResponse> {
-    return await this.requestJson<SelectedTaskRunResponse>("POST", "/task-runs/activate", input);
+  async activateTaskForRun(input: ActivateTaskForRunRequest): Promise<SelectedTaskForRunResponse> {
+    return await this.requestJson<SelectedTaskForRunResponse>(
+      "POST",
+      "/runs/" + encodeURIComponent(input.runId) + "/tasks/activate",
+      input,
+    );
   }
 
   async planTaskRequestRoute(
@@ -215,26 +197,12 @@ export class GitContextClient implements GitContextService {
     );
   }
 
-  async finalizeTaskRun(input: FinalizeTaskRunRequest): Promise<FinalizeTaskRunResponse> {
-    return await this.requestJson<FinalizeTaskRunResponse>(
+  async finalizeRun(input: FinalizeRunRequest): Promise<FinalizeRunResponse> {
+    return await this.requestJson<FinalizeRunResponse>(
       "POST",
-      "/runs/" + encodeURIComponent(input.runId) + "/finalize-task",
+      "/runs/" + encodeURIComponent(input.runId) + "/finalize",
       input,
     );
-  }
-
-  async finalizeSessionRun(
-    input: FinalizeSessionRunRequest,
-  ): Promise<FinalizeSessionRunResponse> {
-    return await this.requestJson<FinalizeSessionRunResponse>(
-      "POST",
-      "/runs/" + encodeURIComponent(input.runId) + "/finalize-session",
-      input,
-    );
-  }
-
-  async startRun(input: StartRunRequest): Promise<StartRunResponse> {
-    return await this.requestJson<StartRunResponse>("POST", "/runs/start", input);
   }
 
   async recordRunStep(input: RecordRunStepRequest): Promise<RecordRunStepResponse> {

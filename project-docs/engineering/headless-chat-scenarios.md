@@ -234,7 +234,7 @@ pnpm feedback:git-context -- --input ayati-main/data/feedback/YYYY-MM-DD/session
 ```
 
 The report correlates daemon and Git Context transport events, checks paired
-operations, and renders one lifecycle row per task run. Read the row from left
+operations, and renders one lifecycle row per task-bound run. Read the row from left
 to right: task/run identity, selection mode, explicit request decision,
 request identity, stable working directory, finalization, and commit.
 
@@ -315,7 +315,7 @@ Overall: needs_review
 
 - Final response included file paths.
 - No provider errors.
-- No missing-work-run repair.
+- No missing-task-binding repair.
 
 ## Suggested Improvements
 

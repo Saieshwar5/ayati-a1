@@ -28,7 +28,6 @@ export function recordTimelineCheckpointObservability(input: {
     exactTailCount: exactTail.length,
     ...(continuityCheckpoint ? {
       continuityCheckpointId: continuityCheckpoint.checkpointId,
-      continuityRunId: continuityCheckpoint.runId,
       continuityFromSeq: continuityCheckpoint.fromSeq,
       continuityToSeq: continuityCheckpoint.toSeq,
     } : {}),

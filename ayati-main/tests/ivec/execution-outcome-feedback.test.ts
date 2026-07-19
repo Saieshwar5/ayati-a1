@@ -9,11 +9,11 @@ describe("feedback execution outcome", () => {
     expect(deriveFeedbackExecutionOutcome({
       actionSteps: 0,
       verificationPassed: false,
-      finalizationStatus: "skipped",
+      finalizationStatus: "not_required",
       committed: false,
     })).toEqual({
       verification: "not_applicable",
-      finalization: "skipped",
+      finalization: "completed",
       commit: "not_required",
     });
   });
@@ -22,10 +22,11 @@ describe("feedback execution outcome", () => {
     expect(deriveFeedbackExecutionOutcome({
       actionSteps: 1,
       verificationPassed: true,
-      runClass: "session",
+      taskBound: false,
+      finalizationStatus: "not_required",
     })).toEqual({
       verification: "passed",
-      finalization: "not_required",
+      finalization: "completed",
       commit: "not_required",
     });
   });
@@ -34,7 +35,7 @@ describe("feedback execution outcome", () => {
     expect(deriveFeedbackExecutionOutcome({
       actionSteps: 1,
       verificationPassed: true,
-      runClass: "task",
+      taskBound: true,
       finalizationStatus: "not_started",
       committed: false,
     })).toEqual({
@@ -48,7 +49,7 @@ describe("feedback execution outcome", () => {
     expect(deriveFeedbackExecutionOutcome({
       actionSteps: 1,
       verificationPassed: true,
-      taskSelected: true,
+      taskBound: true,
       finalizationStatus: "committed",
       committed: true,
       commitIdentity: "abc123",
@@ -64,15 +65,14 @@ describe("feedback execution outcome", () => {
     expect(deriveFeedbackExecutionOutcome({
       actionSteps: 1,
       verificationPassed: true,
-      taskSelected: true,
+      taskBound: true,
       finalizationStatus: "committed",
-      committed: true,
-      commitIdentity: "existing-head",
+      commitStatus: "no_change",
       commitCreated: false,
     })).toEqual({
       verification: "passed",
       finalization: "completed",
-      commit: "not_required",
+      commit: "no_change",
     });
   });
 
@@ -80,7 +80,7 @@ describe("feedback execution outcome", () => {
     expect(deriveFeedbackExecutionOutcome({
       actionSteps: 1,
       verificationPassed: true,
-      taskSelected: true,
+      taskBound: true,
       finalizationStatus: "committed",
       committed: true,
       commitCreated: true,
@@ -94,16 +94,16 @@ describe("feedback execution outcome", () => {
   it("validates serialized execution outcomes", () => {
     expect(readFeedbackExecutionOutcome({
       verification: "not_applicable",
-      finalization: "skipped",
+      finalization: "completed",
       commit: "not_required",
     })).toEqual({
       verification: "not_applicable",
-      finalization: "skipped",
+      finalization: "completed",
       commit: "not_required",
     });
     expect(readFeedbackExecutionOutcome({
       verification: "unknown",
-      finalization: "skipped",
+      finalization: "completed",
       commit: "not_required",
     })).toBeUndefined();
   });

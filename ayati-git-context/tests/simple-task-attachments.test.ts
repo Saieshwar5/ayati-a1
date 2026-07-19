@@ -5,10 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import type { SessionAttachmentRecord } from "../src/contracts.js";
+import type { SessionAttachmentRecord, TaskCatalogEntry } from "../src/contracts.js";
 import { ContextDatabase } from "../src/database/database.js";
 import { SqliteGitContextService } from "../src/services/sqlite-git-context-service.js";
-import { TaskLifecycleService } from "../src/services/task-lifecycle-service.js";
 import { readSimpleTaskContext } from "../src/tasks/simple-task-context-reader.js";
 import { validateTaskRepository } from "../src/tasks/task-repository-validator.js";
 
@@ -25,7 +24,7 @@ afterEach(async () => {
 });
 
 describe("simple task attachments and references", () => {
-  it("retains attachment identity before routing and restores it after restart", async () => {
+  it("retains attachment identity and restores it after restart", async () => {
     const fixture = await createFixture();
     const attachment = await createAttachment(fixture.root, "report.csv", "name,value\na,1\n", "SA-report");
 
@@ -232,9 +231,11 @@ describe("simple task attachments and references", () => {
     });
     await finalizeIncomplete(fixture, "REQ-finalize-first-task");
 
-    const nextConversation = await fixture.service.appendConversation({
-      requestId: "REQ-next-message",
-      sessionId: fixture.sessionId,
+    const next = await fixture.service.prepareContextTurn({
+      requestId: "REQ-next-turn",
+      date: "2026-07-17",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
       role: "user",
       content: "Use the same retained input in another task.",
       at,
@@ -242,21 +243,15 @@ describe("simple task attachments and references", () => {
     await fixture.service.recordSessionAttachments({
       requestId: "REQ-record-shared-again",
       sessionId: fixture.sessionId,
-      conversationId: nextConversation.conversation.conversationId,
+      conversationId: next.conversation.conversationId,
       attachments: [attachment],
       at,
     });
-    const secondRun = await fixture.service.startRun({
-      requestId: "REQ-second-run",
-      sessionId: fixture.sessionId,
-      conversationId: nextConversation.conversation.conversationId,
-      trigger: "user",
-      workState: emptyWorkState(),
-      at,
-    });
-    const secondTask = await fixture.lifecycle.createSimpleTask({
+    const secondTask = await fixture.service.createTaskForRun({
       requestId: "REQ-second-task",
       sessionId: fixture.sessionId,
+      conversationId: next.conversation.conversationId,
+      runId: next.run.runId,
       title: "Second attachment task",
       objective: "Share one retained input without exclusive ownership.",
       placement: { mode: "managed" },
@@ -265,7 +260,7 @@ describe("simple task attachments and references", () => {
     const secondAuthority = await fixture.service.acquireMutationAuthority({
       requestId: "REQ-second-authority",
       sessionId: fixture.sessionId,
-      runId: secondRun.run.runId,
+      runId: next.run.runId,
       taskId: secondTask.task.taskId,
       taskRequestId: "R-0001",
       expectedTaskHead: secondTask.task.head,
@@ -275,8 +270,8 @@ describe("simple task attachments and references", () => {
     const secondBinding = await fixture.service.bindTaskAttachments({
       requestId: "REQ-bind-second-task",
       sessionId: fixture.sessionId,
-      conversationId: nextConversation.conversation.conversationId,
-      runId: secondRun.run.runId,
+      conversationId: next.conversation.conversationId,
+      runId: next.run.runId,
       taskId: secondTask.task.taskId,
       at,
     });
@@ -305,11 +300,10 @@ interface Fixture {
   taskRoot: string;
   database: ContextDatabase;
   service: SqliteGitContextService;
-  lifecycle: TaskLifecycleService;
   sessionId: string;
   conversationId: string;
   runId: string;
-  task: Awaited<ReturnType<TaskLifecycleService["createSimpleTask"]>>["task"];
+  task: TaskCatalogEntry;
 }
 
 async function createFixture(): Promise<Fixture> {
@@ -325,37 +319,20 @@ async function createFixture(): Promise<Fixture> {
     now: () => at,
   });
   services.push(service);
-  const session = await service.ensureActiveSession({
-    requestId: "REQ-session-" + temporaryDirectories.length,
+  const prepared = await service.prepareContextTurn({
+    requestId: "REQ-prepare-" + temporaryDirectories.length,
     date: "2026-07-17",
     timezone: "Asia/Kolkata",
     agentId: "local",
-    at,
-  });
-  const conversation = await service.appendConversation({
-    requestId: "REQ-message-" + temporaryDirectories.length,
-    sessionId: session.session.sessionId,
     role: "user",
     content: "Use the attached input in this task.",
     at,
   });
-  const run = await service.startRun({
-    requestId: "REQ-run-" + temporaryDirectories.length,
-    sessionId: session.session.sessionId,
-    conversationId: conversation.conversation.conversationId,
-    trigger: "user",
-    workState: emptyWorkState(),
-    at,
-  });
-  const lifecycle = new TaskLifecycleService({
-    database,
-    dataRoot: root,
-    workspaceRoot,
-    now: () => at,
-  });
-  const created = await lifecycle.createSimpleTask({
+  const created = await service.createTaskForRun({
     requestId: "REQ-task-" + temporaryDirectories.length,
-    sessionId: session.session.sessionId,
+    sessionId: prepared.session.sessionId,
+    conversationId: prepared.conversation.conversationId,
+    runId: prepared.run.runId,
     title: "Attachment task",
     objective: "Persist attachment provenance without tracking private bytes.",
     placement: { mode: "managed" },
@@ -368,10 +345,9 @@ async function createFixture(): Promise<Fixture> {
     taskRoot: join(workspaceRoot, "tasks"),
     database,
     service,
-    lifecycle,
-    sessionId: session.session.sessionId,
-    conversationId: conversation.conversation.conversationId,
-    runId: run.run.runId,
+    sessionId: prepared.session.sessionId,
+    conversationId: prepared.conversation.conversationId,
+    runId: prepared.run.runId,
     task: created.task,
   };
 }
@@ -427,22 +403,29 @@ async function acquire(
 }
 
 async function finalizeIncomplete(fixture: Fixture, requestId: string): Promise<void> {
-  await fixture.service.finalizeTaskRun({
+  await fixture.service.finalizeRun({
     requestId,
     sessionId: fixture.sessionId,
     runId: fixture.runId,
-    taskId: fixture.task.taskId,
     outcome: "incomplete",
+    stopReason: "run_limit",
     conversationSummary: "The task input was retained for later work.",
     summary: "The task now has a verified retained input reference.",
-    validation: "not_run",
+    validation: "not_applicable",
     next: "Continue using the retained input.",
-    completion: {
-      accepted: false,
-      assets: [],
-      missing: ["Remaining task work"],
-      failures: [],
-      criteria: [{ criterion: "Complete the remaining task work.", passed: false }],
+    workState: {
+      ...emptyWorkState(),
+      summary: "The task now has a verified retained input reference.",
+      nextStep: "Continue using the retained input.",
+    },
+    task: {
+      completion: {
+        accepted: false,
+        assets: [],
+        missing: ["Remaining task work"],
+        failures: [],
+        criteria: [{ criterion: "Complete the remaining task work.", passed: false }],
+      },
     },
     assistantResponse: "The input is retained and linked to the task.",
     at,

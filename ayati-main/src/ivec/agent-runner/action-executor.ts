@@ -49,14 +49,8 @@ export async function executeAgentAction(
   const planError = validateActionPlan(deps, action);
   if (planError) {
     const actOutput: ActOutput = {
-      toolCalls: [{
-        tool: "execution_plan",
-        purpose: "Validate the planned executable tool calls before execution.",
-        input: action,
-        output: "",
-        error: planError,
-      }],
-      finalText: "",
+      toolCalls: [],
+      finalText: planError,
       stoppedEarlyReason: "planned_call_failed",
     };
     const verifyOutput = buildVerifyOutput(false, actOutput, [], [], [], planError);
@@ -322,6 +316,7 @@ async function executeToolCall(
   const context = {
     clientId: deps.clientId,
     runId: deps.runHandle.runId,
+    callId: call.id,
     sessionId: deps.runHandle.sessionId,
     ...(deps.taskAssets?.length ? { taskAssets: deps.taskAssets } : {}),
     stepNumber,

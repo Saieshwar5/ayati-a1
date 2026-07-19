@@ -3,6 +3,8 @@ import type {
   ActiveContext,
   ConversationMessage,
   ConversationRef,
+  ReadContextProjection,
+  RunContextProjection,
 } from "ayati-git-context";
 import {
   buildContextEngineProjection,
@@ -138,6 +140,38 @@ export class GitContextHarnessCache {
       active,
       projection,
     });
+    this.stats(input.sessionId).incrementalUpdates++;
+    return projection;
+  }
+
+  updateRun(input: {
+    sessionId: string;
+    run: RunContextProjection;
+    readContext: ReadContextProjection;
+    baseProjection?: ContextEngineMachineContext;
+  }): ContextEngineMachineContext | undefined {
+    if (this.dirtySessions.has(input.sessionId)) return undefined;
+    const existing = this.bySessionId.get(input.sessionId);
+    if (!existing) return undefined;
+    const revision = "run:" + createHash("sha256")
+      .update(JSON.stringify({
+        runId: input.run.run.runId,
+        stepCount: input.run.run.stepCount,
+        workStateRevision: input.run.workState.revision,
+        readContextRevision: input.readContext.revision,
+      }))
+      .digest("hex");
+    const active: ActiveContext = {
+      ...existing.active,
+      contextRevision: revision,
+      run: input.run,
+      readContext: input.readContext,
+    };
+    const projection: ContextEngineMachineContext = {
+      ...(input.baseProjection ?? existing.projection),
+      readContext: input.readContext,
+    };
+    this.bySessionId.set(input.sessionId, { revision, active, projection });
     this.stats(input.sessionId).incrementalUpdates++;
     return projection;
   }

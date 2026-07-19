@@ -1,142 +1,83 @@
 import { describe, expect, it } from "vitest";
 import { auditToolPolicy } from "../../src/ivec/agent-runner/tool-policy-audit.js";
-import type {
-  RuntimeCapabilityMode,
-  RuntimeCapabilityModeName,
-} from "../../src/ivec/agent-runner/runtime-capability-mode.js";
+import type { TaskBindingCapabilityPolicy } from "../../src/ivec/agent-runner/task-binding-capability-policy.js";
 
 describe("tool policy audit", () => {
-  it("allows observational tools during session enquiry", () => {
+  it("allows observational tools on an unbound run", () => {
     const audit = auditToolPolicy({
-      mode: mode("session_only"),
-      selectedTools: ["read_files"],
+      policy: policy({ routingAvailable: false }),
+      selectedTools: ["read_files", "search_in_files"],
     });
 
     expect(audit.phase).toBe("enquiry");
     expect(audit.violations).toEqual([]);
-    expect(audit.warningCodes).toEqual([]);
   });
 
-  it("flags task-run-only mutation tools before a work run exists", () => {
+  it("flags mutation and long-running tools without a task binding", () => {
     const audit = auditToolPolicy({
-      mode: mode("session_only"),
+      policy: policy(),
       selectedTools: ["write_files", "process_start"],
     });
 
-    expect(audit.warningCodes).toEqual([
-      "mutation_tool_without_task_run",
+    expect(audit.warningCodes).toEqual(expect.arrayContaining([
+      "mutation_tool_without_task_binding",
+      "long_running_tool_without_task_binding",
       "tool_not_allowed_in_phase",
-      "long_running_tool_without_task_run",
-    ]);
+    ]));
     expect(audit.violations).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        code: "mutation_tool_without_task_run",
+        code: "mutation_tool_without_task_binding",
         severity: "error",
         tools: ["write_files", "process_start"],
       }),
       expect.objectContaining({
-        code: "long_running_tool_without_task_run",
-        severity: "error",
+        code: "long_running_tool_without_task_binding",
         tools: ["process_start"],
-      }),
-      expect.objectContaining({
-        code: "tool_not_allowed_in_phase",
-        severity: "warning",
-        tools: ["write_files", "process_start"],
       }),
     ]));
   });
 
-  it("allows routing controls during routing mode", () => {
-    const audit = auditToolPolicy({
-      mode: mode("fresh_session_routing"),
+  it("allows routing controls only before binding", () => {
+    const routing = auditToolPolicy({
+      policy: policy({ routingAvailable: true }),
+      selectedTools: ["git_context_create_task"],
+    });
+    const bound = auditToolPolicy({
+      policy: policy({ taskBound: true, routingAvailable: false }),
       selectedTools: ["git_context_create_task"],
     });
 
-    expect(audit.phase).toBe("routing");
-    expect(audit.violations).toEqual([]);
-  });
-
-  it("allows routing controls during the active-task routing window", () => {
-    const audit = auditToolPolicy({
-      mode: {
-        ...mode("active_task_ready"),
-        routingWindow: {
-          open: true,
-          step: 1,
-          maxSteps: 2,
-          remaining: 1,
-          expiresAfterThisDecision: false,
-          readToolsAvailable: true,
-          routingToolsAvailable: true,
-          readToolsRemainAfterExpiry: true,
-          guidance: "test routing window",
-        },
-      },
-      selectedTools: ["write_files", "git_context_create_task"],
-    });
-
-    expect(audit.phase).toBe("task_run");
-    expect(audit.violations).toEqual([]);
-  });
-
-  it("flags routing controls after task work is bound", () => {
-    const audit = auditToolPolicy({
-      mode: mode("task_run", true, "bound"),
-      selectedTools: ["git_context_create_task"],
-    });
-
-    expect(audit.phase).toBe("task_run");
-    expect(audit.warningCodes).toEqual([
+    expect(routing.phase).toBe("routing");
+    expect(routing.violations).toEqual([]);
+    expect(bound.phase).toBe("task_bound");
+    expect(bound.warningCodes).toEqual(expect.arrayContaining([
       "routing_control_after_task_bound",
       "tool_not_allowed_in_phase",
-    ]);
-    expect(audit.violations).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        code: "routing_control_after_task_bound",
-        severity: "error",
-        tools: ["git_context_create_task"],
-      }),
-      expect.objectContaining({
-        code: "tool_not_allowed_in_phase",
-        severity: "warning",
-        tools: ["git_context_create_task"],
-      }),
     ]));
   });
 
   it("flags selected tools missing taxonomy", () => {
     const audit = auditToolPolicy({
-      mode: mode("task_run", true),
+      policy: policy({ taskBound: true }),
       selectedTools: ["unknown_tool"],
     });
 
     expect(audit.taxonomy.unknown).toEqual(["unknown_tool"]);
-    expect(audit.warningCodes).toEqual(["unknown_tool_taxonomy"]);
     expect(audit.violations).toEqual([
-      expect.objectContaining({
-        code: "unknown_tool_taxonomy",
-        severity: "error",
-        tools: ["unknown_tool"],
-      }),
+      expect.objectContaining({ code: "unknown_tool_taxonomy", severity: "error" }),
     ]);
   });
 });
 
-function mode(
-  name: RuntimeCapabilityModeName,
-  hasWorkRun = false,
-  pendingTurnStatus?: string,
-): RuntimeCapabilityMode {
+function policy(
+  overrides: Partial<TaskBindingCapabilityPolicy> = {},
+): TaskBindingCapabilityPolicy {
   return {
-    name,
-    primary: true,
-    hasWorkRun,
-    ...(pendingTurnStatus ? { pendingTurnStatus } : {}),
-    whyActive: "test mode",
-    allowedActions: [],
-    blockedCapabilities: [],
-    next: "test next",
+    taskBound: false,
+    routingSuppressed: false,
+    routingAvailable: false,
+    routingFailureLimitReached: false,
     allowToolLoading: true,
+    ...overrides,
   };
 }

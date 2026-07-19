@@ -1,12 +1,10 @@
 export type FeedbackVerificationOutcome = "not_applicable" | "passed" | "failed";
 export type FeedbackFinalizationOutcome =
-  | "not_required"
-  | "skipped"
   | "pending"
   | "started"
   | "completed"
   | "failed";
-export type FeedbackCommitOutcome = "not_required" | "pending" | "committed" | "failed";
+export type FeedbackCommitOutcome = "not_required" | "no_change" | "pending" | "committed" | "failed";
 
 export interface FeedbackExecutionOutcome {
   verification: FeedbackVerificationOutcome;
@@ -18,9 +16,9 @@ export interface FeedbackExecutionEvidence {
   actionSteps?: number;
   verificationPassed?: boolean;
   verificationFailed?: boolean;
-  runClass?: "session" | "task";
-  taskSelected?: boolean;
-  finalizationStatus?: "not_started" | "started" | "committed" | "skipped" | "failed";
+  taskBound?: boolean;
+  finalizationStatus?: "not_started" | "started" | "not_required" | "no_change" | "committed" | "failed";
+  commitStatus?: "not_required" | "no_change" | "committed";
   committed?: boolean;
   commitIdentity?: string;
   commitCreated?: boolean;
@@ -30,8 +28,7 @@ export function deriveFeedbackExecutionOutcome(
   evidence: FeedbackExecutionEvidence,
 ): FeedbackExecutionOutcome {
   const actionSteps = validCount(evidence.actionSteps);
-  const taskRun = evidence.runClass === "task" || evidence.taskSelected === true;
-  const finalization = deriveFinalization(evidence.finalizationStatus, taskRun);
+  const finalization = deriveFinalization(evidence.finalizationStatus);
   return {
     verification: actionSteps === 0
       ? "not_applicable"
@@ -39,7 +36,7 @@ export function deriveFeedbackExecutionOutcome(
         ? "failed"
         : "passed",
     finalization,
-    commit: deriveCommit(evidence, taskRun, finalization),
+    commit: deriveCommit(evidence, evidence.taskBound === true, finalization),
   };
 }
 
@@ -62,14 +59,11 @@ export function readFeedbackExecutionOutcome(
 
 function deriveFinalization(
   status: FeedbackExecutionEvidence["finalizationStatus"],
-  taskRun: boolean,
 ): FeedbackFinalizationOutcome {
-  if (status === "committed") return "completed";
+  if (status === "committed" || status === "no_change" || status === "not_required") return "completed";
   if (status === "started") return "started";
   if (status === "failed") return "failed";
-  if (status === "skipped") return "skipped";
-  if (status === "not_started" || taskRun) return "pending";
-  return "not_required";
+  return "pending";
 }
 
 function deriveCommit(
@@ -78,11 +72,16 @@ function deriveCommit(
   finalization: FeedbackFinalizationOutcome,
 ): FeedbackCommitOutcome {
   const commitIdentity = nonEmptyString(evidence.commitIdentity);
+  if (evidence.commitStatus === "not_required") return "not_required";
+  if (evidence.commitStatus === "no_change") return "no_change";
+  if (evidence.commitStatus === "committed") {
+    return commitIdentity ? "committed" : "failed";
+  }
   if (!taskRun) {
     if (evidence.committed === true) return commitIdentity ? "committed" : "failed";
     return finalization === "failed" ? "failed" : "not_required";
   }
-  if (finalization === "failed" || finalization === "skipped") return "failed";
+  if (finalization === "failed") return "failed";
   if (finalization === "completed") {
     if (evidence.commitCreated === false) return "not_required";
     return evidence.committed === true && commitIdentity ? "committed" : "failed";
@@ -104,14 +103,12 @@ function isVerification(value: unknown): value is FeedbackVerificationOutcome {
 }
 
 function isFinalization(value: unknown): value is FeedbackFinalizationOutcome {
-  return value === "not_required"
-    || value === "skipped"
-    || value === "pending"
+  return value === "pending"
     || value === "started"
     || value === "completed"
     || value === "failed";
 }
 
 function isCommit(value: unknown): value is FeedbackCommitOutcome {
-  return value === "not_required" || value === "pending" || value === "committed" || value === "failed";
+  return value === "not_required" || value === "no_change" || value === "pending" || value === "committed" || value === "failed";
 }

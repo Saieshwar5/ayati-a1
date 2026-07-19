@@ -5,7 +5,7 @@ import type { LoopState, WorkState } from "../types.js";
 import type { AgentTaskCompletionRequest, TaskCompletionAssetInput } from "./decision.js";
 
 export type TaskCompletionFailureCode =
-  | "NO_ACTIVE_TASK_RUN"
+  | "NO_TASK_BINDING"
   | "TASK_ALREADY_COMPLETED"
   | "COMPLETION_EVIDENCE_MISSING"
   | "ACTIVE_BLOCKERS_REMAIN"
@@ -44,7 +44,7 @@ export type TaskCompletionEvaluation =
     };
 
 export function isTaskCompletionAvailable(state: LoopState): boolean {
-  return state.runClass === "task"
+  return isTaskBound(state)
     && Boolean(state.runId)
     && state.workState.status === "not_done";
 }
@@ -56,8 +56,8 @@ export async function evaluateTaskCompletion(
   const failures: TaskCompletionFailure[] = [];
   const summary = request.summary.replace(/\s+/g, " ").trim();
 
-  if (state.runClass !== "task" || !state.runId) {
-    failures.push({ code: "NO_ACTIVE_TASK_RUN", message: "Task completion requires an active task run." });
+  if (!isTaskBound(state) || !state.runId) {
+    failures.push({ code: "NO_TASK_BINDING", message: "Task completion requires the current run to be bound to a task." });
   }
   if (state.workState.status === "done") {
     failures.push({ code: "TASK_ALREADY_COMPLETED", message: "The task is already complete." });
@@ -116,6 +116,10 @@ export async function evaluateTaskCompletion(
       ]).slice(0, 20),
     },
   };
+}
+
+function isTaskBound(state: LoopState): boolean {
+  return state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "bound";
 }
 
 async function verifyAssets(

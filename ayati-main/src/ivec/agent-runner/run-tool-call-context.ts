@@ -1,6 +1,7 @@
 import type { RunToolCallContext } from "../types.js";
 
 export type PromptRunToolCallMode = "full" | "preview" | "summary" | "reference";
+type PromptToolCallStepRef = Omit<NonNullable<RunToolCallContext["stepRef"]>, "runId">;
 
 export interface PromptRunToolCallContext {
   step: number;
@@ -19,7 +20,7 @@ export interface PromptRunToolCallContext {
   code?: string;
   operationStatus?: RunToolCallContext["operationStatus"];
   artifacts?: RunToolCallContext["artifacts"];
-  stepRef?: RunToolCallContext["stepRef"];
+  stepRef?: PromptToolCallStepRef;
   evidenceRef?: string;
   readContextKeys?: string[];
   rawOutputChars?: number;
@@ -63,12 +64,21 @@ function projectPromptToolCall(call: RunToolCallContext): PromptRunToolCallConte
     ...(call.code ? { code: call.code } : {}),
     ...(call.operationStatus ? { operationStatus: call.operationStatus } : {}),
     ...(call.artifacts && call.artifacts.length > 0 ? { artifacts: call.artifacts } : {}),
-    ...(call.stepRef ? { stepRef: call.stepRef } : {}),
+    ...(call.stepRef ? { stepRef: projectStepRef(call.stepRef) } : {}),
     ...(call.evidenceRef ? { evidenceRef: call.evidenceRef } : {}),
     ...(call.rawOutputChars !== undefined ? { rawOutputChars: call.rawOutputChars } : {}),
     ...(call.outputTruncated !== undefined ? { outputTruncated: call.outputTruncated } : {}),
   };
   return projected;
+}
+
+function projectStepRef(
+  stepRef: NonNullable<RunToolCallContext["stepRef"]>,
+): PromptToolCallStepRef {
+  return {
+    step: stepRef.step,
+    ...(stepRef.callId ? { callId: stepRef.callId } : {}),
+  };
 }
 
 export function compactPromptToolCall(

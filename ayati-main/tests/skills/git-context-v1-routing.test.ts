@@ -2,23 +2,28 @@ import type { GitContextService } from "ayati-git-context";
 import { describe, expect, it, vi } from "vitest";
 import { createGitContextSkill } from "../../src/skills/builtins/git-context/index.js";
 
-describe("model-facing V1 task routing", () => {
+describe("model-facing task routing", () => {
   it("submits the explicit create-request decision and binds attachments", async () => {
-    const activateTaskRun = vi.fn(async (input) => ({
+    const activateTaskForRun = vi.fn(async (input) => ({
       task: task(),
       run: {
         runId: "RUN-1",
         sessionId: "S-1",
         conversationId: "C-1",
-        runClass: "task" as const,
-        taskId: task().taskId,
-        taskRequestId: "R-0002",
+        taskBinding: {
+          taskId: task().taskId,
+          taskRequestId: "R-0002",
+          boundAt: "2026-07-17T20:00:01+05:30",
+        },
       },
-      context: {} as never,
+      context: {
+        currentRequest: { status: "active" },
+      } as never,
       taskCreated: false,
-      sessionRunBound: true,
       taskRequestDecision: "create" as const,
+      taskRequestStatus: "active" as const,
       taskRequestCreated: true,
+      headBeforeSelection: task().head,
     }));
     const bindTaskAttachments = vi.fn(async () => ({
       taskId: task().taskId,
@@ -29,7 +34,7 @@ describe("model-facing V1 task routing", () => {
       getActiveContext: vi.fn()
         .mockResolvedValueOnce(activeContext(false))
         .mockResolvedValueOnce(activeContext(true)),
-      activateTaskRun,
+      activateTaskForRun,
       bindTaskAttachments,
     } as unknown as GitContextService;
     const tool = createGitContextSkill({ service }).tools
@@ -45,7 +50,7 @@ describe("model-facing V1 task routing", () => {
         acceptance: ["The menu page is verified."],
         constraints: ["Keep the existing design."],
       },
-    }, { sessionId: "S-1", runId: "RUN-1" });
+    }, { sessionId: "S-1", runId: "RUN-1", callId: "activate-task" });
 
     expect(result.ok).toBe(true);
     expect(result.v2?.structuredContent).toMatchObject({
@@ -53,9 +58,8 @@ describe("model-facing V1 task routing", () => {
       requestDecision: "create",
       taskRequestId: "R-0002",
       taskRequestCreated: true,
-      sessionRunBound: true,
     });
-    expect(activateTaskRun).toHaveBeenCalledWith(expect.objectContaining({
+    expect(activateTaskForRun).toHaveBeenCalledWith(expect.objectContaining({
       taskId: task().taskId,
       runId: "RUN-1",
       route: {
@@ -138,8 +142,17 @@ function activeContext(selected: boolean) {
         runId: "RUN-1",
         sessionId: "S-1",
         conversationId: "C-1",
-        runClass: selected ? "task" : "session",
-        ...(selected ? { taskId: task().taskId, taskRequestId: "R-0002" } : {}),
+        status: "running",
+        trigger: "user",
+        startedAt: "2026-07-17T20:00:00+05:30",
+        stepCount: 0,
+        ...(selected ? {
+          taskBinding: {
+            taskId: task().taskId,
+            taskRequestId: "R-0002",
+            boundAt: "2026-07-17T20:00:01+05:30",
+          },
+        } : {}),
       },
       workState: undefined,
       steps: [],

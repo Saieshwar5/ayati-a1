@@ -1,22 +1,21 @@
 import type { ToolExecutionContext, ToolDefinition } from "../../skills/types.js";
 import type { ToolExecutor } from "../../skills/tool-executor.js";
-import type { MemoryRunHandle } from "../../memory/types.js";
 import type { ActToolCallRecord, LoopState } from "../types.js";
 import type { ToolCatalog, ToolCatalogEntry } from "./tool-catalog.js";
 import {
-  GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES,
+  GIT_CONTEXT_UNBOUND_RUN_ROUTING_TOOL_NAMES,
   GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
   GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
   isGitContextTurnRoutingToolName,
 } from "../../skills/builtins/git-context/tool-policy.js";
 import { getToolLoadPriority } from "../../skills/tool-taxonomy.js";
 import {
-  detectRuntimeCapabilityMode,
-  deterministicToolsForRuntimeMode,
-  isFreshSessionRoutingMode,
-  isRuntimeToolAllowed,
-  requiredRoutingControlToolsForRuntimeMode,
-} from "./runtime-capability-mode.js";
+  deriveTaskBindingCapabilityPolicy,
+  deterministicToolsForTaskBinding,
+  isToolAllowedByTaskBinding,
+  requiredRoutingControls,
+  type TaskBindingCapabilityPolicy,
+} from "./task-binding-capability-policy.js";
 
 export interface ToolLoadRequest {
   query?: string;
@@ -93,27 +92,19 @@ export class ToolWorkingSetManager {
   prepareForDecision(
     state: LoopState,
     context: ToolExecutionContext,
-    input: {
-      workRunHandle?: MemoryRunHandle;
-      sessionRunHandle?: MemoryRunHandle;
-    } = {},
   ): ToolLoadResult {
     const runState = this.getRunState(context);
-    const mode = detectRuntimeCapabilityMode({
-      state,
-      workRunHandle: input.workRunHandle,
-      sessionRunHandle: input.sessionRunHandle,
-    });
-    if (mode.hasWorkRun || mode.pendingTurnStatus === "bound") {
+    const policy = deriveTaskBindingCapabilityPolicy(state);
+    if (policy.taskBound) {
       this.removeTaskRoutingResolutionTools(runState, []);
       this.syncMount(context);
     }
-    const request = buildDeterministicLoadRequest(state, input);
+    const request = buildDeterministicLoadRequest(state);
     const suppressTaskRoutingTools = shouldSuppressTaskRoutingTools(state);
     const requiredRoutingTools = suppressTaskRoutingTools
       ? []
-      : requiredRoutingControlToolsForRuntimeMode(mode);
-    const result = this.load(this.addTaskRoutingWindowTools(request, state, context, input), context);
+      : requiredRoutingControls(policy, state);
+    const result = this.load(this.addTaskRoutingWindowTools(request, state, context), context);
     let prepared = mergeToolLoadResult(result, this.ensureToolsLoadedOutsideLimit(requiredRoutingTools, context));
     if (suppressTaskRoutingTools) {
       const removed: string[] = [];
@@ -130,14 +121,14 @@ export class ToolWorkingSetManager {
       }
     }
     const policyRemoved: string[] = [];
-    this.removeToolsDisallowedForRuntimeMode(runState, mode, policyRemoved);
+    this.removeToolsDisallowedByTaskBinding(runState, policy, policyRemoved);
     if (policyRemoved.length > 0) {
       prepared = {
         ...prepared,
         loaded: prepared.loaded.filter((tool) => !policyRemoved.includes(tool)),
         alreadyActive: prepared.alreadyActive.filter((tool) => !policyRemoved.includes(tool)),
         evicted: normalizeStrings([...prepared.evicted, ...policyRemoved]),
-        message: `${prepared.message} Removed tools disallowed for ${mode.name}: ${policyRemoved.join(", ")}.`,
+        message: `${prepared.message} Removed tools disallowed by task binding: ${policyRemoved.join(", ")}.`,
       };
     }
     this.syncMount(context);
@@ -295,21 +286,13 @@ export class ToolWorkingSetManager {
     request: ToolLoadRequest,
     state: LoopState,
     context: ToolExecutionContext,
-    input: {
-      workRunHandle?: MemoryRunHandle;
-      sessionRunHandle?: MemoryRunHandle;
-    } = {},
   ): ToolLoadRequest {
     const runState = this.getRunState(context);
-    const mode = detectRuntimeCapabilityMode({
-      state,
-      workRunHandle: input.workRunHandle,
-      sessionRunHandle: input.sessionRunHandle,
-    });
+    const policy = deriveTaskBindingCapabilityPolicy(state);
     if (runState.taskRouting.resolved) {
       return request;
     }
-    if (state.runId || state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "bound") {
+    if (policy.taskBound || !policy.routingAvailable) {
       return request;
     }
     if (state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "clarifying") {
@@ -322,8 +305,8 @@ export class ToolWorkingSetManager {
     if (step < 1) {
       return request;
     }
-    const routingTools = isFreshSessionRoutingMode(mode)
-      ? GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES
+    const routingTools = state.harnessContext.contextEngine?.focus.status === "none"
+      ? GIT_CONTEXT_UNBOUND_RUN_ROUTING_TOOL_NAMES
       : TASK_ROUTING_WINDOW_TOOL_NAMES;
     return {
       ...request,
@@ -358,13 +341,13 @@ export class ToolWorkingSetManager {
     }
   }
 
-  private removeToolsDisallowedForRuntimeMode(
+  private removeToolsDisallowedByTaskBinding(
     state: RunToolState,
-    mode: ReturnType<typeof detectRuntimeCapabilityMode>,
+    policy: TaskBindingCapabilityPolicy,
     removed: string[],
   ): void {
     const before = state.ordered;
-    state.ordered = state.ordered.filter((tool) => isRuntimeToolAllowed(mode, tool));
+    state.ordered = state.ordered.filter((tool) => isToolAllowedByTaskBinding(policy, tool));
     for (const tool of before) {
       if (!state.ordered.includes(tool)) {
         state.loadedAtStep.delete(tool);
@@ -535,17 +518,9 @@ export class ToolWorkingSetManager {
 
 function buildDeterministicLoadRequest(
   state: LoopState,
-  input: {
-    workRunHandle?: MemoryRunHandle;
-    sessionRunHandle?: MemoryRunHandle;
-  } = {},
 ): ToolLoadRequest {
-  const mode = detectRuntimeCapabilityMode({
-    state,
-    workRunHandle: input.workRunHandle,
-    sessionRunHandle: input.sessionRunHandle,
-  });
-  const modeTools = deterministicToolsForRuntimeMode(mode);
+  const policy = deriveTaskBindingCapabilityPolicy(state);
+  const modeTools = deterministicToolsForTaskBinding(policy);
   if (modeTools) {
     return {
       toolNames: modeTools,

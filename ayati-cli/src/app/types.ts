@@ -76,18 +76,23 @@ export interface ReplyMessage {
   type: "reply";
   content: string;
   runId?: string;
+  commitStatus: ReplyCommitStatus;
   artifacts?: unknown[];
 }
 
 export interface FeedbackMessage {
   type: "feedback";
   content: string;
+  runId?: string;
+  commitStatus: ReplyCommitStatus;
 }
 
 export interface NotificationMessage {
   type: "notification";
   content: string;
   final?: boolean;
+  runId?: string;
+  commitStatus: ReplyCommitStatus;
 }
 
 export interface ProgressMessage {
@@ -114,17 +119,13 @@ export interface ReplyDoneMessage {
   type: "reply_done";
   turnId: string;
   content: string;
-  commitStatus: "committed" | "skipped" | "failed" | "finalizing";
+  commitStatus: ReplyCommitStatus;
   kind?: "reply" | "feedback" | "notification";
   runId?: string;
   artifacts?: unknown[];
 }
 
-export interface ReplyCommitStatusMessage {
-  type: "reply_commit_status";
-  runId: string;
-  commitStatus: "committed" | "skipped" | "failed";
-}
+export type ReplyCommitStatus = "not_required" | "no_change" | "committed" | "failed";
 
 export interface ErrorMessage {
   type: "error";
@@ -139,5 +140,4 @@ export type ServerMessage =
   | ReplyStartedMessage
   | ReplyDeltaMessage
   | ReplyDoneMessage
-  | ReplyCommitStatusMessage
   | ErrorMessage;

@@ -1,7 +1,5 @@
 import type { ContextDatabase } from "../database/database.js";
 import type {
-  AppendConversationRequest,
-  AppendConversationResponse,
   ConversationContext,
   ConversationMessage,
   ConversationRef,
@@ -26,16 +24,19 @@ interface ConversationMessageRow {
   created_at: string;
 }
 
+export interface AppendIngressConversationInput {
+  sessionId: string;
+  role: "user" | "system_event";
+  content: string;
+  at: string;
+}
+
 export function appendConversationMessage(
   database: ContextDatabase,
-  input: AppendConversationRequest,
-): Pick<AppendConversationResponse, "conversation" | "message"> {
-  if (input.role !== "assistant") {
-    closeActiveConversation(database, input.sessionId, input.at);
-  }
-  const conversation = input.role === "assistant"
-    ? requireActiveConversation(database, input.sessionId)
-    : createConversationForNewInput(database, input);
+  input: AppendIngressConversationInput,
+): { conversation: ConversationRef; message: ConversationMessage } {
+  closeActiveConversation(database, input.sessionId, input.at);
+  const conversation = createConversationForNewInput(database, input);
   const sessionSequence = nextNumber(database, [
     "SELECT COALESCE(MAX(session_sequence), 0) + 1 AS next",
     "FROM messages WHERE session_id = ?",
@@ -62,17 +63,6 @@ export function appendConversationMessage(
     input.at,
   );
 
-  if (input.runId || input.taskId) {
-    database.prepare([
-      "UPDATE conversation_segments",
-      "SET run_id = COALESCE(?, run_id), task_id = COALESCE(?, task_id)",
-      "WHERE conversation_id = ?",
-    ].join(" ")).run(
-      input.runId ?? null,
-      input.taskId ?? null,
-      conversation.conversationId,
-    );
-  }
   return {
     conversation,
     message: {
@@ -195,28 +185,15 @@ export function bindConversationRun(
   ].join(" ")).run(runId, conversationId);
 }
 
-export function closeTaskConversationWithAssistant(database: ContextDatabase, input: {
-  requestId: string;
+export function closeRunConversationWithAssistant(database: ContextDatabase, input: {
   sessionId: string;
   conversationId: string;
   runId: string;
-  taskId: string;
+  taskId?: string;
   content: string;
   at: string;
 }): ConversationRef {
-  const row = database.prepare([
-    "SELECT conversation_id, session_id, sequence, file_path, status FROM conversation_segments",
-    "WHERE conversation_id = ? AND session_id = ? AND run_id = ? AND task_id = ?",
-  ].join(" ")).get(
-    input.conversationId, input.sessionId, input.runId, input.taskId,
-  ) as ConversationRow | undefined;
-  if (!row || row.status !== "active") {
-    throw new GitContextServiceError({
-      code: "CONVERSATION_NOT_ACTIVE",
-      message: "Task-run finalization requires its active conversation.",
-      details: { conversationId: input.conversationId, runId: input.runId },
-    });
-  }
+  const row = requireRunConversation(database, input);
   const sessionSequence = nextNumber(database, [
     "SELECT COALESCE(MAX(session_sequence), 0) + 1 AS next",
     "FROM messages WHERE session_id = ?",
@@ -233,57 +210,51 @@ export function closeTaskConversationWithAssistant(database: ContextDatabase, in
     input.sessionId, sessionSequence, segmentSequence, input.content, input.at,
   );
   const filePath = "conversations/" + pad(Number(row.sequence), 6)
-    + "-task-" + input.taskId + ".md";
-  database.prepare([
-    "UPDATE conversation_segments SET status = 'closed', closed_at = ?, file_path = ?",
-    "WHERE conversation_id = ?",
-  ].join(" ")).run(input.at, filePath, input.conversationId);
-  const conversation: ConversationRef = {
-    conversationId: input.conversationId,
-    sessionId: input.sessionId,
-    sequence: Number(row.sequence),
-    filePath,
-    status: "closed",
-  };
-  return conversation;
+    + (input.taskId ? "-task-" + input.taskId : "-unbound") + ".md";
+  return closeRunConversation(database, input, row, filePath);
 }
 
-export function closeSessionConversationWithAssistant(database: ContextDatabase, input: {
+export function closeRunConversationWithoutAssistant(database: ContextDatabase, input: {
   sessionId: string;
   conversationId: string;
   runId: string;
-  content: string;
+  taskId?: string;
   at: string;
 }): ConversationRef {
+  const row = requireRunConversation(database, input);
+  const filePath = "conversations/" + pad(Number(row.sequence), 6)
+    + (input.taskId ? "-task-" + input.taskId : "-unbound") + ".md";
+  return closeRunConversation(database, input, row, filePath);
+}
+
+function requireRunConversation(database: ContextDatabase, input: {
+  sessionId: string;
+  conversationId: string;
+  runId: string;
+  taskId?: string;
+}): ConversationRow {
   const row = database.prepare([
-    "SELECT conversation_id, session_id, sequence, file_path, status FROM conversation_segments",
-    "WHERE conversation_id = ? AND session_id = ? AND run_id = ? AND task_id IS NULL",
+    "SELECT conversation_id, session_id, sequence, file_path, status, task_id",
+    "FROM conversation_segments",
+    "WHERE conversation_id = ? AND session_id = ? AND run_id = ?",
   ].join(" ")).get(
     input.conversationId, input.sessionId, input.runId,
-  ) as ConversationRow | undefined;
-  if (!row || row.status !== "active") {
+  ) as (ConversationRow & { task_id: string | null }) | undefined;
+  if (!row || row.status !== "active" || (row.task_id ?? undefined) !== input.taskId) {
     throw new GitContextServiceError({
       code: "CONVERSATION_NOT_ACTIVE",
-      message: "Session-run finalization requires its active conversation.",
+      message: "Run finalization requires its matching active conversation.",
       details: { conversationId: input.conversationId, runId: input.runId },
     });
   }
-  const sessionSequence = nextNumber(database, [
-    "SELECT COALESCE(MAX(session_sequence), 0) + 1 AS next",
-    "FROM messages WHERE session_id = ?",
-  ].join(" "), input.sessionId);
-  const segmentSequence = nextNumber(database, [
-    "SELECT COALESCE(MAX(segment_sequence), 0) + 1 AS next",
-    "FROM messages WHERE conversation_id = ?",
-  ].join(" "), input.conversationId);
-  database.prepare([
-    "INSERT INTO messages(message_id, conversation_id, session_id, session_sequence,",
-    "segment_sequence, role, content, created_at) VALUES (?, ?, ?, ?, ?, 'assistant', ?, ?)",
-  ].join(" ")).run(
-    input.sessionId + "-M-" + pad(sessionSequence, 6), input.conversationId,
-    input.sessionId, sessionSequence, segmentSequence, input.content, input.at,
-  );
-  const filePath = "conversations/" + pad(Number(row.sequence), 6) + "-session.md";
+  return row;
+}
+
+function closeRunConversation(database: ContextDatabase, input: {
+  sessionId: string;
+  conversationId: string;
+  at: string;
+}, row: ConversationRow, filePath: string): ConversationRef {
   database.prepare([
     "UPDATE conversation_segments SET status = 'closed', closed_at = ?, file_path = ?",
     "WHERE conversation_id = ?",
@@ -322,15 +293,16 @@ function conversationMessage(row: ConversationMessageRow): ConversationMessage {
 
 function createConversationForNewInput(
   database: ContextDatabase,
-  input: AppendConversationRequest,
+  input: AppendIngressConversationInput,
 ): ConversationRef {
   const activeRun = database.prepare([
-    "SELECT run_id FROM runs WHERE session_id = ? AND status = 'running' LIMIT 1",
+    "SELECT run_id FROM runs",
+    "WHERE session_id = ? AND status IN ('running', 'recovery_required') LIMIT 1",
   ].join(" ")).get(input.sessionId) as { run_id: string } | undefined;
   if (activeRun) {
     throw new GitContextServiceError({
       code: "RUN_ALREADY_ACTIVE",
-      message: "Session already has an active run.",
+      message: "Session already has an active or recovery-required run.",
       details: { sessionId: input.sessionId, runId: activeRun.run_id },
     });
   }
@@ -351,8 +323,8 @@ function createConversationForNewInput(
     input.sessionId,
     sequence,
     filePath,
-    input.taskId ?? null,
-    input.runId ?? null,
+    null,
+    null,
     input.at,
   );
   return {
@@ -380,26 +352,6 @@ function closeActiveConversation(
     "WHERE conversation_id = ?",
   ].join(" ")).run(at, closedPath, active.conversationId);
   return { ...active, filePath: closedPath, status: "closed" };
-}
-
-function requireActiveConversation(
-  database: ContextDatabase,
-  sessionId: string,
-): ConversationRef {
-  const row = database.prepare([
-    "SELECT conversation_id, session_id, sequence, file_path, status",
-    "FROM conversation_segments",
-    "WHERE session_id = ? AND status = 'active'",
-    "ORDER BY sequence DESC LIMIT 1",
-  ].join(" ")).get(sessionId) as ConversationRow | undefined;
-  if (!row) {
-    throw new GitContextServiceError({
-      code: "CONVERSATION_NOT_ACTIVE",
-      message: "Assistant message requires an active conversation segment.",
-      details: { sessionId },
-    });
-  }
-  return conversationRef(row);
 }
 
 function requireActiveConversationIfPresent(

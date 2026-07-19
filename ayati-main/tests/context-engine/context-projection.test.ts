@@ -5,6 +5,7 @@ import {
   projectAgentPromptContext,
   projectAgentStateViewForPrompt,
 } from "../../src/ivec/agent-runner/prompt-context.js";
+import { buildPromptToolCallsForRun } from "../../src/ivec/agent-runner/run-tool-call-context.js";
 
 describe("context engine projection", () => {
   it("exposes one authoritative task working directory", () => {
@@ -62,8 +63,8 @@ describe("context engine projection", () => {
       validation: "passed",
       at: "2026-07-14T10:30:00.000Z",
       workId: "T-20260714-0001",
-      runId: "R-20260714-0004",
     }]);
+    expect(prompt.context.git?.session.recentCommits?.[0]).not.toHaveProperty("runId");
   });
 
   it("preserves compact V1 lifecycle and request state for routing", () => {
@@ -103,6 +104,74 @@ describe("context engine projection", () => {
       workingDirectory: "/workspace/tasks/T-20260714-0002-machine-learning-course",
       updatedAt: "2026-07-14T11:00:00.000Z",
     }]);
+  });
+
+  it("omits run identities and internal storage paths from provider-facing context", () => {
+    const active = activeTaskContext("/workspace/aurora-coffee-site");
+    if (!active.session) throw new Error("Expected a session fixture.");
+    active.session.attachments = {
+      count: 1,
+      recent: [{
+        sessionAssetId: "SA-1",
+        kind: "document",
+        name: "brief.md",
+        source: "upload",
+        status: "ready",
+        originalPath: "/workspace/brief.md",
+        storedPath: "/internal/session-data/SA-1/brief.md",
+        createdAt: "2026-07-14T10:00:00.000Z",
+      }],
+    };
+    active.readContext = {
+      revision: "read-1",
+      afterCommitRunId: "R-previous",
+      inventory: [],
+      discovery: [],
+      evidence: [{
+        key: "evidence:read_files:brief.md",
+        runId: "R-1",
+        step: 1,
+        callId: "read-brief",
+        tool: "read_files",
+        purpose: "Read the brief.",
+        resources: ["brief.md"],
+        input: { path: "brief.md" },
+        output: "brief",
+        verification: { passed: true },
+        createdAt: "2026-07-14T10:00:02.000Z",
+      }],
+      actions: [],
+    };
+
+    const projection = buildContextEngineProjection(active);
+    const toolCalls = buildPromptToolCallsForRun([{
+      step: 1,
+      callId: "read-brief",
+      tool: "read_files",
+      purpose: "Read the brief.",
+      input: { path: "brief.md" },
+      status: "success",
+      output: "brief",
+      stepRef: { runId: "R-1", step: 1, callId: "read-brief" },
+    }]);
+    const promptContext = projectAgentPromptContext({
+      context: { timeline: [], gitContext: projection },
+      run: { toolCalls },
+    });
+    const prompt = projectAgentStateViewForPrompt({ context: promptContext });
+
+    expect(prompt.context.git?.current.pendingTurn).not.toHaveProperty("runId");
+    expect(prompt.context.git?.current.readContext).not.toHaveProperty("afterCommitRunId");
+    expect(prompt.context.git?.current.readContext?.evidence[0]).not.toHaveProperty("runId");
+    expect(prompt.context.run?.toolCalls?.[0]?.stepRef).toEqual({
+      step: 1,
+      callId: "read-brief",
+    });
+    expect(prompt.context.git?.session.attachments).toMatchObject({
+      recent: [{ originalPath: "/workspace/brief.md" }],
+    });
+    expect(JSON.stringify(prompt.context)).not.toContain('"runId"');
+    expect(JSON.stringify(prompt.context)).not.toContain("/internal/session-data/");
   });
 });
 
@@ -160,8 +229,11 @@ function activeTaskContext(workingDirectory: string): ActiveContext {
         runId: "R-1",
         sessionId: "S-20260714-local",
         conversationId: "C-1",
-        runClass: "task",
-        taskId: "T-20260714-0001",
+        taskBinding: {
+          taskId: "T-20260714-0001",
+          taskRequestId: "REQ-1",
+          boundAt: "2026-07-14T10:00:01.000Z",
+        },
         status: "running",
         trigger: "user",
         startedAt: "2026-07-14T10:00:00.000Z",

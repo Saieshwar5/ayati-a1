@@ -10,22 +10,16 @@ import {
   type ActiveContext,
   type AdoptTaskReferenceRequest,
   type AdoptTaskReferenceResponse,
-  type ActivateTaskRunRequest,
+  type ActivateTaskForRunRequest,
   type AcquireMutationAuthorityRequest,
   type AcquireMutationAuthorityResponse,
   type BindTaskAttachmentsRequest,
   type BindTaskAttachmentsResponse,
-  type AppendConversationRequest,
-  type AppendConversationResponse,
-  type CompleteContextTurnRequest,
-  type CompleteContextTurnResponse,
-  type CreateTaskRunRequest,
+  type CreateTaskForRunRequest,
   type EnsureActiveSessionRequest,
   type EnsureActiveSessionResponse,
-  type FinalizeSessionRunRequest,
-  type FinalizeSessionRunResponse,
-  type FinalizeTaskRunRequest,
-  type FinalizeTaskRunResponse,
+  type FinalizeRunRequest,
+  type FinalizeRunResponse,
   type GetActiveContextRequest,
   type GetTaskRequest,
   type GetTaskResponse,
@@ -43,9 +37,7 @@ import {
   type RecordRunStepResponse,
   type RecordSessionAttachmentsRequest,
   type RecordSessionAttachmentsResponse,
-  type SelectedTaskRunResponse,
-  type StartRunRequest,
-  type StartRunResponse,
+  type SelectedTaskForRunResponse,
   type VerifyMutationRequest,
   type VerifyMutationResponse,
 } from "ayati-git-context";
@@ -146,26 +138,18 @@ export class ManagedGitContextProcess implements GitContextService {
     return await this.invoke((client) => client.prepareContextTurn(input));
   }
 
-  async completeContextTurn(
-    input: CompleteContextTurnRequest,
-  ): Promise<CompleteContextTurnResponse> {
-    return await this.invoke((client) => client.completeContextTurn(input));
-  }
-
   async ensureActiveSession(input: EnsureActiveSessionRequest): Promise<EnsureActiveSessionResponse> {
     return await this.invoke((client) => client.ensureActiveSession(input));
   }
 
-  async appendConversation(input: AppendConversationRequest): Promise<AppendConversationResponse> {
-    return await this.invoke((client) => client.appendConversation(input));
+  async createTaskForRun(input: CreateTaskForRunRequest): Promise<SelectedTaskForRunResponse> {
+    return await this.invoke((client) => client.createTaskForRun(input));
   }
 
-  async createTaskRun(input: CreateTaskRunRequest): Promise<SelectedTaskRunResponse> {
-    return await this.invoke((client) => client.createTaskRun(input));
-  }
-
-  async activateTaskRun(input: ActivateTaskRunRequest): Promise<SelectedTaskRunResponse> {
-    return await this.invoke((client) => client.activateTaskRun(input));
+  async activateTaskForRun(
+    input: ActivateTaskForRunRequest,
+  ): Promise<SelectedTaskForRunResponse> {
+    return await this.invoke((client) => client.activateTaskForRun(input));
   }
 
   async planTaskRequestRoute(
@@ -210,16 +194,8 @@ export class ManagedGitContextProcess implements GitContextService {
     return await this.invoke((client) => client.verifyMutation(input));
   }
 
-  async finalizeTaskRun(input: FinalizeTaskRunRequest): Promise<FinalizeTaskRunResponse> {
-    return await this.invoke((client) => client.finalizeTaskRun(input));
-  }
-
-  async finalizeSessionRun(input: FinalizeSessionRunRequest): Promise<FinalizeSessionRunResponse> {
-    return await this.invoke((client) => client.finalizeSessionRun(input));
-  }
-
-  async startRun(input: StartRunRequest): Promise<StartRunResponse> {
-    return await this.invoke((client) => client.startRun(input));
+  async finalizeRun(input: FinalizeRunRequest): Promise<FinalizeRunResponse> {
+    return await this.invoke((client) => client.finalizeRun(input));
   }
 
   async recordRunStep(input: RecordRunStepRequest): Promise<RecordRunStepResponse> {
@@ -256,6 +232,8 @@ export class ManagedGitContextProcess implements GitContextService {
         AYATI_GIT_CONTEXT_DATA_DIR: this.options.dataRoot,
         AYATI_GIT_CONTEXT_WORKSPACE_DIR: this.options.workspaceRoot,
         AYATI_GIT_CONTEXT_SOCKET: this.options.socketPath,
+        AYATI_GIT_CONTEXT_TIMEZONE: this.options.timezone,
+        AYATI_GIT_CONTEXT_AGENT_ID: this.options.agentId,
         AYATI_GIT_CONTEXT_PARENT_PID: String(process.pid),
       },
       stdio: ["ignore", "pipe", "pipe"],

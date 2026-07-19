@@ -3,7 +3,7 @@ import type { LoopState, StepSummary } from "../types.js";
 import type { AgentDecision } from "./decision.js";
 import { isObservationalTool } from "../../skills/tool-taxonomy.js";
 import { isGitContextReadOnlyToolName } from "../../skills/builtins/git-context/tool-policy.js";
-import { isGitContextRoutingToolName } from "./runtime-capability-mode.js";
+import { isGitContextRoutingToolName } from "./task-binding-capability-policy.js";
 import { stepUsesFileMutationTool } from "./task-routing-policy.js";
 
 export function canMarkTerminalReplyDone(state: LoopState): boolean {
@@ -18,7 +18,7 @@ export function shouldRejectTerminalReplyForUnresolvedMutation(
   state: LoopState,
   decision: Extract<AgentDecision, { kind: "reply" }>,
 ): { reason: string; failedStep?: StepSummary } | null {
-  if (decision.status !== "completed" || state.runClass !== "task" || !isFileMutationRequest(state.userMessage)) {
+  if (decision.status !== "completed" || !isTaskBound(state) || !isFileMutationRequest(state.userMessage)) {
     return null;
   }
   const failedStep = latestFileMutationStep(state.completedSteps, "failed");
@@ -33,6 +33,10 @@ export function shouldRejectTerminalReplyForUnresolvedMutation(
     reason: "The user asked for file changes, but the latest file mutation failed and no later file mutation succeeded. Continue with patch_files, write_files, or another mutation tool instead of sending a final reply.",
     failedStep,
   };
+}
+
+function isTaskBound(state: LoopState): boolean {
+  return state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "bound";
 }
 
 export function isFileMutationRequest(message: string): boolean {

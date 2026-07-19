@@ -1,4 +1,3 @@
-import type { MemoryRunHandle } from "../../memory/types.js";
 import type {
   ActToolCallRecord,
   AgentLoopDeps,
@@ -61,7 +60,7 @@ export function buildStepSummary(input: {
   };
 }
 
-export async function recordTaskStep(
+export async function recordRunStep(
   deps: AgentLoopDeps,
   state: LoopState,
   action: AgentAction,
@@ -71,43 +70,19 @@ export async function recordTaskStep(
     completedAt: string;
   },
 ): Promise<HarnessContextInput | undefined> {
-  if (!deps.recordTaskStep || !state.runId || state.runClass !== "task") {
+  if (!deps.recordRunStep || !state.runId) {
     return undefined;
   }
-  const taskId = state.harnessContext.contextEngine?.task?.workId
-    ?? state.harnessContext.contextEngine?.pendingTurn?.workId;
-  if (!taskId) {
-    return undefined;
-  }
-  return await deps.recordTaskStep(buildContextTaskStepRecord({
-    taskId,
-    runId: state.runId,
-    action,
-    stepResult,
-    timing,
-  })) ?? undefined;
-}
-
-export async function recordSessionStep(
-  deps: AgentLoopDeps,
-  sessionRunHandle: MemoryRunHandle | undefined,
-  action: AgentAction,
-  stepResult: ExecuteActionStepResult,
-  timing: {
-    startedAt: string;
-    completedAt: string;
-  },
-): Promise<HarnessContextInput | undefined> {
-  if (!deps.recordSessionStep || !sessionRunHandle?.runId) {
-    return undefined;
-  }
-  return await deps.recordSessionStep(buildContextSessionStepRecord({
-    sessionId: sessionRunHandle.sessionId,
-    runId: sessionRunHandle.runId,
-    action,
-    stepResult,
-    timing,
-  })) ?? undefined;
+  return await deps.recordRunStep(
+    buildContextRunStepRecord({
+      sessionId: deps.runHandle.sessionId,
+      runId: state.runId,
+      action,
+      stepResult,
+      timing,
+    }),
+    state.harnessContext,
+  ) ?? undefined;
 }
 
 function buildStepEvidenceMetadata(calls: ActToolCallRecord[]): Pick<StepSummary, "evidenceSource" | "outputSize" | "lineCount" | "truncated"> {
@@ -140,7 +115,7 @@ function buildToolEvidenceSource(call: ActToolCallRecord): Record<string, unknow
   });
 }
 
-function buildContextSessionStepRecord(input: {
+function buildContextRunStepRecord(input: {
   sessionId: string;
   runId: string;
   action: AgentAction;
@@ -210,79 +185,6 @@ function buildContextSessionStepRecord(input: {
     truncated: step.truncated,
     failureType: step.failureType,
     blockedTargets: step.blockedTargets,
-  };
-}
-
-function buildContextTaskStepRecord(input: {
-  taskId: string;
-  runId: string;
-  action: AgentAction;
-  stepResult: ExecuteActionStepResult;
-  timing: {
-    startedAt: string;
-    completedAt: string;
-  };
-}): ContextRunStepRecord {
-  const step = input.stepResult.stepSummary;
-  const verification = input.stepResult.execution.verifyOutput;
-  const status = step.outcome === "failed" ? "failed" : step.outcome === "skipped" ? "skipped" : "completed";
-  return {
-    v: 1,
-    taskId: input.taskId,
-    runId: input.runId,
-    step: step.step,
-    status,
-    startedAt: input.timing.startedAt,
-    completedAt: input.timing.completedAt,
-    summary: step.summary,
-    decision: {
-      actionKind: "tool_calls",
-      mode: input.action.mode,
-      allowedTools: input.action.allowedTools,
-      assertions: input.action.assertions,
-    },
-    action: {
-      executionContract: step.executionContract,
-      calls: input.action.calls,
-      toolsUsed: step.toolsUsed ?? [],
-      toolSuccessCount: step.toolSuccessCount,
-      toolFailureCount: step.toolFailureCount,
-      stoppedEarlyReason: step.stoppedEarlyReason,
-    },
-    toolCalls: input.stepResult.execution.actOutput.toolCalls.map((call) => ({
-      ...call,
-      status: call.error ? "failed" : "success",
-    })),
-    verification: {
-      passed: verification.passed,
-      policy: step.verificationPolicy,
-      method: verification.method,
-      executionStatus: verification.executionStatus,
-      validationStatus: verification.validationStatus,
-      summary: verification.summary,
-      evidenceSummary: verification.evidenceSummary,
-      evidenceItems: verification.evidenceItems,
-      newFacts: verification.newFacts,
-      artifacts: verification.artifacts,
-      usedRawArtifacts: verification.usedRawArtifacts,
-      expectationCheckStatus: verification.expectationCheckStatus,
-      expectationCheckSummary: verification.expectationCheckSummary,
-    },
-    workStateAfter: input.stepResult.execution.nextWorkState,
-    facts: uniqueStrings([
-      ...step.newFacts,
-      ...verification.newFacts,
-      ...(step.evidenceItems ?? []),
-    ]),
-    artifacts: uniqueStrings([
-      ...step.artifacts,
-      ...verification.artifacts,
-    ]),
-    ...(step.outputSize !== undefined ? { outputSize: step.outputSize } : {}),
-    ...(step.lineCount !== undefined ? { lineCount: step.lineCount } : {}),
-    ...(step.truncated !== undefined ? { truncated: step.truncated } : {}),
-    ...(step.failureType ? { failureType: step.failureType } : {}),
-    ...(step.blockedTargets?.length ? { blockedTargets: step.blockedTargets } : {}),
   };
 }
 

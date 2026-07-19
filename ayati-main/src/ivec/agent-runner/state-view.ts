@@ -1,14 +1,8 @@
 import type { LoopState, ToolContextState, ToolObservation, WorkState } from "../types.js";
-import type { MemoryRunHandle } from "../../memory/types.js";
 import type { ContextReadContext } from "../../context-engine/index.js";
 import type { RepairPromptCard } from "./repair-policy.js";
 import { buildPromptToolCallsForRun } from "./run-tool-call-context.js";
 import type { PromptToolCalls } from "./run-tool-call-context.js";
-import {
-  buildRuntimeCapabilityPromptContext,
-  detectRuntimeCapabilityMode,
-} from "./runtime-capability-mode.js";
-import type { RuntimeCapabilityPromptContext } from "./runtime-capability-mode.js";
 import type { ToolLoadResult } from "./tool-working-set.js";
 import { buildAgentContextPack } from "./context-pack.js";
 import { projectAgentPromptContext } from "./prompt-context.js";
@@ -106,27 +100,16 @@ export interface AgentStateView {
 
 export interface AgentStateViewOptions {
   activeTools?: string[];
-  runtimeMode?: RuntimeCapabilityPromptContext;
-  workRunHandle?: MemoryRunHandle;
-  sessionRunHandle?: MemoryRunHandle;
 }
 
 export function buildAgentStateView(state: LoopState, options: AgentStateViewOptions = {}): AgentStateView {
-  const runtimeMode = options.runtimeMode
-    ?? buildRuntimeCapabilityPromptContext(detectRuntimeCapabilityMode({
-      state,
-      workRunHandle: options.workRunHandle,
-      sessionRunHandle: options.sessionRunHandle,
-    }));
   const progress = buildProgressView(state.workState);
   const toolLoad = buildToolLoadView(state.lastToolLoad);
   const workingFeedback = buildWorkingFeedbackView(state);
   const observations = buildObservationsView(state.toolContext);
   const readContext = buildReadContextView(state.toolContext);
   const contextPack = buildAgentContextPack(state);
-  const activeRunId = options.workRunHandle?.runId
-    ?? options.sessionRunHandle?.runId
-    ?? state.runId;
+  const activeRunId = state.runId;
   const toolCalls = buildToolCallsView(
     state.toolContext,
     contextPack.gitContext?.readContext,
@@ -144,7 +127,6 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
   } : undefined;
   const context = projectAgentPromptContext({
     context: contextPack,
-    runtimeMode,
     tools: buildToolsContext({
       activeTools: options.activeTools,
       toolLoad,
@@ -153,11 +135,8 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
       workingFeedback,
     }),
     run: buildRunContext({
-      status: state.workState.status,
       workState: progress,
       toolCalls,
-      routing: buildRoutingAttemptView(state),
-      deferredMutation: buildDeferredMutationView(state),
       contextPressure: buildContextPressureView(state),
     }),
   });
@@ -193,19 +172,13 @@ function buildToolsContext(input: {
 }
 
 function buildRunContext(input: {
-  status: WorkState["status"];
   workState?: PromptProgressState;
   toolCalls?: PromptToolCalls;
-  routing?: PromptRunContext["routing"];
-  deferredMutation?: PromptRunContext["deferredMutation"];
   contextPressure?: PromptRunContext["contextPressure"];
 }): PromptRunContext {
   return {
-    status: input.status,
     ...(input.workState ? { workState: input.workState } : {}),
     ...(input.toolCalls ? { toolCalls: input.toolCalls } : {}),
-    ...(input.routing ? { routing: input.routing } : {}),
-    ...(input.deferredMutation ? { deferredMutation: input.deferredMutation } : {}),
     ...(input.contextPressure ? { contextPressure: input.contextPressure } : {}),
   };
 }
@@ -228,42 +201,6 @@ function buildContextPressureView(state: LoopState): PromptRunContext["contextPr
   };
 }
 
-function buildRoutingAttemptView(state: LoopState): PromptRunContext["routing"] | undefined {
-  const routing = state.routingAttempts;
-  if (!routing) {
-    return undefined;
-  }
-  if (
-    routing.successCount === 0
-    && routing.failureCount === 0
-    && !routing.resolved
-    && !routing.lastTool
-    && !routing.lastError
-  ) {
-    return undefined;
-  }
-  return {
-    successCount: routing.successCount,
-    failureCount: routing.failureCount,
-    maxFailures: routing.maxFailures,
-    resolved: routing.resolved,
-    ...(routing.lastTool ? { lastTool: routing.lastTool } : {}),
-    ...(routing.lastError ? { lastError: routing.lastError } : {}),
-  };
-}
-
-function buildDeferredMutationView(state: LoopState): PromptRunContext["deferredMutation"] | undefined {
-  const deferred = state.deferredMutation;
-  if (!deferred) {
-    return undefined;
-  }
-  return {
-    reason: deferred.reason,
-    tools: deferred.blockedTools,
-    callCount: deferred.action.calls.length,
-  };
-}
-
 function buildHarnessContext(input: {
   workingFeedback?: PromptWorkingFeedback;
 }): PromptHarnessContext | undefined {
@@ -280,11 +217,6 @@ function buildWorkingFeedbackView(state: LoopState): PromptWorkingFeedback | und
   const pendingTurnFeedback = buildPendingTurnWorkingFeedback(state);
   if (pendingTurnFeedback) {
     latest.push(pendingTurnFeedback);
-  }
-
-  const deferredMutationFeedback = buildDeferredMutationWorkingFeedback(state);
-  if (deferredMutationFeedback) {
-    latest.push(deferredMutationFeedback);
   }
 
   const toolLoadFeedback = buildToolLoadWorkingFeedback(state.lastToolLoad);
@@ -309,20 +241,6 @@ function buildWorkingFeedbackView(state: LoopState): PromptWorkingFeedback | und
   }
 
   return latest.length > 0 ? { latest: latest.slice(-4) } : undefined;
-}
-
-function buildDeferredMutationWorkingFeedback(state: LoopState): PromptWorkingFeedbackItem | undefined {
-  const deferred = state.deferredMutation;
-  if (!deferred) {
-    return undefined;
-  }
-  return {
-    severity: "warning",
-    source: "tool_validation",
-    code: "mutation_deferred_for_task_routing",
-    message: `The pending mutation (${deferred.blockedTools.join(", ")}) is paused until this session run has task ownership.`,
-    retryHint: "Inspect task candidates, then activate the task that owns the resources or create a distinct new task. The deferred mutation will execute automatically after routing.",
-  };
 }
 
 function buildPendingTurnWorkingFeedback(state: LoopState): PromptWorkingFeedbackItem | undefined {

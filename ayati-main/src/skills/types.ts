@@ -17,6 +17,7 @@ export interface ToolSelectionHints {
 export interface ToolExecutionContext {
   clientId?: string;
   runId?: string;
+  callId?: string;
   sessionId?: string;
   taskAssets?: TaskAssetRecord[];
   stepNumber?: number;

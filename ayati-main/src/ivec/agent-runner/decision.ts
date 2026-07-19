@@ -124,6 +124,7 @@ interface CallAgentDecisionInput {
   toolLoadingAvailable?: boolean;
   taskFeedbackToolAvailable?: boolean;
   taskCompletionAvailable?: boolean;
+  taskBound?: boolean;
   systemContext?: string;
   metrics?: RunMetrics;
   feedbackLedger?: AgentFeedbackLedger;
@@ -140,6 +141,7 @@ interface ToolProtocolViolation {
   invalidTools: string[];
   selectedTools: string[];
   loadToolsUsedAsAction: boolean;
+  mutationRequiresTaskBinding: boolean;
 }
 
 interface ToolInputSchemaViolation {
@@ -332,6 +334,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         toolLoadingAvailable: input.toolLoadingAvailable !== false,
         taskFeedbackToolAvailable: input.taskFeedbackToolAvailable === true,
         taskCompletionAvailable: input.taskCompletionAvailable === true,
+        taskBound: input.taskBound === true,
       });
       if (violation) {
         const repair = createToolProtocolRepairSignal(violation, attempt + 1);
@@ -741,6 +744,7 @@ function createToolProtocolRepairSignal(violation: ToolProtocolViolation, attemp
       invalidTools: violation.invalidTools,
       selectedTools: violation.selectedTools,
       loadToolsUsedAsAction: violation.loadToolsUsedAsAction,
+      mutationRequiresTaskBinding: violation.mutationRequiresTaskBinding,
     },
   });
 }
@@ -754,6 +758,9 @@ function toolProtocolRepairCode(violation: ToolProtocolViolation): RepairCode {
   }
   if (violation.loadToolsUsedAsAction) {
     return "R_LOAD_TOOLS_USED_AS_ACTION";
+  }
+  if (violation.mutationRequiresTaskBinding) {
+    return "R_MUTATION_REQUIRES_TASK_BINDING";
   }
   if (violation.reason.includes("decision_load_tools request must include")) {
     return "R_EMPTY_TOOL_LOAD_SELECTOR";
@@ -814,16 +821,18 @@ function validateToolProtocol(
     toolLoadingAvailable: boolean;
     taskFeedbackToolAvailable: boolean;
     taskCompletionAvailable: boolean;
+    taskBound: boolean;
   },
 ): ToolProtocolViolation | null {
   const selectedTools = selectedToolDefinitions.map((tool) => tool.name);
   if (decision.kind === "ask_user" && !options.taskFeedbackToolAvailable) {
     return {
       kind: "tool_protocol_violation",
-      reason: "ask_user_feedback is only available during an active task run",
+      reason: "ask_user_feedback is only available during an active task-bound run",
       invalidTools: [TASK_FEEDBACK_TOOL_NAME],
       selectedTools,
       loadToolsUsedAsAction: false,
+      mutationRequiresTaskBinding: false,
     };
   }
   if (decision.kind === "load_tools") {
@@ -834,6 +843,7 @@ function validateToolProtocol(
         invalidTools: ["decision_load_tools"],
         selectedTools,
         loadToolsUsedAsAction: false,
+        mutationRequiresTaskBinding: false,
       };
     }
     const hasSelector = Boolean(decision.request.query?.trim())
@@ -848,6 +858,7 @@ function validateToolProtocol(
       invalidTools: [],
       selectedTools,
       loadToolsUsedAsAction: false,
+      mutationRequiresTaskBinding: false,
     };
   }
 
@@ -855,10 +866,11 @@ function validateToolProtocol(
     if (!options.taskCompletionAvailable) {
       return {
         kind: "tool_protocol_violation",
-        reason: "task_completion is only available during an active task run",
+        reason: "task_completion is only available during an active task-bound run",
         invalidTools: [TASK_COMPLETION_TOOL_NAME],
         selectedTools,
         loadToolsUsedAsAction: false,
+        mutationRequiresTaskBinding: false,
       };
     }
     return null;
@@ -875,6 +887,8 @@ function validateToolProtocol(
   const invalidAllowedTools = decision.action.allowedTools.filter((tool) => tool === "load_tools" || !selectedToolSet.has(tool));
   const invalidTools = uniqueStrings([...invalidCallTools, ...invalidAllowedTools]);
   const loadToolsUsedAsAction = decision.action.calls.some((call) => call.tool === "load_tools");
+  const mutationRequiresTaskBinding = !options.taskBound
+    && invalidTools.some((tool) => getToolPurpose(tool) === "mutation");
 
   if (decision.action.calls.length === 0) {
     return {
@@ -883,6 +897,7 @@ function validateToolProtocol(
       invalidTools,
       selectedTools,
       loadToolsUsedAsAction,
+      mutationRequiresTaskBinding,
     };
   }
 
@@ -897,6 +912,7 @@ function validateToolProtocol(
       invalidTools: uniqueStrings(invalidPurposeCalls.map((call) => call.tool)),
       selectedTools,
       loadToolsUsedAsAction,
+      mutationRequiresTaskBinding,
     };
   }
 
@@ -912,6 +928,7 @@ function validateToolProtocol(
     invalidTools,
     selectedTools,
     loadToolsUsedAsAction,
+    mutationRequiresTaskBinding,
   };
 }
 
@@ -1295,7 +1312,7 @@ function buildNativeDecisionTools(
   if (options.taskFeedbackToolAvailable) {
     controlTools.push({
       name: TASK_FEEDBACK_TOOL_NAME,
-      description: "Pause the active task run to ask the user for required feedback when progress is blocked and no safe default exists. Do not use for final responses.",
+      description: "Pause the active task-bound run to ask the user for required feedback when progress is blocked and no safe default exists. Do not use for final responses.",
       inputSchema: objectSchema({
         question: {
           type: "string",
@@ -1312,7 +1329,7 @@ function buildNativeDecisionTools(
   if (options.taskCompletionAvailable) {
     controlTools.push({
       name: TASK_COMPLETION_TOOL_NAME,
-      description: "Request deterministic completion verification for the active task run after the requested work appears complete. The runtime verifies declared assets, tool evidence, and unresolved failures before updating task state.",
+      description: "Request deterministic completion verification for the active task-bound run after the requested work appears complete. The runtime verifies declared assets, tool evidence, and unresolved failures before updating task state.",
       inputSchema: objectSchema({
         summary: {
           type: "string",

@@ -23,7 +23,7 @@ The service also provides:
 
 - typed HTTP/JSON contracts and client;
 - SQLite lifecycle, idempotency, locks, and recovery journals;
-- read-first session runs and task/request/run binding;
+- atomic run preparation and immutable optional task/request binding;
 - ignored attachment inboxes with tracked provenance manifests;
 - context-only commits for verified external outcomes;
 - direct single-repository task mutation and finalization.

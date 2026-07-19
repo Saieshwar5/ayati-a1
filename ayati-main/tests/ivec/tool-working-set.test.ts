@@ -31,8 +31,9 @@ function skill(id: string, tools: ToolDefinition[]): SkillDefinition {
 
 function state(userMessage: string): LoopState {
   return {
-    runId: "",
-    runClass: "interaction",
+    runId: "r1",
+    currentSeq: 1,
+    inputKind: "user_message",
     userMessage,
     workState: {
       status: "not_done",
@@ -46,9 +47,21 @@ function state(userMessage: string): LoopState {
     maxIterations: 15,
     consecutiveFailures: 0,
     completedSteps: [],
+    routingAttempts: {
+      successCount: 0,
+      failureCount: 0,
+      maxFailures: 2,
+      resolved: false,
+    },
     runPath: "",
     failureHistory: [],
-    harnessContext: createInitialHarnessContext(),
+    harnessContext: createInitialHarnessContext({
+      contextEngine: contextEngineWithPendingTurn({
+        status: "active",
+        ref: "refs/heads/task/T-1",
+        workId: "T-1",
+      }, "bound"),
+    }),
   };
 }
 
@@ -121,7 +134,7 @@ describe("ToolWorkingSetManager", () => {
     expect(manager.listActive(context)).toEqual(["read_files", "patch_files", "write_files"]);
   });
 
-  it("keeps read and write file tools active across task-run steps", () => {
+  it("keeps read and write file tools active across task-bound steps", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
         tool("read_files", "Read file"),
@@ -231,7 +244,10 @@ describe("ToolWorkingSetManager", () => {
     ]);
     const executor = createToolExecutor([]);
     const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 12 });
-    const runState = state("hii");
+    const runState = state("create a task");
+    runState.harnessContext = createInitialHarnessContext({
+      contextEngine: contextEngineWithFocus({ status: "none" }),
+    });
 
     manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 });
     expect(manager.listActive({ runId: "r1" })).toEqual([
@@ -371,7 +387,7 @@ describe("ToolWorkingSetManager", () => {
     ]);
   });
 
-  it("keeps mutation tools and routing-window tools available for active task continuation before run allocation", () => {
+  it("keeps mutation tools unavailable while active-task ownership is unbound", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
         tool("find_files"),
@@ -412,13 +428,11 @@ describe("ToolWorkingSetManager", () => {
       "find_files",
       "search_in_files",
       "read_files",
-      "write_files",
       "git_context_activate_task",
       "git_context_create_task",
     ]));
-    expect(result.evicted).not.toEqual(expect.arrayContaining([
-      "write_files",
-    ]));
+    expect(active).not.toContain("write_files");
+    expect(result.evicted).toEqual(expect.arrayContaining(["write_files"]));
     expect(executor.list(context)).toEqual(active);
   });
 
@@ -434,7 +448,11 @@ describe("ToolWorkingSetManager", () => {
     const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 12 });
     const context = { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 };
 
-    manager.prepareForDecision(state("build a website"), context);
+    const runState = state("build a website");
+    runState.harnessContext = createInitialHarnessContext({
+      contextEngine: contextEngineWithFocus({ status: "none" }),
+    });
+    manager.prepareForDecision(runState, context);
     manager.afterExecution([{
       callId: "call_1",
       tool: "git_context_create_task",
@@ -456,6 +474,9 @@ describe("ToolWorkingSetManager", () => {
     const executor = createToolExecutor([]);
     const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 12 });
     const runState = state("continue after task creation");
+    runState.harnessContext = createInitialHarnessContext({
+      contextEngine: contextEngineWithFocus({ status: "none" }),
+    });
     runState.completedSteps = [{
       toolsUsed: ["git_context_create_task"],
     } as LoopState["completedSteps"][number]];
@@ -467,14 +488,14 @@ describe("ToolWorkingSetManager", () => {
     ]);
   });
 
-  it("removes task-routing controls when a work run is active", () => {
+  it("removes task-routing controls when the run is task-bound", () => {
     const catalog = new ToolCatalog([
       skill("git-context", [
-        tool("git_context_search_tasks"),
         tool("git_context_create_task"),
         tool("git_context_activate_task"),
       ]),
       skill("filesystem", [
+        tool("search_in_files"),
         tool("write_files"),
       ]),
     ]);
@@ -486,7 +507,7 @@ describe("ToolWorkingSetManager", () => {
 
     manager.load({
       toolNames: [
-        "git_context_search_tasks",
+        "search_in_files",
         "git_context_create_task",
         "git_context_activate_task",
         "write_files",
@@ -495,7 +516,7 @@ describe("ToolWorkingSetManager", () => {
     manager.prepareForDecision(runState, context);
 
     expect(manager.listActive(context)).toEqual([
-      "git_context_search_tasks",
+      "search_in_files",
       "write_files",
     ]);
   });
@@ -504,10 +525,9 @@ describe("ToolWorkingSetManager", () => {
 function contextEngineWithFocus(focus: ContextEngineMachineContext["focus"]): ContextEngineMachineContext {
   return {
     session: {
-      sessionId: "s1",
+      meta: { sessionId: "s1", assetCount: 0 },
       conversationTail: [],
       activityTail: [],
-      assetCount: 0,
     },
     focus,
   };

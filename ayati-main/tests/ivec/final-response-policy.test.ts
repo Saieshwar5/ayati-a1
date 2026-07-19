@@ -15,7 +15,6 @@ function state(input: Partial<LoopState> = {}): LoopState {
   return {
     runId: "R-1",
     currentSeq: 1,
-    runClass: "task",
     userMessage: "update the html file",
     workState: {
       status: "not_done",
@@ -37,7 +36,30 @@ function state(input: Partial<LoopState> = {}): LoopState {
     },
     runPath: "",
     failureHistory: [],
-    harnessContext: createInitialHarnessContext(),
+    harnessContext: createInitialHarnessContext({
+      contextEngine: {
+        session: {
+          meta: { sessionId: "S-1", assetCount: 0 },
+          conversationTail: [],
+          activityTail: [],
+        },
+        pendingTurn: {
+          fromSeq: 1,
+          toSeq: 1,
+          text: "update the html file",
+          at: "2026-07-19T10:00:00.000Z",
+          routingStatus: "bound",
+          workId: "T-1",
+          branch: "task/T-1",
+          runId: "R-1",
+        },
+        focus: {
+          status: "active",
+          ref: "refs/heads/task/T-1",
+          workId: "T-1",
+        },
+      },
+    }),
     ...input,
   };
 }

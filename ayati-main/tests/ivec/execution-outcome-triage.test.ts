@@ -9,28 +9,28 @@ describe("execution outcome triage", () => {
     const input = {
       execution: {
         verification: "not_applicable" as const,
-        finalization: "skipped" as const,
+        finalization: "completed" as const,
         commit: "not_required" as const,
       },
       actionSteps: 0,
-      taskRun: false,
+      taskBound: false,
     };
 
     expect(buildExecutionOutcomeFindings(input)).toEqual([]);
     expect(isHealthyConversationOutcome(input)).toBe(true);
   });
 
-  it("rejects skipped finalization for a task run", () => {
+  it("rejects a non-pending commit while task finalization is pending", () => {
     expect(buildExecutionOutcomeFindings({
       execution: {
         verification: "passed",
-        finalization: "skipped",
-        commit: "failed",
+        finalization: "pending",
+        commit: "not_required",
       },
       actionSteps: 1,
-      taskRun: true,
+      taskBound: true,
     })).toEqual([expect.objectContaining({
-      code: "task_finalization_skipped",
+      code: "task_commit_state_mismatch",
       severity: "error",
     })]);
   });
@@ -43,7 +43,7 @@ describe("execution outcome triage", () => {
         commit: "committed",
       },
       actionSteps: 1,
-      taskRun: true,
+      taskBound: true,
     })).toEqual([expect.objectContaining({
       code: "commit_identity_missing",
       severity: "error",
@@ -58,7 +58,7 @@ describe("execution outcome triage", () => {
         commit: "not_required",
       },
       actionSteps: 1,
-      taskRun: true,
+      taskBound: true,
     })).toEqual([expect.objectContaining({
       code: "finalized_after_failed_verification",
       severity: "warning",

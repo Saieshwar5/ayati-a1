@@ -33,8 +33,9 @@ cross-package boundary when applicable:
    task Git, and creates exactly one task commit on retry.
 7. Restart can reopen the same task/request and working directory.
 Existing focused suites include `simple-task-*`,
-`live-task-request-routing.test.ts`, `v1-task-end-to-end-flows.test.ts`, and
-the SQLite service suites in `ayati-git-context/tests`.
+`prepare-context-turn.test.ts`, `record-run-step.test.ts`,
+`finalize-run.test.ts`, `task-bound-run-finalization.test.ts`, and the SQLite
+service suites in `ayati-git-context/tests`.
 
 ## Harness and Live-Flow Coverage
 
@@ -44,7 +45,7 @@ that routing refreshes the active context before normal work tools run.
 
 App-level tests should distinguish:
 
-- read-only session runs from selected task runs;
+- read-only unbound runs from task-bound runs;
 - direct clarification from task selection;
 - new task from new request in an existing task;
 - verified repository mutation from external side effects; and
@@ -54,7 +55,7 @@ Feedback coverage should assert the same lifecycle at two levels. The compact
 latest summary must retain repository, request, run-binding, and finalization
 identity across successive events. The live report must reject V1 mounts,
 missing working directories, missing or contradictory request decisions, and
-commit/HEAD mismatches while accepting clarification backed only by a session
+commit/HEAD mismatches while accepting clarification backed only by an unbound
 run.
 
 For completed, failed, blocked, needs-user-input, run-limit, context-limit, and

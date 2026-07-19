@@ -94,7 +94,8 @@ describe("callAgentDecision", () => {
     const sentContext = sentState["context"] as {
       git: { session: { recentCommits?: unknown[] } };
     };
-    expect(sentContext.git.session.recentCommits).toEqual([recentCommit]);
+    const { runId: _runId, ...promptCommit } = recentCommit;
+    expect(sentContext.git.session.recentCommits).toEqual([promptCommit]);
   });
 
   it("does not log decision traces by default", async () => {
@@ -130,7 +131,7 @@ describe("callAgentDecision", () => {
     expect(systemPrompt).toContain("Use direct assistant text only for pure conversation");
     expect(systemPrompt).toContain("Do not use a final reply to promise future work.");
     expect(systemPrompt).toContain("Call the selected tool directly");
-    expect(systemPrompt).toContain("ask_user_feedback is available only during an active task run");
+    expect(systemPrompt).toContain("ask_user_feedback is available only during an active task-bound run");
     expect(systemPrompt).toContain("Do not use ask_user_feedback for casual conversation");
     expect(systemPrompt).toContain("There is no session-global active task");
     expect(systemPrompt).toContain("A task is a long-lived workstream");
@@ -138,7 +139,7 @@ describe("callAgentDecision", () => {
     expect(systemPrompt).toContain("Completing a request does not archive its task");
     expect(systemPrompt).toContain("Exact resource ownership is stronger evidence than title similarity");
     expect(systemPrompt).toContain("If ownership is ambiguous, ask one short clarification question");
-    expect(systemPrompt).toContain("Normal mutation tools require an explicitly selected task run");
+    expect(systemPrompt).toContain("Normal mutation tools require the current run to be explicitly task-bound");
     expect(systemPrompt).toContain("Do not tell the user that tools are missing.");
     expect(systemPrompt).not.toContain("decision_act");
   });
@@ -163,7 +164,7 @@ describe("callAgentDecision", () => {
     expect(systemPrompt).toContain("context.timeline as exact recent history");
     expect(systemPrompt).toContain("exact later items override an older checkpoint or summary");
     expect(systemPrompt).toContain("Do not infer details omitted from a summary");
-    expect(systemPrompt).toContain("context.run.status");
+    expect(systemPrompt).not.toContain("context.run.status");
     expect(systemPrompt).toContain("context.run.workState");
     expect(systemPrompt).toContain("context.run.toolCalls");
     expect(systemPrompt).toContain("outputPreview");
@@ -642,7 +643,7 @@ describe("callAgentDecision", () => {
       git: {
         session: {
           summary?: unknown;
-          recentTaskRuns?: Array<{ runId: string }>;
+          recentTaskRuns?: Array<{ checkpointId: string }>;
           attachments?: unknown;
           activity: { recent: unknown[] };
         };
@@ -651,7 +652,8 @@ describe("callAgentDecision", () => {
       run: { workState: unknown };
     };
     expect(sentContext.git.session).not.toHaveProperty("summary");
-    expect(sentContext.git.session.recentTaskRuns?.map((item) => item.runId)).toEqual(["run-5"]);
+    expect(sentContext.git.session.recentTaskRuns?.map((item) => item.checkpointId)).toEqual(["checkpoint-5"]);
+    expect(JSON.stringify(sentContext)).not.toContain('"runId"');
     expect(sentContext.git.session.activity.recent).toEqual([]);
     expect(sentContext.git.session.attachments).toEqual(
       stateView.context.git?.session.attachments,
@@ -661,7 +663,7 @@ describe("callAgentDecision", () => {
     expect(sentContext.run.workState).toEqual(workState);
   });
 
-  it("combines the latest task-run checkpoint with the old timeline prefix", async () => {
+  it("combines the latest task-bound-run checkpoint with the old timeline prefix", async () => {
     const generateTurn = vi.fn(async (turnInput: LlmTurnInput): Promise<LlmTurnOutput> => {
       if (turnInput.responseFormat?.type === "json_schema") {
         return { type: "assistant", content: JSON.stringify(validTimelineCheckpointSummary(9)) };
@@ -734,8 +736,8 @@ describe("callAgentDecision", () => {
     const checkpointInput = generateTurn.mock.calls.find((call) => call[0].responseFormat)?.[0];
     const checkpointSource = checkpointInput?.messages.find((message) => message.role === "user")?.content;
     if (typeof checkpointSource !== "string") throw new Error("Expected checkpoint source.");
-    expect(checkpointSource).toContain('"previousTaskRunCheckpoint"');
-    expect(checkpointSource).toContain('"runId": "run-5"');
+    expect(checkpointSource).toContain('"previousTaskBoundRunCheckpoint"');
+    expect(checkpointSource).not.toContain('"runId"');
     expect(checkpointSource).toContain('"seq": 11');
 
     const decisionInput = generateTurn.mock.calls.find((call) => !call[0].responseFormat)?.[0];
@@ -1333,9 +1335,6 @@ describe("callAgentDecision", () => {
             }],
           },
         },
-        run: {
-          status: "not_done",
-        },
         personal: {
           memorySnapshot: "Prefer concise answers.",
         },
@@ -1649,11 +1648,11 @@ describe("callAgentDecision", () => {
 
     expect(decision.kind).toBe("load_tools");
     const repairPrompt = generateTurn.mock.calls[1]?.[0]?.messages.at(-1)?.content ?? "";
-    expect(repairPrompt).toContain("Repair code: R_TOOL_NOT_SELECTED");
+    expect(repairPrompt).toContain("Repair code: R_MUTATION_REQUIRES_TASK_BINDING");
     expect(repairPrompt).toContain("Blocked targets: process_run");
     expect(feedback.events.find((event) => event.event === "protocol_violation")?.data).toMatchObject({
       repair: {
-        code: "R_TOOL_NOT_SELECTED",
+        code: "R_MUTATION_REQUIRES_TASK_BINDING",
         blockedTargets: ["process_run"],
       },
     });
@@ -2418,8 +2417,8 @@ function taskRunCheckpoint(sequence: number) {
     strategy: "llm" as const,
     at: `2026-07-10T09:0${sequence}:00.000Z`,
     summary: sequence === 5
-      ? `Task-run checkpoint ${sequence}: ${"x".repeat(300_000)}`
-      : `Task-run checkpoint ${sequence}.`,
+      ? `Task-bound-run checkpoint ${sequence}: ${"x".repeat(300_000)}`
+      : `Task-bound-run checkpoint ${sequence}.`,
   };
 }
 

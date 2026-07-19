@@ -4,20 +4,14 @@ import type {
   AdoptTaskReferenceResponse,
   AcquireMutationAuthorityRequest,
   AcquireMutationAuthorityResponse,
-  CompleteContextTurnRequest,
-  CompleteContextTurnResponse,
-  AppendConversationRequest,
-  AppendConversationResponse,
-  ActivateTaskRunRequest,
+  ActivateTaskForRunRequest,
   BindTaskAttachmentsRequest,
   BindTaskAttachmentsResponse,
-  CreateTaskRunRequest,
+  CreateTaskForRunRequest,
   EnsureActiveSessionRequest,
   EnsureActiveSessionResponse,
-  FinalizeSessionRunRequest,
-  FinalizeSessionRunResponse,
-  FinalizeTaskRunRequest,
-  FinalizeTaskRunResponse,
+  FinalizeRunRequest,
+  FinalizeRunResponse,
   GetActiveContextRequest,
   GetTaskRequest,
   GetTaskResponse,
@@ -32,9 +26,7 @@ import type {
   RecordRunStepResponse,
   RecordSessionAttachmentsRequest,
   RecordSessionAttachmentsResponse,
-  StartRunRequest,
-  StartRunResponse,
-  SelectedTaskRunResponse,
+  SelectedTaskForRunResponse,
   VerifyMutationRequest,
   VerifyMutationResponse,
 } from "./contracts.js";
@@ -43,11 +35,9 @@ export interface GitContextService {
   getHealth(): Promise<HealthResponse>;
   getActiveContext(input: GetActiveContextRequest): Promise<ActiveContext>;
   prepareContextTurn(input: PrepareContextTurnRequest): Promise<PrepareContextTurnResponse>;
-  completeContextTurn(input: CompleteContextTurnRequest): Promise<CompleteContextTurnResponse>;
   ensureActiveSession(input: EnsureActiveSessionRequest): Promise<EnsureActiveSessionResponse>;
-  appendConversation(input: AppendConversationRequest): Promise<AppendConversationResponse>;
-  createTaskRun(input: CreateTaskRunRequest): Promise<SelectedTaskRunResponse>;
-  activateTaskRun(input: ActivateTaskRunRequest): Promise<SelectedTaskRunResponse>;
+  createTaskForRun(input: CreateTaskForRunRequest): Promise<SelectedTaskForRunResponse>;
+  activateTaskForRun(input: ActivateTaskForRunRequest): Promise<SelectedTaskForRunResponse>;
   planTaskRequestRoute(
     input: PlanTaskRequestRouteRequest,
   ): Promise<PlanTaskRequestRouteResponse>;
@@ -66,8 +56,6 @@ export interface GitContextService {
     input: AcquireMutationAuthorityRequest,
   ): Promise<AcquireMutationAuthorityResponse>;
   verifyMutation(input: VerifyMutationRequest): Promise<VerifyMutationResponse>;
-  finalizeTaskRun(input: FinalizeTaskRunRequest): Promise<FinalizeTaskRunResponse>;
-  finalizeSessionRun(input: FinalizeSessionRunRequest): Promise<FinalizeSessionRunResponse>;
-  startRun(input: StartRunRequest): Promise<StartRunResponse>;
+  finalizeRun(input: FinalizeRunRequest): Promise<FinalizeRunResponse>;
   recordRunStep(input: RecordRunStepRequest): Promise<RecordRunStepResponse>;
 }

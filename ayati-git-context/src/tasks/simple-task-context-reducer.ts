@@ -1,7 +1,7 @@
 import type {
+  RunOutcome,
   RunWorkState,
   TaskCompletionRecord,
-  TaskRunOutcome,
 } from "../contracts.js";
 import { GitContextServiceError } from "../errors.js";
 import { renderTaskCard, type TaskCard } from "./task-card.js";
@@ -32,8 +32,8 @@ export function reduceSimpleTaskContext(input: {
   taskCard: TaskCard;
   taskRequest: TaskRequest;
   workState: RunWorkState;
-  outcome: TaskRunOutcome;
-  validation: "passed" | "failed" | "not_run";
+  outcome: RunOutcome;
+  validation: "passed" | "failed" | "not_applicable";
   summary: string;
   next?: string;
   completion: TaskCompletionRecord;
@@ -122,11 +122,16 @@ export function reduceSimpleTaskContext(input: {
   const contextWrites = proposedWrites
     .filter((write) => currentContent.get(write.path) !== write.content)
     .sort((left, right) => left.path.localeCompare(right.path));
-  return { commitRequired: true, taskCard, taskRequest, contextWrites };
+  return {
+    commitRequired: contextWrites.length > 0,
+    taskCard,
+    taskRequest,
+    contextWrites,
+  };
 }
 
 function requireVerifiedCompletion(input: {
-  validation: "passed" | "failed" | "not_run";
+  validation: "passed" | "failed" | "not_applicable";
   completion: TaskCompletionRecord;
 }): void {
   const completion = input.completion;

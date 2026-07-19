@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { estimateTextTokens } from "../../prompt/token-estimator.js";
 import type { ContextSessionTaskRunCheckpoint } from "../../context-engine/index.js";
 
+export type TimelineContinuityCheckpoint = Omit<ContextSessionTaskRunCheckpoint, "runId">;
+
 export type ExactTimelineEvent =
   | {
       kind: "user";
@@ -112,7 +114,7 @@ export interface TimelineCheckpointPlan {
   estimatedSavingsTokens: number;
   canReachTarget: boolean;
   selectedEvents: ExactTimelineEvent[];
-  continuityCheckpoint?: ContextSessionTaskRunCheckpoint;
+  continuityCheckpoint?: TimelineContinuityCheckpoint;
   exactTail: ExactTimelineEvent[];
   protectedEvents: Array<{
     seq: number;
@@ -129,10 +131,13 @@ const DEFAULT_CHECKPOINT_ESTIMATE_TOKENS = 1_200;
 
 export function planTimelineCheckpoint(input: {
   events: ExactTimelineEvent[];
-  continuityCheckpoint?: ContextSessionTaskRunCheckpoint;
+  continuityCheckpoint?: ContextSessionTaskRunCheckpoint | TimelineContinuityCheckpoint;
   requiredSavingsTokens: number;
   estimatedCheckpointTokens?: number;
 }): TimelineCheckpointPlan {
+  const continuityCheckpoint = input.continuityCheckpoint
+    ? withoutRunId(input.continuityCheckpoint)
+    : undefined;
   const requiredSavingsTokens = Math.max(0, Math.ceil(input.requiredSavingsTokens));
   const estimatedCheckpointTokens = Math.max(
     1,
@@ -140,8 +145,8 @@ export function planTimelineCheckpoint(input: {
   );
   const protectedEvents = identifyProtectedEvents(input.events);
   const protectedIndexes = new Set(protectedEvents.map((entry) => entry.index));
-  const continuityCheckpointTokens = input.continuityCheckpoint
-    ? estimateTextTokens(JSON.stringify(input.continuityCheckpoint))
+  const continuityCheckpointTokens = continuityCheckpoint
+    ? estimateTextTokens(JSON.stringify(continuityCheckpoint))
     : 0;
   let maximumPrefixCount = Math.max(0, input.events.length - MINIMUM_EXACT_TAIL_EVENTS);
   const firstProtectedIndex = [...protectedIndexes].sort((left, right) => left - right)[0];
@@ -149,13 +154,13 @@ export function planTimelineCheckpoint(input: {
     maximumPrefixCount = Math.min(maximumPrefixCount, firstProtectedIndex);
   }
 
-  if (requiredSavingsTokens === 0 || (maximumPrefixCount === 0 && !input.continuityCheckpoint)) {
+  if (requiredSavingsTokens === 0 || (maximumPrefixCount === 0 && !continuityCheckpoint)) {
     return emptyPlan(
       input.events,
       requiredSavingsTokens,
       estimatedCheckpointTokens,
       protectedEvents,
-      input.continuityCheckpoint,
+      continuityCheckpoint,
     );
   }
 
@@ -180,15 +185,15 @@ export function planTimelineCheckpoint(input: {
       requiredSavingsTokens,
       estimatedCheckpointTokens,
       protectedEvents,
-      input.continuityCheckpoint,
+      continuityCheckpoint,
     );
   }
 
   const selectedEvents = input.events.slice(0, selectedCount);
   const exactTail = input.events.slice(selectedCount);
   const estimatedSavingsTokens = selectedSourceTokens - estimatedCheckpointTokens;
-  const coveredFromSeq = input.continuityCheckpoint?.fromSeq ?? selectedEvents[0]?.seq;
-  const coveredToSeq = selectedEvents.at(-1)?.seq ?? input.continuityCheckpoint?.toSeq;
+  const coveredFromSeq = continuityCheckpoint?.fromSeq ?? selectedEvents[0]?.seq;
+  const coveredToSeq = selectedEvents.at(-1)?.seq ?? continuityCheckpoint?.toSeq;
   return {
     schemaVersion: 1,
     triggered: true,
@@ -199,12 +204,12 @@ export function planTimelineCheckpoint(input: {
     estimatedSavingsTokens,
     canReachTarget: estimatedSavingsTokens >= requiredSavingsTokens,
     selectedEvents,
-    ...(input.continuityCheckpoint ? { continuityCheckpoint: input.continuityCheckpoint } : {}),
+    ...(continuityCheckpoint ? { continuityCheckpoint } : {}),
     exactTail,
     protectedEvents: protectedEvents.map(({ index: _index, ...entry }) => entry),
     coveredFromSeq,
     coveredToSeq,
-    sourceHash: hashTimelineSource(input.continuityCheckpoint, selectedEvents),
+    sourceHash: hashTimelineSource(continuityCheckpoint, selectedEvents),
   };
 }
 
@@ -300,7 +305,7 @@ function emptyPlan(
   requiredSavingsTokens: number,
   estimatedCheckpointTokens: number,
   protectedEvents: ReturnType<typeof identifyProtectedEvents>,
-  continuityCheckpoint?: ContextSessionTaskRunCheckpoint,
+  continuityCheckpoint?: TimelineContinuityCheckpoint,
 ): TimelineCheckpointPlan {
   return {
     schemaVersion: 1,
@@ -319,13 +324,20 @@ function emptyPlan(
 }
 
 function hashTimelineSource(
-  continuityCheckpoint: ContextSessionTaskRunCheckpoint | undefined,
+  continuityCheckpoint: TimelineContinuityCheckpoint | undefined,
   events: ExactTimelineEvent[],
 ): string {
   return createHash("sha256").update(JSON.stringify({
     continuityCheckpoint: continuityCheckpoint ?? null,
     events,
   })).digest("hex");
+}
+
+function withoutRunId(
+  checkpoint: ContextSessionTaskRunCheckpoint | TimelineContinuityCheckpoint,
+): TimelineContinuityCheckpoint {
+  const { runId: _runId, ...projected } = checkpoint as ContextSessionTaskRunCheckpoint;
+  return projected;
 }
 
 function estimateTimelineEventTokens(event: ExactTimelineEvent): number {

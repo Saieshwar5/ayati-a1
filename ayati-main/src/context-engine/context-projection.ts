@@ -16,7 +16,9 @@ export function buildContextEngineProjection(
   const conversationTail = conversationRecords(active);
   const activeTask = active.activeTask;
   const run = active.run?.run;
-  const taskBound = Boolean(activeTask && run?.runClass === "task" && run.taskId === activeTask.task.taskId);
+  const taskBound = Boolean(
+    activeTask && run?.taskBinding?.taskId === activeTask.task.taskId,
+  );
   const taskWorkingDirectories = new Map(
     (active.taskCandidates ?? []).map((task) => [task.taskId, task.workingDirectory]),
   );

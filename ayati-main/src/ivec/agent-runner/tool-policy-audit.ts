@@ -6,16 +6,15 @@ import {
   summarizeToolTaxonomy,
 } from "../../skills/tool-taxonomy.js";
 import {
-  runtimeToolPhase,
-  type RuntimeCapabilityMode,
-  type RuntimeCapabilityModeName,
-} from "./runtime-capability-mode.js";
+  toolPhaseForTaskBinding,
+  type TaskBindingCapabilityPolicy,
+} from "./task-binding-capability-policy.js";
 
 export type ToolPolicyViolationCode =
   | "unknown_tool_taxonomy"
-  | "mutation_tool_without_task_run"
+  | "mutation_tool_without_task_binding"
   | "routing_control_after_task_bound"
-  | "long_running_tool_without_task_run"
+  | "long_running_tool_without_task_binding"
   | "tool_not_allowed_in_phase";
 
 export type ToolPolicyViolationSeverity = "warning" | "error";
@@ -28,9 +27,8 @@ export interface ToolPolicyViolation {
 }
 
 export interface ToolPolicyAudit {
-  mode: RuntimeCapabilityModeName;
   phase: ToolPhase;
-  hasWorkRun: boolean;
+  taskBound: boolean;
   selectedTools: string[];
   taxonomy: ToolTaxonomySummary;
   violations: ToolPolicyViolation[];
@@ -38,13 +36,12 @@ export interface ToolPolicyAudit {
 }
 
 export function auditToolPolicy(input: {
-  mode: RuntimeCapabilityMode;
+  policy: TaskBindingCapabilityPolicy;
   selectedTools: ToolDefinition[] | string[];
 }): ToolPolicyAudit {
   const selectedTools = normalizeToolNames(input.selectedTools);
-  const phase = runtimeToolPhase(input.mode, selectedTools.length);
+  const phase = toolPhaseForTaskBinding(input.policy, selectedTools.length);
   const violationMap = new Map<ToolPolicyViolationCode, ToolPolicyViolation>();
-  const hasExecutionRunBoundary = input.mode.hasWorkRun || input.mode.name === "active_task_ready";
 
   for (const toolName of selectedTools) {
     const taxonomy = getToolTaxonomy(toolName);
@@ -58,25 +55,25 @@ export function auditToolPolicy(input: {
       continue;
     }
 
-    if (!hasExecutionRunBoundary && taxonomy.requiresTaskRun) {
+    if (!input.policy.taskBound && taxonomy.requiresTaskBinding) {
       addViolation(violationMap, {
-        code: "mutation_tool_without_task_run",
+        code: "mutation_tool_without_task_binding",
         severity: "error",
         tools: [toolName],
-        message: "A task-run-only mutation tool was selected before a task run exists.",
+        message: "A task-bound-only mutation tool was selected while the run was unbound.",
       });
     }
 
-    if (!hasExecutionRunBoundary && isLongRunningTool(taxonomy)) {
+    if (!input.policy.taskBound && isLongRunningTool(taxonomy)) {
       addViolation(violationMap, {
-        code: "long_running_tool_without_task_run",
+        code: "long_running_tool_without_task_binding",
         severity: "error",
         tools: [toolName],
-        message: "A long-running tool was selected before a task run exists.",
+        message: "A long-running tool was selected while the run was unbound.",
       });
     }
 
-    if (isRoutingControlAfterTaskBound(input.mode, taxonomy)) {
+    if (isRoutingControlAfterTaskBound(input.policy, taxonomy)) {
       addViolation(violationMap, {
         code: "routing_control_after_task_bound",
         severity: "error",
@@ -85,7 +82,8 @@ export function auditToolPolicy(input: {
       });
     }
 
-    if (!isToolAllowedInPhase(toolName, phase) && !isActiveTaskRoutingWindowControl(input.mode, taxonomy)) {
+    if (!isToolAllowedInPhase(toolName, phase)
+      && !isAvailableRoutingControl(input.policy, taxonomy)) {
       addViolation(violationMap, {
         code: "tool_not_allowed_in_phase",
         severity: "warning",
@@ -97,9 +95,8 @@ export function auditToolPolicy(input: {
 
   const violations = [...violationMap.values()];
   return {
-    mode: input.mode.name,
     phase,
-    hasWorkRun: input.mode.hasWorkRun,
+    taskBound: input.policy.taskBound,
     selectedTools,
     taxonomy: summarizeToolTaxonomy(selectedTools),
     violations,
@@ -112,21 +109,19 @@ function normalizeToolNames(tools: ToolDefinition[] | string[]): string[] {
 }
 
 function isRoutingControlAfterTaskBound(
-  mode: RuntimeCapabilityMode,
+  policy: TaskBindingCapabilityPolicy,
   taxonomy: NonNullable<ReturnType<typeof getToolTaxonomy>>,
 ): boolean {
-  if (mode.name !== "task_run" && mode.pendingTurnStatus !== "bound") {
-    return false;
-  }
-  return taxonomy.purpose === "control" && taxonomy.roles.includes("task_routing");
+  return policy.taskBound
+    && taxonomy.purpose === "control"
+    && taxonomy.roles.includes("task_routing");
 }
 
-function isActiveTaskRoutingWindowControl(
-  mode: RuntimeCapabilityMode,
+function isAvailableRoutingControl(
+  policy: TaskBindingCapabilityPolicy,
   taxonomy: NonNullable<ReturnType<typeof getToolTaxonomy>>,
 ): boolean {
-  return mode.name === "active_task_ready"
-    && Boolean(mode.routingWindow?.open)
+  return policy.routingAvailable
     && taxonomy.purpose === "control"
     && taxonomy.roles.includes("task_routing");
 }

@@ -1,5 +1,5 @@
 import { mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { ContextDatabase } from "./database/database.js";
 import { GitContextProcessLock } from "./process-lock.js";
 import { GitContextHttpServer, type GitContextServerAddress } from "./server.js";
@@ -13,6 +13,8 @@ export interface GitContextServerRuntimeOptions {
   databasePath: string;
   dataRoot: string;
   workspaceRoot?: string;
+  timezone?: string;
+  agentId?: string;
   socketPath: string;
   parentPid?: number;
   parentPollIntervalMs?: number;
@@ -53,11 +55,23 @@ export async function startGitContextServerRuntime(
   let stopPromise: Promise<void> | undefined;
   try {
     const database = await ContextDatabase.open({ path: options.databasePath });
+    const workspaceRoot = options.workspaceRoot ?? join(options.dataRoot, "workspace");
+    await mkdir(join(workspaceRoot, "tasks"), { recursive: true });
     service = new SqliteGitContextService({
       database,
       dataRoot: options.dataRoot,
-      workspaceRoot: options.workspaceRoot,
+      workspaceRoot,
       observer,
+    });
+    const at = new Date().toISOString();
+    const timezone = options.timezone ?? "UTC";
+    const agentId = options.agentId ?? "local";
+    const date = localDate(at, timezone);
+    await service.ensureActiveSession({
+      requestId: `startup-session:${date}:${agentId}`,
+      date,
+      timezone,
+      agentId,
     });
     await service.getHealth();
     server = new GitContextHttpServer({
@@ -108,6 +122,15 @@ export async function startGitContextServerRuntime(
     await lock.release().catch(() => undefined);
     throw error;
   }
+}
+
+function localDate(at: string, timezone: string): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(at));
 }
 
 function isProcessAlive(pid: number): boolean {

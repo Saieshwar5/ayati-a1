@@ -1,6 +1,6 @@
 export type FeedbackTaskSelectionMode = "created" | "activated";
 export type FeedbackTaskRequestDecision = "initial" | "continue" | "create";
-export type FeedbackTaskFinalizationStatus = "not_started" | "started" | "committed" | "skipped" | "failed";
+export type FeedbackTaskFinalizationStatus = "not_started" | "started" | "not_required" | "no_change" | "committed" | "failed";
 
 export interface FeedbackTaskRepository {
   taskId?: string;
@@ -20,17 +20,15 @@ export interface FeedbackTaskRequest {
   created?: boolean;
 }
 
-export interface FeedbackTaskRun {
+export interface FeedbackRun {
   runId?: string;
-  startedAs?: "none" | "session" | "task";
-  selectedAs?: "session" | "task";
-  sessionRunBound?: boolean;
+  taskBound?: boolean;
 }
 
 export interface FeedbackTaskFinalization {
   status?: FeedbackTaskFinalizationStatus;
   outcome?: "done" | "incomplete" | "failed" | "blocked" | "needs_user_input";
-  validation?: "passed" | "failed" | "not_run";
+  validation?: "passed" | "failed" | "not_applicable";
   commit?: string;
   commitCreated?: boolean;
   headBefore?: string;
@@ -40,7 +38,7 @@ export interface FeedbackTaskFinalization {
 export interface FeedbackTaskLifecycle {
   repository?: FeedbackTaskRepository;
   request?: FeedbackTaskRequest;
-  run?: FeedbackTaskRun;
+  run?: FeedbackRun;
   finalization?: FeedbackTaskFinalization;
 }
 
@@ -109,22 +107,20 @@ function readRequest(value: unknown): FeedbackTaskRequest | undefined {
   });
 }
 
-function readRun(value: unknown): FeedbackTaskRun | undefined {
+function readRun(value: unknown): FeedbackRun | undefined {
   if (!isRecord(value)) return undefined;
   return compactRecord({
     runId: stringValue(value["runId"]),
-    startedAs: oneOf(value["startedAs"], ["none", "session", "task"] as const),
-    selectedAs: oneOf(value["selectedAs"], ["session", "task"] as const),
-    sessionRunBound: booleanValue(value["sessionRunBound"]),
+    taskBound: booleanValue(value["taskBound"]),
   });
 }
 
 function readFinalization(value: unknown): FeedbackTaskFinalization | undefined {
   if (!isRecord(value)) return undefined;
   return compactRecord({
-    status: oneOf(value["status"], ["not_started", "started", "committed", "skipped", "failed"] as const),
+    status: oneOf(value["status"], ["not_started", "started", "not_required", "no_change", "committed", "failed"] as const),
     outcome: oneOf(value["outcome"], ["done", "incomplete", "failed", "blocked", "needs_user_input"] as const),
-    validation: oneOf(value["validation"], ["passed", "failed", "not_run"] as const),
+    validation: oneOf(value["validation"], ["passed", "failed", "not_applicable"] as const),
     commit: stringValue(value["commit"]),
     commitCreated: booleanValue(value["commitCreated"]),
     headBefore: stringValue(value["headBefore"]),

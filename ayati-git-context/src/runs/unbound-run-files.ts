@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { GitContextServiceError } from "../errors.js";
 import { writeFileAtomically } from "../files/atomic-file.js";
 
-export function sessionRunPaths(sessionRepository: string, runId: string): {
+export function unboundRunPaths(sessionRepository: string, runId: string): {
   runFile: string;
   stepsFile: string;
   runRelative: string;
@@ -19,7 +19,7 @@ export function sessionRunPaths(sessionRepository: string, runId: string): {
   };
 }
 
-export async function writeSessionRunFiles(input: {
+export async function writeUnboundRunFiles(input: {
   sessionRepository: string;
   runFile: string;
   stepsFile: string;
@@ -38,7 +38,7 @@ async function requireNormalOrCreate(path: string): Promise<void> {
     if (stat.isSymbolicLink() || !stat.isDirectory()) {
       throw new GitContextServiceError({
         code: "RECOVERY_REQUIRED",
-        message: "Session-run evidence path is not a normal directory.",
+        message: "Unbound run evidence path is not a normal directory.",
         details: { path },
       });
     }

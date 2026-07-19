@@ -13,7 +13,7 @@ import {
 } from "../src/repositories/task-records.js";
 import { TaskLifecycleService } from "../src/services/task-lifecycle-service.js";
 import { parseTaskCard, renderTaskCard } from "../src/tasks/task-card.js";
-import { renderTaskRunCommit } from "../src/tasks/task-commit-metadata.js";
+import { renderTaskCommit } from "../src/tasks/task-commit-metadata.js";
 import { readTaskContext } from "../src/tasks/task-context-reader.js";
 import { TASK_CARD_PATH } from "../src/tasks/task-repository-layout.js";
 import { createSimpleTaskFixture, git } from "./simple-task-repository-fixtures.js";
@@ -48,7 +48,7 @@ describe("simple task context reader", () => {
     await git(fixture.repositoryPath, [
       "commit",
       "-m",
-      renderTaskRunCommit({
+      renderTaskCommit({
         subject: "Finish accessible home page",
         taskId: fixture.taskId,
         requestId: fixture.requestId,
@@ -109,7 +109,7 @@ describe("simple task context reader", () => {
     });
     expect(context.recentCommits).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        event: "task_run_finalized",
+        event: "task_bound_run_finalized",
         requestId: "R-0001",
         runId: "RUN-0001",
       }),

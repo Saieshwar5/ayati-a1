@@ -104,6 +104,7 @@ export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<
   const toolExecutor = createTaskScopedToolExecutor({
     base: baseToolExecutor,
     gitContext: options.gitContextService,
+    workspaceRoot: options.config.workspace.root,
   });
   const toolCatalog = new ToolCatalog(allRuntimeSkills);
   const toolWorkingSetManager = new ToolWorkingSetManager({

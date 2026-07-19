@@ -61,7 +61,7 @@ export interface AgentFeedbackLatestSummary {
 }
 
 export type AgentFeedbackContextRouteSource = "auto" | "agent_tool" | "deterministic_router" | "runtime" | "unknown";
-export type AgentFeedbackContextFinalizationStatus = "not_started" | "started" | "committed" | "skipped" | "failed";
+export type AgentFeedbackContextFinalizationStatus = "not_started" | "started" | "not_required" | "no_change" | "committed" | "failed";
 
 export interface AgentFeedbackContextEngineSummary {
   pendingTurnStatus?: string;
@@ -94,11 +94,17 @@ export interface AgentFeedbackContextEngineSummary {
   cacheHits?: number;
   cacheMisses?: number;
   cacheRefreshes?: number;
-  runClass?: "session" | "task";
+  taskBound?: boolean;
+  runOutcome?: "done" | "incomplete" | "failed" | "blocked" | "needs_user_input";
+  stopReason?: "completed" | "run_limit" | "context_limit" | "failed" | "blocked" | "needs_user_input" | "interrupted";
+  materializationStatus?: "not_requested" | "materialized";
+  commitStatus?: "not_required" | "no_change" | "committed";
+  headBefore?: string;
+  headAfter?: string;
   workStateRevision?: number;
   lastPersistedStep?: number;
   readContextRevision?: string;
-  readContextAfterTaskRunId?: string;
+  readContextAfterCommitRunId?: string;
   readContextCounts?: {
     inventory: number;
     discovery: number;
@@ -372,8 +378,8 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
     if (event.stage === "decision" && event.event === "provider_malformed_response") {
       signals.add("provider_malformed_response");
     }
-    if (event.stage === "guard" && event.event === "fresh_session_tool_repair_requested") {
-      signals.add("fresh_session_tool_repair_requested");
+    if (event.stage === "guard" && event.event === "unbound_run_tool_repair_requested") {
+      signals.add("unbound_run_tool_repair_requested");
     }
     if (event.stage === "action" && event.event === "failed") {
       signals.add("action_failed");
@@ -386,10 +392,6 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
     }
     if (event.stage === "final" && event.event === "error") {
       signals.add("runtime_error");
-      const message = typeof event.data?.["message"] === "string" ? event.data["message"] : "";
-      if (message.includes("Git-memory routed run is required") || message.includes("Git-memory run handle is required")) {
-        signals.add("missing_work_run_for_action");
-      }
     }
     const repairCode = readRepairCode(event.data?.["repair"]);
     if (repairCode) {
@@ -521,10 +523,11 @@ function executionEvidence(
         : summary.execution?.verification === "failed" ? false : undefined),
     verificationFailed: warningSet.has("verification_failed")
       || warningSet.has("R_VERIFICATION_FAILED"),
-    runClass: context?.runClass,
-    taskSelected: lifecycle?.run?.selectedAs === "task"
-      || Boolean(context?.taskId && context.runId),
+    taskBound: context?.taskBound
+      ?? lifecycle?.run?.taskBound
+      ?? Boolean(context?.taskId && context.runId),
     finalizationStatus: finalization?.status ?? context?.finalizationStatus,
+    commitStatus: context?.commitStatus,
     committed: context?.committed ?? (finalization?.status === "committed"),
     commitIdentity: finalization?.commit ?? context?.commit,
     commitCreated: finalization?.commitCreated,
@@ -539,8 +542,8 @@ function executionTriageInput(
   return {
     execution: summary.execution,
     actionSteps: summary.actionSteps,
-    taskRun: context?.runClass === "task"
-      || lifecycle?.run?.selectedAs === "task"
+    taskBound: context?.taskBound === true
+      || lifecycle?.run?.taskBound === true
       || Boolean(context?.taskId && context.runId),
     commitIdentity: lifecycle?.finalization?.commit ?? context?.commit,
   };
@@ -557,6 +560,13 @@ export function buildContextEngineFeedbackSummary(input: {
   branch?: string;
   ref?: string;
   runId?: string;
+  taskBound?: boolean;
+  runOutcome?: AgentFeedbackContextEngineSummary["runOutcome"];
+  stopReason?: AgentFeedbackContextEngineSummary["stopReason"];
+  materializationStatus?: AgentFeedbackContextEngineSummary["materializationStatus"];
+  commitStatus?: AgentFeedbackContextEngineSummary["commitStatus"];
+  headBefore?: string;
+  headAfter?: string;
   committed?: boolean;
   commit?: string;
   conversationRefs?: AgentFeedbackContextEngineSummary["conversationRefs"];
@@ -589,7 +599,7 @@ export function buildContextEngineFeedbackSummary(input: {
     } : undefined,
     run: runId ? {
       runId,
-      selectedAs: taskId ? "task" : "session",
+      taskBound: Boolean(taskId),
     } : undefined,
   }) : undefined;
   const taskLifecycle = mergeFeedbackTaskLifecycle(contextTaskLifecycle, input.taskLifecycle);
@@ -622,6 +632,13 @@ export function buildContextEngineFeedbackSummary(input: {
     ...(branch ? { branch } : {}),
     ...(ref ? { ref } : {}),
     ...(runId ? { runId } : {}),
+    ...(input.taskBound !== undefined ? { taskBound: input.taskBound } : {}),
+    ...(input.runOutcome ? { runOutcome: input.runOutcome } : {}),
+    ...(input.stopReason ? { stopReason: input.stopReason } : {}),
+    ...(input.materializationStatus ? { materializationStatus: input.materializationStatus } : {}),
+    ...(input.commitStatus ? { commitStatus: input.commitStatus } : {}),
+    ...(input.headBefore ? { headBefore: input.headBefore } : {}),
+    ...(input.headAfter ? { headAfter: input.headAfter } : {}),
     ...(input.committed !== undefined ? { committed: input.committed } : {}),
     ...(input.commit ? { commit: input.commit } : {}),
     ...(input.conversationRefs && input.conversationRefs.length > 0 ? { conversationRefs: input.conversationRefs } : {}),
@@ -632,8 +649,8 @@ export function buildContextEngineFeedbackSummary(input: {
       recentEvidenceCount: task.recentEvidence.length,
     } : {}),
     ...(readContext ? { readContextRevision: readContext.revision } : {}),
-    ...(readContext?.afterTaskRunId
-      ? { readContextAfterTaskRunId: readContext.afterTaskRunId }
+    ...(readContext?.afterCommitRunId
+      ? { readContextAfterCommitRunId: readContext.afterCommitRunId }
       : {}),
     ...(readContextCounts ? { readContextCounts } : {}),
     ...(input.warningCodes && input.warningCodes.length > 0 ? { warningCodes: uniqueStrings(input.warningCodes) } : {}),
@@ -650,7 +667,7 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
   findings.push(...buildGitContextLifecycleFindings({
     lifecycle: contextEngine?.taskLifecycle,
     pendingTurnStatus: contextEngine?.pendingTurnStatus,
-    runClass: contextEngine?.runClass,
+    taskBound: contextEngine?.taskBound,
   }));
   findings.push(...buildExecutionOutcomeFindings(executionTriage));
 
@@ -760,12 +777,12 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
     });
   }
 
-  if (warningSet.has("fresh_session_tool_repair_requested")) {
+  if (warningSet.has("unbound_run_tool_repair_requested")) {
     findings.push({
-      code: "fresh_session_tool_repair_requested",
+      code: "unbound_run_tool_repair_requested",
       severity: "warning",
-      title: "Fresh session needed task routing",
-      details: "The model tried to load or call work tools before any active task existed.",
+      title: "Unbound run needed task routing",
+      details: "The model tried to load or call task-scoped tools before the run had a task binding.",
       recommendation: "Inspect task candidates, then activate the matching task or create a distinct task before mutation.",
     });
   }
@@ -800,23 +817,23 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
     });
   }
 
-  if (warningSet.has("normal_tools_selected_without_work_run")) {
+  if (warningSet.has("task_tools_selected_without_binding")) {
     findings.push({
-      code: "normal_tools_selected_without_work_run",
+      code: "task_tools_selected_without_binding",
       severity: "error",
-      title: "Task tools were selected without a work run",
-      details: "The model saw normal executable tools even though the runtime had no routed task run.",
-      recommendation: "Inspect tools.working_set_prepared, decision.selected, and guard.missing_work_run. Ensure routing state is represented before normal task tools are exposed.",
+      title: "Task tools were selected without a task binding",
+      details: "The model saw task-scoped executable tools even though the current run was unbound.",
+      recommendation: "Inspect tools.working_set_prepared and decision.selected. Ensure binding state is represented before task-scoped tools are exposed.",
     });
   }
 
-  if (warningSet.has("missing_work_run_for_action")) {
+  if (warningSet.has("task_binding_required_for_action")) {
     findings.push({
-      code: "missing_work_run_for_action",
+      code: "task_binding_required_for_action",
       severity: "error",
-      title: "Action needed a task run",
+      title: "Action needed a task binding",
       details: "A normal executable action reached the run guard before task ownership was bound.",
-      recommendation: "Route the pending turn first, or block normal executable tools until the turn is bound or intentionally session-only.",
+      recommendation: "Route the current run first, or block task-scoped executable tools until it is task-bound.",
     });
   }
 
@@ -826,7 +843,7 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
       severity: "error",
       title: "Normal tool was chosen before routing",
       details: "The decision selected a non git-context tool before task ownership was resolved.",
-      recommendation: "Check the projected state view and selected tool list; the model should only see/use routing tools until a task run exists.",
+      recommendation: "Check the projected state view and selected tool list; the model should only see routing and observational tools until a task binding exists.",
     });
   }
 
@@ -856,12 +873,11 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
     && contextEngine.committed === false
     && summary.status
     && summary.status !== "stuck"
-    && contextEngine.finalizationStatus !== "skipped"
   ) {
     findings.push({
-      code: "task_run_not_committed",
+      code: "task_bound_run_not_committed",
       severity: "warning",
-      title: "Task run was not committed",
+      title: "Task-bound run was not committed",
       details: "The run had a git-context task/run binding but no committed context-engine result.",
       recommendation: "Check whether app-level finalization ran after the agent loop returned.",
     });
@@ -982,8 +998,8 @@ const REPAIR_TRIAGE_FINDINGS: ReadonlyArray<[string, AgentFeedbackTriageFinding]
     code: "R_TASK_FEEDBACK_UNAVAILABLE",
     severity: "warning",
     title: "Task feedback tool was unavailable",
-    details: "The model attempted to ask task-run feedback when the feedback tool was not exposed.",
-    recommendation: "Use direct assistant text before a task run; use ask_user_feedback only during active task runs.",
+    details: "The model attempted to ask task-bound feedback when the feedback tool was not exposed.",
+    recommendation: "Use direct assistant text during an unbound run; use ask_user_feedback only during an active task-bound run.",
   }],
   ["R_MULTIPLE_NATIVE_TOOL_CALLS", {
     code: "R_MULTIPLE_NATIVE_TOOL_CALLS",
@@ -1027,18 +1043,18 @@ const REPAIR_TRIAGE_FINDINGS: ReadonlyArray<[string, AgentFeedbackTriageFinding]
     details: "The run attempted a step that produced no useful tool output or task progress.",
     recommendation: "Change strategy, choose a concrete tool action, or stop with a clear failure if no useful next action exists.",
   }],
-  ["R_FRESH_SESSION_NEEDS_TASK", {
-    code: "R_FRESH_SESSION_NEEDS_TASK",
+  ["R_UNBOUND_RUN_NEEDS_TASK_BINDING", {
+    code: "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
     severity: "warning",
-    title: "Fresh session needs task routing",
-    details: "The model tried to use normal work tools before any active task existed.",
+    title: "Unbound run needs task routing",
+    details: "The model tried to use task-scoped tools before the current run had a task binding.",
     recommendation: "Search and activate an existing task, create a new task, or ask a short clarification directly.",
   }],
-  ["R_NORMAL_TOOL_WITHOUT_TASK_RUN", {
-    code: "R_NORMAL_TOOL_WITHOUT_TASK_RUN",
+  ["R_TOOL_REQUIRES_TASK_BINDING", {
+    code: "R_TOOL_REQUIRES_TASK_BINDING",
     severity: "error",
-    title: "Normal tool reached runner without a task run",
-    details: "A normal executable tool reached the runner before a task run existed.",
+    title: "Task-scoped tool reached runner without a binding",
+    details: "A task-scoped executable tool reached the runner while the current run was unbound.",
     recommendation: "Route, create, or activate the correct task before normal tool execution.",
   }],
   ["R_PENDING_TURN_UNBOUND", {
@@ -1137,61 +1153,110 @@ function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFe
       ...(readNumberValue(data["hits"]) !== undefined ? { cacheHits: readNumberValue(data["hits"]) } : {}),
       ...(readNumberValue(data["misses"]) !== undefined ? { cacheMisses: readNumberValue(data["misses"]) } : {}),
       ...(readNumberValue(data["refreshes"]) !== undefined ? { cacheRefreshes: readNumberValue(data["refreshes"]) } : {}),
+      ...(readStringValue(data["readContextRevision"])
+        ? { readContextRevision: readStringValue(data["readContextRevision"]) }
+        : {}),
+      ...(readStringValue(data["readContextAfterCommitRunId"])
+        ? { readContextAfterCommitRunId: readStringValue(data["readContextAfterCommitRunId"]) }
+        : {}),
+      ...(readContextCounts(data["readContextCounts"])
+        ? { readContextCounts: readContextCounts(data["readContextCounts"]) }
+        : {}),
     });
   }
-  if (event.event === "session_run_started") {
+  if (event.event === "run_started") {
     return compactContextEngineFeedbackSummary({
-      runClass: "session",
-      ...(event.runId ? {
-        runId: event.runId,
-        taskLifecycle: {
-          run: {
-            runId: event.runId,
-            startedAs: "session",
-            selectedAs: "session",
-            sessionRunBound: false,
-          },
-        },
-      } : {}),
+      ...(event.runId ? { runId: event.runId } : {}),
+      taskBound: false,
+      finalizationStatus: "not_started",
     });
   }
-  if (event.event === "task_run_selected") {
+  if (event.event === "run_task_bound") {
     const taskId = readStringValue(data["taskId"]);
     const runId = event.runId ?? readStringValue(data["runId"]);
-    const selectionMode = readSelectionMode(data["selectionMode"]);
-    const requestDecision = readTaskRequestDecision(data["taskRequestDecision"]);
-    const requestStatus = readTaskRequestStatus(data["taskRequestStatus"]);
     return compactContextEngineFeedbackSummary({
-      runClass: "task",
-      ...(selectionMode ? { routeMode: selectionMode } : {}),
       ...(taskId ? { taskId } : {}),
       ...(runId ? { runId } : {}),
+      taskBound: true,
+      pendingTurnStatus: "bound",
       taskLifecycle: {
         repository: {
           taskId,
           workingDirectory: readStringValue(data["workingDirectory"]),
           branch: readStringValue(data["branch"]),
-          selectionMode,
+          selectionMode: readSelectionMode(data["mode"]),
           taskCreated: readBooleanValue(data["taskCreated"]),
           headBefore: readStringValue(data["taskHead"]),
         },
         request: {
-          decision: requestDecision,
+          decision: readTaskRequestDecision(data["taskRequestDecision"]),
           requestId: readStringValue(data["taskRequestId"]),
-          status: requestStatus,
+          status: readTaskRequestStatus(data["taskRequestStatus"]),
           created: readBooleanValue(data["taskRequestCreated"]),
         },
-        run: {
-          runId,
-          startedAs: data["sessionRunBound"] === true ? "session" : "none",
-          selectedAs: "task",
-          sessionRunBound: data["sessionRunBound"] === true,
-        },
+        run: { runId, taskBound: true },
         finalization: { status: "not_started" },
       },
     });
   }
-  if (event.event === "run_step_persistence_acknowledged") {
+  if (event.event === "run_finalization_started") {
+    return compactContextEngineFeedbackSummary({
+      ...(event.runId ? { runId: event.runId } : {}),
+      taskBound: readBooleanValue(data["taskBound"]),
+      runOutcome: readFinalizationOutcome(data["outcome"]),
+      stopReason: readRunStopReason(data["stopReason"]),
+      finalizationStatus: "started",
+      committed: false,
+    });
+  }
+  if (event.event === "run_finalization_completed") {
+    const binding = readRecordValue(data["taskBinding"]);
+    const materialization = readRecordValue(data["materialization"]);
+    const commit = readRecordValue(data["commit"]);
+    const commitStatus = readCommitStatus(commit?.["status"]);
+    const taskId = readStringValue(binding?.["taskId"]);
+    const runId = event.runId ?? readStringValue(data["runId"]);
+    const headBefore = readStringValue(commit?.["headBefore"]);
+    const headAfter = readStringValue(commit?.["headAfter"]);
+    const commitIdentity = readStringValue(commit?.["commit"]);
+    return compactContextEngineFeedbackSummary({
+      ...(runId ? { runId } : {}),
+      ...(taskId ? { taskId } : {}),
+      taskBound: Boolean(binding),
+      runOutcome: readFinalizationOutcome(data["outcome"]),
+      stopReason: readRunStopReason(data["stopReason"]),
+      materializationStatus: readMaterializationStatus(materialization?.["status"]),
+      commitStatus,
+      finalizationStatus: commitStatus ?? "failed",
+      committed: commitStatus === "committed",
+      ...(commitIdentity ? { commit: commitIdentity } : {}),
+      ...(headBefore ? { headBefore } : {}),
+      ...(headAfter ? { headAfter } : {}),
+      ...(binding ? {
+        taskLifecycle: {
+          repository: { taskId, headBefore, headAfter },
+          request: { requestId: readStringValue(binding["taskRequestId"]) },
+          run: { runId, taskBound: true },
+          finalization: {
+            status: commitStatus,
+            outcome: readFinalizationOutcome(data["outcome"]),
+            commit: commitIdentity,
+            commitCreated: commitStatus === "committed",
+            headBefore,
+            headAfter,
+          },
+        },
+      } : {}),
+    });
+  }
+  if (event.event === "run_finalization_failed") {
+    return compactContextEngineFeedbackSummary({
+      ...(event.runId ? { runId: event.runId } : {}),
+      finalizationStatus: "failed",
+      committed: false,
+    });
+  }
+  if (event.event === "run_step_persisted" || event.event === "run_step_persistence_acknowledged") {
     return compactContextEngineFeedbackSummary({
       ...(readNumberValue(data["workStateRevision"]) !== undefined
         ? { workStateRevision: readNumberValue(data["workStateRevision"]) }
@@ -1278,99 +1343,7 @@ function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFe
       pendingTurnStatus: "clarifying",
     });
   }
-  if (event.event === "committed") {
-    return compactContextEngineFeedbackSummary({
-      finalizationStatus: "committed",
-      committed: true,
-      ...(readStringValue(data["taskId"]) ? { taskId: readStringValue(data["taskId"]) } : {}),
-      ...(readStringValue(data["taskCommit"]) ? { commit: readStringValue(data["taskCommit"]) } : {}),
-      ...(readStringValue(data["ref"]) ? { ref: readStringValue(data["ref"]) } : {}),
-      ...(event.runId ? { runId: event.runId } : {}),
-    });
-  }
-  if (event.event === "task_finalization_started") {
-    const taskId = readStringValue(data["taskId"]);
-    const runId = event.runId ?? readStringValue(data["runId"]);
-    return compactContextEngineFeedbackSummary({
-      finalizationStatus: "started",
-      committed: false,
-      ...(taskId ? { taskId } : {}),
-      ...(runId ? { runId } : {}),
-      taskLifecycle: {
-        repository: {
-          taskId,
-          workingDirectory: readStringValue(data["workingDirectory"]),
-        },
-        request: { requestId: readStringValue(data["taskRequestId"]) },
-        run: { runId, selectedAs: "task" },
-        finalization: {
-          status: "started",
-          outcome: readFinalizationOutcome(data["requestedOutcome"]),
-          validation: readFinalizationValidation(data["validation"]),
-        },
-      },
-    });
-  }
-  if (event.event === "task_finalization_completed") {
-    const taskId = readStringValue(data["taskId"]);
-    const runId = event.runId ?? readStringValue(data["runId"]);
-    const commit = readStringValue(data["taskCommit"]);
-    const headBefore = readStringValue(data["taskHeadBefore"]);
-    const headAfter = readStringValue(data["taskHeadAfter"]);
-    return compactContextEngineFeedbackSummary({
-      finalizationStatus: "committed",
-      committed: true,
-      ...(taskId ? { taskId } : {}),
-      ...(runId ? { runId } : {}),
-      ...(commit ? { commit } : {}),
-      taskLifecycle: {
-        repository: {
-          taskId,
-          workingDirectory: readStringValue(data["workingDirectory"]),
-          headBefore,
-          headAfter,
-        },
-        request: { requestId: readStringValue(data["taskRequestId"]) },
-        run: { runId, selectedAs: "task" },
-        finalization: {
-          status: "committed",
-          outcome: readFinalizationOutcome(data["outcome"]),
-          commit,
-          commitCreated: readBooleanValue(data["taskCommitCreated"]),
-          headBefore,
-          headAfter,
-        },
-      },
-    });
-  }
-  if (event.event === "finalization_started") {
-    return compactContextEngineFeedbackSummary({
-      finalizationStatus: "started",
-      committed: false,
-      ...(readStringValue(data["taskId"]) ? { taskId: readStringValue(data["taskId"]) } : {}),
-      ...(readStringValue(data["runId"]) ? { runId: readStringValue(data["runId"]) } : {}),
-      ...(readConversationRefs(data["conversationRefs"]) ? { conversationRefs: readConversationRefs(data["conversationRefs"]) } : {}),
-    });
-  }
-  if (event.event === "finalization_skipped") {
-    return compactContextEngineFeedbackSummary({
-      finalizationStatus: "skipped",
-      committed: false,
-    });
-  }
-  if (event.event === "conversation_enquiry_recorded") {
-    return compactContextEngineFeedbackSummary({
-      finalizationStatus: "skipped",
-      committed: false,
-    });
-  }
-  if (event.event === "finalization_failed") {
-    return compactContextEngineFeedbackSummary({
-      finalizationStatus: "failed",
-      committed: false,
-    });
-  }
-  return undefined;
+ return undefined;
 }
 
 function readContextEngineFeedbackSummary(value: unknown): AgentFeedbackContextEngineSummary | undefined {
@@ -1403,11 +1376,17 @@ function readContextEngineFeedbackSummary(value: unknown): AgentFeedbackContextE
     ...(readNumberValue(record["cacheHits"]) !== undefined ? { cacheHits: readNumberValue(record["cacheHits"]) } : {}),
     ...(readNumberValue(record["cacheMisses"]) !== undefined ? { cacheMisses: readNumberValue(record["cacheMisses"]) } : {}),
     ...(readNumberValue(record["cacheRefreshes"]) !== undefined ? { cacheRefreshes: readNumberValue(record["cacheRefreshes"]) } : {}),
-    ...(readRunClass(record["runClass"]) ? { runClass: readRunClass(record["runClass"]) } : {}),
+    ...(typeof record["taskBound"] === "boolean" ? { taskBound: record["taskBound"] } : {}),
+    ...(readFinalizationOutcome(record["runOutcome"]) ? { runOutcome: readFinalizationOutcome(record["runOutcome"]) } : {}),
+    ...(readRunStopReason(record["stopReason"]) ? { stopReason: readRunStopReason(record["stopReason"]) } : {}),
+    ...(readMaterializationStatus(record["materializationStatus"]) ? { materializationStatus: readMaterializationStatus(record["materializationStatus"]) } : {}),
+    ...(readCommitStatus(record["commitStatus"]) ? { commitStatus: readCommitStatus(record["commitStatus"]) } : {}),
+    ...(readStringValue(record["headBefore"]) ? { headBefore: readStringValue(record["headBefore"]) } : {}),
+    ...(readStringValue(record["headAfter"]) ? { headAfter: readStringValue(record["headAfter"]) } : {}),
     ...(readNumberValue(record["workStateRevision"]) !== undefined ? { workStateRevision: readNumberValue(record["workStateRevision"]) } : {}),
     ...(readNumberValue(record["lastPersistedStep"]) !== undefined ? { lastPersistedStep: readNumberValue(record["lastPersistedStep"]) } : {}),
     ...(readStringValue(record["readContextRevision"]) ? { readContextRevision: readStringValue(record["readContextRevision"]) } : {}),
-    ...(readStringValue(record["readContextAfterTaskRunId"]) ? { readContextAfterTaskRunId: readStringValue(record["readContextAfterTaskRunId"]) } : {}),
+    ...(readStringValue(record["readContextAfterCommitRunId"]) ? { readContextAfterCommitRunId: readStringValue(record["readContextAfterCommitRunId"]) } : {}),
     ...(readContextCounts(record["readContextCounts"]) ? { readContextCounts: readContextCounts(record["readContextCounts"]) } : {}),
     ...(readFeedbackTaskLifecycle(record["taskLifecycle"])
       ? { taskLifecycle: readFeedbackTaskLifecycle(record["taskLifecycle"]) }
@@ -1467,11 +1446,17 @@ function compactContextEngineFeedbackSummary(
   if (value.cacheHits !== undefined) output.cacheHits = value.cacheHits;
   if (value.cacheMisses !== undefined) output.cacheMisses = value.cacheMisses;
   if (value.cacheRefreshes !== undefined) output.cacheRefreshes = value.cacheRefreshes;
-  if (value.runClass) output.runClass = value.runClass;
+  if (value.taskBound !== undefined) output.taskBound = value.taskBound;
+  if (value.runOutcome) output.runOutcome = value.runOutcome;
+  if (value.stopReason) output.stopReason = value.stopReason;
+  if (value.materializationStatus) output.materializationStatus = value.materializationStatus;
+  if (value.commitStatus) output.commitStatus = value.commitStatus;
+  if (value.headBefore) output.headBefore = value.headBefore;
+  if (value.headAfter) output.headAfter = value.headAfter;
   if (value.workStateRevision !== undefined) output.workStateRevision = value.workStateRevision;
   if (value.lastPersistedStep !== undefined) output.lastPersistedStep = value.lastPersistedStep;
   if (value.readContextRevision) output.readContextRevision = value.readContextRevision;
-  if (value.readContextAfterTaskRunId) output.readContextAfterTaskRunId = value.readContextAfterTaskRunId;
+  if (value.readContextAfterCommitRunId) output.readContextAfterCommitRunId = value.readContextAfterCommitRunId;
   if (value.readContextCounts) output.readContextCounts = value.readContextCounts;
   const taskLifecycle = compactFeedbackTaskLifecycle(value.taskLifecycle);
   if (taskLifecycle) output.taskLifecycle = taskLifecycle;
@@ -1524,6 +1509,12 @@ function readBooleanValue(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
 }
 
+function readRecordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
 function readSelectionMode(value: unknown): "created" | "activated" | undefined {
   return value === "created" || value === "activated" ? value : undefined;
 }
@@ -1546,10 +1537,6 @@ function readTaskRequestStatus(
 
 function readCacheStatus(value: unknown): AgentFeedbackContextEngineSummary["cacheStatus"] {
   return value === "hit" || value === "miss" || value === "fresh" ? value : undefined;
-}
-
-function readRunClass(value: unknown): AgentFeedbackContextEngineSummary["runClass"] {
-  return value === "session" || value === "task" ? value : undefined;
 }
 
 function readNumberValue(value: unknown): number | undefined {
@@ -1610,8 +1597,9 @@ function readFinalizationStatus(value: unknown): AgentFeedbackContextFinalizatio
   if (
     value === "not_started"
     || value === "started"
+    || value === "not_required"
+    || value === "no_change"
     || value === "committed"
-    || value === "skipped"
     || value === "failed"
   ) {
     return value;
@@ -1631,10 +1619,26 @@ function readFinalizationOutcome(
     : undefined;
 }
 
-function readFinalizationValidation(
+function readRunStopReason(value: unknown): AgentFeedbackContextEngineSummary["stopReason"] {
+  return value === "completed"
+    || value === "run_limit"
+    || value === "context_limit"
+    || value === "failed"
+    || value === "blocked"
+    || value === "needs_user_input"
+    || value === "interrupted"
+    ? value
+    : undefined;
+}
+
+function readMaterializationStatus(
   value: unknown,
-): "passed" | "failed" | "not_run" | undefined {
-  return value === "passed" || value === "failed" || value === "not_run"
+): AgentFeedbackContextEngineSummary["materializationStatus"] {
+  return value === "not_requested" || value === "materialized" ? value : undefined;
+}
+
+function readCommitStatus(value: unknown): AgentFeedbackContextEngineSummary["commitStatus"] {
+  return value === "not_required" || value === "no_change" || value === "committed"
     ? value
     : undefined;
 }

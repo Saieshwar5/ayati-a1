@@ -27,7 +27,7 @@ describe("git-context-feedback-report", () => {
         ts: "2026-07-18T10:00:00.000Z",
         tsMs: 1,
         stage: "git_context_service",
-        event: "session_run_bound",
+        event: "run_task_bound",
         runId: "RUN-1",
         taskId: "T-20260718-0001",
         data: {
@@ -38,14 +38,13 @@ describe("git-context-feedback-report", () => {
           taskRequestId: "R-0001",
           taskRequestStatus: "active",
           taskRequestCreated: true,
-          sessionRunBound: true,
         },
       }),
       JSON.stringify({
         ts: "2026-07-18T10:00:01.000Z",
         tsMs: 2,
         stage: "git_context_service",
-        event: "task_finalization_started",
+        event: "run_finalization_started",
         runId: "RUN-1",
         taskId: "T-20260718-0001",
         data: { requestedOutcome: "done", validation: "passed" },
@@ -54,14 +53,19 @@ describe("git-context-feedback-report", () => {
         ts: "2026-07-18T10:00:02.000Z",
         tsMs: 3,
         stage: "git_context_service",
-        event: "task_finalization_completed",
+        event: "run_finalization_completed",
         runId: "RUN-1",
         taskId: "T-20260718-0001",
         data: {
           outcome: "done",
-          taskHeadAfter: commit,
-          taskCommit: commit,
-          taskCommitCreated: true,
+          commit: {
+            status: "committed",
+            taskId: "T-20260718-0001",
+            taskRequestId: "R-0001",
+            headBefore: "a".repeat(40),
+            headAfter: commit,
+            commit,
+          },
         },
       }),
       "",
@@ -75,7 +79,7 @@ describe("git-context-feedback-report", () => {
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("PASS — no deterministic lifecycle or outcome findings.");
     expect(result.stdout).toContain("Task selections: 1");
-    expect(result.stdout).toContain("Session runs bound to tasks: 1");
+    expect(result.stdout).toContain("Task-bound runs: 1");
     expect(result.stdout).toContain("initial | R-0001 (active)");
     expect(result.stdout).toContain("committed (done, passed)");
   });
@@ -86,7 +90,7 @@ describe("git-context-feedback-report", () => {
       ts: "2026-07-18T10:00:00.000Z",
       tsMs: 1,
       stage: "git_context_service",
-      event: "task_run_started",
+      event: "run_task_bound",
       runId: "RUN-1",
       taskId: "T-20260718-0001",
       data: {},

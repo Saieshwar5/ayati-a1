@@ -21,7 +21,7 @@ import {
   isToolAllowedInPhase,
   getToolLoadGroups,
   missingToolTaxonomy,
-  requiresTaskRun,
+  requiresTaskBinding,
   summarizeToolTaxonomy,
 } from "../../src/skills/tool-taxonomy.js";
 
@@ -44,7 +44,7 @@ describe("tool taxonomy", () => {
     expect(getToolPurpose("list_directory")).toBe("list");
     expect(isObservationalTool("list_directory")).toBe(true);
     expect(canRunBeforeTask("read_files")).toBe(true);
-    expect(requiresTaskRun("read_files")).toBe(false);
+    expect(requiresTaskBinding("read_files")).toBe(false);
     expect(getToolTaxonomy("read_files")).toMatchObject({ lifetime: "run" });
     expect(getToolTaxonomy("write_files")).toMatchObject({ lifetime: "run" });
     expect(getToolLoadGroups("write_files")).toEqual(expect.arrayContaining(["file:write", "file:create"]));
@@ -54,14 +54,14 @@ describe("tool taxonomy", () => {
     expect(hasMutationEffect("git_context_create_task")).toBe(true);
     expect(canRunBeforeTask("git_context_create_task")).toBe(true);
     expect(isToolAllowedInPhase("git_context_create_task", "routing")).toBe(true);
-    expect(isToolAllowedInPhase("git_context_create_task", "task_run")).toBe(false);
+    expect(isToolAllowedInPhase("git_context_create_task", "task_bound")).toBe(false);
 
     expect(getToolTaxonomy("write_file")).toBeUndefined();
     expect(hasMutationEffect("write_files")).toBe(true);
     expect(getToolPurpose("write_files")).toBe("mutation");
-    expect(requiresTaskRun("write_files")).toBe(true);
+    expect(requiresTaskBinding("write_files")).toBe(true);
     expect(canRunBeforeTask("write_files")).toBe(false);
-    expect(isToolAllowedInPhase("write_files", "task_run")).toBe(true);
+    expect(isToolAllowedInPhase("write_files", "task_bound")).toBe(true);
     expect(isToolAllowedInPhase("write_files", "enquiry")).toBe(false);
 
     expect(getToolTaxonomy("process_start")).toMatchObject({
@@ -109,7 +109,7 @@ describe("tool taxonomy", () => {
       task_mutation: 1,
       long_running_process: 1,
     });
-    expect(summary.requiresTaskRun).toEqual(["write_files", "process_start"]);
+    expect(summary.requiresTaskBinding).toEqual(["write_files", "process_start"]);
     expect(summary.canRunBeforeTask).toEqual(["read_files", "git_context_activate_task"]);
     expect(summary.longRunning).toEqual(["process_start"]);
     expect(summary.lifetimes).toMatchObject({

@@ -58,7 +58,6 @@ export type TurnRoutingUpdate =
       taskRequestId?: string;
       taskRequestStatus?: "queued" | "active" | "blocked" | "done" | "dropped";
       taskRequestCreated?: boolean;
-      sessionRunBound?: boolean;
       harnessContext: HarnessContextInput;
     }
   | {
@@ -184,9 +183,6 @@ export function extractTurnRoutingUpdate(calls: ActToolCallRecord[]): TurnRoutin
           ...(typeof record["taskRequestCreated"] === "boolean"
             ? { taskRequestCreated: record["taskRequestCreated"] }
             : {}),
-          ...(typeof record["sessionRunBound"] === "boolean"
-            ? { sessionRunBound: record["sessionRunBound"] }
-            : {}),
           harnessContext,
         };
       }
@@ -234,7 +230,7 @@ function validatePendingRoutingAction(input: ExecutePendingRoutingActionInput): 
   if (action.calls.length > input.config.maxSequentialToolCallsPerStep) {
     return `Pending-turn routing requested ${action.calls.length} calls, above max ${input.config.maxSequentialToolCallsPerStep}.`;
   }
-  const routingAttemptBlock = validateRoutingAttemptLimits(input.state, action, Boolean(input.state.runId));
+  const routingAttemptBlock = validateRoutingAttemptLimits(input.state, action, isTaskBound(input.state));
   if (routingAttemptBlock) {
     return routingAttemptBlock.message;
   }
@@ -245,7 +241,7 @@ function validatePendingRoutingAction(input: ExecutePendingRoutingActionInput): 
       return `Allowed tool '${tool}' was not selected for this decision.`;
     }
     if (input.observationalSessionAction && !isObservationalTool(tool)) {
-      return `Allowed tool '${tool}' cannot run in a session observational action before task binding.`;
+      return `Allowed tool '${tool}' cannot run in an unbound observational action.`;
     }
   }
   for (const call of action.calls) {
@@ -257,7 +253,7 @@ function validatePendingRoutingAction(input: ExecutePendingRoutingActionInput): 
     }
     if (input.observationalSessionAction) {
       if (!isObservationalTool(call.tool)) {
-        return `Tool '${call.tool}' cannot run in a session observational action before task binding.`;
+        return `Tool '${call.tool}' cannot run in an unbound observational action.`;
       }
     } else if (!isGitContextAllowedDuringPendingRouting(call.tool)) {
       return [
@@ -271,6 +267,10 @@ function validatePendingRoutingAction(input: ExecutePendingRoutingActionInput): 
     }
   }
   return undefined;
+}
+
+function isTaskBound(state: LoopState): boolean {
+  return state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "bound";
 }
 
 async function executePendingRoutingCalls(input: ExecutePendingRoutingActionInput): Promise<ActOutput> {
@@ -292,7 +292,10 @@ async function executePendingRoutingCalls(input: ExecutePendingRoutingActionInpu
     }
     let result: ToolResult;
     try {
-      result = await input.deps.toolExecutor!.execute(call.tool, call.input, input.toolContext);
+      result = await input.deps.toolExecutor!.execute(call.tool, call.input, {
+        ...input.toolContext,
+        callId: call.id,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       failedCallIds.add(call.id);
@@ -352,24 +355,8 @@ function failedPendingRoutingActOutput(action: AgentAction, error: string): ActO
   return {
     toolCalls: action.calls.length > 0
       ? action.calls.map((call) => pendingRoutingToolCallRecord(call, "", error))
-      : [{
-        tool: "pending_turn_routing_guard",
-        input: action,
-        output: "",
-        error,
-        observation: {
-          id: "OBS-pending_turn_routing_guard",
-          step: 0,
-          callId: "pending_turn_routing_guard",
-          tool: "pending_turn_routing_guard",
-          status: "failed",
-          mode: "summary",
-          retention: "next_step",
-          content: error,
-          hasMore: false,
-        },
-      }],
-    finalText: "",
+      : [],
+    finalText: error,
     stoppedEarlyReason: "planned_call_failed",
   };
 }
@@ -380,6 +367,12 @@ function buildPendingRoutingVerifyOutput(actOutput: ActOutput): AgentActionExecu
   const evidenceItems = actOutput.toolCalls.map((call) => call.error
     ? `${call.tool}: ${call.error}`
     : `${call.tool}: ${call.result?.message ?? "completed"}`);
+  if (!passed && evidenceItems.length === 0 && actOutput.finalText.trim()) {
+    evidenceItems.push(actOutput.finalText.trim());
+  }
+  const failure = failed.map((call) => `${call.tool}: ${call.error}`).join(" | ")
+    || actOutput.finalText.trim()
+    || "routing action validation failed";
   return {
     passed,
     method: "execution_gate",
@@ -387,7 +380,7 @@ function buildPendingRoutingVerifyOutput(actOutput: ActOutput): AgentActionExecu
     validationStatus: passed ? "passed" : "failed",
     summary: passed
       ? "Pending-turn routing tools executed successfully."
-      : `Pending-turn routing failed: ${failed.map((call) => `${call.tool}: ${call.error}`).join(" | ")}`,
+      : `Pending-turn routing failed: ${failure}`,
     evidenceSummary: evidenceItems.join(" "),
     evidenceItems,
     newFacts: [],

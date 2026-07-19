@@ -59,7 +59,7 @@ interface BenchmarkCaseResult {
   runPath: string;
   workspacePath?: string;
   status: string;
-  runClass: string;
+  taskBound: boolean;
   totalIterations: number;
   totalToolCalls: number;
   llmCalls: number;
@@ -348,7 +348,7 @@ function directReplyBasicCase(): BenchmarkCase {
         budgets: { maxLlmCalls: 1, maxToolCalls: 0, maxTotalTokens: 1_000 },
         checks: async ({ result }) => [
           check("completed", result.status === "completed", result.status),
-          check("interaction run", result.runClass === "interaction", result.runClass),
+          check("unbound run", !result.taskSummary, result.outcome),
           check("one iteration", result.totalIterations === 1, String(result.totalIterations)),
           check("no tools", result.totalToolCalls === 0, String(result.totalToolCalls)),
           check("answers directly", result.content.includes("persistent AI agent daemon"), result.content),
@@ -410,7 +410,7 @@ function codeSearchContextPackCase(): BenchmarkCase {
         budgets: { maxLlmCalls: 2, maxToolCalls: 1, maxTotalTokens: 4_000 },
         checks: async ({ result, metrics }) => [
           check("completed", result.status === "completed", result.status),
-          check("task run", result.runClass === "task", result.runClass),
+          check("unbound observational run", !result.taskSummary, result.outcome),
           check("one tool call", result.totalToolCalls === 1, String(result.totalToolCalls)),
           check("search tool succeeded", readMetricNumber(metrics, ["stages", "tool:search_in_files", "failures"]) === 0),
           check("mentions context-pack path", result.content.includes("context-pack.ts"), result.content),
@@ -480,7 +480,7 @@ function smallFileEditCase(): BenchmarkCase {
           const content = await readFile(targetPath, "utf-8");
           return [
             check("completed", result.status === "completed", result.status),
-            check("task run", result.runClass === "task", result.runClass),
+            check("task-bound run", Boolean(result.taskSummary), result.outcome),
             check("one tool call", result.totalToolCalls === 1, String(result.totalToolCalls)),
             check("file edited", content === "status: ready\n", content),
             check("no internal final wording", !containsInternalHarnessWords(result.content), result.content),
@@ -1366,7 +1366,7 @@ function followupContinuePreviousFileEditCase(): BenchmarkCase {
         runPath: second.runPath,
         workspacePath,
         status: second.status,
-        runClass: second.runClass,
+        taskBound: second.taskBound,
         totalIterations: first.totalIterations + second.totalIterations,
         totalToolCalls: first.totalToolCalls + second.totalToolCalls,
         llmCalls: first.llmCalls + second.llmCalls,
@@ -1750,7 +1750,7 @@ function buildSyntheticCaseResult(input: {
     runPath: input.outputDir,
     ...(input.workspacePath ? { workspacePath: input.workspacePath } : {}),
     status: input.status,
-    runClass: "task",
+    taskBound: true,
     totalIterations: 0,
     totalToolCalls: 0,
     llmCalls: 0,
@@ -1797,7 +1797,12 @@ async function runCase(input: RunCaseInput): Promise<BenchmarkCaseResult> {
     ...(toolExecutor ? { toolExecutor } : {}),
     toolDefinitions: toolExecutor?.definitions() ?? [],
     runRecorder: noopRunRecorder,
-    runHandle: { sessionId: "bench-session", runId: input.caseId },
+    runHandle: {
+      sessionId: "bench-session",
+      conversationId: `bench-conversation-${input.caseId}`,
+      runId: input.caseId,
+      triggerSeq: 1,
+    },
     clientId: "bench-client",
     initialUserMessage: input.userMessage,
     dataDir: outputDir,
@@ -1831,7 +1836,7 @@ async function runCase(input: RunCaseInput): Promise<BenchmarkCaseResult> {
     runPath: result.runPath,
     ...(input.workspacePath ? { workspacePath: input.workspacePath } : {}),
     status: result.status,
-    runClass: result.runClass,
+    taskBound: Boolean(result.taskSummary),
     totalIterations: result.totalIterations,
     totalToolCalls: result.totalToolCalls,
     llmCalls,
@@ -2495,7 +2500,7 @@ function renderHumanReview(summary: BenchmarkRunSummary): string {
       `Tier: ${result.tier}`,
       `Category: ${result.category}`,
       `Status: ${result.status}`,
-      `Run class: ${result.runClass}`,
+      `Task binding: ${result.taskBound ? "task-bound" : "unbound"}`,
       `Latency: ${result.latencyMs}ms`,
       `Iterations: ${result.totalIterations}`,
       `LLM calls: ${result.llmCalls}`,

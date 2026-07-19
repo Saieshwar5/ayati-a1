@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   isAcquireMutationAuthorityRequest,
-  isActivateTaskRunRequest,
+  isActivateTaskForRunRequest,
 } from "../src/contracts.js";
 import { GitContextServiceError } from "../src/errors.js";
 import { parseTaskCard, renderTaskCard, type TaskCard } from "../src/tasks/task-card.js";
 import {
   parseSimpleTaskCommit,
   renderTaskIdentityCommit,
-  renderTaskRunCommit,
+  renderTaskCommit,
 } from "../src/tasks/task-commit-metadata.js";
 import {
   nextReferenceId,
@@ -36,14 +36,12 @@ describe("simple task repository contracts", () => {
       sessionId: "S-20260717-local",
       conversationId: "C-000001",
       runId: "RUN-000001",
-      trigger: "user",
-      workState: emptyRunWorkState(),
       taskId: "T-20260717-0001",
       expectedTaskHead: "a".repeat(40),
       at: "2026-07-17T10:00:00+05:30",
     };
-    expect(isActivateTaskRunRequest(activation)).toBe(false);
-    expect(isActivateTaskRunRequest({
+    expect(isActivateTaskForRunRequest(activation)).toBe(false);
+    expect(isActivateTaskForRunRequest({
       ...activation,
       route: {
         kind: "continue_active_request",
@@ -51,7 +49,7 @@ describe("simple task repository contracts", () => {
         reason: "Continue the exact unfinished request.",
       },
     })).toBe(true);
-    expect(isActivateTaskRunRequest({
+    expect(isActivateTaskForRunRequest({
       ...activation,
       taskId: "X-20260717-0001",
       route: {
@@ -183,7 +181,7 @@ describe("simple task repository contracts", () => {
       taskId: "T-20260717-0001",
       requestId: "R-0001",
     });
-    const final = renderTaskRunCommit({
+    const final = renderTaskCommit({
       subject: "Implement Logistic Regression Exercise",
       taskId: "T-20260717-0001",
       requestId: "R-0002",
@@ -202,7 +200,7 @@ describe("simple task repository contracts", () => {
       taskId: "T-20260717-0001",
     });
     expect(parseSimpleTaskCommit(final)).toMatchObject({
-      event: "task_run_finalized",
+      event: "task_bound_run_finalized",
       outcome: "completed",
       validation: "passed",
       next: "Evaluate regularization.",

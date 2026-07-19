@@ -104,8 +104,8 @@ describe("executeAgentAction verification gates", () => {
 
       expect(result.verifyOutput.passed).toBe(false);
       expect(result.verifyOutput.summary).toContain("Sequential action requested 5 calls");
-      expect(result.actOutput.toolCalls).toHaveLength(1);
-      expect(result.actOutput.toolCalls[0]?.tool).toBe("execution_plan");
+      expect(result.actOutput.toolCalls).toEqual([]);
+      expect(result.actOutput.finalText).toContain("Sequential action requested 5 calls");
       expect(result.nextWorkState.status).toBe("blocked");
     } finally {
       cleanup(runPath);
@@ -132,8 +132,7 @@ describe("executeAgentAction verification gates", () => {
 
       expect(result.verifyOutput.passed).toBe(false);
       expect(result.verifyOutput.summary).toContain("Parallel action requested 4 calls");
-      expect(result.actOutput.toolCalls).toHaveLength(1);
-      expect(result.actOutput.toolCalls[0]?.tool).toBe("execution_plan");
+      expect(result.actOutput.toolCalls).toEqual([]);
     } finally {
       cleanup(runPath);
     }
@@ -147,9 +146,8 @@ describe("executeAgentAction verification gates", () => {
       expect(result.verifyOutput.passed).toBe(false);
       expect(result.verifyOutput.summary).toContain("Tool input preflight failed for 'write_files'");
       expect(result.verifyOutput.summary).toContain("missing required field 'files'");
-      expect(result.actOutput.toolCalls).toHaveLength(1);
-      expect(result.actOutput.toolCalls[0]?.tool).toBe("execution_plan");
-      expect(result.actOutput.toolCalls[0]?.error).toContain("received input keys: (none)");
+      expect(result.actOutput.toolCalls).toEqual([]);
+      expect(result.actOutput.finalText).toContain("received input keys: (none)");
     } finally {
       cleanup(runPath);
     }
@@ -296,7 +294,7 @@ describe("executeAgentAction verification gates", () => {
       expect(executed).toBe(false);
       expect(result.verifyOutput.passed).toBe(false);
       expect(result.verifyOutput.summary).toContain("has no safety annotations");
-      expect(result.actOutput.toolCalls[0]?.tool).toBe("execution_plan");
+      expect(result.actOutput.toolCalls).toEqual([]);
     } finally {
       cleanup(runPath);
     }
@@ -324,7 +322,7 @@ describe("executeAgentAction verification gates", () => {
 
       expect(result.verifyOutput.passed).toBe(false);
       expect(result.verifyOutput.summary).toContain("tool 'process_run' is not parallel-safe");
-      expect(result.actOutput.toolCalls[0]?.tool).toBe("execution_plan");
+      expect(result.actOutput.toolCalls).toEqual([]);
     } finally {
       cleanup(runPath);
     }
@@ -393,7 +391,7 @@ describe("executeAgentAction verification gates", () => {
       expect(unsafeExecuted).toBe(false);
       expect(result.verifyOutput.passed).toBe(false);
       expect(result.verifyOutput.summary).toContain("tool 'write_files' is not parallel-safe");
-      expect(result.actOutput.toolCalls[0]?.tool).toBe("execution_plan");
+      expect(result.actOutput.toolCalls).toEqual([]);
     } finally {
       cleanup(runPath);
     }
@@ -418,7 +416,7 @@ describe("executeAgentAction verification gates", () => {
 
       expect(result.verifyOutput.passed).toBe(false);
       expect(result.verifyOutput.summary).toContain("tool 'create_directory' is not parallel-safe");
-      expect(result.actOutput.toolCalls[0]?.tool).toBe("execution_plan");
+      expect(result.actOutput.toolCalls).toEqual([]);
     } finally {
       cleanup(runPath);
     }

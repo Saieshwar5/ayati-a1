@@ -11,7 +11,7 @@ export interface GitContextFeedbackTriageFinding {
 export function buildGitContextLifecycleFindings(input: {
   lifecycle?: FeedbackTaskLifecycle;
   pendingTurnStatus?: string;
-  runClass?: "session" | "task";
+  taskBound?: boolean;
 }): GitContextFeedbackTriageFinding[] {
   const findings: GitContextFeedbackTriageFinding[] = [];
   const repository = input.lifecycle?.repository;
@@ -45,7 +45,7 @@ export function buildGitContextLifecycleFindings(input: {
         "v1_task_request_missing",
         "error",
         "Selected task request is missing",
-        "The task run has no observable resolved task request identity.",
+        "The task-bound run has no observable resolved task request identity.",
         "Inspect task-request route planning before mutation authority is acquired.",
       ));
     }
@@ -120,29 +120,29 @@ export function buildGitContextLifecycleFindings(input: {
         `v1_task_outcome_${finalization.outcome}`,
         "warning",
         `Task outcome is ${finalization.outcome.replaceAll("_", " ")}`,
-        `The repository lifecycle is consistent, but the task run ended with outcome '${finalization.outcome}'.`,
+        `The repository lifecycle is consistent, but the task-bound run ended with outcome '${finalization.outcome}'.`,
         "Use the task card, request state, and final reply to decide whether to continue or request user input.",
       ));
     }
   }
 
   if (input.pendingTurnStatus === "clarifying"
-    && (input.runClass === "task" || run?.selectedAs === "task")) {
+    && (input.taskBound === true || run?.taskBound === true)) {
     findings.push(finding(
-      "clarification_with_task_run",
+      "clarification_with_task_binding",
       "warning",
-      "Clarification owns a task run",
-      "A clarification may have a session run, but it should not bind mutation work to a task before ownership is clear.",
-      "Inspect the explicit routing result and keep clarification session-only.",
+      "Clarification owns a task binding",
+      "The clarification run bound mutation work to a task before ownership was clear.",
+      "Inspect the explicit routing result and keep the clarification run unbound.",
     ));
   }
 
-  if (input.pendingTurnStatus === "unbound" && run?.selectedAs === "task") {
+  if (input.pendingTurnStatus === "unbound" && (input.taskBound === true || run?.taskBound === true)) {
     findings.push(finding(
       "unbound_turn_has_task_binding",
       "error",
       "Unbound turn has task authority",
-      "The turn remained unbound while feedback reported a selected task run.",
+      "The run remained unbound while feedback reported a task binding.",
       "Fix routing state propagation before exposing normal task tools.",
     ));
   }

@@ -1,4 +1,3 @@
-import type { MemoryRunHandle } from "../../memory/types.js";
 import type {
   ActOutput,
   ActToolCallRecord,
@@ -6,12 +5,8 @@ import type {
   RoutingAttemptState,
   StepSummary,
 } from "../types.js";
-import type { AgentAction, AgentDecision } from "./decision.js";
-import { isObservationalTool } from "../../skills/tool-taxonomy.js";
-import {
-  isGitContextAllowedDuringPendingRouting,
-  isGitContextTurnRoutingToolName,
-} from "../../skills/builtins/git-context/tool-policy.js";
+import type { AgentAction } from "./decision.js";
+import { isGitContextTurnRoutingToolName } from "../../skills/builtins/git-context/tool-policy.js";
 
 const MAX_ROUTING_FAILURES_PER_TURN = 2;
 const FILE_MUTATION_TOOL_NAMES = new Set([
@@ -37,19 +32,25 @@ export function createRoutingAttemptState(): RoutingAttemptState {
   };
 }
 
+export function hasExhaustedRoutingFailures(state: LoopState): boolean {
+  return !state.routingAttempts.resolved
+    && state.routingAttempts.successCount === 0
+    && state.routingAttempts.failureCount >= state.routingAttempts.maxFailures;
+}
+
 export function validateRoutingAttemptLimits(
   state: LoopState,
   action: AgentAction,
-  hasWorkRun: boolean,
+  hasTaskBinding: boolean,
 ): RoutingAttemptBlock | undefined {
   const tools = routingControlToolsForAction(action);
   if (tools.length === 0) {
     return undefined;
   }
-  if (hasWorkRun) {
+  if (hasTaskBinding) {
     return {
-      reason: "task_run_already_exists",
-      message: "Task routing tools cannot run after this turn is already bound to a task run.",
+      reason: "task_binding_already_exists",
+      message: "Task routing tools cannot run after this run is already bound to a task.",
       tools,
     };
   }
@@ -127,30 +128,6 @@ export function summarizeRoutingAttempts(routing: RoutingAttemptState): Record<s
     ...(routing.lastTool ? { lastTool: routing.lastTool } : {}),
     ...(routing.lastError ? { lastError: routing.lastError } : {}),
   };
-}
-
-export function shouldDeferPreTaskMutation(
-  _state: LoopState,
-  decision: AgentDecision,
-  workRunHandle: MemoryRunHandle | undefined,
-): boolean {
-  if (workRunHandle || decision.kind !== "act") {
-    return false;
-  }
-  if (decision.action.calls.some((call) => isGitContextTurnRoutingToolName(call.tool))) {
-    return false;
-  }
-  return decision.action.calls.some((call) => isPreTaskMutationTool(call.tool));
-}
-
-export function isPreTaskMutationTool(tool: string): boolean {
-  return !isObservationalTool(tool) && !isGitContextAllowedDuringPendingRouting(tool);
-}
-
-export function deferredMutationToolNames(action: AgentAction): string[] {
-  return uniqueStrings(action.calls
-    .map((call) => call.tool)
-    .filter(isPreTaskMutationTool));
 }
 
 export function stepUsesFileMutationTool(step: StepSummary): boolean {

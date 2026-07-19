@@ -88,9 +88,7 @@ export function activeContextRevision(input: {
     run: input.run
       ? {
           runId: input.run.run.runId,
-          runClass: input.run.run.runClass,
-          taskId: input.run.run.taskId,
-          taskRequestId: input.run.run.taskRequestId,
+          taskBinding: input.run.run.taskBinding ?? null,
           status: input.run.run.status,
           stepCount: input.run.run.stepCount,
           workStateRevision: input.run.workState.revision,

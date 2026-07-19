@@ -1,8 +1,6 @@
-import { randomUUID } from "node:crypto";
 import type {
   GitContextService,
-  RunWorkStateInput,
-  SelectedTaskRunResponse,
+  SelectedTaskForRunResponse,
 } from "ayati-git-context";
 import { buildContextEngineProjection } from "../../../context-engine/index.js";
 import type { SkillDefinition, ToolDefinition, ToolExecutionContext, ToolResult } from "../../types.js";
@@ -23,7 +21,7 @@ const PROMPT = [
   "A request is one bounded feature, lesson, analysis, or improvement inside a task; a run is only the current attempt.",
   "Continue the current request only when the user is still pursuing its unfinished outcome. A materially separate outcome belongs to a new request in the same task, not automatically to a new task.",
   "Completing one request does not complete or archive its task. A task may remain active with no current request.",
-  "There is no session-global active task. Each task run owns exactly one task.",
+  "There is no session-global active task. Each task-bound run owns exactly one task.",
   "The current context includes recent task candidates. Resource ownership and existing task files are stronger routing signals than text similarity.",
   "Use git_context_activate_task when the request continues or changes an existing task.",
   "Use git_context_create_task only when the request starts a distinct durable deliverable.",
@@ -81,20 +79,22 @@ function createTaskTool(deps: GitContextSkillDeps): ToolDefinition {
         if (!conversation || conversation.status !== "active") {
           return routingError("No active conversation exists for task creation.");
         }
-        const selected = await service.createTaskRun({
-          requestId: randomUUID(),
+        const run = active.run?.run;
+        if (!run || run.conversationId !== conversation.conversationId) {
+          return routingError("Task creation requires the current prepared run.");
+        }
+        const selected = await service.createTaskForRun({
+          requestId: toolRequestId(context, "create-task"),
           sessionId: parsed.sessionId,
           conversationId: conversation.conversationId,
-          ...(active.run?.run.runId ? { runId: active.run.run.runId } : {}),
-          trigger: conversationTrigger(active, conversation.conversationId),
-          workState: active.run?.workState ?? initialWorkState(),
+          runId: run.runId,
           title: parsed.title,
           objective: parsed.objective,
           placement: { mode: "managed" },
           at: new Date().toISOString(),
         });
         await service.bindTaskAttachments({
-          requestId: randomUUID(),
+          requestId: toolRequestId(context, "bind-attachments"),
           sessionId: parsed.sessionId,
           conversationId: conversation.conversationId,
           runId: selected.run.runId,
@@ -154,19 +154,21 @@ function activateTaskTool(service: GitContextService): ToolDefinition {
         if (!conversation || conversation.status !== "active") {
           return routingError("No active conversation exists for task activation.");
         }
-        const selected = await service.activateTaskRun({
-          requestId: randomUUID(),
+        const run = active.run?.run;
+        if (!run || run.conversationId !== conversation.conversationId) {
+          return routingError("Task activation requires the current prepared run.");
+        }
+        const selected = await service.activateTaskForRun({
+          requestId: toolRequestId(context, "activate-task"),
           sessionId: parsed.sessionId,
           conversationId: conversation.conversationId,
-          ...(active.run?.run.runId ? { runId: active.run.run.runId } : {}),
-          trigger: conversationTrigger(active, conversation.conversationId),
-          workState: active.run?.workState ?? initialWorkState(),
+          runId: run.runId,
           taskId: parsed.taskId,
           route: parsed.route,
           at: new Date().toISOString(),
         });
         await service.bindTaskAttachments({
-          requestId: randomUUID(),
+          requestId: toolRequestId(context, "bind-attachments"),
           sessionId: parsed.sessionId,
           conversationId: conversation.conversationId,
           runId: selected.run.runId,
@@ -184,7 +186,7 @@ function activateTaskTool(service: GitContextService): ToolDefinition {
 async function routingSuccess(
   service: GitContextService,
   sessionId: string,
-  selected: SelectedTaskRunResponse,
+  selected: SelectedTaskForRunResponse,
   mode: "created" | "activated",
 ): Promise<ToolResult> {
   const active = await service.getActiveContext({ sessionId });
@@ -204,10 +206,10 @@ async function routingSuccess(
       taskHead: selected.task.head,
       taskCreated: selected.taskCreated,
       requestDecision: selected.taskRequestDecision,
-      taskRequestId: selected.run.taskRequestId,
+      taskRequestId: selected.run.taskBinding?.taskRequestId,
       taskRequestStatus: selected.context.currentRequest?.status,
       taskRequestCreated: selected.taskRequestCreated,
-      sessionRunBound: selected.sessionRunBound,
+      headBeforeSelection: selected.headBeforeSelection,
       harnessContext: {
         contextEngine: buildContextEngineProjection(active),
       },
@@ -232,7 +234,7 @@ function routingOutputSchema() {
       taskRequestId: { type: "string" },
       taskRequestStatus: { enum: ["queued", "active", "blocked", "done", "dropped"] },
       taskRequestCreated: { type: "boolean" },
-      sessionRunBound: { type: "boolean" },
+      headBeforeSelection: { type: "string" },
       harnessContext: { type: "object" },
     },
     required: [
@@ -247,7 +249,7 @@ function routingOutputSchema() {
       "taskCreated",
       "requestDecision",
       "taskRequestCreated",
-      "sessionRunBound",
+      "headBeforeSelection",
       "harnessContext",
     ],
     additionalProperties: false,
@@ -261,16 +263,6 @@ function routingAnnotations() {
     idempotent: false,
     retrySafe: false,
   });
-}
-
-function conversationTrigger(
-  active: Awaited<ReturnType<GitContextService["getActiveContext"]>>,
-  conversationId: string,
-): "user" | "system_event" {
-  const conversation = active.session?.pendingConversationContext.find(
-    (candidate) => candidate.conversation.conversationId === conversationId,
-  );
-  return conversation?.messages.at(-1)?.role === "system_event" ? "system_event" : "user";
 }
 
 function parseCreateInput(input: unknown, context?: ToolExecutionContext): {
@@ -358,20 +350,15 @@ function routingError(message: string): ToolResult {
   });
 }
 
-function initialWorkState(): RunWorkStateInput {
-  return {
-    status: "not_done",
-    summary: "Task run started.",
-    openWork: [],
-    blockers: [],
-    facts: [],
-    evidence: [],
-    artifacts: [],
-    nextStep: null,
-    userInputNeeded: [],
-  };
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function toolRequestId(context: ToolExecutionContext | undefined, operation: string): string {
+  const runId = context?.runId?.trim();
+  const callId = context?.callId?.trim();
+  if (!runId || !callId) {
+    throw new Error("Git Context routing requires run and tool-call identity.");
+  }
+  return runId + ":" + callId + ":" + operation;
 }

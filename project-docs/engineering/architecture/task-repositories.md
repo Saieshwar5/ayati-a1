@@ -124,10 +124,10 @@ operation when Git durability is required.
 
 ## Sessions And Continuation
 
-Every provider-handled turn begins as a read-first session run. Read-only work
-may finish without selecting a task. Before task mutation, the same active run
-is bound to exactly one task and request. A completed run is sealed; a later
-continuation allocates a new run and reads committed task context.
+Every accepted provider-handled turn begins as an unbound run. Read-only work
+may finish without selecting a task. Before task mutation, the same run id is
+bound immutably to exactly one task and request. A completed run is sealed; a
+later continuation allocates a new run and reads committed task context.
 
 Sessions store conversation and run journals, but they do not own V1 task
 continuity. Closing the CLI, daemon, or a conversation does not close the task.
@@ -162,10 +162,11 @@ preserve the V1 topology while closing them.
 - `ayati-git-context/src/contracts.ts`
 - `ayati-git-context/src/tasks/`
 - `ayati-git-context/src/services/task-lifecycle-service.ts`
-- `ayati-git-context/src/services/task-run-selection-service.ts`
+- `ayati-git-context/src/services/task-binding-service.ts`
 - `ayati-git-context/src/services/task-request-routing-service.ts`
 - `ayati-git-context/src/services/mutation-boundary-service.ts`
-- `ayati-git-context/src/services/simple-task-finalization-service.ts`
+- `ayati-git-context/src/services/run-finalization-service.ts`
+- `ayati-git-context/src/services/task-bound-finalization-service.ts`
 - `ayati-main/src/app/git-context-runtime.ts`
 - `ayati-main/src/app/task-scoped-tool-executor.ts`
 - `ayati-main/src/skills/builtins/git-context/index.ts`

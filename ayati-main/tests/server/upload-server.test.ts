@@ -12,7 +12,6 @@ import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnInput } from "../../src/core/contracts/llm-protocol.js";
 import type {
   GitContextPreparedTurn,
-  GitContextRoutedTurn,
   GitContextRuntime,
 } from "../../src/app/git-context-runtime.js";
 
@@ -103,37 +102,51 @@ function messageContentToText(content: unknown): string {
 
 function createReadyChatContextRuntime(): GitContextRuntime {
   const prepared = readyGitContextPreparedTurn();
-  const routed = readyGitContextRoutedTurn();
   return {
-    prepareUserTurn: vi.fn().mockResolvedValue(prepared),
-    routeTaskTurn: vi.fn().mockResolvedValue(routed),
-    activateTaskTurn: vi.fn().mockResolvedValue(routed),
-    completeTaskRun: vi.fn().mockResolvedValue({
-      taskId: routed.taskId,
-      branch: routed.branch,
-      ref: routed.ref,
-      runId: "R-20260627-0001",
-      taskCommit: "task-commit",
-      event: {
-        v: 1,
-        seq: 1,
-        eventId: "E-20260627-000001",
-        type: "run_completed",
-        at: "2026-06-27T10:05:00+05:30",
-        taskId: routed.taskId,
-        runId: "R-20260627-0001",
-        branch: routed.branch,
-        commit: "task-commit",
+    prepareUserTurn: vi.fn(async (input: Parameters<GitContextRuntime["prepareUserTurn"]>[0]) => {
+      prepared.context.session.conversationTail = [{
+        seq: prepared.currentMessageSessionSequence,
+        messageId: prepared.currentMessageId,
+        conversationId: prepared.conversationId,
+        conversationSequence: prepared.messageSeq,
+        segmentSequence: 1,
+        role: "user",
+        at: input.at,
+        text: input.userMessage,
+      }];
+      return prepared;
+    }),
+    warmActiveContext: vi.fn().mockResolvedValue(undefined),
+    finalizeRun: vi.fn(async (input: Parameters<GitContextRuntime["finalizeRun"]>[0]) => ({
+      run: {
+        runId: prepared.run.runId,
+        sessionId: prepared.sessionId,
+        conversationId: prepared.conversationId,
+        status: input.outcome,
+        trigger: "user",
+        startedAt: "2026-06-27T10:00:00.000Z",
+        completedAt: input.at,
+        stopReason: input.stopReason,
+        stepCount: 0,
       },
-    }),
-    recordAssistantMessage: vi.fn().mockResolvedValue({
-      v: 1,
-      seq: 2,
-      role: "assistant",
-      at: "2026-06-27T10:05:01+05:30",
-      text: "mock reply",
-    }),
-    buildActiveContext: vi.fn().mockResolvedValue(routed.context),
+      conversation: {
+        conversationId: prepared.conversationId,
+        sessionId: prepared.sessionId,
+        sequence: prepared.messageSeq,
+        filePath: "conversations/1.md",
+        status: "committed",
+      },
+      persistence: {
+        database: "saved",
+        materialization: "not_requested",
+        git: "not_required",
+      },
+      materialization: { status: "not_requested" },
+      commit: { status: "not_required" },
+    })),
+    recordRunStep: vi.fn().mockResolvedValue(prepared.context),
+    recordSessionAttachments: vi.fn().mockResolvedValue(null),
+    buildActiveContext: vi.fn().mockResolvedValue(prepared.context),
   };
 }
 
@@ -144,6 +157,16 @@ function readyGitContextPreparedTurn(): GitContextPreparedTurn {
     repoPath: "/tmp/ayati-git-context/S-20260627-local",
     initialized: false,
     messageSeq: 1,
+    currentMessageId: "M-20260627-0001",
+    currentMessageSessionSequence: 1,
+    conversationId: "C-20260627-0001",
+    inputRole: "user",
+    run: {
+      runId: "R-20260627-0001",
+      sessionId: "S-20260627-local",
+      conversationId: "C-20260627-0001",
+      triggerSeq: 1,
+    },
     context: {
       session: {
         meta: { sessionId: "S-20260627-local", assetCount: 0 },
@@ -151,80 +174,6 @@ function readyGitContextPreparedTurn(): GitContextPreparedTurn {
         activityTail: [],
       },
       focus: { status: "none" },
-    },
-  };
-}
-
-function readyGitContextRoutedTurn(): Extract<GitContextRoutedTurn, { status: "ready" }> {
-  const context = {
-    session: {
-      meta: { sessionId: "S-20260627-local", assetCount: 0 },
-      conversationTail: [],
-      activityTail: [],
-    },
-    focus: {
-      status: "active" as const,
-      taskId: "T-20260627-0001",
-      branch: "task/T-20260627-0001-upload-test",
-      ref: "refs/heads/task/T-20260627-0001-upload-test",
-    },
-    task: {
-      ref: "refs/heads/task/T-20260627-0001-upload-test",
-      taskId: "T-20260627-0001",
-      branch: "task/T-20260627-0001-upload-test",
-      title: "Upload test",
-      objective: "Handle uploaded attachment",
-      status: "in_progress",
-      summary: "Handle uploaded attachment",
-      completed: [],
-      open: ["Handle uploaded attachment"],
-      blockers: [],
-      facts: [],
-      next: "Handle uploaded attachment",
-      recentRuns: [],
-      recentCommits: [],
-    },
-  };
-  return {
-    status: "ready",
-    mode: "activated",
-    sessionId: "S-20260627-local",
-    taskId: "T-20260627-0001",
-    runId: "R-20260627-0001",
-    branch: "task/T-20260627-0001-upload-test",
-    ref: "refs/heads/task/T-20260627-0001-upload-test",
-    conversationRefs: [{ fromSeq: 1, toSeq: 1 }],
-    confidence: "deterministic",
-    reason: "test fixture",
-    context,
-    harnessContext: {
-      contextEngine: {
-        session: {
-          meta: { sessionId: "S-20260627-local", assetCount: 0 },
-          conversationTail: [],
-          activityTail: [],
-        },
-        focus: {
-          status: "active",
-          ref: "refs/heads/task/T-20260627-0001-upload-test",
-          workId: "T-20260627-0001",
-        },
-        task: {
-          ref: "refs/heads/task/T-20260627-0001-upload-test",
-          workId: "T-20260627-0001",
-          title: "Upload test",
-          objective: "Handle uploaded attachment",
-          status: "in_progress",
-          completed: [],
-          open: ["Handle uploaded attachment"],
-          blockers: [],
-          facts: [],
-          assets: [],
-          recentRuns: [],
-          recentCommits: [],
-          recentEvidence: [],
-        },
-      },
     },
   };
 }
@@ -550,6 +499,8 @@ describe("UploadServer", () => {
       expect(response).toEqual({
         type: "reply",
         content: "I can see the attached policy document.",
+        runId: "R-20260627-0001",
+        commitStatus: "not_required",
       });
       expect(provider.generateTurn).toHaveBeenCalled();
     } finally {
@@ -660,6 +611,8 @@ describe("UploadServer", () => {
       expect(response).toEqual({
         type: "reply",
         content: "I can see the attached image.",
+        runId: "R-20260627-0001",
+        commitStatus: "not_required",
       });
       expect(provider.generateTurn).toHaveBeenCalled();
     } finally {

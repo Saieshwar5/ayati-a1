@@ -37,7 +37,7 @@ Current product features:
 - Filesystem metadata and batched-read tools, including `inspect_paths`,
   `read_files`, read advisories, and search/list tools for efficient code and
   document context gathering.
-- Read-progress feedback for active task runs, so repeated read-only loops can
+- Read-progress feedback for active task-bound runs, so repeated read-only loops can
   be redirected toward writing/editing, clarification, or a useful blocked
   state.
 - Personal memory for stable user facts, time-based facts, and evolving preferences.
@@ -56,7 +56,7 @@ Core product capabilities:
 - Multi-channel communication model where clients connect to the daemon.
 - Long-term personalization through personal memory and episodic recall, with
   task continuation handled by independent task repositories and
-  runtime-owned task-run finalization.
+  runtime-owned task-bound-run finalization.
 - General visual workbench control for coding, browsing, references, previews, scratch explanations, and other workspace-heavy tasks.
 - Computer-access layer for useful work across files, focused project processes, Python, SQLite, documents, datasets, and generated artifacts.
 - Event-driven and proactive behavior through system events, plugins, and Pulse scheduling.

@@ -1,6 +1,7 @@
 import type {
+  RunOutcome,
+  RunStopReason,
   TaskCompletionRecord,
-  TaskRunOutcome,
 } from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
 import type { SimpleTaskContextWrite } from "../tasks/simple-task-context-reducer.js";
@@ -30,8 +31,9 @@ export interface SimpleTaskFinalizationRecord {
   taskRequestId: string;
   conversationId: string;
   phase: SimpleTaskFinalizationPhase;
-  outcome: TaskRunOutcome;
-  validation: "passed" | "failed" | "not_run";
+  outcome: RunOutcome;
+  stopReason: RunStopReason;
+  validation: "passed" | "failed" | "not_applicable";
   summary: string;
   next?: string;
   completion: TaskCompletionRecord;
@@ -55,8 +57,9 @@ interface Row {
   task_request_id: string;
   conversation_id: string;
   phase: SimpleTaskFinalizationPhase;
-  outcome: TaskRunOutcome;
-  validation: "passed" | "failed" | "not_run";
+  outcome: RunOutcome;
+  stop_reason: RunStopReason;
+  validation: "passed" | "failed" | "not_applicable";
   summary: string;
   next_action: string | null;
   completion_json: string;
@@ -79,8 +82,9 @@ export function insertSimpleTaskFinalization(database: ContextDatabase, input: {
   taskId: string;
   taskRequestId: string;
   conversationId: string;
-  outcome: TaskRunOutcome;
-  validation: "passed" | "failed" | "not_run";
+  outcome: RunOutcome;
+  stopReason: RunStopReason;
+  validation: "passed" | "failed" | "not_applicable";
   summary: string;
   next?: string;
   completion: TaskCompletionRecord;
@@ -91,12 +95,12 @@ export function insertSimpleTaskFinalization(database: ContextDatabase, input: {
   at: string;
 }): SimpleTaskFinalizationRecord {
   database.prepare([
-    "INSERT INTO simple_task_finalizations(",
+    "INSERT INTO task_finalizations(",
     "run_id, request_id, authority_id, session_id, task_id, task_request_id,",
-    "conversation_id, phase, outcome, validation, summary, next_action, completion_json,",
+    "conversation_id, phase, outcome, stop_reason, validation, summary, next_action, completion_json,",
     "assistant_response, base_head, conversation_hash, plan_json, commit_head,",
     "commit_created, created_at, updated_at, last_error",
-    ") VALUES (?, ?, ?, ?, ?, ?, ?, 'prepared', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, NULL)",
+    ") VALUES (?, ?, ?, ?, ?, ?, ?, 'prepared', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, NULL)",
   ].join(" ")).run(
     input.runId,
     input.requestId,
@@ -106,6 +110,7 @@ export function insertSimpleTaskFinalization(database: ContextDatabase, input: {
     input.taskRequestId,
     input.conversationId,
     input.outcome,
+    input.stopReason,
     input.validation,
     input.summary,
     input.next ?? null,
@@ -147,7 +152,7 @@ export function updateSimpleTaskFinalization(database: ContextDatabase, input: {
   error?: string;
 }): SimpleTaskFinalizationRecord {
   database.prepare([
-    "UPDATE simple_task_finalizations SET phase = ?, updated_at = ?,",
+    "UPDATE task_finalizations SET phase = ?, updated_at = ?,",
     "commit_head = COALESCE(?, commit_head),",
     "commit_created = COALESCE(?, commit_created), last_error = ? WHERE run_id = ?",
   ].join(" ")).run(
@@ -173,9 +178,9 @@ function requireRecord(
 function select(): string {
   return [
     "SELECT run_id, request_id, authority_id, session_id, task_id, task_request_id,",
-    "conversation_id, phase, outcome, validation, summary, next_action, completion_json,",
+    "conversation_id, phase, outcome, stop_reason, validation, summary, next_action, completion_json,",
     "assistant_response, base_head, conversation_hash, plan_json, commit_head,",
-    "commit_created, created_at, updated_at, last_error FROM simple_task_finalizations",
+    "commit_created, created_at, updated_at, last_error FROM task_finalizations",
   ].join(" ");
 }
 
@@ -190,6 +195,7 @@ function record(row: Row): SimpleTaskFinalizationRecord {
     conversationId: row.conversation_id,
     phase: row.phase,
     outcome: row.outcome,
+    stopReason: row.stop_reason,
     validation: row.validation,
     summary: row.summary,
     ...(row.next_action ? { next: row.next_action } : {}),

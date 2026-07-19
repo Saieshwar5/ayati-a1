@@ -32,7 +32,7 @@ import {
   updateMutationAuthorityVerification,
   type MutationAuthorityRecord,
 } from "../repositories/mutation-authority-records.js";
-import { bindActiveRunToTask } from "../repositories/run-records.js";
+import { readRunEvidence } from "../repositories/run-records.js";
 import {
   readTaskRequestRoutePlan,
   updateTaskRequestRoutePlan,
@@ -92,6 +92,20 @@ export class MutationBoundaryService {
         message: "V1 mutation authority requires the active task request identity.",
         details: { taskId: task.taskId },
       });
+    }
+    if (input.expectedTaskHead !== task.head) {
+      throw taskHeadMismatch(input.taskId, input.expectedTaskHead, task.head);
+    }
+    const boundRun = readRunEvidence(this.database, input.runId);
+    if (!boundRun
+      || boundRun.status !== "running"
+      || boundRun.sessionId !== input.sessionId
+      || boundRun.taskBinding?.taskId !== input.taskId
+      || boundRun.taskBinding.taskRequestId !== input.taskRequestId) {
+      throw mutationRequiresTask(
+        input,
+        "Mutation authority requires the run's immutable task/request binding.",
+      );
     }
     const routePlan = readTaskRequestRoutePlan(this.database, input.runId);
     if (routePlan && (routePlan.sessionId !== input.sessionId
@@ -172,13 +186,17 @@ export class MutationBoundaryService {
         });
       }
       this.database.transaction(() => {
-        bindActiveRunToTask(
-          this.database,
-          input.sessionId,
-          input.runId,
-          input.taskId,
-          input.taskRequestId,
-        );
+        const run = readRunEvidence(this.database, input.runId);
+        if (!run
+          || run.status !== "running"
+          || run.sessionId !== input.sessionId
+          || run.taskBinding?.taskId !== input.taskId
+          || run.taskBinding.taskRequestId !== input.taskRequestId) {
+          throw mutationRequiresTask(
+            input,
+            "Mutation authority requires the run's immutable task/request binding.",
+          );
+        }
         if (routePlan) {
           updateTaskRequestRoutePlan(this.database, {
             runId: input.runId,
@@ -481,7 +499,7 @@ function mutationRequiresTask(
   message: string,
 ): GitContextServiceError {
   return new GitContextServiceError({
-    code: "MUTATION_REQUIRES_TASK",
+    code: "MUTATION_REQUIRES_TASK_BINDING",
     message,
     details: {
       sessionId: input.sessionId,

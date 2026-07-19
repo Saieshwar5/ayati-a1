@@ -15,7 +15,7 @@ afterEach(async () => {
 });
 
 describe("session summary hot cache", () => {
-  it("keeps five detailed commits and compacts older task-run commits", async () => {
+  it("keeps five detailed commits and compacts older task-bound-run commits", async () => {
     const repositoryPath = await mkdtemp(join(tmpdir(), "ayati-session-summary-"));
     directories.push(repositoryPath);
     await git(repositoryPath, ["init", "--initial-branch=main"]);
@@ -83,7 +83,7 @@ function commitMessage(index: number): string {
     "Run: R-20260712-" + suffix,
     "Outcome: done",
     "Validation: passed",
-    "Ayati-Event: task_run_committed",
+    "Ayati-Event: task_bound_run_committed",
   ].join("\n");
 }
 

@@ -2,23 +2,17 @@ import {
   GIT_CONTEXT_PROTOCOL_VERSION,
   type AdoptTaskReferenceRequest,
   type AdoptTaskReferenceResponse,
-  type ActivateTaskRunRequest,
+  type ActivateTaskForRunRequest,
   type ActiveContext,
   type AcquireMutationAuthorityRequest,
   type AcquireMutationAuthorityResponse,
   type BindTaskAttachmentsRequest,
   type BindTaskAttachmentsResponse,
-  type CompleteContextTurnRequest,
-  type CompleteContextTurnResponse,
-  type AppendConversationRequest,
-  type AppendConversationResponse,
-  type CreateTaskRunRequest,
+  type CreateTaskForRunRequest,
   type EnsureActiveSessionRequest,
   type EnsureActiveSessionResponse,
-  type FinalizeSessionRunRequest,
-  type FinalizeSessionRunResponse,
-  type FinalizeTaskRunRequest,
-  type FinalizeTaskRunResponse,
+  type FinalizeRunRequest,
+  type FinalizeRunResponse,
   type GetActiveContextRequest,
   type GetTaskRequest,
   type GetTaskResponse,
@@ -33,9 +27,7 @@ import {
   type RecordRunStepResponse,
   type RecordSessionAttachmentsRequest,
   type RecordSessionAttachmentsResponse,
-  type StartRunRequest,
-  type StartRunResponse,
-  type SelectedTaskRunResponse,
+  type SelectedTaskForRunResponse,
   type VerifyMutationRequest,
   type VerifyMutationResponse,
 } from "./contracts.js";
@@ -63,29 +55,19 @@ export class ContractOnlyGitContextService implements GitContextService {
     throw notReady();
   }
 
-  async completeContextTurn(
-    _input: CompleteContextTurnRequest,
-  ): Promise<CompleteContextTurnResponse> {
-    throw notReady();
-  }
-
   async ensureActiveSession(
     _input: EnsureActiveSessionRequest,
   ): Promise<EnsureActiveSessionResponse> {
     throw notReady();
   }
 
-  async appendConversation(
-    _input: AppendConversationRequest,
-  ): Promise<AppendConversationResponse> {
+  async createTaskForRun(_input: CreateTaskForRunRequest): Promise<SelectedTaskForRunResponse> {
     throw notReady();
   }
 
-  async createTaskRun(_input: CreateTaskRunRequest): Promise<SelectedTaskRunResponse> {
-    throw notReady();
-  }
-
-  async activateTaskRun(_input: ActivateTaskRunRequest): Promise<SelectedTaskRunResponse> {
+  async activateTaskForRun(
+    _input: ActivateTaskForRunRequest,
+  ): Promise<SelectedTaskForRunResponse> {
     throw notReady();
   }
 
@@ -131,17 +113,7 @@ export class ContractOnlyGitContextService implements GitContextService {
     throw notReady();
   }
 
-  async finalizeTaskRun(_input: FinalizeTaskRunRequest): Promise<FinalizeTaskRunResponse> {
-    throw notReady();
-  }
-
-  async finalizeSessionRun(
-    _input: FinalizeSessionRunRequest,
-  ): Promise<FinalizeSessionRunResponse> {
-    throw notReady();
-  }
-
-  async startRun(_input: StartRunRequest): Promise<StartRunResponse> {
+  async finalizeRun(_input: FinalizeRunRequest): Promise<FinalizeRunResponse> {
     throw notReady();
   }
 

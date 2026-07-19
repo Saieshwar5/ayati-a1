@@ -1,24 +1,22 @@
-import { randomUUID } from "node:crypto";
-import { isAbsolute, relative } from "node:path";
+import { createHash } from "node:crypto";
 import type {
-  ActiveContext,
-  ConversationRef,
+  AgentRunHandle,
+  FinalizeRunResponse,
   GitContextService,
+  RunOutcome,
+  RunStepRecord,
+  RunStopReason,
   RunWorkStateInput,
-  SelectedTaskRunResponse,
-  TaskPlacement,
+  TaskCompletionRecord,
   RecordSessionAttachmentsResponse,
 } from "ayati-git-context";
 import { GitContextObserver } from "ayati-git-context";
-import {
-  type ContextEngineMachineContext,
-  type ContextRunStepRecord,
-  type ContextSessionAttachmentRecord,
-  type HarnessRunResultForContext,
-  type TaskAssetRecord,
+import type {
+  ContextEngineMachineContext,
+  ContextRunStepRecord,
+  ContextSessionAttachmentRecord,
 } from "../context-engine/index.js";
-import type { HarnessContextInput } from "../ivec/harness-context.js";
-import { isObservationalTool } from "../skills/tool-taxonomy.js";
+import { getToolTaxonomy } from "../skills/tool-taxonomy.js";
 import { GitContextHarnessCache } from "./git-context-harness-cache.js";
 
 export interface GitContextPreparedTurn {
@@ -27,47 +25,27 @@ export interface GitContextPreparedTurn {
   repoPath: string;
   initialized: boolean;
   messageSeq: number;
-  currentMessageId?: string;
-  currentMessageSessionSequence?: number;
+  currentMessageId: string;
+  currentMessageSessionSequence: number;
   conversationId: string;
   inputRole: "user" | "system_event";
+  run: AgentRunHandle;
   context: ContextEngineMachineContext;
 }
 
-export interface GitContextConversationSeqRange {
-  fromSeq: number;
-  toSeq: number;
+export interface GitContextFinalizeRunInput {
+  turn: GitContextPreparedTurn | null;
+  outcome: RunOutcome;
+  stopReason: RunStopReason;
+  assistantResponse: string;
+  conversationSummary: string;
+  summary: string;
+  validation: "passed" | "failed" | "not_applicable";
+  next?: string;
+  workState?: unknown;
+  taskCompletion?: TaskCompletionRecord;
+  at: string;
 }
-
-export type GitContextRoutedTurn =
-  | {
-      status: "ready";
-      sessionId: string;
-      taskId: string;
-      branch: string;
-      ref: string;
-      mode: "created" | "activated";
-      runId: string;
-      workingDirectory: string;
-      taskHead: string;
-      taskCreated: boolean;
-      requestDecision: "initial" | "continue" | "create";
-      taskRequestId?: string;
-      taskRequestStatus?: "queued" | "active" | "blocked" | "done" | "dropped";
-      taskRequestCreated: boolean;
-      sessionRunBound: boolean;
-      conversationRefs: GitContextConversationSeqRange[];
-      harnessContext: HarnessContextInput;
-      context: ContextEngineMachineContext;
-    }
-  | {
-      status: "ambiguous";
-      sessionId: string;
-      reason: string;
-      candidates: Array<{ taskId: string; title: string }>;
-      harnessContext: HarnessContextInput;
-      context: ContextEngineMachineContext;
-    };
 
 export interface GitContextRuntimeOptions {
   service: GitContextService;
@@ -78,66 +56,23 @@ export interface GitContextRuntimeOptions {
 
 export interface GitContextRuntime {
   warmActiveContext(): Promise<void>;
-  prepareUserTurn(input: { clientId: string; userMessage: string; at: string }): Promise<GitContextPreparedTurn>;
-  prepareSystemEventTurn(input: { clientId: string; systemMessage: string; at: string }): Promise<GitContextPreparedTurn>;
-  startSessionRun(input: { clientId: string; turn: GitContextPreparedTurn | null; at: string }): Promise<{ runId: string } | null>;
-  routeTaskTurn(input: { turn: GitContextPreparedTurn | null; autoOnly?: boolean; [key: string]: unknown }): Promise<GitContextRoutedTurn | null>;
-  createTaskTurn(input: {
-    turn: GitContextPreparedTurn | null;
-    title: string;
-    objective: string;
-    placement: TaskPlacement;
-    sessionRunId?: string;
+  prepareUserTurn(input: {
+    clientId: string;
+    userMessage: string;
     at: string;
-    [key: string]: unknown;
-  }): Promise<GitContextRoutedTurn | null>;
-  activateTaskTurn(input: {
-    turn: GitContextPreparedTurn | null;
-    taskId: string;
-    route: import("ayati-git-context").TaskRequestRoute;
-    sessionRunId?: string;
+  }): Promise<GitContextPreparedTurn>;
+  prepareSystemEventTurn(input: {
+    clientId: string;
+    systemMessage: string;
     at: string;
-    [key: string]: unknown;
-  }): Promise<GitContextRoutedTurn | null>;
-  finalizeSessionRun(input: {
+  }): Promise<GitContextPreparedTurn>;
+  finalizeRun(input: GitContextFinalizeRunInput): Promise<FinalizeRunResponse | null>;
+  recordRunStep(input: {
     turn: GitContextPreparedTurn | null;
-    runId: string;
-    assistantResponse?: string;
-    workState?: unknown;
-    at: string;
+    record: ContextRunStepRecord;
+    currentContext?: ContextEngineMachineContext;
     [key: string]: unknown;
-  }): Promise<{ runId: string } | null>;
-  completeTaskRun(input: {
-    turn: GitContextPreparedTurn | null;
-    taskId: string;
-    runId?: string;
-    result: HarnessRunResultForContext;
-    at: string;
-    assistantMessage?: string;
-    [key: string]: unknown;
-  }): Promise<{
-    runId: string;
-    taskId: string;
-    taskCommit: string;
-    ref: string;
-    workingDirectory?: string;
-    taskRequestId?: string;
-    outcome: "done" | "incomplete" | "failed" | "blocked" | "needs_user_input";
-    validation: "passed" | "failed" | "not_run";
-    taskHeadBefore: string;
-    taskHeadAfter: string;
-    taskCommitCreated?: boolean;
-  } | null>;
-  recordSessionRunStep(input: { turn: GitContextPreparedTurn | null; record: ContextRunStepRecord; [key: string]: unknown }): Promise<ContextEngineMachineContext | null>;
-  recordTaskRunStep(input: { turn: GitContextPreparedTurn | null; record: ContextRunStepRecord; [key: string]: unknown }): Promise<ContextEngineMachineContext | null>;
-  recordAssistantMessage(input: {
-    turn: GitContextPreparedTurn | null;
-    message: string;
-    at: string;
-    taskId?: string;
-    runId?: string;
-    [key: string]: unknown;
-  }): Promise<ConversationRef | null>;
+  }): Promise<ContextEngineMachineContext | null>;
   recordSessionAttachments(input: {
     turn: GitContextPreparedTurn | null;
     attachments: ContextSessionAttachmentRecord[];
@@ -181,7 +116,7 @@ class AppGitContextRuntime implements GitContextRuntime {
     userMessage: string;
     at: string;
   }): Promise<GitContextPreparedTurn> {
-    return await this.prepareInput("user", input.userMessage, input.at);
+    return await this.prepareInput(input.clientId, "user", input.userMessage, input.at);
   }
 
   async prepareSystemEventTurn(input: {
@@ -189,302 +124,150 @@ class AppGitContextRuntime implements GitContextRuntime {
     systemMessage: string;
     at: string;
   }): Promise<GitContextPreparedTurn> {
-    return await this.prepareInput("system_event", input.systemMessage, input.at);
+    return await this.prepareInput(input.clientId, "system_event", input.systemMessage, input.at);
   }
 
-  async startSessionRun(input: {
-    clientId: string;
-    turn: GitContextPreparedTurn | null;
-    at: string;
-  }): Promise<{ runId: string } | null> {
-    if (!input.turn) return null;
-    const response = await this.options.service.startRun({
-      requestId: randomUUID(),
-      sessionId: input.turn.sessionId,
-      conversationId: input.turn.conversationId,
-      trigger: input.turn.inputRole,
-      workState: initialWorkState(),
-      at: input.at,
-    });
-    this.contextCache.markDirty(input.turn.sessionId);
-    this.observer.emit({
-      level: "info",
-      event: "session_run_started",
-      sessionId: input.turn.sessionId,
-      seq: input.turn.messageSeq,
-      runId: response.run.runId,
-      data: { runClass: "session" },
-    });
-    return { runId: response.run.runId };
-  }
-
-  async routeTaskTurn(_input: {
-    turn: GitContextPreparedTurn | null;
-    autoOnly?: boolean;
-  }): Promise<GitContextRoutedTurn | null> {
-    return null;
-  }
-
-  async createTaskTurn(input: {
-    turn: GitContextPreparedTurn | null;
-    title: string;
-    objective: string;
-    placement: TaskPlacement;
-    sessionRunId?: string;
-    at: string;
-  }): Promise<GitContextRoutedTurn | null> {
-    if (!input.turn) return null;
-    const selected = await this.options.service.createTaskRun({
-      requestId: randomUUID(),
-      sessionId: input.turn.sessionId,
-      conversationId: input.turn.conversationId,
-      ...(input.sessionRunId ? { runId: input.sessionRunId } : {}),
-      trigger: "user",
-      workState: initialWorkState(),
-      title: input.title,
-      objective: input.objective,
-      placement: input.placement,
-      at: input.at,
-    });
-    this.observer.emit({
-      level: "info",
-      event: "task_run_selected",
-      sessionId: input.turn.sessionId,
-      seq: input.turn.messageSeq,
-      runId: selected.run.runId,
-      taskId: selected.task.taskId,
-      outcome: "succeeded",
-      data: selectionFeedback(selected, "created"),
-    });
-    return await this.routedTurn(selected, input.turn, input.at);
-  }
-
-  async activateTaskTurn(input: {
-    turn: GitContextPreparedTurn | null;
-    taskId: string;
-    route: import("ayati-git-context").TaskRequestRoute;
-    sessionRunId?: string;
-    at: string;
-  }): Promise<GitContextRoutedTurn | null> {
-    if (!input.turn) return null;
-    const selected = await this.options.service.activateTaskRun({
-      requestId: randomUUID(),
-      sessionId: input.turn.sessionId,
-      conversationId: input.turn.conversationId,
-      ...(input.sessionRunId ? { runId: input.sessionRunId } : {}),
-      trigger: "user",
-      workState: initialWorkState(),
-      taskId: input.taskId,
-      route: input.route,
-      at: input.at,
-    });
-    this.observer.emit({
-      level: "info",
-      event: "task_run_selected",
-      sessionId: input.turn.sessionId,
-      seq: input.turn.messageSeq,
-      runId: selected.run.runId,
-      taskId: selected.task.taskId,
-      outcome: "succeeded",
-      data: selectionFeedback(selected, "activated"),
-    });
-    return await this.routedTurn(selected, input.turn, input.at);
-  }
-
-  async finalizeSessionRun(input: {
-    turn: GitContextPreparedTurn | null;
-    runId: string;
-    assistantResponse?: string;
-    workState?: unknown;
-    at: string;
-  }): Promise<{ runId: string } | null> {
+  async finalizeRun(input: GitContextFinalizeRunInput): Promise<FinalizeRunResponse | null> {
     if (!input.turn) return null;
     await this.drainWrites();
-    const response = await this.options.service.finalizeSessionRun({
-      requestId: randomUUID(),
-      sessionId: input.turn.sessionId,
-      runId: input.runId,
-      assistantResponse: input.assistantResponse ?? "",
-      workState: completedSessionWorkState(input.workState),
-      at: input.at,
-    });
-    this.contextCache.markDirty(input.turn.sessionId);
+    const turn = input.turn;
     this.observer.emit({
       level: "info",
-      event: "session_run_finalization_completed",
-      sessionId: input.turn.sessionId,
-      seq: input.turn.messageSeq,
-      runId: response.runId,
-      outcome: "succeeded",
-    });
-    return { runId: response.runId };
-  }
-
-  async completeTaskRun(input: {
-    turn: GitContextPreparedTurn | null;
-    taskId: string;
-    runId?: string;
-    result: HarnessRunResultForContext;
-    at: string;
-    assistantMessage?: string;
-  }): Promise<{
-    runId: string;
-    taskId: string;
-    taskCommit: string;
-    ref: string;
-    workingDirectory?: string;
-    taskRequestId?: string;
-    outcome: "done" | "incomplete" | "failed" | "blocked" | "needs_user_input";
-    validation: "passed" | "failed" | "not_run";
-    taskHeadBefore: string;
-    taskHeadAfter: string;
-    taskCommitCreated?: boolean;
-  } | null> {
-    if (!input.turn || !input.runId) return null;
-    await this.drainWrites();
-    const done = input.result.workState?.status === "done";
-    const failed = input.result.status === "failed";
-    const needsUser = input.result.workState?.status === "needs_user_input";
-    const blocked = input.result.workState?.status === "blocked";
-    const active = await this.loadActiveContext(input.turn.sessionId);
-    const taskRequestId = active.run?.run.taskRequestId;
-    const workingDirectory = active.activeTask?.workingDirectory;
-    const assets = completionAssets(
-      input.result.verifiedCompletionAssets ?? [],
-      active.activeTask?.workingDirectory,
-    );
-    this.observer.emit({
-      level: "info",
-      event: "task_run_finalization_requested",
-      sessionId: input.turn.sessionId,
-      seq: input.turn.messageSeq,
-      runId: input.runId,
-      taskId: input.taskId,
-    });
-    const response = await this.options.service.finalizeTaskRun({
-      requestId: randomUUID(),
-      sessionId: input.turn.sessionId,
-      runId: input.runId,
-      taskId: input.taskId,
-      outcome: done ? "done" : failed ? "failed" : needsUser ? "needs_user_input" : blocked ? "blocked" : "incomplete",
-      conversationSummary: input.result.taskSummary?.summary ?? input.result.content,
-      summary: input.result.workState?.summary ?? input.result.taskSummary?.summary ?? input.result.content,
-      validation: done ? "passed" : failed ? "failed" : "not_run",
-      ...(input.result.workState?.nextStep ? { next: input.result.workState.nextStep } : {}),
-      completion: {
-        accepted: done,
-        assets,
-        missing: [],
-        failures: failed ? [input.result.content] : [],
-        criteria: [{
-          criterion: "Harness task completion verification",
-          passed: done,
-          evidence: input.result.workState?.summary,
-        }],
-      },
-      assistantResponse: input.assistantMessage ?? input.result.content,
-      at: input.at,
-    });
-    this.contextCache.markDirty(input.turn.sessionId);
-    this.observer.emit({
-      level: "info",
-      event: "task_run_finalization_completed",
-      sessionId: input.turn.sessionId,
-      seq: input.turn.messageSeq,
-      runId: response.runId,
-      taskId: response.taskId,
-      outcome: failed ? "failed" : "succeeded",
+      event: "run_finalization_started",
+      sessionId: turn.sessionId,
+      seq: turn.messageSeq,
+      runId: turn.run.runId,
+      taskId: turn.context.pendingTurn?.workId,
       data: {
-        completionOutcome: done ? "done" : failed ? "failed" : "incomplete",
-        workingDirectory,
-        taskRequestId,
-        validation: done ? "passed" : failed ? "failed" : "not_run",
-        taskHeadBefore: response.taskHeadBefore,
-        taskHeadAfter: response.taskHeadAfter,
-        taskCommit: response.taskFinalizationCommit,
-        taskCommitCreated: response.taskCommitCreated,
+        outcome: input.outcome,
+        stopReason: input.stopReason,
+        taskBound: turn.context.pendingTurn?.routingStatus === "bound",
       },
     });
-    return {
-      runId: response.runId,
-      taskId: response.taskId,
-      taskCommit: response.taskFinalizationCommit,
-      ref: "refs/heads/main",
-      ...(workingDirectory ? { workingDirectory } : {}),
-      ...(taskRequestId ? { taskRequestId } : {}),
-      outcome: response.outcome,
-      validation: done ? "passed" : failed ? "failed" : "not_run",
-      taskHeadBefore: response.taskHeadBefore,
-      taskHeadAfter: response.taskHeadAfter,
-      ...(response.taskCommitCreated !== undefined
-        ? { taskCommitCreated: response.taskCommitCreated }
-        : {}),
-    };
+    try {
+      const response = await this.options.service.finalizeRun({
+        requestId: operationRequestId(turn.run.runId, "finalize"),
+        sessionId: turn.sessionId,
+        runId: turn.run.runId,
+        outcome: input.outcome,
+        stopReason: input.stopReason,
+        assistantResponse: input.assistantResponse,
+        conversationSummary: input.conversationSummary,
+        summary: input.summary,
+        validation: input.validation,
+        ...(input.next ? { next: input.next } : {}),
+        workState: toRunWorkState(input.workState, input.outcome),
+        ...(input.taskCompletion ? { task: { completion: input.taskCompletion } } : {}),
+        at: input.at,
+      });
+      this.contextCache.markDirty(turn.sessionId);
+      this.observer.emit({
+        level: "info",
+        event: "run_finalization_completed",
+        sessionId: turn.sessionId,
+        seq: turn.messageSeq,
+        runId: response.run.runId,
+        taskId: response.run.taskBinding?.taskId,
+        outcome: "succeeded",
+        data: {
+          outcome: response.run.status,
+          stopReason: response.run.stopReason,
+          taskBinding: response.run.taskBinding,
+          materialization: response.materialization,
+          commit: response.commit,
+        },
+      });
+      if (response.commit.status === "committed") {
+        this.observer.emit({
+          level: "info",
+          event: "task_commit_created",
+          sessionId: turn.sessionId,
+          seq: turn.messageSeq,
+          runId: response.run.runId,
+          taskId: response.commit.taskId,
+          outcome: "succeeded",
+          data: response.commit,
+        });
+      }
+      return response;
+    } catch (error) {
+      this.contextCache.markDirty(turn.sessionId);
+      this.observer.emit({
+        level: "error",
+        event: "run_finalization_failed",
+        sessionId: turn.sessionId,
+        seq: turn.messageSeq,
+        runId: turn.run.runId,
+        outcome: "failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   }
 
-  async recordSessionRunStep(input: {
+  async recordRunStep(input: {
     turn: GitContextPreparedTurn | null;
     record: ContextRunStepRecord;
+    currentContext?: ContextEngineMachineContext;
   }): Promise<ContextEngineMachineContext | null> {
-    return await this.enqueueStep(input.turn, input.record, "read_only");
-  }
-
-  async recordTaskRunStep(input: {
-    turn: GitContextPreparedTurn | null;
-    record: ContextRunStepRecord;
-  }): Promise<ContextEngineMachineContext | null> {
-    const mutating = input.record.toolCalls.some((call) =>
-      !isObservationalTool(call.tool)
-    );
-    return await this.enqueueStep(input.turn, input.record, mutating ? "mutating" : "read_only");
-  }
-
-  async recordAssistantMessage(input: {
-    turn: GitContextPreparedTurn | null;
-    message: string;
-    at: string;
-    taskId?: string;
-    runId?: string;
-  }): Promise<ConversationRef | null> {
     if (!input.turn) return null;
-    if (input.runId) {
-      throw new Error(
-        "Run-bound assistant responses must be persisted by session or task finalization.",
-      );
-    }
-    if (!input.turn.currentMessageId) {
-      throw new Error("Prepared turn message identity is required for direct completion.");
-    }
-    const response = await this.options.service.completeContextTurn({
-      requestId: randomUUID(),
-      sessionId: input.turn.sessionId,
-      conversationId: input.turn.conversationId,
-      userMessageId: input.turn.currentMessageId,
-      assistantContent: input.message,
-      at: input.at,
-    });
-    const projection = this.contextCache.appendConversation({
-      sessionId: input.turn.sessionId,
-      conversation: response.conversation,
-      message: response.message,
-      contextRevision: response.contextRevision,
-      pendingDigest: response.pendingDigest,
-    });
+    const turn = input.turn;
+    const record = toRunStepRecord(input.record);
     this.observer.emit({
       level: "debug",
-      event: projection
-        ? "harness_context_incrementally_updated"
-        : "conversation_cache_update_deferred",
-      sessionId: input.turn.sessionId,
-      seq: input.turn.messageSeq,
-      runId: input.runId,
-      data: {
-        role: "assistant",
-        contextRevision: response.contextRevision,
-        ...this.contextCache.getStats(input.turn.sessionId),
-      },
+      event: "run_step_persistence_queued",
+      sessionId: turn.sessionId,
+      seq: turn.messageSeq,
+      runId: turn.run.runId,
+      step: record.step,
+      data: { tools: record.toolCalls.map((call) => call.tool) },
     });
-    return response.conversation;
+    const persisted = this.writeChain.then(async () => {
+      try {
+        const response = await this.options.service.recordRunStep({
+          requestId: operationRequestId(turn.run.runId, "step-" + record.step),
+          sessionId: turn.sessionId,
+          runId: turn.run.runId,
+          record,
+        });
+        const projection = this.contextCache.updateRun({
+          sessionId: turn.sessionId,
+          run: response.run,
+          readContext: response.readContext,
+          ...(input.currentContext ? { baseProjection: input.currentContext } : {}),
+        });
+        if (projection) turn.context = projection;
+        this.observer.emit({
+          level: "info",
+          event: "run_step_persisted",
+          sessionId: turn.sessionId,
+          seq: turn.messageSeq,
+          runId: turn.run.runId,
+          step: record.step,
+          outcome: "succeeded",
+          data: {
+            workStateRevision: response.run.workState.revision,
+            afterStep: response.run.workState.afterStep,
+          },
+        });
+        return projection ?? await this.refreshActiveContext(turn.sessionId);
+      } catch (error) {
+        this.contextCache.markDirty(turn.sessionId);
+        this.observer.emit({
+          level: "error",
+          event: "run_step_persistence_failed",
+          sessionId: turn.sessionId,
+          seq: turn.messageSeq,
+          runId: turn.run.runId,
+          step: record.step,
+          outcome: "failed",
+          message: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    });
+    this.writeChain = persisted.then(() => undefined);
+    return await persisted;
   }
 
   async recordSessionAttachments(input: {
@@ -494,7 +277,7 @@ class AppGitContextRuntime implements GitContextRuntime {
   }): Promise<RecordSessionAttachmentsResponse | null> {
     if (!input.turn || input.attachments.length === 0) return null;
     const response = await this.options.service.recordSessionAttachments({
-      requestId: randomUUID(),
+      requestId: operationRequestId(input.turn.run.runId, "session-attachments"),
       sessionId: input.turn.sessionId,
       conversationId: input.turn.conversationId,
       attachments: input.attachments,
@@ -517,12 +300,14 @@ class AppGitContextRuntime implements GitContextRuntime {
   }
 
   private async prepareInput(
+    clientId: string,
     role: "user" | "system_event",
     content: string,
     at: string,
   ): Promise<GitContextPreparedTurn> {
+    const requestId = preparationRequestId(clientId, role, content, at);
     const prepared = await this.options.service.prepareContextTurn({
-      requestId: randomUUID(),
+      requestId,
       date: localDate(at, this.options.timezone),
       timezone: this.options.timezone,
       agentId: this.options.agentId,
@@ -531,16 +316,21 @@ class AppGitContextRuntime implements GitContextRuntime {
       at,
     });
     const context = this.contextCache.set(prepared.session.sessionId, prepared.context);
+    const run: AgentRunHandle = {
+      runId: prepared.run.runId,
+      sessionId: prepared.run.sessionId,
+      conversationId: prepared.run.conversationId,
+      triggerSeq: prepared.message.sessionSequence,
+    };
     this.observer.emit({
-      level: "debug",
-      event: "harness_context_turn_prepared",
+      level: "info",
+      event: "run_started",
+      requestId,
       sessionId: prepared.session.sessionId,
+      conversationId: prepared.conversation.conversationId,
+      runId: run.runId,
       outcome: "succeeded",
-      data: {
-        source: "prepared_service_snapshot",
-        contextRevision: prepared.context.contextRevision,
-        ...this.contextCache.getStats(prepared.session.sessionId),
-      },
+      data: { contextRevision: prepared.context.contextRevision },
     });
     return {
       status: "ready",
@@ -552,196 +342,47 @@ class AppGitContextRuntime implements GitContextRuntime {
       currentMessageSessionSequence: prepared.message.sessionSequence,
       conversationId: prepared.conversation.conversationId,
       inputRole: role,
+      run,
       context,
     };
-  }
-
-  private async routedTurn(
-    selected: SelectedTaskRunResponse,
-    turn: GitContextPreparedTurn,
-    at: string,
-  ): Promise<GitContextRoutedTurn> {
-    await this.options.service.bindTaskAttachments({
-      requestId: randomUUID(),
-      sessionId: turn.sessionId,
-      conversationId: turn.conversationId,
-      runId: selected.run.runId,
-      taskId: selected.task.taskId,
-      at,
-    });
-    const context = await this.refreshActiveContext(turn.sessionId);
-    return {
-      status: "ready",
-      sessionId: turn.sessionId,
-      taskId: selected.task.taskId,
-      branch: selected.task.branch,
-      ref: "refs/heads/" + selected.task.branch,
-      mode: selected.taskCreated ? "created" : "activated",
-      runId: selected.run.runId,
-      workingDirectory: selected.context.workingDirectory,
-      taskHead: selected.task.head,
-      taskCreated: selected.taskCreated,
-      requestDecision: selected.taskRequestDecision,
-      ...(selected.run.taskRequestId ? { taskRequestId: selected.run.taskRequestId } : {}),
-      ...(selected.context.currentRequest?.status
-        ? { taskRequestStatus: selected.context.currentRequest.status }
-        : {}),
-      taskRequestCreated: selected.taskRequestCreated,
-      sessionRunBound: selected.sessionRunBound,
-      conversationRefs: [{ fromSeq: turn.messageSeq, toSeq: turn.messageSeq }],
-      harnessContext: { contextEngine: context },
-      context,
-    };
-  }
-
-  private enqueueStep(
-    turn: GitContextPreparedTurn | null,
-    record: ContextRunStepRecord,
-    toolEffect: "read_only" | "mutating",
-  ): Promise<ContextEngineMachineContext | null> {
-    if (!turn) return Promise.resolve(null);
-    this.contextCache.markDirty(turn.sessionId);
-    this.observer.emit({
-      level: "debug",
-      event: "run_step_persistence_queued",
-      sessionId: turn.sessionId,
-      seq: turn.messageSeq,
-      runId: record.runId,
-      step: record.step,
-      data: { toolEffect, tools: record.toolCalls.map((item) => item.tool) },
-    });
-    const persisted = this.writeChain.then(async () => {
-      const call = record.toolCalls[0];
-      try {
-        const response = await this.options.service.recordRunStep({
-          requestId: randomUUID(),
-          sessionId: turn.sessionId,
-          runId: record.runId,
-          step: record.step,
-          tool: record.toolCalls.map((item) => item.tool).join(", ") || "agent_step",
-          toolEffect,
-          purpose: record.toolCalls.map((item) => item.purpose).filter(Boolean).join("; ") || record.summary,
-          status: record.status === "failed" ? "failed" : record.status === "skipped" ? "blocked" : "completed",
-          input: {
-            decision: record.decision,
-            action: record.action,
-            toolCalls: record.toolCalls.map((item) => ({
-              callId: item.callId,
-              tool: item.tool,
-              purpose: item.purpose,
-              input: item.input,
-            })),
-          },
-          output: {
-            summary: record.summary,
-            toolCalls: record.toolCalls.map((item) => ({
-              callId: item.callId,
-              tool: item.tool,
-              output: item.output,
-              error: item.error,
-            })),
-            firstOutput: call?.output,
-          },
-          verification: record.verification,
-          workState: toRunWorkState(record.workStateAfter),
-          at: record.completedAt,
-        });
-        this.observer.emit({
-          level: "info",
-          event: "run_step_persistence_acknowledged",
-          sessionId: turn.sessionId,
-          seq: turn.messageSeq,
-          runId: record.runId,
-          step: record.step,
-          outcome: "succeeded",
-          data: {
-            toolEffect,
-            workStateRevision: response.workState.revision,
-            afterStep: response.workState.afterStep,
-          },
-        });
-        return await this.refreshActiveContext(turn.sessionId);
-      } catch (error) {
-        this.observer.emit({
-          level: "error",
-          event: "run_step_persistence_failed",
-          sessionId: turn.sessionId,
-          seq: turn.messageSeq,
-          runId: record.runId,
-          step: record.step,
-          outcome: "failed",
-          message: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
-      }
-    });
-    this.writeChain = persisted.then(() => undefined);
-    return persisted;
   }
 
   private async drainWrites(): Promise<void> {
     await this.writeChain;
   }
 
-  private async loadActiveContext(sessionId: string): Promise<ActiveContext> {
-    const cached = this.contextCache.getActive(sessionId);
-    if (cached) return cached;
-    const active = await this.options.service.getActiveContext({ sessionId });
-    this.contextCache.set(sessionId, active);
-    return active;
-  }
-
   private async refreshActiveContext(sessionId: string): Promise<ContextEngineMachineContext> {
     const startedAt = Date.now();
     const previousRevision = this.contextCache.getStats(sessionId).revision;
+    const active = await this.options.service.getActiveContext({ sessionId });
+    const projection = this.contextCache.set(sessionId, active);
     this.observer.emit({
-      level: "debug",
-      event: "harness_context_refresh_started",
+      level: "info",
+      event: "harness_context_refresh_completed",
       sessionId,
-      data: { previousRevision },
-    });
-    try {
-      const active = await this.options.service.getActiveContext({ sessionId });
-      const projection = this.contextCache.set(sessionId, active);
-      this.observer.emit({
-        level: "info",
-        event: "harness_context_refresh_completed",
-        sessionId,
-        durationMs: Date.now() - startedAt,
-        outcome: "succeeded",
-        data: {
-          previousRevision,
-          contextRevision: active.contextRevision,
-          readContextRevision: active.readContext?.revision,
-          readContextAfterTaskRunId: active.readContext?.afterTaskRunId,
+      durationMs: Date.now() - startedAt,
+      outcome: "succeeded",
+      data: {
+        previousRevision,
+        contextRevision: active.contextRevision,
+        readContextRevision: active.readContext?.revision,
+        readContextAfterCommitRunId: active.readContext?.afterCommitRunId,
+        ...(active.readContext ? {
           readContextCounts: {
-            inventory: active.readContext?.inventory.length ?? 0,
-            discovery: active.readContext?.discovery.length ?? 0,
-            evidence: active.readContext?.evidence.length ?? 0,
-            actions: active.readContext?.actions.length ?? 0,
-            total: active.readContext
-              ? active.readContext.inventory.length
-                + active.readContext.discovery.length
-                + active.readContext.evidence.length
-                + active.readContext.actions.length
-              : 0,
+            inventory: active.readContext.inventory.length,
+            discovery: active.readContext.discovery.length,
+            evidence: active.readContext.evidence.length,
+            actions: active.readContext.actions.length,
+            total: active.readContext.inventory.length
+              + active.readContext.discovery.length
+              + active.readContext.evidence.length
+              + active.readContext.actions.length,
           },
-          ...this.contextCache.getStats(sessionId),
-        },
-      });
-      return projection;
-    } catch (error) {
-      this.observer.emit({
-        level: "error",
-        event: "harness_context_refresh_failed",
-        sessionId,
-        durationMs: Date.now() - startedAt,
-        outcome: "failed",
-        message: error instanceof Error ? error.message : String(error),
-        data: { previousRevision },
-      });
-      throw error;
-    }
+        } : {}),
+        ...this.contextCache.getStats(sessionId),
+      },
+    });
+    return projection;
   }
 
   private emitCacheSummary(sessionId: string, outcome: "hit" | "miss"): void {
@@ -755,84 +396,97 @@ class AppGitContextRuntime implements GitContextRuntime {
   }
 }
 
-function initialWorkState(): RunWorkStateInput {
+function toRunStepRecord(record: ContextRunStepRecord): RunStepRecord {
   return {
-    status: "not_done",
-    summary: "Run started.",
-    openWork: [],
-    blockers: [],
-    facts: [],
-    evidence: [],
-    artifacts: [],
-    nextStep: null,
-    userInputNeeded: [],
+    version: 1,
+    step: record.step,
+    status: record.status === "failed"
+      ? "failed"
+      : record.status === "skipped"
+        ? "blocked"
+        : "completed",
+    summary: record.summary,
+    ...(record.decision ? { decision: record.decision } : {}),
+    ...(record.action ? { action: record.action } : {}),
+    toolCalls: record.toolCalls.map((call) => {
+      const taxonomy = getToolTaxonomy(call.tool);
+      if (!taxonomy) {
+        throw new Error("Unknown tool taxonomy for persisted run step: " + call.tool);
+      }
+      return {
+        ...(call.callId ? { callId: call.callId } : {}),
+        tool: call.tool,
+        purpose: call.purpose?.trim() || "Execute " + call.tool + ".",
+        toolPurpose: taxonomy.purpose,
+        toolEffect: taxonomy.effect,
+        status: call.status,
+        input: call.input,
+        ...(call.output !== undefined ? { output: call.output } : {}),
+        ...(call.error !== undefined ? { error: call.error } : {}),
+      };
+    }),
+    verification: record.verification,
+    workStateAfter: toRunWorkState(record.workStateAfter),
+    createdAt: record.completedAt,
   };
 }
 
-function selectionFeedback(
-  selected: SelectedTaskRunResponse,
-  selectionMode: "created" | "activated",
-): Record<string, unknown> {
-  return {
-    selectionMode,
-    workingDirectory: selected.context.workingDirectory,
-    branch: selected.task.branch,
-    taskHead: selected.task.head,
-    taskCreated: selected.taskCreated,
-    taskRequestDecision: selected.taskRequestDecision,
-    taskRequestId: selected.run.taskRequestId,
-    taskRequestStatus: selected.context.currentRequest?.status,
-    taskRequestCreated: selected.taskRequestCreated,
-    sessionRunBound: selected.sessionRunBound,
-  };
-}
-
-function toRunWorkState(value: unknown): RunWorkStateInput {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return initialWorkState();
-  const state = value as Record<string, unknown>;
-  const status = ["not_done", "done", "blocked", "needs_user_input"].includes(String(state["status"]))
+function toRunWorkState(value: unknown, outcome?: RunOutcome): RunWorkStateInput {
+  const state = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const inferredStatus = outcome === "done"
+    ? "done"
+    : outcome === "blocked"
+      ? "blocked"
+      : outcome === "needs_user_input"
+        ? "needs_user_input"
+        : "not_done";
+  const status = ["not_done", "done", "blocked", "needs_user_input"].includes(
+    String(state["status"]),
+  )
     ? state["status"] as RunWorkStateInput["status"]
-    : "not_done";
+    : inferredStatus;
   return {
     status,
-    summary: typeof state["summary"] === "string" ? state["summary"] : "Run in progress.",
+    summary: typeof state["summary"] === "string"
+      ? state["summary"]
+      : outcome
+        ? "Run ended with outcome " + outcome + "."
+        : "Run in progress.",
     openWork: strings(state["openWork"]),
     blockers: strings(state["blockers"]),
-    facts: strings(state["verifiedFacts"]),
+    facts: strings(state["verifiedFacts"] ?? state["facts"]),
     evidence: strings(state["evidence"]),
     artifacts: strings(state["artifacts"]),
     nextStep: typeof state["nextStep"] === "string" ? state["nextStep"] : null,
-    userInputNeeded: typeof state["userInputNeeded"] === "string" ? [state["userInputNeeded"]] : [],
+    userInputNeeded: typeof state["userInputNeeded"] === "string"
+      ? [state["userInputNeeded"]]
+      : strings(state["userInputNeeded"]),
   };
 }
 
-function completedSessionWorkState(value: unknown): RunWorkStateInput {
-  return { ...toRunWorkState(value), status: "done" };
+function preparationRequestId(
+  clientId: string,
+  role: "user" | "system_event",
+  content: string,
+  at: string,
+): string {
+  const digest = createHash("sha256")
+    .update(JSON.stringify({ clientId, role, content, at }))
+    .digest("hex")
+    .slice(0, 24);
+  return "prepare:" + digest;
 }
 
-function completionAssets(
-  assets: TaskAssetRecord[],
-  workingDirectory: string | undefined,
-) {
-  return assets
-    .filter((asset) => asset.role === "generated" || asset.role === "output")
-    .filter((asset) => Boolean(asset.path))
-    .map((asset) => ({
-      path: taskRelativePath(asset.path!, workingDirectory),
-      kind: asset.kind === "directory" ? "directory" as const : "file" as const,
-      description: asset.description ?? asset.name,
-      verified: true,
-    }));
-}
-
-function taskRelativePath(path: string, workingDirectory?: string): string {
-  if (!workingDirectory || !isAbsolute(path)) return path;
-  const candidate = relative(workingDirectory, path);
-  return candidate === "" ? "." : candidate;
+function operationRequestId(runId: string, operation: string): string {
+  return runId + ":" + operation;
 }
 
 function strings(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
 }
 
 function localDate(at: string, timezone: string): string {

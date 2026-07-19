@@ -32,9 +32,9 @@ Primary value:
 - Default daily git context for task/work continuity, with one normal `T-*`
   repository per durable task, explicit request files, task state, references,
   verified outcomes, and commit metadata.
-- Run-first execution: provider-handled turns can perform read-only work in a
-  session run, and promote that same run into a task run only when mutation
-  becomes necessary.
+- One-run execution: every accepted message or system event atomically creates
+  one run. The run can remain unbound for conversation and observation or gain
+  one immutable task/request binding for durable task work.
 - Turn-aware task routing: the agent can search/read tasks and route work by
   creating one V1 task or selecting an existing task with an explicit
   continue-current-request or create-new-request decision.

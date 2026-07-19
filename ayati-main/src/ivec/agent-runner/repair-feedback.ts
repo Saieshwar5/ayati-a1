@@ -15,27 +15,26 @@ import {
   repairSignalToFeedbackData,
   repairSignalToPromptCard,
 } from "./repair-policy.js";
-import { deferredMutationToolNames } from "./task-routing-policy.js";
 import {
   summarizeDecision,
   summarizeHarnessContext,
   summarizeStep,
 } from "./feedback-summary.js";
 
-const FRESH_SESSION_TOOL_REPAIR_MESSAGE = "No active task exists. Before mutation, search and activate an existing task or create a new task. Ask a short clarification directly if task ownership is unclear.";
+const UNBOUND_RUN_TOOL_REPAIR_MESSAGE = "The run is not bound to a task. Before mutation, activate an existing task or create a new task. Ask a short clarification directly if task ownership is unclear.";
 const REPEATED_REPAIR_FAILURE_THRESHOLD = 3;
 
-export function recordFreshSessionToolRepair(input: {
+export function recordUnboundRunToolRepair(input: {
   deps: AgentLoopDeps;
   inputHandle: SessionInputHandle;
   state: LoopState;
   config: LoopConfig;
   decision: AgentDecision;
-  reason: "fresh_session_tool_load" | "fresh_session_wrong_tool";
+  reason: "unbound_run_tool_load" | "unbound_run_wrong_tool";
 }): void {
   input.state.consecutiveFailures++;
-  const blockedTargets = freshSessionDecisionTargets(input.decision);
-  const repair = createRepairSignal("R_FRESH_SESSION_NEEDS_TASK", {
+  const blockedTargets = unboundRunDecisionTargets(input.decision);
+  const repair = createRepairSignal("R_UNBOUND_RUN_NEEDS_TASK_BINDING", {
     blockedTargets,
     operatorDetails: {
       reason: input.reason,
@@ -51,15 +50,15 @@ export function recordFreshSessionToolRepair(input: {
   input.state.failureHistory.push({
     step: input.state.iteration,
     failureType: "validation_error",
-    reason: FRESH_SESSION_TOOL_REPAIR_MESSAGE,
+    reason: UNBOUND_RUN_TOOL_REPAIR_MESSAGE,
     blockedTargets,
     repairCode: repair.code,
     repair: repairSignalToPromptCard(repair),
   });
-  recordFeedback(input.deps, input.inputHandle, undefined, "guard", "fresh_session_tool_repair_requested", {
+  recordFeedback(input.deps, input.inputHandle, undefined, "guard", "unbound_run_tool_repair_requested", {
     reason: input.reason,
-    message: FRESH_SESSION_TOOL_REPAIR_MESSAGE,
-    warningCodes: ["fresh_session_tool_repair_requested"],
+    message: UNBOUND_RUN_TOOL_REPAIR_MESSAGE,
+    warningCodes: ["unbound_run_tool_repair_requested"],
     consecutiveFailures: input.state.consecutiveFailures,
     maxConsecutiveFailures: input.config.maxConsecutiveFailures,
     blockedTargets,
@@ -68,57 +67,6 @@ export function recordFreshSessionToolRepair(input: {
       context: input.state.harnessContext.contextEngine,
     }),
     harnessContext: summarizeHarnessContext(input.state.harnessContext),
-    ...repairSignalToFeedbackData(repair),
-  });
-}
-
-export function recordDeferredMutationRoutingRepair(input: {
-  deps: AgentLoopDeps;
-  inputHandle: SessionInputHandle;
-  state: LoopState;
-  config: LoopConfig;
-  decision: AgentDecision;
-  reason: "deferred_mutation_reply" | "deferred_mutation_already_pending";
-}): void {
-  input.state.consecutiveFailures++;
-  const deferredTools = input.state.deferredMutation?.blockedTools ?? [];
-  const repair = createRepairSignal("R_PENDING_TURN_UNBOUND", {
-    source: "runner.deferred_mutation_guard",
-    message: "A mutation is already deferred and cannot execute until this session run is routed to a task.",
-    blockedTargets: input.decision.kind === "act"
-      ? deferredMutationToolNames(input.decision.action)
-      : ["direct_reply"],
-    allowedNextActions: [
-      "Call git_context_activate_task if a task candidate owns the requested resources.",
-      "Call git_context_create_task if this is a new durable task.",
-      "After routing succeeds, the deferred mutation will execute automatically; do not repeat the mutation call.",
-    ],
-    operatorDetails: {
-      reason: input.reason,
-      deferredTools,
-      consecutiveFailures: input.state.consecutiveFailures,
-      maxConsecutiveFailures: input.config.maxConsecutiveFailures,
-      decision: summarizeDecision(input.decision),
-      contextEngine: buildContextEngineFeedbackSummary({
-        context: input.state.harnessContext.contextEngine,
-      }),
-    },
-  });
-  const promptCard = repairSignalToPromptCard(repair);
-  input.state.failureHistory.push({
-    step: input.state.iteration,
-    failureType: "validation_error",
-    reason: repair.message,
-    blockedTargets: repair.blockedTargets,
-    repairCode: repair.code,
-    ...(promptCard ? { repair: promptCard } : {}),
-  });
-  recordFeedback(input.deps, input.inputHandle, input.state.runId || undefined, "guard", "deferred_mutation_routing_required", {
-    reason: input.reason,
-    deferredTools,
-    decision: summarizeDecision(input.decision),
-    consecutiveFailures: input.state.consecutiveFailures,
-    maxConsecutiveFailures: input.config.maxConsecutiveFailures,
     ...repairSignalToFeedbackData(repair),
   });
 }
@@ -213,14 +161,14 @@ export function recordTerminalReplyMutationRepair(input: {
   });
 }
 
-export function createMissingWorkRunRepairSignal(input: {
+export function createMissingTaskBindingRepairSignal(input: {
   reason: string;
   message: string;
   decision?: AgentDecision;
   pendingTurnStatus?: string;
 }): RepairSignal {
-  return createRepairSignal(missingWorkRunRepairCode(input.pendingTurnStatus), {
-    blockedTargets: input.decision ? freshSessionDecisionTargets(input.decision) : [],
+  return createRepairSignal(missingTaskBindingRepairCode(input.pendingTurnStatus), {
+    blockedTargets: input.decision ? unboundRunDecisionTargets(input.decision) : [],
     operatorDetails: {
       reason: input.reason,
       message: input.message,
@@ -385,14 +333,14 @@ export function recordRepeatedRepairFailure(input: {
   });
 }
 
-function missingWorkRunRepairCode(pendingTurnStatus: string | undefined): "R_NORMAL_TOOL_WITHOUT_TASK_RUN" | "R_PENDING_TURN_UNBOUND" | "R_PENDING_TURN_CLARIFYING" {
+function missingTaskBindingRepairCode(pendingTurnStatus: string | undefined): "R_TOOL_REQUIRES_TASK_BINDING" | "R_PENDING_TURN_UNBOUND" | "R_PENDING_TURN_CLARIFYING" {
   if (pendingTurnStatus === "unbound") {
     return "R_PENDING_TURN_UNBOUND";
   }
   if (pendingTurnStatus === "clarifying") {
     return "R_PENDING_TURN_CLARIFYING";
   }
-  return "R_NORMAL_TOOL_WITHOUT_TASK_RUN";
+  return "R_TOOL_REQUIRES_TASK_BINDING";
 }
 
 function createStepFailureRepairSignal(input: {
@@ -589,7 +537,7 @@ function toolsFromExecutionContract(value: string | undefined): string[] {
   return calls
     .split(",")
     .map((call) => call.trim().split(/\s|\(/)[0])
-    .filter((tool): tool is string => Boolean(tool) && tool !== "execution_plan");
+    .filter((tool): tool is string => Boolean(tool));
 }
 
 function latestRepairSignature(history: LoopState["failureHistory"]): string | undefined {
@@ -625,7 +573,7 @@ function extractInvalidFields(error: string): string[] {
   return matches.map((match) => match[1]).filter((field): field is string => Boolean(field));
 }
 
-function freshSessionDecisionTargets(decision: AgentDecision): string[] {
+function unboundRunDecisionTargets(decision: AgentDecision): string[] {
   if (decision.kind === "load_tools") {
     return uniqueStrings([
       ...decision.request.toolNames,

@@ -51,4 +51,35 @@ describe("Git Context server runtime", () => {
       "shutdown_completed",
     ]));
   });
+
+  it("restarts against the same version-2 catalog without conflicting startup idempotency", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ayati-git-context-restart-"));
+    const databasePath = join(root, "store", "context.sqlite");
+    const dataRoot = join(root, "git-data");
+    const first = await startGitContextServerRuntime({
+      databasePath,
+      dataRoot,
+      socketPath: join(root, "run", "first.sock"),
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    runtimes.push(first);
+    await first.stop();
+    runtimes.splice(runtimes.indexOf(first), 1);
+
+    const restarted = await startGitContextServerRuntime({
+      databasePath,
+      dataRoot,
+      socketPath: join(root, "run", "second.sock"),
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    runtimes.push(restarted);
+
+    const client = new GitContextClient({ connection: restarted.address });
+    await expect(client.getHealth()).resolves.toMatchObject({
+      protocolVersion: 34,
+      ready: true,
+    });
+  });
 });

@@ -2,7 +2,7 @@ import type {
   ActiveContext,
   RecordRunStepRequest,
   RecordRunStepResponse,
-  SelectedTaskRunResponse,
+  SelectedTaskForRunResponse,
 } from "../contracts.js";
 import { GitContextObserver } from "../observability.js";
 
@@ -93,7 +93,7 @@ export class GitContextServiceObservability {
               + context.readContext.actions.length
             : 0,
         },
-        readContextAfterTaskRunId: context.readContext?.afterTaskRunId,
+        readContextAfterCommitRunId: context.readContext?.afterCommitRunId,
         taskCandidateCount: context.taskCandidates?.length ?? 0,
         ...counters,
       },
@@ -125,10 +125,10 @@ export class GitContextServiceObservability {
     });
   }
 
-  taskSelected(mode: "created" | "activated", result: SelectedTaskRunResponse): void {
+  taskSelected(mode: "created" | "activated", result: SelectedTaskForRunResponse): void {
     this.emit({
       level: "info",
-      event: result.sessionRunBound ? "session_run_bound" : "task_run_started",
+      event: "run_task_bound",
       sessionId: result.run.sessionId,
       conversationId: result.run.conversationId,
       runId: result.run.runId,
@@ -136,17 +136,14 @@ export class GitContextServiceObservability {
       outcome: "succeeded",
       data: {
         mode,
-        fromClass: result.sessionRunBound ? "session" : "none",
-        toClass: "task",
-        runIdPreserved: result.sessionRunBound,
-        sessionRunBound: result.sessionRunBound,
+        runIdPreserved: true,
         taskHead: result.task.head,
         workingDirectory: result.context.workingDirectory,
         branch: result.task.branch,
         taskCreated: result.taskCreated,
         taskRequestDecision: result.taskRequestDecision,
-        taskRequestId: result.run.taskRequestId,
-        taskRequestStatus: result.context.currentRequest?.status,
+        taskRequestId: result.run.taskBinding?.taskRequestId,
+        taskRequestStatus: result.taskRequestStatus,
         taskRequestCreated: result.taskRequestCreated,
       },
     });
@@ -159,19 +156,16 @@ export class GitContextServiceObservability {
       requestId: input.requestId,
       sessionId: input.sessionId,
       runId: input.runId,
-      step: input.step,
+      step: input.record.step,
       outcome: "succeeded",
       data: {
-        tool: input.tool,
-        purpose: input.purpose,
-        toolEffect: input.toolEffect,
-        status: result.toolCall.status,
-        workStateRevision: result.workState.revision,
-        afterStep: result.workState.afterStep,
-        inputBytes: serializedBytes(input.input),
-        outputBytes: serializedBytes(input.output),
-        ...(input.outputHash ? { outputHash: input.outputHash } : {}),
-        verificationPassed: verificationPassed(input.verification),
+        tools: input.record.toolCalls.map((call) => call.tool),
+        toolEffects: input.record.toolCalls.map((call) => call.toolEffect),
+        status: input.record.status,
+        workStateRevision: result.run.workState.revision,
+        afterStep: result.run.workState.afterStep,
+        recordBytes: serializedBytes(input.record),
+        verificationPassed: verificationPassed(input.record.verification),
       },
     });
   }

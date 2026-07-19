@@ -92,10 +92,10 @@ export class TaskAttachmentService {
     });
     if (completed) return completed;
     const run = readRunEvidence(this.options.database, input.runId);
-    if (!run || run.status !== "running" || run.runClass !== "task"
-      || run.sessionId !== input.sessionId || run.taskId !== input.taskId
+    if (!run || run.status !== "running"
+      || run.sessionId !== input.sessionId || run.taskBinding?.taskId !== input.taskId
       || run.conversationId !== input.conversationId) {
-      throw invalid("Attachment binding requires the matching active task run.");
+      throw invalid("Attachment binding requires the matching active task-bound run.");
     }
     const task = readTaskInitialization(this.options.database, input.taskId);
     if (!task?.head) {
@@ -125,7 +125,7 @@ export class TaskAttachmentService {
       ? resolvePlannedTaskRequestState(routePlan, validation).taskRequest
       : validation.currentRequest;
     if (!taskRequest || taskRequest.status !== "active"
-      || run.taskRequestId !== taskRequest.id) {
+      || run.taskBinding.taskRequestId !== taskRequest.id) {
       throw invalid("Attachment binding requires an active V1 task request.");
     }
     const attachments = readConversationAttachments(

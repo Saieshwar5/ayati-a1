@@ -47,11 +47,11 @@ For streaming-capable clients, final user-visible responses may be delivered as
 `reply_done`. The `reply_done.content` field is the assembled canonical
 assistant response and includes a `commitStatus` value:
 
-- `committed`: a task run was finalized and committed.
-- `skipped`: no task-run commit was needed for this response. This includes
-  read-only session-run replies that are persisted by the context engine but do
-  not create or finalize a task run.
-- `failed`: task-run finalization failed after the response was assembled.
+- `not_required`: the finalized run required no task commit.
+- `no_change`: a task-bound run finalized without creating a new commit.
+- `committed`: a task-bound run created and acknowledged its verified commit.
+- `failed`: run finalization failed after response text was assembled; no
+  successful terminal acknowledgement may be inferred.
 
 After committing the canonical `reply_done` content and making the newest
 message visible, the CLI acknowledges the exact server-issued turn:

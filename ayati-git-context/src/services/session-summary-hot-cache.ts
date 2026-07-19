@@ -23,7 +23,7 @@ export class SessionSummaryHotCache {
       this.bySessionId.set(session.sessionId, empty);
       return empty;
     }
-    const commits = await readTaskRunSessionCommits(session.repositoryPath);
+    const commits = await readTaskBoundRunSessionCommits(session.repositoryPath);
     const recentCommits = commits.slice(0, RECENT_COMMIT_LIMIT);
     const older = commits.slice(RECENT_COMMIT_LIMIT);
     const state: SessionSummaryState = {
@@ -40,7 +40,7 @@ export class SessionSummaryHotCache {
   }
 }
 
-async function readTaskRunSessionCommits(repositoryPath: string): Promise<CommitSummary[]> {
+async function readTaskBoundRunSessionCommits(repositoryPath: string): Promise<CommitSummary[]> {
   const output = await runGitRaw([
     "log",
     "--format=%H%x00%aI%x00%B%x00%x1e",
@@ -55,7 +55,7 @@ async function readTaskRunSessionCommits(repositoryPath: string): Promise<Commit
 function parseCommit(record: string): CommitSummary | undefined {
   const [commit, committedAt, ...messageParts] = record.split("\x00");
   const message = messageParts.join("\x00").trim();
-  if (!commit || !message.includes("Ayati-Event: task_run_committed")) return undefined;
+  if (!commit || !message.includes("Ayati-Event: task_bound_run_committed")) return undefined;
   const subject = message.split("\n", 1)[0] ?? "session commit";
   return {
     commit,

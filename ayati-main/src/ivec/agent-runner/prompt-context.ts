@@ -1,7 +1,16 @@
-import type { ContextEngineMachineContext } from "../../context-engine/index.js";
-import type { WorkState } from "../types.js";
+import type {
+  ContextCommitSummary,
+  ContextEngineMachineContext,
+  ContextPendingTurn,
+  ContextReadContext,
+  ContextReadEntry,
+  ContextSessionActivityRecord,
+  ContextSessionTaskRunCheckpoint,
+  ContextTaskArtifactRecord,
+  ContextTaskEvidenceSummary,
+  ContextTaskRunSummary,
+} from "../../context-engine/index.js";
 import type { AgentContextPack } from "./context-pack.js";
-import type { RuntimeCapabilityPromptContext } from "./runtime-capability-mode.js";
 import type { PromptToolCalls } from "./run-tool-call-context.js";
 import type { AgentStateView } from "./state-view.js";
 
@@ -17,11 +26,11 @@ export interface PromptGitContext {
 export interface PromptGitSessionContext {
   meta: ContextEngineMachineContext["session"]["meta"];
   summary?: ContextEngineMachineContext["session"]["summary"];
-  recentCommits?: ContextEngineMachineContext["session"]["recentCommits"];
-  recentTaskRuns?: ContextEngineMachineContext["session"]["recentTaskRuns"];
+  recentCommits?: PromptCommitSummary[];
+  recentTaskRuns?: PromptSessionRunCheckpoint[];
   attachments?: unknown;
   activity: {
-    recent: ContextEngineMachineContext["session"]["activityTail"];
+    recent: PromptSessionActivityRecord[];
   };
 }
 
@@ -31,7 +40,14 @@ type ContextEngineTaskContext = NonNullable<ContextEngineMachineContext["task"]>
   taskId?: string;
 };
 
-export type PromptGitCurrentContext = Omit<ContextEngineMachineContext, "session" | "task"> & {
+type PromptGitCurrentBase = Omit<
+  ContextEngineMachineContext,
+  "session" | "task" | "pendingTurn" | "readContext"
+>;
+
+export type PromptGitCurrentContext = PromptGitCurrentBase & {
+  pendingTurn?: PromptPendingTurn;
+  readContext?: PromptReadContext;
   task?: PromptGitTaskContext;
 };
 
@@ -55,30 +71,36 @@ export interface PromptGitTaskContext {
     summary?: string;
   };
   assets: ContextEngineTaskContext["assets"];
-  artifacts?: ContextEngineTaskContext["artifacts"];
+  artifacts?: PromptTaskArtifact[];
   activity: {
-    recentRuns: ContextEngineTaskContext["recentRuns"];
-    recentEvidence: ContextEngineTaskContext["recentEvidence"];
+    recentRuns: PromptTaskRunSummary[];
+    recentEvidence: PromptTaskEvidenceSummary[];
   };
 };
 
+type PromptCommitSummary = Omit<ContextCommitSummary, "runId">;
+type PromptSessionRunCheckpoint = Omit<ContextSessionTaskRunCheckpoint, "runId">;
+type WithoutRunId<Value> = Value extends unknown ? Omit<Value, "runId"> : never;
+type PromptSessionActivityRecord = WithoutRunId<ContextSessionActivityRecord>;
+type PromptPendingTurn = Omit<ContextPendingTurn, "runId">;
+type PromptReadEntry = Omit<ContextReadEntry, "runId">;
+type PromptTaskRunSummary = Omit<ContextTaskRunSummary, "runId">;
+type PromptTaskEvidenceSummary = Omit<ContextTaskEvidenceSummary, "runId">;
+type PromptTaskArtifact = Omit<
+  ContextTaskArtifactRecord,
+  "createdByRunId" | "lastTouchedRunId" | "sourceRunId"
+>;
+
+interface PromptReadContext extends Omit<ContextReadContext, "afterCommitRunId" | "inventory" | "discovery" | "evidence" | "actions"> {
+  inventory: PromptReadEntry[];
+  discovery: PromptReadEntry[];
+  evidence: PromptReadEntry[];
+  actions: PromptReadEntry[];
+}
+
 export interface PromptRunContext {
-  status?: WorkState["status"];
   workState?: PromptRunWorkStateContext;
   toolCalls?: PromptToolCalls;
-  routing?: {
-    successCount: number;
-    failureCount: number;
-    maxFailures: number;
-    resolved: boolean;
-    lastTool?: string;
-    lastError?: string;
-  };
-  deferredMutation?: {
-    reason: string;
-    tools: string[];
-    callCount: number;
-  };
   contextPressure?: {
     mode: "tool_compact" | "session_shed" | "timeline_checkpoint" | "step_ledger";
     recommendedMode?: "session_shed" | "timeline_checkpoint" | "step_ledger";
@@ -91,7 +113,7 @@ export interface PromptRunContext {
 }
 
 export interface PromptRunWorkStateContext {
-  status: WorkState["status"];
+  status: import("../types.js").WorkState["status"];
   summary?: string;
   openWork?: string[];
   blockers?: string[];
@@ -112,7 +134,6 @@ export interface PromptToolsContext {
 }
 
 export interface AgentPromptContext extends AgentContextPack {
-  runtimeMode?: RuntimeCapabilityPromptContext;
   personal?: PromptPersonalContext;
   git?: PromptGitContext;
   tools?: PromptToolsContext;
@@ -122,7 +143,6 @@ export interface AgentPromptContext extends AgentContextPack {
 
 export interface ProjectAgentPromptContextInput {
   context: AgentContextPack;
-  runtimeMode?: RuntimeCapabilityPromptContext;
   sessionAttachments?: unknown;
   tools?: PromptToolsContext;
   harness?: PromptHarnessContext;
@@ -140,7 +160,6 @@ export function projectAgentPromptContext(input: ProjectAgentPromptContextInput)
   const run = compactRunContext(input.run, { preserveProjectionMetadata: true });
   return {
     ...input.context,
-    ...(input.runtimeMode ? { runtimeMode: input.runtimeMode } : {}),
     ...(personalMemorySnapshot ? {
       personal: {
         memorySnapshot: personalMemorySnapshot,
@@ -169,14 +188,21 @@ function projectGitSessionForPrompt(
   session: ContextEngineMachineContext["session"],
   attachments: unknown,
 ): PromptGitSessionContext {
+  const promptAttachments = attachments ?? session.attachments;
   return {
     meta: readSessionMeta(session),
     ...(session.summary ? { summary: session.summary } : {}),
-    ...(session.recentCommits ? { recentCommits: session.recentCommits } : {}),
-    ...(session.recentTaskRuns ? { recentTaskRuns: session.recentTaskRuns } : {}),
-    ...(attachments ?? session.attachments ? { attachments: attachments ?? session.attachments } : {}),
+    ...(session.recentCommits ? {
+      recentCommits: session.recentCommits.map(withoutRunId),
+    } : {}),
+    ...(session.recentTaskRuns ? {
+      recentTaskRuns: session.recentTaskRuns.map(withoutRunId),
+    } : {}),
+    ...(promptAttachments ? {
+      attachments: withoutInternalStoragePaths(promptAttachments),
+    } : {}),
     activity: {
-      recent: session.activityTail,
+      recent: session.activityTail.map(withoutRunId),
     },
   };
 }
@@ -189,9 +215,17 @@ function readSessionMeta(session: ContextEngineMachineContext["session"]): Conte
 }
 
 function projectGitCurrentForPrompt(gitContext: ContextEngineMachineContext): PromptGitCurrentContext {
-  const { session: _session, task, ...current } = gitContext;
+  const {
+    session: _session,
+    task,
+    pendingTurn,
+    readContext,
+    ...current
+  } = gitContext;
   return {
     ...current,
+    ...(pendingTurn ? { pendingTurn: withoutRunId(pendingTurn) } : {}),
+    ...(readContext ? { readContext: projectReadContextForPrompt(readContext) } : {}),
     ...(task ? {
       task: projectGitTaskForPrompt(task),
     } : {}),
@@ -221,24 +255,125 @@ function projectGitTaskForPrompt(
       ...(task.summary ? { summary: task.summary } : {}),
     },
     assets: task.assets,
-    ...(task.artifacts ? { artifacts: task.artifacts } : {}),
+    ...(task.artifacts ? {
+      artifacts: task.artifacts.map(projectTaskArtifactForPrompt),
+    } : {}),
     activity: {
-      recentRuns: task.recentRuns,
-      recentEvidence: task.recentEvidence,
+      recentRuns: task.recentRuns.map(withoutRunId),
+      recentEvidence: task.recentEvidence.map(withoutRunId),
     },
   };
+}
+
+function projectReadContextForPrompt(
+  readContext: ContextReadContext | PromptReadContext,
+): PromptReadContext {
+  const { afterCommitRunId: _afterCommitRunId, ...projected } = readContext as ContextReadContext;
+  return {
+    revision: projected.revision,
+    inventory: projected.inventory.map(withoutRunId),
+    discovery: projected.discovery.map(withoutRunId),
+    evidence: projected.evidence.map(withoutRunId),
+    actions: projected.actions.map(withoutRunId),
+  };
+}
+
+function projectTaskArtifactForPrompt(
+  artifact: ContextTaskArtifactRecord | PromptTaskArtifact,
+): PromptTaskArtifact {
+  const {
+    createdByRunId: _createdByRunId,
+    lastTouchedRunId: _lastTouchedRunId,
+    sourceRunId: _sourceRunId,
+    ...projected
+  } = artifact as ContextTaskArtifactRecord;
+  return projected;
+}
+
+function withoutRunId<Value extends object>(value: Value): WithoutRunId<Value> {
+  const { runId: _runId, ...projected } = value as Value & { runId?: unknown };
+  return projected as WithoutRunId<Value>;
+}
+
+const INTERNAL_STORAGE_PATH_KEYS = new Set([
+  "artifactPath",
+  "derivedDir",
+  "metadataPath",
+  "repositoryPath",
+  "runFile",
+  "runPath",
+  "stepsFile",
+  "storagePath",
+  "storedPath",
+]);
+
+function withoutInternalStoragePaths(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(withoutInternalStoragePaths);
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !INTERNAL_STORAGE_PATH_KEYS.has(key))
+      .map(([key, item]) => [key, withoutInternalStoragePaths(item)]),
+  );
 }
 
 function compactAgentPromptContext(context: AgentPromptContext): AgentPromptContext {
   const run = compactRunContext(context.run);
   return {
     timeline: context.timeline,
-    ...(context.runtimeMode ? { runtimeMode: context.runtimeMode } : {}),
-    ...(context.git ? { git: context.git } : {}),
+    ...(context.git ? { git: compactPromptGitContext(context.git) } : {}),
     ...(context.tools ? { tools: context.tools } : {}),
     ...(context.harness ? { harness: context.harness } : {}),
     ...(run ? { run } : {}),
     ...(context.personal ? { personal: context.personal } : {}),
+  };
+}
+
+function compactPromptGitContext(git: PromptGitContext): PromptGitContext {
+  return {
+    session: {
+      ...git.session,
+      ...(git.session.recentCommits ? {
+        recentCommits: git.session.recentCommits.map(withoutRunId),
+      } : {}),
+      ...(git.session.recentTaskRuns ? {
+        recentTaskRuns: git.session.recentTaskRuns.map(withoutRunId),
+      } : {}),
+      ...(git.session.attachments ? {
+        attachments: withoutInternalStoragePaths(git.session.attachments),
+      } : {}),
+      activity: {
+        recent: git.session.activity.recent.map(withoutRunId),
+      },
+    },
+    current: compactPromptGitCurrent(git.current),
+  };
+}
+
+function compactPromptGitCurrent(current: PromptGitCurrentContext): PromptGitCurrentContext {
+  const { pendingTurn, readContext, task, ...rest } = current;
+  return {
+    ...rest,
+    ...(pendingTurn ? { pendingTurn: withoutRunId(pendingTurn) } : {}),
+    ...(readContext ? { readContext: projectReadContextForPrompt(readContext) } : {}),
+    ...(task ? { task: compactPromptGitTask(task) } : {}),
+  };
+}
+
+function compactPromptGitTask(task: PromptGitTaskContext): PromptGitTaskContext {
+  return {
+    ...task,
+    ...(task.artifacts ? {
+      artifacts: task.artifacts.map(projectTaskArtifactForPrompt),
+    } : {}),
+    activity: {
+      recentRuns: task.activity.recentRuns.map(withoutRunId),
+      recentEvidence: task.activity.recentEvidence.map(withoutRunId),
+    },
   };
 }
 
@@ -260,14 +395,12 @@ function compactRunContext(
     return undefined;
   }
   const compacted: PromptRunContext = {
-    ...(run.status ? { status: run.status } : {}),
     ...(run.workState ? { workState: run.workState } : {}),
     ...(run.toolCalls ? {
       toolCalls: options.preserveProjectionMetadata
         ? run.toolCalls
         : run.toolCalls.map(({ projectionMetadata: _projectionMetadata, ...call }) => call),
     } : {}),
-    ...(run.routing ? { routing: run.routing } : {}),
     ...(run.contextPressure ? { contextPressure: run.contextPressure } : {}),
   };
   return Object.keys(compacted).length > 0 ? compacted : undefined;

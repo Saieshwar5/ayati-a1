@@ -164,9 +164,11 @@ describe("task completion policy", () => {
     }
   });
 
-  it("exposes completion only for active not-done task runs", () => {
+  it("exposes completion only for bound, not-done runs", () => {
     expect(isTaskCompletionAvailable(taskState())).toBe(true);
-    expect(isTaskCompletionAvailable(taskState({ runClass: "session" }))).toBe(false);
+    expect(isTaskCompletionAvailable(taskState({
+      harnessContext: createInitialHarnessContext(),
+    }))).toBe(false);
     expect(isTaskCompletionAvailable(taskState({ workState: { ...baseWorkState(), status: "done" } }))).toBe(false);
   });
 });
@@ -183,6 +185,16 @@ function taskHarnessContext(repositoryPath: string) {
         status: "active",
         ref: "refs/heads/main",
         workId: "W-1",
+      },
+      pendingTurn: {
+        fromSeq: 1,
+        toSeq: 1,
+        text: "Create a website",
+        at: "2026-07-19T10:00:00.000Z",
+        routingStatus: "bound",
+        workId: "W-1",
+        branch: "main",
+        runId: "R-1",
       },
       task: {
         workingDirectory: repositoryPath,
@@ -230,7 +242,6 @@ function taskState(input: Partial<LoopState> = {}): LoopState {
   return {
     runId: "R-1",
     currentSeq: 1,
-    runClass: "task",
     userMessage: "Create a website",
     workState: baseWorkState(),
     status: "running",
@@ -242,7 +253,7 @@ function taskState(input: Partial<LoopState> = {}): LoopState {
     routingAttempts: { successCount: 0, failureCount: 0, maxFailures: 2, resolved: true },
     runPath: "",
     failureHistory: [],
-    harnessContext: createInitialHarnessContext(),
+    harnessContext: taskHarnessContext(process.env["AYATI_WORKSPACE_DIR"] ?? "/workspace"),
     ...input,
   };
 }

@@ -168,6 +168,19 @@ describe("AsyncAgentFeedbackLedger", () => {
         },
       },
     });
+    ledger.record({
+      sessionId: "session-1",
+      seq: 2,
+      runId: "run-2",
+      stage: "git_context_service",
+      event: "run_finalization_completed",
+      data: {
+        outcome: "done",
+        stopReason: "completed",
+        materialization: { status: "not_requested" },
+        commit: { status: "not_required" },
+      },
+    });
     await ledger.flush();
 
     const summary = JSON.parse(await readFile(join(tempDir, "feedback", "latest-summary.json"), "utf-8")) as {
@@ -198,7 +211,7 @@ describe("AsyncAgentFeedbackLedger", () => {
     expect(summary.basedOnVerifiedFacts).toBe(true);
     expect(summary.execution).toEqual({
       verification: "passed",
-      finalization: "not_required",
+      finalization: "completed",
       commit: "not_required",
     });
     expect(summary.warnings).toEqual([]);
@@ -210,7 +223,7 @@ describe("AsyncAgentFeedbackLedger", () => {
       rawSummaryPath?: string;
     };
     expect(triage.outcome).toBe("healthy");
-    expect(triage.findings?.[0]).toMatchObject({ code: "healthy_run", severity: "info" });
+    expect(triage.findings?.[0]).toMatchObject({ code: "healthy_conversation", severity: "info" });
     expect(triage.rawSummaryPath).toBe("feedback/latest-summary.json");
   });
 
@@ -364,12 +377,21 @@ describe("AsyncAgentFeedbackLedger", () => {
       sessionId: "session-1",
       seq: 4,
       runId: "run-4",
-      stage: "context_engine",
-      event: "committed",
+      stage: "git_context_service",
+      event: "run_finalization_completed",
       data: {
-        taskId: "W-4",
-        taskCommit: "abc1234",
-        ref: "refs/heads/task/W-4-example",
+        outcome: "done",
+        stopReason: "completed",
+        taskBinding: { taskId: "W-4", taskRequestId: "R-0001" },
+        materialization: { status: "not_requested" },
+        commit: {
+          status: "committed",
+          taskId: "W-4",
+          taskRequestId: "R-0001",
+          headBefore: "0000000",
+          headAfter: "abc1234",
+          commit: "abc1234",
+        },
       },
     });
     await ledger.flush();
@@ -391,7 +413,7 @@ describe("AsyncAgentFeedbackLedger", () => {
       finalizationStatus: "committed",
       committed: true,
       commit: "abc1234",
-      ref: "refs/heads/task/W-4-example",
+      headAfter: "abc1234",
     });
     expect(summary.execution).toEqual({
       verification: "passed",
@@ -432,11 +454,24 @@ describe("AsyncAgentFeedbackLedger", () => {
           actionSteps: 0,
           verificationPassed: false,
           contextEngine: {
-            finalizationStatus: "skipped",
+            finalizationStatus: "not_started",
             committed: false,
           },
           warnings: [],
         },
+      },
+    });
+    ledger.record({
+      sessionId: "S-1",
+      seq: 4,
+      runId: "run-4",
+      stage: "git_context_service",
+      event: "run_finalization_completed",
+      data: {
+        outcome: "done",
+        stopReason: "completed",
+        materialization: { status: "not_requested" },
+        commit: { status: "not_required" },
       },
     });
     await ledger.flush();
@@ -469,7 +504,7 @@ describe("AsyncAgentFeedbackLedger", () => {
     });
     expect(summary.execution).toEqual({
       verification: "not_applicable",
-      finalization: "skipped",
+      finalization: "completed",
       commit: "not_required",
     });
     const triage = JSON.parse(await readFile(
@@ -562,7 +597,7 @@ describe("AsyncAgentFeedbackLedger", () => {
         contextRevision: "revision-5",
         previousRevision: "revision-4",
         readContextRevision: "read-revision-5",
-        readContextAfterTaskRunId: "run-4",
+        readContextAfterCommitRunId: "run-4",
         readContextCounts: {
           inventory: 1,
           discovery: 2,
@@ -594,7 +629,7 @@ describe("AsyncAgentFeedbackLedger", () => {
       cacheMisses: 1,
       cacheRefreshes: 2,
       readContextRevision: "read-revision-5",
-      readContextAfterTaskRunId: "run-4",
+      readContextAfterCommitRunId: "run-4",
       readContextCounts: {
         inventory: 1,
         discovery: 2,
@@ -632,8 +667,9 @@ describe("AsyncAgentFeedbackLedger", () => {
       event: "working_set_prepared",
       data: {
         warningCodes: [
-          "normal_tools_selected_without_work_run",
+          "task_tools_selected_without_binding",
           "normal_tool_before_routing",
+          "task_binding_required_for_action",
         ],
       },
     });
@@ -644,7 +680,7 @@ describe("AsyncAgentFeedbackLedger", () => {
       stage: "final",
       event: "error",
       data: {
-        message: "Git-memory routed run is required before chat tool execution.",
+        message: "Task binding is required before chat tool execution.",
       },
     });
     await ledger.flush();
@@ -658,9 +694,9 @@ describe("AsyncAgentFeedbackLedger", () => {
     expect(summary.responseKind).toBe("error");
     expect(summary.warnings).toEqual([
       "runtime_error",
-      "normal_tools_selected_without_work_run",
+      "task_tools_selected_without_binding",
       "normal_tool_before_routing",
-      "missing_work_run_for_action",
+      "task_binding_required_for_action",
     ]);
 
     const triage = JSON.parse(await readFile(join(tempDir, "feedback", "triage-summary.json"), "utf-8")) as {
@@ -671,8 +707,8 @@ describe("AsyncAgentFeedbackLedger", () => {
     expect(triage.findings?.map((finding) => finding.code)).toEqual([
       "run_not_completed",
       "runtime_error",
-      "normal_tools_selected_without_work_run",
-      "missing_work_run_for_action",
+      "task_tools_selected_without_binding",
+      "task_binding_required_for_action",
       "normal_tool_before_routing",
     ]);
   });
@@ -689,10 +725,10 @@ describe("AsyncAgentFeedbackLedger", () => {
       sessionId: "session-1",
       seq: 6,
       stage: "guard",
-      event: "fresh_session_tool_repair_requested",
+      event: "unbound_run_tool_repair_requested",
       data: {
         repair: {
-          code: "R_FRESH_SESSION_NEEDS_TASK",
+          code: "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
           blockedTargets: ["write_files"],
         },
       },
@@ -732,8 +768,8 @@ describe("AsyncAgentFeedbackLedger", () => {
       warnings?: string[];
     };
     expect(summary.warnings).toEqual([
-      "fresh_session_tool_repair_requested",
-      "R_FRESH_SESSION_NEEDS_TASK",
+      "unbound_run_tool_repair_requested",
+      "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
       "R_ASSISTANT_TEXT_TOOL_CALL",
     ]);
 
@@ -742,8 +778,8 @@ describe("AsyncAgentFeedbackLedger", () => {
     };
     expect(triage.findings?.map((finding) => finding.code)).toEqual([
       "R_ASSISTANT_TEXT_TOOL_CALL",
-      "R_FRESH_SESSION_NEEDS_TASK",
-      "fresh_session_tool_repair_requested",
+      "R_UNBOUND_RUN_NEEDS_TASK_BINDING",
+      "unbound_run_tool_repair_requested",
     ]);
   });
 
@@ -836,7 +872,7 @@ describe("AsyncAgentFeedbackLedger", () => {
     expect(triage.topRecommendation).toContain("raw feedback log");
   });
 
-  it("keeps a complete V1 task lifecycle in the latest summary", async () => {
+  it("keeps a complete task lifecycle in the latest summary", async () => {
     const ledger = new AsyncAgentFeedbackLedger({
       dataDir: tempDir,
       enabled: true,
@@ -859,9 +895,7 @@ describe("AsyncAgentFeedbackLedger", () => {
       },
       run: {
         runId: "RUN-2",
-        startedAs: "session",
-        selectedAs: "task",
-        sessionRunBound: true,
+        taskBound: true,
       },
       finalization: { status: "not_started" },
     } as const;
@@ -901,20 +935,23 @@ describe("AsyncAgentFeedbackLedger", () => {
       sessionId: "S-1",
       seq: 2,
       runId: "RUN-2",
-      stage: "context_engine",
-      event: "committed",
+      stage: "git_context_service",
+      event: "run_finalization_completed",
       data: {
-        taskLifecycle: {
-          repository: { headAfter: "b".repeat(40) },
-          finalization: {
-            status: "committed",
-            outcome: "done",
-            validation: "passed",
-            commit: "b".repeat(40),
-            commitCreated: true,
-            headBefore: "a".repeat(40),
-            headAfter: "b".repeat(40),
-          },
+        outcome: "done",
+        stopReason: "completed",
+        taskBinding: {
+          taskId: "T-20260718-0001",
+          taskRequestId: "R-0002",
+        },
+        materialization: { status: "not_requested" },
+        commit: {
+          status: "committed",
+          taskId: "T-20260718-0001",
+          taskRequestId: "R-0002",
+          commit: "b".repeat(40),
+          headBefore: "a".repeat(40),
+          headAfter: "b".repeat(40),
         },
       },
     });
@@ -931,7 +968,7 @@ describe("AsyncAgentFeedbackLedger", () => {
         headAfter: "b".repeat(40),
       },
       request: { decision: "create", requestId: "R-0002", created: true },
-      run: { runId: "RUN-2", selectedAs: "task", sessionRunBound: true },
+      run: { runId: "RUN-2", taskBound: true },
       finalization: {
         status: "committed",
         outcome: "done",
@@ -946,7 +983,7 @@ describe("AsyncAgentFeedbackLedger", () => {
     expect(triage.findings).toEqual([expect.objectContaining({ code: "healthy_run" })]);
   });
 
-  it("reduces flat Git Context events into the V1 lifecycle summary", async () => {
+  it("reduces one-run Git Context events into the task lifecycle summary", async () => {
     const ledger = new AsyncAgentFeedbackLedger({
       dataDir: tempDir,
       enabled: true,
@@ -956,10 +993,11 @@ describe("AsyncAgentFeedbackLedger", () => {
       sessionId: "S-1",
       seq: 2,
       runId: "RUN-1",
-      stage: "context_engine",
-      event: "task_run_selected",
+      stage: "git_context_service",
+      event: "run_task_bound",
       data: {
         taskId: "T-20260718-0001",
+        runId: "RUN-1",
         selectionMode: "created",
         workingDirectory: "/tasks/T-20260718-0001-site",
         branch: "main",
@@ -969,7 +1007,6 @@ describe("AsyncAgentFeedbackLedger", () => {
         taskRequestId: "R-0001",
         taskRequestStatus: "active",
         taskRequestCreated: true,
-        sessionRunBound: true,
       },
     });
     ledger.record({
@@ -977,16 +1014,23 @@ describe("AsyncAgentFeedbackLedger", () => {
       seq: 2,
       runId: "RUN-1",
       stage: "git_context_service",
-      event: "task_finalization_completed",
+      event: "run_finalization_completed",
       data: {
-        taskId: "T-20260718-0001",
-        workingDirectory: "/tasks/T-20260718-0001-site",
-        taskRequestId: "R-0001",
         outcome: "done",
-        taskHeadBefore: "a".repeat(40),
-        taskHeadAfter: "b".repeat(40),
-        taskCommit: "b".repeat(40),
-        taskCommitCreated: true,
+        stopReason: "completed",
+        taskBinding: {
+          taskId: "T-20260718-0001",
+          taskRequestId: "R-0001",
+        },
+        materialization: { status: "not_requested" },
+        commit: {
+          status: "committed",
+          taskId: "T-20260718-0001",
+          taskRequestId: "R-0001",
+          headBefore: "a".repeat(40),
+          headAfter: "b".repeat(40),
+          commit: "b".repeat(40),
+        },
       },
     });
     ledger.record({
@@ -1019,7 +1063,7 @@ describe("AsyncAgentFeedbackLedger", () => {
         requestId: "R-0001",
         created: true,
       },
-      run: { runId: "RUN-1", selectedAs: "task", sessionRunBound: true },
+      run: { runId: "RUN-1", taskBound: true },
       finalization: {
         status: "committed",
         outcome: "done",
@@ -1036,14 +1080,14 @@ describe("AsyncAgentFeedbackLedger", () => {
       status: "completed",
       responseKind: "reply",
       contextEngine: {
-        runClass: "task",
+        taskBound: true,
         taskLifecycle: {
           repository: {
             taskId: "T-20260718-0001",
             workingDirectory: "/workspace/tasks/T-20260718-0001-site",
             selectionMode: "activated",
           },
-          run: { runId: "RUN-1", selectedAs: "task" },
+          run: { runId: "RUN-1", taskBound: true },
         },
       },
       warnings: [],
@@ -1057,7 +1101,7 @@ describe("AsyncAgentFeedbackLedger", () => {
     ]);
   });
 
-  it("allows clarification to retain a session run", () => {
+  it("allows clarification to finalize an unbound run", () => {
     const triage = buildFeedbackTriageSummary({
       updatedAt: "2026-07-18T10:00:00.000Z",
       tsMs: 1,
@@ -1065,14 +1109,12 @@ describe("AsyncAgentFeedbackLedger", () => {
       responseKind: "reply",
       contextEngine: {
         pendingTurnStatus: "clarifying",
-        runClass: "session",
-        runId: "RUN-session",
+        runId: "RUN-unbound",
+        taskBound: false,
         taskLifecycle: {
           run: {
-            runId: "RUN-session",
-            startedAs: "session",
-            selectedAs: "session",
-            sessionRunBound: false,
+            runId: "RUN-unbound",
+            taskBound: false,
           },
         },
       },
@@ -1091,7 +1133,7 @@ describe("AsyncAgentFeedbackLedger", () => {
       status: "completed",
       responseKind: "reply",
       contextEngine: {
-        runClass: "task",
+        taskBound: true,
         taskLifecycle: {
           repository: {
             taskId: "T-20260718-0001",
@@ -1104,9 +1146,9 @@ describe("AsyncAgentFeedbackLedger", () => {
             requestId: "R-0001",
             created: false,
           },
-          run: { runId: "RUN-1", selectedAs: "task" },
+          run: { runId: "RUN-1", taskBound: true },
           finalization: {
-            status: "committed",
+            status: "no_change",
             outcome: "failed",
             validation: "failed",
             commitCreated: false,

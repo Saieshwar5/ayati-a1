@@ -2,8 +2,7 @@ import { createHash } from "node:crypto";
 import type {
   ReadContextEntry,
   ReadContextProjection,
-  RunClass,
-  ToolCallContext,
+  RunStepToolCall,
 } from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
 
@@ -27,29 +26,15 @@ interface TaskCommitBoundaryRow {
 
 interface ReadContextStepRow {
   run_id: string;
-  run_class: RunClass;
   run_sequence: number;
   step: number;
-  tool: string;
-  tool_effect: ToolCallContext["toolEffect"];
-  purpose: string;
-  status: ToolCallContext["status"];
-  input_json: string | null;
-  output_json: string | null;
-  output_hash: string | null;
-  verification_json: string | null;
+  status: "completed" | "failed" | "blocked";
+  tool_calls_json: string;
+  verification_json: string;
   created_at: string;
 }
 
-interface StepToolCall {
-  callId?: string;
-  tool: string;
-  purpose: string;
-  input?: unknown;
-  output?: unknown;
-  error?: unknown;
-  outputHash?: string;
-}
+type StepToolCall = RunStepToolCall;
 
 type ContextBucketMaps = Record<ContextBucket, Map<string, ReadContextEntry>>;
 
@@ -64,8 +49,7 @@ export function buildReadContext(
 ): ReadContextProjection {
   const boundary = readTaskCommitBoundary(database, sessionId);
   const rows = database.prepare([
-    "SELECT r.run_id, r.run_class, r.run_sequence, rs.step, rs.tool, rs.tool_effect,",
-    "rs.purpose, rs.status, rs.input_json, rs.output_json, rs.output_hash,",
+    "SELECT r.run_id, r.run_sequence, rs.step, rs.status, rs.tool_calls_json,",
     "rs.verification_json, rs.created_at",
     "FROM run_steps rs",
     "JOIN runs r ON r.run_id = rs.run_id",
@@ -80,7 +64,7 @@ export function buildReadContext(
 
     const calls = readStepToolCalls(row);
     for (const call of calls) {
-      if (call.error !== undefined && call.error !== null) continue;
+      if (call.status !== "success") continue;
       const bucket = CONTEXT_BUCKET_BY_TOOL[call.tool];
       if (bucket === "actions") {
         const resources = readResourcePaths(call.input, call.output, verification);
@@ -93,7 +77,7 @@ export function buildReadContext(
         setContextEntry(buckets[bucket], bucket, row, call, resources, verification);
         continue;
       }
-      if (row.tool_effect === "mutating") {
+      if (call.toolEffect !== "read_only") {
         invalidateObservedContext(
           buckets,
           readResourcePaths(call.input, call.output, verification),
@@ -110,10 +94,10 @@ export function buildReadContext(
   };
   return {
     revision: hash(JSON.stringify({
-      afterTaskRunId: boundary?.run_id ?? null,
+      afterCommitRunId: boundary?.run_id ?? null,
       ...projected,
     })),
-    ...(boundary ? { afterTaskRunId: boundary.run_id } : {}),
+    ...(boundary ? { afterCommitRunId: boundary.run_id } : {}),
     ...projected,
   };
 }
@@ -134,48 +118,15 @@ function readTaskCommitBoundary(
   return database.prepare([
     "SELECT r.run_id, r.run_sequence",
     "FROM runs r",
-    "WHERE r.session_id = ? AND EXISTS (SELECT 1 FROM simple_task_finalizations f",
+    "WHERE r.session_id = ? AND EXISTS (SELECT 1 FROM task_finalizations f",
     "  WHERE f.run_id = r.run_id AND f.phase = 'completed' AND f.commit_created = 1)",
     "ORDER BY r.run_sequence DESC LIMIT 1",
   ].join(" ")).get(sessionId) as TaskCommitBoundaryRow | undefined;
 }
 
 function readStepToolCalls(row: ReadContextStepRow): StepToolCall[] {
-  const input = parseJson(row.input_json);
-  const output = parseJson(row.output_json);
-  if (!isRecord(input) || !Array.isArray(input["toolCalls"])) {
-    return [{
-      tool: row.tool,
-      purpose: row.purpose,
-      ...(input !== undefined ? { input } : {}),
-      ...(output !== undefined ? { output } : {}),
-      ...(row.output_hash ? { outputHash: row.output_hash } : {}),
-    }];
-  }
-
-  const outputCalls = isRecord(output) && Array.isArray(output["toolCalls"])
-    ? output["toolCalls"]
-    : [];
-  return input["toolCalls"].flatMap((value, index): StepToolCall[] => {
-    if (!isRecord(value) || typeof value["tool"] !== "string") return [];
-    const callId = typeof value["callId"] === "string" ? value["callId"] : undefined;
-    const matchingOutput = outputCalls.find((candidate) => (
-      isRecord(candidate)
-      && callId !== undefined
-      && candidate["callId"] === callId
-    )) ?? outputCalls[index];
-    const outputRecord = isRecord(matchingOutput) ? matchingOutput : undefined;
-    const callOutput = outputRecord?.["output"];
-    return [{
-      ...(callId ? { callId } : {}),
-      tool: value["tool"],
-      purpose: typeof value["purpose"] === "string" ? value["purpose"] : row.purpose,
-      ...(value["input"] !== undefined ? { input: value["input"] } : {}),
-      ...(callOutput !== undefined ? { output: callOutput } : {}),
-      ...(outputRecord?.["error"] !== undefined ? { error: outputRecord["error"] } : {}),
-      ...(callOutput !== undefined ? { outputHash: hash(JSON.stringify(callOutput)) } : {}),
-    }];
-  });
+  const calls = JSON.parse(row.tool_calls_json) as unknown;
+  return Array.isArray(calls) ? calls as StepToolCall[] : [];
 }
 
 function setContextEntry(
@@ -192,7 +143,6 @@ function setContextEntry(
     runId: row.run_id,
     step: Number(row.step),
     ...(call.callId ? { callId: call.callId } : {}),
-    runClass: row.run_class,
     tool: call.tool,
     purpose: call.purpose,
     resources,
