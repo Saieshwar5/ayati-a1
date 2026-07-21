@@ -10,8 +10,8 @@ Current trust boundaries:
 - HTTP upload/artifact/Pulse API runs on `127.0.0.1:8081` by default.
 - `AYATI_HTTP_API_TOKEN` can protect Pulse API access.
 - Provider and integration credentials are read from environment variables.
-- Git Context uses a local Unix socket. Local transport does not remove the
-  need for typed request validation and strict filesystem boundaries.
+- Context Engine runs inside the trusted daemon. Its typed service boundary,
+  exact resource validation, and strict filesystem boundaries remain required.
 - A bound resource's canonical locator and access mode define the authorization
   boundary for resource-scoped tools.
 
@@ -24,10 +24,10 @@ Security-sensitive capabilities:
 - Memory read/write and personalization data.
 - File uploads and artifact serving.
 - Webhook/event integrations.
-- Resource mutation and Git Context lifecycle mutation.
+- Resource mutation and Context Engine lifecycle mutation.
 
 The model may discover, inspect, and select a workstream/request through typed
-Git Context controls, but runtime owns identity allocation, resource binding,
+Context Engine controls, but runtime owns identity allocation, resource binding,
 mutation journals, lifecycle files, and context commits. Path checks resolve
 symlinks before verifying that mutation remains inside an exact mutable
 resource. User attachments enter immutable managed storage and are never

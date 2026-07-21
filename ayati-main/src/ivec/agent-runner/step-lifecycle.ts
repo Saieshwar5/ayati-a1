@@ -75,7 +75,7 @@ export async function recordRunStep(
   }
   return await deps.recordRunStep(
     buildContextRunStepRecord({
-      sessionId: deps.runHandle.sessionId,
+      sessionId: deps.runHandle.streamId,
       runId: state.runId,
       action,
       stepResult,

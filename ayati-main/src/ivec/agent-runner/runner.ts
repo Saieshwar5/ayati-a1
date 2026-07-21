@@ -17,6 +17,7 @@ import type {
 import {
   DEFAULT_LOOP_CONFIG,
 } from "../types.js";
+import type { WorkstreamResolutionOutcome } from "../workstream-resolution/types.js";
 import { updateContextPressureState } from "../context-pressure-state.js";
 import {
   createRunMetrics,
@@ -53,18 +54,6 @@ import {
 } from "./tool-load-progress-policy.js";
 import { recordRunStep } from "./step-lifecycle.js";
 import { buildContextEngineFeedbackSummary } from "../feedback-ledger.js";
-import { isGitContextTurnRoutingToolName } from "../../skills/builtins/git-context/tool-policy.js";
-import {
-  hasExhaustedRoutingFailures,
-  summarizeRoutingAttempts,
-  updateRoutingAttemptsFromActOutput,
-  validateRoutingAttemptLimits,
-} from "./workstream-routing-policy.js";
-import {
-  executePendingRoutingAction,
-  extractTurnRoutingUpdate,
-  recordRoutingAttemptFeedback,
-} from "./workstream-routing-executor.js";
 import {
   createFailureRecordFromStepSummary,
   hasRepeatedRepairFailure,
@@ -92,7 +81,6 @@ import {
 import {
   buildFinalFeedbackWarnings,
   buildToolExposureWarningCodes,
-  latestCompletedWorkstreamRoutingToolNames,
   recordActionFeedback,
   recordFeedback,
   recordReducerFeedback,
@@ -108,7 +96,6 @@ import {
   syncHarnessContext,
 } from "./runner-state.js";
 import {
-  applyToolStateUpdates,
   buildUpdatedToolContext,
   executeActionStep,
   syncPreparedAttachmentsFromRegistry,
@@ -120,7 +107,6 @@ import {
 import {
   deriveWorkstreamBindingCapabilityPolicy,
   isDecisionAllowedByWorkstreamBinding,
-  isGitContextRoutingToolName,
 } from "./workstream-binding-capability-policy.js";
 import {
   summarizeAgentAction,
@@ -351,7 +337,13 @@ export async function runAgentLoop(
     });
     const workstreamFeedbackToolAvailable = isWorkstreamFeedbackToolAvailable(state);
     const capabilityPolicy = deriveWorkstreamBindingCapabilityPolicy(state);
+    const workstreamResolutionAvailable = Boolean(
+      deps.workstreamResolution
+      && capabilityPolicy.routingAvailable
+      && state.harnessContext.contextEngine?.workstreamResolution?.runId !== runHandle.runId,
+    );
     const nativeControlTools = [
+      ...(workstreamResolutionAvailable ? ["workstream_resolve"] : []),
       ...(capabilityPolicy.allowToolLoading ? ["decision_load_tools"] : []),
       ...(isWorkstreamCompletionAvailable(state) ? ["workstream_completion"] : []),
       ...(workstreamFeedbackToolAvailable ? ["ask_user_feedback"] : []),
@@ -394,9 +386,10 @@ export async function runAgentLoop(
         toolLoadingAvailable: capabilityPolicy.allowToolLoading,
         workstreamFeedbackToolAvailable,
         workstreamCompletionAvailable: isWorkstreamCompletionAvailable(state),
+        workstreamResolutionAvailable,
         workstreamBound: capabilityPolicy.workstreamBound,
         toolContextProjectionPolicy: config.toolContextProjectionPolicy,
-        timelineCheckpointCache: state.timelineCheckpointCache,
+        contextCheckpoint: deps.contextCheckpoint,
         systemContext: deps.systemContext,
         metrics,
         feedbackLedger: deps.feedbackLedger,
@@ -435,7 +428,7 @@ export async function runAgentLoop(
     recordFeedback(deps, inputHandle, runHandle.runId, "decision", "selected", {
       iteration: state.iteration,
       decision: summarizeDecision(decision),
-      pendingTurnStatus: state.harnessContext.contextEngine?.pendingTurn?.routingStatus,
+      pendingTurnStatus: state.harnessContext.contextEngine?.current.routing?.status,
       contextEngine: buildContextEngineFeedbackSummary({
         context: state.harnessContext.contextEngine,
       }),
@@ -495,8 +488,7 @@ export async function runAgentLoop(
         }
         continue;
       }
-      const routingFailed = !isWorkstreamBound(state) && hasExhaustedRoutingFailures(state);
-      state.status = decision.status === "failed" || routingFailed ? "failed" : "completed";
+      state.status = decision.status === "failed" ? "failed" : "completed";
       state.finalOutput = decision.message;
       const userInputNeeded = state.status === "completed" && decision.status === "completed"
         ? deriveUserInputNeededFromTerminalReply(decision.message)
@@ -551,6 +543,63 @@ export async function runAgentLoop(
           feedback_kind: "clarification",
         },
       });
+    }
+
+    if (decision.kind === "resolve_workstream") {
+      if (!deps.workstreamResolution || !workstreamResolutionAvailable) {
+        state.consecutiveFailures++;
+        state.failureHistory.push({
+          step: state.iteration,
+          failureType: "validation_error",
+          reason: "The isolated workstream resolver is not available for this run.",
+          blockedTargets: ["workstream_resolve"],
+        });
+        continue;
+      }
+      recordFeedback(deps, inputHandle, runHandle.runId, "workstream_resolution", "started", {
+        iteration: state.iteration,
+        purpose: decision.request.purpose,
+        hintCount: decision.request.hints.length,
+      });
+      let outcome: WorkstreamResolutionOutcome;
+      try {
+        outcome = await deps.workstreamResolution.resolve(decision.request);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        state.failureHistory.push({
+          step: state.iteration,
+          failureType: "validation_error",
+          reason: `Isolated workstream resolution failed: ${reason}`,
+          blockedTargets: ["workstream_resolve"],
+        });
+        recordFeedback(deps, inputHandle, runHandle.runId, "workstream_resolution", "failed", {
+          iteration: state.iteration,
+          reason,
+        });
+        state.status = "failed";
+        state.finalOutput = "Workstream resolution failed before a safe binding was available, so execution stopped without changing task state.";
+        return finalize({ status: "failed", content: state.finalOutput });
+      }
+      deps.harnessContext = {
+        ...(deps.harnessContext ?? {}),
+        contextEngine: outcome.context,
+      };
+      syncHarnessContext(state, deps, inputHandle);
+      recordFeedback(deps, inputHandle, runHandle.runId, "workstream_resolution", outcome.receipt.status, {
+        iteration: state.iteration,
+        receipt: outcome.receipt,
+        contextRevision: outcome.context.contextRevision,
+        routing: outcome.context.current.routing,
+      });
+      if (outcome.receipt.status === "resolved"
+        && outcome.context.current.routing?.status !== "bound") {
+        state.status = "failed";
+        state.finalOutput = "Workstream resolution completed without an authoritative run binding, so execution stopped safely.";
+        return finalize({ status: "failed", content: state.finalOutput });
+      }
+      state.consecutiveFailures = 0;
+      recordStateSnapshotMetric("after_workstream_resolution");
+      continue;
     }
 
     if (decision.kind === "workstream_completion") {
@@ -690,17 +739,6 @@ export async function runAgentLoop(
 
     const decisionAllowed = isDecisionAllowedByWorkstreamBinding(capabilityPolicy, decision);
     if (!decisionAllowed) {
-      const routingAttemptBlock = decision.kind === "act"
-        ? validateRoutingAttemptLimits(state, decision.action, isWorkstreamBound(state))
-        : undefined;
-      if (routingAttemptBlock) {
-        recordFeedback(deps, inputHandle, runHandle.runId, "guard", "routing_attempt_blocked", {
-          iteration: state.iteration,
-          reason: routingAttemptBlock.reason,
-          tools: routingAttemptBlock.tools,
-          routing: summarizeRoutingAttempts(state.routingAttempts),
-        });
-      }
       recordUnboundRunToolRepair({
         deps,
         inputHandle,
@@ -728,223 +766,15 @@ export async function runAgentLoop(
       continue;
     }
 
-    const routingControlAction = decision.action.calls.some(
-      (call) => isGitContextTurnRoutingToolName(call.tool),
-    );
-
-    if (routingControlAction) {
-      const routingRunId = runHandle.runId;
-      const routingToolContext = { ...toolContext, runId: routingRunId };
-      const routingAttemptBlock = validateRoutingAttemptLimits(
-        state,
-        decision.action,
-        isWorkstreamBound(state),
-      );
-      if (routingAttemptBlock) {
-        recordFeedback(deps, inputHandle, routingRunId, "guard", "routing_attempt_blocked", {
-          iteration: state.iteration,
-          reason: routingAttemptBlock.reason,
-          tools: routingAttemptBlock.tools,
-          routing: summarizeRoutingAttempts(state.routingAttempts),
-        });
-      }
-      recordFeedback(deps, inputHandle, routingRunId, "action", "started", {
-        iteration: state.iteration,
-        mode: decision.action.mode,
-        action: summarizeAgentAction(decision.action),
-        plannedCallCount: decision.action.calls.length,
-        calls: decision.action.calls.map((call) => ({
-          id: call.id,
-          tool: call.tool,
-          input: summarizeActionInput(call.input),
-          dependsOn: call.dependsOn,
-          purpose: call.purpose,
-        })),
-        allowedTools: decision.action.allowedTools,
-        pendingRouting: routingControlAction,
-      });
-      const stepStartedAt = new Date().toISOString();
-      const stepNumber = actionStepCount + 1;
-      const stepResult = await executePendingRoutingAction({
-        deps,
-        state,
-        config,
-        selectedTools,
-        decision,
-        stepNumber,
-        toolContext: routingToolContext,
-        applyToolStateUpdates,
-      });
-      const stepCompletedAt = new Date().toISOString();
-      actionStepCount++;
-      lastVerificationPassed = stepResult.execution.verifyOutput.passed;
-      if (!stepResult.execution.verifyOutput.passed) {
-        failedVerificationCount++;
-      }
-      recordActionFeedback(deps, inputHandle, routingRunId, decision.action, stepResult);
-      updateRoutingAttemptsFromActOutput(state, stepResult.execution.actOutput, {
-        blocked: Boolean(routingAttemptBlock),
-      });
-      recordRoutingAttemptFeedback(deps, inputHandle, routingRunId, state, stepResult.execution.actOutput, {
-        blocked: Boolean(routingAttemptBlock),
-      });
-      totalToolCalls += stepResult.stepSummary.toolSuccessCount + stepResult.stepSummary.toolFailureCount;
-      recordStepFeedback(deps, inputHandle, routingRunId, state.iteration, stepResult);
-
-      const beforeWorkStateChars = measureJson(stepResult.execution.nextWorkState);
-      const compactedWorkState = compactWorkState(stepResult.execution.nextWorkState);
-      recordCompactionMetric(metrics, "workState", beforeWorkStateChars, measureJson(compactedWorkState), { step: stepNumber });
-      state.workState = compactedWorkState;
-      state.toolContext = buildUpdatedToolContext(state, stepResult.execution);
-      stepResult.stepSummary.workState = compactedWorkState;
-      recordReducerFeedback(deps, inputHandle, routingRunId, state.iteration, {
-        beforeWorkStateChars,
-        compactedWorkState,
-        stepSummary: stepResult.stepSummary,
-      });
-
-      const compactedStep = compactStepSummaryForState(stepResult.stepSummary);
-      recordCompactionMetric(metrics, "completedStepSummary", measureJson(stepResult.stepSummary), measureJson(compactedStep), { step: stepNumber });
-      state.completedSteps.push(compactedStep);
-      const routingUpdate = extractTurnRoutingUpdate(stepResult.execution.actOutput.toolCalls);
-      if (routingUpdate?.status === "ready" || routingUpdate?.status === "ambiguous") {
-        deps.harnessContext = routingUpdate.harnessContext;
-        syncHarnessContext(state, deps, inputHandle);
-      }
-      const persistedContext = await recordRunStep(deps, state, decision.action, stepResult, {
-        startedAt: stepStartedAt,
-        completedAt: stepCompletedAt,
-      });
-      applyPersistedStepContext(deps, state, inputHandle, persistedContext);
-
-      if (routingUpdate?.status === "ready") {
-        if (routingUpdate.runId !== runHandle.runId) {
-          state.status = "failed";
-          state.finalOutput = "Workstream binding returned a different run identity, so execution stopped safely.";
-          recordFeedback(deps, inputHandle, runHandle.runId, "guard", "run_identity_mismatch", {
-            expectedRunId: runHandle.runId,
-            returnedRunId: routingUpdate.runId,
-          });
-          return finalize({ status: "failed", content: state.finalOutput });
-        }
-        deps.harnessContext = routingUpdate.harnessContext;
-        syncHarnessContext(state, deps, inputHandle);
-        recordFeedback(deps, inputHandle, runHandle.runId, "run", "workstream_bound", {
-          workstreamId: routingUpdate.workstreamId,
-          contextRepositoryPath: routingUpdate.contextRepositoryPath,
-          branch: routingUpdate.branch,
-          mode: routingUpdate.mode,
-          workstreamCreated: routingUpdate.workstreamCreated,
-          workstreamHead: routingUpdate.workstreamHead,
-          requestId: routingUpdate.requestId,
-          requestDecision: routingUpdate.requestDecision,
-          requestStatus: routingUpdate.requestStatus,
-          requestCreated: routingUpdate.requestCreated,
-          resources: routingUpdate.resources,
-        });
-        const workstreamLifecycle = {
-          repository: {
-            workstreamId: routingUpdate.workstreamId,
-            contextRepositoryPath: routingUpdate.contextRepositoryPath,
-            branch: routingUpdate.branch,
-            selectionMode: routingUpdate.mode,
-            workstreamCreated: routingUpdate.workstreamCreated,
-            headBefore: routingUpdate.workstreamHead,
-          },
-          request: {
-            decision: routingUpdate.requestDecision,
-            requestId: routingUpdate.requestId,
-            status: routingUpdate.requestStatus,
-            created: routingUpdate.requestCreated,
-          },
-          run: {
-            runId: routingUpdate.runId,
-            workstreamBound: true,
-          },
-          finalization: { status: "not_started" },
-        } as const;
-        recordFeedback(deps, inputHandle, runHandle.runId, "context_engine", "agent_routed", {
-          status: routingUpdate.status,
-          mode: routingUpdate.mode,
-          workstreamId: routingUpdate.workstreamId,
-          branch: routingUpdate.branch,
-          runId: routingUpdate.runId,
-          workstreamLifecycle,
-          contextEngine: buildContextEngineFeedbackSummary({
-            context: routingUpdate.harnessContext.contextEngine,
-            routeStatus: routingUpdate.status,
-            routeMode: routingUpdate.mode,
-            routeSource: "agent_tool",
-            pendingTurnStatus: "bound",
-            workstreamId: routingUpdate.workstreamId,
-            branch: routingUpdate.branch,
-            runId: routingUpdate.runId,
-            workstreamLifecycle,
-          }),
-        });
-      } else if (routingUpdate?.status === "ambiguous") {
-        deps.harnessContext = routingUpdate.harnessContext;
-        syncHarnessContext(state, deps, inputHandle);
-        recordFeedback(deps, inputHandle, routingRunId, "context_engine", "clarification_requested", {
-          status: routingUpdate.status,
-          contextEngine: buildContextEngineFeedbackSummary({
-            context: routingUpdate.harnessContext.contextEngine,
-            routeStatus: routingUpdate.status,
-            routeSource: "agent_tool",
-            pendingTurnStatus: "clarifying",
-          }),
-        });
-      }
-
-      if (stepResult.stepSummary.outcome === "failed") {
-        state.consecutiveFailures++;
-        state.failureHistory.push(createFailureRecordFromStepSummary(stepResult.stepSummary, state.failureHistory));
-        if (hasRepeatedRepairFailure(state.failureHistory)) {
-          recordRepeatedRepairFailure({
-            deps,
-            inputHandle,
-            state,
-            runId: routingRunId,
-          });
-          state.status = "failed";
-          state.finalOutput = buildFailureReply(state);
-          return finalize({ status: "failed", content: state.finalOutput });
-        }
-        if (state.consecutiveFailures >= config.maxConsecutiveFailures) {
-          state.status = "failed";
-          state.finalOutput = buildFailureReply(state);
-          return finalize({ status: "failed", content: state.finalOutput });
-        }
-      } else {
-        state.consecutiveFailures = 0;
-      }
-
-      recordStateSnapshotMetric("after_pending_routing_step");
-      deps.onProgress?.(
-        `Step ${stepNumber}: ${stepResult.stepSummary.executionContract} -> ${stepResult.stepSummary.outcome}`,
-        state.runPath,
-      );
-      continue;
-    }
-
     const activeToolsForRun = deps.toolWorkingSetManager?.listActive(toolContext) ?? [];
-    const routingToolsForRun = activeToolsForRun.filter(isGitContextRoutingToolName);
     recordFeedback(deps, inputHandle, runHandle.runId, "tools", "run_tools_enabled", {
       iteration: state.iteration,
       toolContextRunId: toolContext.runId,
       workstreamBound: isWorkstreamBound(state),
       activeTools: activeToolsForRun,
-      normalTools: activeToolsForRun.filter((tool) => !isGitContextRoutingToolName(tool)),
-      routingTools: routingToolsForRun,
+      normalTools: activeToolsForRun,
+      routingTools: [],
     });
-    const completedRoutingTools = latestCompletedWorkstreamRoutingToolNames(state);
-    if (completedRoutingTools.length > 0 && routingToolsForRun.length === 0) {
-      recordFeedback(deps, inputHandle, runHandle.runId, "tools", "routing_tools_deactivated", {
-        iteration: state.iteration,
-        completedRoutingTools,
-        activeTools: activeToolsForRun,
-      });
-    }
     const readProgressViolation = evaluateReadProgressGuard(state.readProgress, decision.action);
     if (readProgressViolation) {
       recordReadProgressRepair({
@@ -1184,7 +1014,7 @@ async function buildFinalResponseFromWorkState(input: {
       workstreamFeedbackToolAvailable: false,
       workstreamBound: isWorkstreamBound(input.state),
       toolContextProjectionPolicy: input.config.toolContextProjectionPolicy,
-      timelineCheckpointCache: input.state.timelineCheckpointCache,
+      contextCheckpoint: input.deps.contextCheckpoint,
       systemContext: [
         input.deps.systemContext,
         "Final response-only mode: tools are unavailable. Reply naturally to the user from context.run.workState, verified facts, artifacts, and recent tool-call memory. Do not mention harness internals. Do not say control tool names such as workstream_completion, decision_load_tools, or ask_user_feedback.",
@@ -1318,7 +1148,7 @@ function isWorkstreamFeedbackToolAvailable(state: LoopState): boolean {
 }
 
 function isWorkstreamBound(state: LoopState): boolean {
-  return state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "bound";
+  return state.harnessContext.contextEngine?.current.routing?.status === "bound";
 }
 
 function deriveRunTerminal(

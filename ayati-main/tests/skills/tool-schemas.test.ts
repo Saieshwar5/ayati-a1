@@ -12,7 +12,7 @@ import type { SessionAttachmentService } from "../../src/documents/session-attac
 import type { RecallRetriever } from "../../src/skills/builtins/recall/index.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
 import { WorkspaceOrchestrator } from "../../src/ui/workspace-orchestrator.js";
-import { ContractOnlyGitContextService } from "ayati-git-context";
+import { ContractOnlyContextEngineService } from "ayati-context-engine";
 
 function findMissingArrayItems(schema: unknown, path = "inputSchema"): string[] {
   if (!schema || typeof schema !== "object") {
@@ -99,7 +99,7 @@ async function buildRuntimeTools(): Promise<ToolDefinition[]> {
       preparedAttachmentService,
     }).tools,
     ...createGitContextSkill({
-      service: new ContractOnlyGitContextService(),
+      service: new ContractOnlyContextEngineService(),
     }).tools,
     ...createUiSkill({
       workspaceOrchestrator: new WorkspaceOrchestrator({
@@ -134,7 +134,8 @@ describe("runtime tool schemas", () => {
     const activateWorkstream = tools.find((tool) => tool.name === "git_context_activate_workstream");
     expect(activateWorkstream?.inputSchema.properties?.["requestDecision"]).toMatchObject({ type: "object" });
     expect(activateWorkstream?.inputSchema.required).toEqual(["workstreamId", "reason", "requestDecision"]);
-    expect(createWorkstream?.outputSchema.properties?.["contextRepositoryPath"]).toMatchObject({ type: "string" });
+    expect(createWorkstream?.outputSchema.properties).not.toHaveProperty("contextRepositoryPath");
+    expect(createWorkstream?.outputSchema.properties?.["streamId"]).toMatchObject({ type: "string" });
     expect(createWorkstream?.outputSchema.properties?.["resources"]).toMatchObject({ type: "array" });
     expect(issues).toEqual([]);
   });

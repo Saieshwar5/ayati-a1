@@ -10,6 +10,9 @@ import {
   processStopTool,
 } from "../../src/skills/builtins/process/index.js";
 import { workspaceRoot } from "../../src/skills/workspace-paths.js";
+import { canCaptureNodeSubprocessOutput } from "../fixtures/runtime-capabilities.js";
+
+const supportsSubprocessOutput = canCaptureNodeSubprocessOutput();
 
 describe("focused process tools", () => {
   it("runs one executable with structured arguments", async () => {
@@ -34,7 +37,7 @@ describe("focused process tools", () => {
     expect(result.rawOutput?.trim()).toBe("hello; echo should-not-run");
   });
 
-  it("returns stdout and stderr when an executable fails", async () => {
+  it.runIf(supportsSubprocessOutput)("returns stdout and stderr when an executable fails", async () => {
     const temp = await mkdtemp(join(tmpdir(), "ayati-process-failure-"));
     try {
       const scriptPath = join(temp, "fail.mjs");
@@ -57,7 +60,7 @@ describe("focused process tools", () => {
     ["find", "find_files"],
     ["ls", "list_directory"],
     ["sqlite3", "database tools"],
-    ["git", "Git Context runtime"],
+    ["git", "Context Engine runtime"],
     ["python3", "python_execute"],
     ["curl", "file_fetch_url"],
   ])("rejects %s because a focused tool owns the capability", async (executable, owner) => {
@@ -76,7 +79,7 @@ describe("focused process tools", () => {
     expect(inline.v2?.code).toBe("PROCESS_INLINE_CODE_BLOCKED");
   });
 
-  it("defaults cwd to the configured workspace", async () => {
+  it.runIf(supportsSubprocessOutput)("defaults cwd to the configured workspace", async () => {
     const temp = await mkdtemp(join(tmpdir(), "ayati-process-cwd-"));
     try {
       const scriptPath = join(temp, "cwd.mjs");
@@ -98,7 +101,7 @@ describe("focused process tools", () => {
     expect(result.v2?.code).toBe("ABSOLUTE_PATH_REQUIRED");
   });
 
-  it("separates process input, polling, and stopping", async () => {
+  it.runIf(supportsSubprocessOutput)("separates process input, polling, and stopping", async () => {
     const temp = await mkdtemp(join(tmpdir(), "ayati-process-session-"));
     try {
       const scriptPath = join(temp, "echo-input.mjs");

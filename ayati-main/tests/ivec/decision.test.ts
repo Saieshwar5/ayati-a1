@@ -47,44 +47,23 @@ describe("callAgentDecision", () => {
     expect(traceOutput).toContain("raw_response=Hi!");
   });
 
-  it("sends recent committed session work to the provider for a follow-up", async () => {
+  it("sends slow agent-stream work references to the provider for a follow-up", async () => {
     const { provider, generateTurn } = createProvider([
       "I created index.html and styles.css.",
     ]);
-    const recentCommit = {
-      commit: "commit-1",
-      subject: "session: created aurora coffee website",
-      conversationSummary: "The user requested an Aurora Coffee website.",
-      workSummary: "Created and validated the responsive website.",
-      assets: [
-        { path: "aurora-coffee-site/index.html", description: "Main website page" },
-        { path: "aurora-coffee-site/styles.css", description: "Responsive styling" },
-      ],
-      outcome: "done",
-      validation: "passed",
+    const recentWork = {
       workstreamId: "W-20260714-0001",
-      runId: "R-20260714-0004",
+      requestId: "R-0001",
+      outcome: "done",
+      resourceIds: ["RES-0123456789ABCDEF01234567"],
+      completedAt: "2026-07-14T10:30:00.000Z",
     };
 
     await callAgentDecision({
       provider,
       stateView: createStateView({
         context: {
-          timeline: [{
-            kind: "user",
-            seq: 2,
-            timestamp: "2026-07-14T10:31:00.000Z",
-            content: "What files did you create?",
-            current: true,
-          }],
-          git: {
-            session: {
-              meta: { sessionId: "S-20260714-local", resourceCount: 0 },
-              recentCommits: [recentCommit],
-              activity: { recent: [] },
-            },
-            current: { focus: { status: "none" } },
-          },
+          stream: { agentId: "local", scopeKey: "default", recentWork: [recentWork] },
         },
       }),
       toolDefinitions: [],
@@ -92,10 +71,9 @@ describe("callAgentDecision", () => {
 
     const sentState = promptStateFromTurn(generateTurn.mock.calls[0]![0]);
     const sentContext = sentState["context"] as {
-      git: { session: { recentCommits?: unknown[] } };
+      stream: { recentWork: unknown[] };
     };
-    const { runId: _runId, ...promptCommit } = recentCommit;
-    expect(sentContext.git.session.recentCommits).toEqual([promptCommit]);
+    expect(sentContext.stream.recentWork).toEqual([recentWork]);
   });
 
   it("does not log decision traces by default", async () => {
@@ -133,11 +111,12 @@ describe("callAgentDecision", () => {
     expect(systemPrompt).toContain("Call the selected native tool directly");
     expect(systemPrompt).toContain("ask_user_feedback is available only in an active workstream-bound run");
     expect(systemPrompt).toContain("Do not use feedback controls for casual conversation");
-    expect(systemPrompt).toContain("There is no session-global active workstream");
+    expect(systemPrompt).toContain("There is no agent-stream-global active workstream");
     expect(systemPrompt).toContain("A workstream is durable context for a long-lived subject");
     expect(systemPrompt).toContain("A later feature, lesson, analysis, or improvement normally becomes a new request");
     expect(systemPrompt).toContain("Exact workstream identity, exact resource identity, and explicit continuation are strongest");
-    expect(systemPrompt).toContain("If ownership is ambiguous, ask one short clarification question");
+    expect(systemPrompt).toContain("If the resolver publishes context.work.resolution.status=needs_user_input");
+    expect(systemPrompt).toContain("call workstream_resolve once");
     expect(systemPrompt).toContain("Persistent mutation requires one immutable workstream/request binding");
     expect(systemPrompt).toContain("Use decision_load_tools when a needed tool is absent");
     expect(systemPrompt).not.toContain("decision_act");
@@ -156,13 +135,17 @@ describe("callAgentDecision", () => {
 
     const messages = generateTurn.mock.calls[0]?.[0]?.messages ?? [];
     const systemPrompt = messages.find((message) => message.role === "system")?.content ?? "";
-    expect(systemPrompt).toContain("Treat State view.context as the bounded context pack");
-    expect(systemPrompt).toContain("context.git.current.workstream");
-    expect(systemPrompt).toContain("context.git.session.resources");
-    expect(systemPrompt).toContain("Use context.git.session.summary as compressed history");
-    expect(systemPrompt).toContain("context.timeline as exact recent history");
-    expect(systemPrompt).toContain("exact later items override older checkpoints or summaries");
-    expect(systemPrompt).toContain("Do not infer details omitted from summaries");
+    expect(systemPrompt).toContain("Treat State view.context as a bounded layered context pack");
+    expect(systemPrompt).toContain("context.current for current input identity and routing state");
+    expect(systemPrompt).toContain("exact current content is the context.temporal.recent item");
+    expect(systemPrompt).toContain("context.stream for slow cross-run continuity");
+    expect(systemPrompt).toContain("context.work for workstreams");
+    expect(systemPrompt).toContain("context.resources for exact resource identity");
+    expect(systemPrompt).toContain("context.observations for reusable list/search/read results");
+    expect(systemPrompt).toContain("context.temporal.checkpoint as compressed earlier history");
+    expect(systemPrompt).toContain("context.temporal.recent as exact later history");
+    expect(systemPrompt).toContain("exact later items override the stream checkpoint");
+    expect(systemPrompt).toContain("Do not infer details omitted from checkpoints");
     expect(systemPrompt).not.toContain("context.run.status");
     expect(systemPrompt).toContain("context.run.workState");
     expect(systemPrompt).toContain("context.run.toolCalls");
@@ -172,11 +155,10 @@ describe("callAgentDecision", () => {
     expect(systemPrompt).not.toContain("context.scratch");
     expect(systemPrompt).not.toContain("context.run.progress");
     expect(systemPrompt).not.toContain("context.run.feedback");
-    expect(systemPrompt).toContain("context.harness for deterministic feedback");
-    expect(systemPrompt).not.toContain("context.run.readContext.latest");
-    expect(systemPrompt).not.toContain("context.run.observations.latest");
+    expect(systemPrompt).toContain("specific context.harness feedback");
+    expect(systemPrompt).not.toContain("context.run.actions");
     expect(systemPrompt).not.toContain("context.run.trace");
-    expect(systemPrompt).toContain("context.tools for tool state");
+    expect(systemPrompt).toContain("context.tools for current tool state");
     expect(systemPrompt).toContain("context.personal for long-lived user memory");
     expect(systemPrompt).not.toContain("context.gitContext");
     expect(systemPrompt).not.toContain("State view.progress");
@@ -193,30 +175,13 @@ describe("callAgentDecision", () => {
       provider,
       stateView: createStateView({
         context: {
-          timeline: [{
+          temporal: { recent: [{
             kind: "user",
             seq: 1,
             timestamp: new Date(0).toISOString(),
             content: "continue",
             current: true,
-          }],
-          git: {
-            session: {
-              meta: {
-                sessionId: "S-20260627-local",
-                resourceCount: 0,
-              },
-              summary: {
-                text: "Session summary.",
-              },
-              activity: {
-                recent: [],
-              },
-            },
-            current: {
-              focus: { status: "none" },
-            },
-          },
+          }] },
           gitContext: {
             session: {
               meta: {
@@ -240,7 +205,9 @@ describe("callAgentDecision", () => {
     });
 
     const breakdown = metrics.promptGrowthState.agent_decision?.stateBreakdown ?? {};
-    expect(breakdown["state.context.git"]).toBeGreaterThan(0);
+    expect(breakdown["state.context.temporal"]).toBeGreaterThan(0);
+    expect(breakdown["state.context.stream"]).toBeGreaterThan(0);
+    expect(breakdown).not.toHaveProperty("state.context.git");
     expect(breakdown).not.toHaveProperty("state.context.gitContext");
   });
 
@@ -392,86 +359,6 @@ describe("callAgentDecision", () => {
     }));
   });
 
-  it("records a pressure-only tool projection plan without changing the request", async () => {
-    const generateTurn = vi.fn().mockResolvedValue({
-      type: "assistant",
-      content: "Done",
-    });
-    const provider: LlmProvider = {
-      name: "fake-provider",
-      version: "test-model",
-      capabilities: { nativeToolCalling: true },
-      start() {},
-      stop() {},
-      countInputTokens: vi.fn().mockResolvedValue({
-        provider: "fake-provider",
-        model: "test-model",
-        inputTokens: 80_000,
-        exact: true,
-      }),
-      generateTurn,
-    };
-    const metrics = createRunMetrics();
-    const toolCalls = Array.from({ length: 10 }, (_, index) => ({
-      step: index + 1,
-      callId: `call-${index + 1}`,
-      tool: "read_files",
-      input: { path: `src/file-${index + 1}.ts` },
-      status: "success" as const,
-      retention: "next_step" as const,
-      mode: "full" as const,
-      output: "x".repeat(30_000),
-      projectionMetadata: { filePath: `src/file-${index + 1}.ts`, lineCount: 1_000 },
-      stepRef: { runId: "run-1", step: index + 1, callId: `call-${index + 1}` },
-    }));
-
-    await callAgentDecision({
-      provider,
-      stateView: createStateView({
-        context: {
-          timeline: [{
-            kind: "user",
-            seq: 1,
-            timestamp: "2026-07-10T00:00:00.000Z",
-            content: "Continue the workstream",
-            current: true,
-          }],
-          run: { toolCalls },
-        },
-      }),
-      toolDefinitions: [],
-      metrics,
-    });
-
-    const event = metrics.optimizationEvents.find(
-      (item) => item.kind === "tool_context_projection_shadow",
-    );
-    expect(event?.data).toMatchObject({
-      shadow: true,
-      triggered: true,
-      candidateInputTokens: 80_000,
-      recoveryTargetTokens: 60_000,
-      hotWindowSize: 6,
-      shadowLocalEstimateTokens: expect.any(Number),
-      correctedShadowLocalEstimateTokens: expect.any(Number),
-    });
-    const plannedCalls = event?.data["calls"] as Array<{ mode: string; reason: string; projectorId?: string }>;
-    expect(event?.data["estimatedSavingsTokens"]).toBeGreaterThan(0);
-    expect(event?.data["projectedInputTokens"]).toBeLessThan(80_000);
-    expect(plannedCalls.slice(-6).every((call) => call.mode === "full")).toBe(true);
-    expect(plannedCalls.slice(0, 4).some((call) => call.projectorId === "filesystem_read_v1")).toBe(true);
-
-    const sentUserPrompt = generateTurn.mock.calls[0]?.[0]?.messages
-      .find((message: { role: string }) => message.role === "user")?.content;
-    if (typeof sentUserPrompt !== "string") {
-      throw new Error("Expected a user prompt.");
-    }
-    const sentState = parsePromptStateView(sentUserPrompt);
-    const sentCalls = (sentState["context"] as { run: { toolCalls: Array<{ mode: string }> } }).run.toolCalls;
-    expect(sentCalls.every((call) => call.mode === "full")).toBe(true);
-    expect(sentCalls.every((call) => !("projectionMetadata" in call))).toBe(true);
-  });
-
   it("enforces tool projection and admits the measured final request", async () => {
     const generateTurn = vi.fn().mockResolvedValue({
       type: "assistant",
@@ -505,16 +392,7 @@ describe("callAgentDecision", () => {
           content: "Continue the workstream",
           current: true,
         }],
-        git: {
-          session: {
-            meta: { sessionId: "session-1", resourceCount: 0 },
-            activity: { recent: [] },
-          },
-          current: {
-            focus: { status: "active", ref: "refs/heads/main", workstreamId: "W-1" },
-            workstream,
-          },
-        },
+        work: { active: workstream, candidates: [] },
         run: { workState, toolCalls: largeToolCalls(50_000) },
       },
     });
@@ -552,248 +430,13 @@ describe("callAgentDecision", () => {
     if (typeof sentUserPrompt !== "string") throw new Error("Expected a user prompt.");
     const sentState = parsePromptStateView(sentUserPrompt);
     const sentContext = sentState["context"] as {
-      git: { current: { workstream: unknown } };
+      work: { active: unknown };
       run: { workState: unknown; toolCalls: Array<{ mode: string }> };
     };
-    expect(sentContext.git.current.workstream).toEqual(workstream);
+    expect(sentContext.work.active).toEqual(workstream);
     expect(sentContext.run.workState).toEqual(workState);
     expect(sentContext.run.toolCalls.slice(0, 4).some((call) => call.mode !== "full")).toBe(true);
     expect(sentContext.run.toolCalls.slice(-6).every((call) => call.mode === "full")).toBe(true);
-  });
-
-  it("sheds low-value session context before touching the exact timeline", async () => {
-    const generateTurn = vi.fn().mockResolvedValue({
-      type: "assistant",
-      content: "Continue",
-    });
-    const countInputTokens = vi.fn(async (turnInput: LlmTurnInput) => {
-      const state = promptStateFromTurn(turnInput);
-      const session = (state["context"] as {
-        git: { session: { summary?: unknown; recentRunCheckpoints?: unknown[] } };
-      }).git.session;
-      return {
-        provider: "fake-provider",
-        model: "test-model",
-        inputTokens: session.summary ? 85_000 : 65_000,
-        exact: true,
-      };
-    });
-    const provider: LlmProvider = {
-      name: "fake-provider",
-      version: "test-model",
-      capabilities: { nativeToolCalling: true },
-      start() {},
-      stop() {},
-      countInputTokens,
-      generateTurn,
-    };
-    const workState = {
-      status: "not_done" as const,
-      openWork: ["Continue the protected workstream."],
-      nextStep: "Take the next small step.",
-    };
-    const stateView = contextPressureState({
-      timeline: [{
-        kind: "user",
-        seq: 11,
-        timestamp: "2026-07-10T10:01:00.000Z",
-        content: "Continue.",
-        current: true,
-      }],
-      workState,
-    });
-    const sourceBefore = structuredClone(stateView);
-    const onContextCompilation = vi.fn();
-
-    await callAgentDecision({
-      provider,
-      stateView,
-      toolDefinitions: [],
-      toolContextProjectionPolicy: "enforce",
-      onContextCompilation,
-    });
-
-    expect(stateView).toEqual(sourceBefore);
-    expect(countInputTokens).toHaveBeenCalledTimes(2);
-    expect(generateTurn).toHaveBeenCalledTimes(1);
-    expect(onContextCompilation).toHaveBeenCalledWith(expect.objectContaining({
-      mode: "session_shed",
-      candidateInputTokens: 85_000,
-      intermediateInputTokens: 85_000,
-      finalInputTokens: 65_000,
-      needsEscalation: false,
-      sessionShedding: {
-        removedSummary: true,
-        removedCheckpointCount: 4,
-        retainedCheckpointId: "checkpoint-5",
-        removedActivityCount: 1,
-        tokensBefore: 85_000,
-        tokensAfter: 65_000,
-      },
-    }));
-
-    const sentState = promptStateFromTurn(generateTurn.mock.calls[0]![0]);
-    const sentContext = sentState["context"] as {
-      timeline: unknown;
-      git: {
-        session: {
-          summary?: unknown;
-          recentRunCheckpoints?: Array<{ checkpointId: string }>;
-          attachments?: unknown;
-          activity: { recent: unknown[] };
-        };
-        current: { workstream: unknown };
-      };
-      run: { workState: unknown };
-    };
-    expect(sentContext.git.session).not.toHaveProperty("summary");
-    expect(sentContext.git.session.recentRunCheckpoints?.map((item) => item.checkpointId)).toEqual(["checkpoint-5"]);
-    expect(JSON.stringify(sentContext)).not.toContain('"runId"');
-    expect(sentContext.git.session.activity.recent).toEqual([]);
-    expect(sentContext.git.session.attachments).toEqual(
-      stateView.context.git?.session.attachments,
-    );
-    expect(sentContext.timeline).toEqual(stateView.context.timeline);
-    expect(sentContext.git.current.workstream).toEqual(protectedWorkstreamContext());
-    expect(sentContext.run.workState).toEqual(workState);
-  });
-
-  it("combines the latest workstream-bound run checkpoint with the old timeline prefix", async () => {
-    const generateTurn = vi.fn(async (turnInput: LlmTurnInput): Promise<LlmTurnOutput> => {
-      if (turnInput.responseFormat?.type === "json_schema") {
-        return { type: "assistant", content: JSON.stringify(validTimelineCheckpointSummary(9)) };
-      }
-      return {
-        type: "assistant",
-        content: "Recovered",
-      };
-    });
-    const countInputTokens = vi.fn(async (turnInput: LlmTurnInput) => {
-      const state = promptStateFromTurn(turnInput);
-      const context = state["context"] as {
-        timeline: Array<{ kind: string }>;
-        git: { session: { summary?: unknown } };
-      };
-      return {
-        provider: "fake-provider",
-        model: "test-model",
-        inputTokens: context.timeline.some((event) => event.kind === "checkpoint")
-          ? 55_000
-          : context.git.session.summary
-            ? 85_000
-            : 75_000,
-        exact: true,
-      };
-    });
-    const provider: LlmProvider = {
-      name: "fake-provider",
-      version: "test-model",
-      capabilities: {
-        nativeToolCalling: true,
-        structuredOutput: { jsonObject: true, jsonSchema: true },
-      },
-      start() {},
-      stop() {},
-      countInputTokens,
-      generateTurn,
-    };
-    const workState = {
-      status: "not_done" as const,
-      verifiedFacts: ["The protected workstream is active."],
-      nextStep: "Continue after recovery.",
-    };
-    const timeline = pressureTimelineAfterCheckpoint();
-    const stateView = contextPressureState({ timeline, workState });
-    const sourceBefore = structuredClone(stateView);
-    const onContextCompilation = vi.fn();
-
-    const decision = await callAgentDecision({
-      provider,
-      stateView,
-      toolDefinitions: [],
-      toolContextProjectionPolicy: "enforce",
-      onContextCompilation,
-    });
-
-    expect(decision).toMatchObject({ kind: "reply", message: "Recovered" });
-    expect(stateView).toEqual(sourceBefore);
-    expect(countInputTokens).toHaveBeenCalledTimes(3);
-    expect(onContextCompilation).toHaveBeenCalledWith(expect.objectContaining({
-      mode: "timeline_checkpoint",
-      candidateInputTokens: 85_000,
-      intermediateInputTokens: 75_000,
-      finalInputTokens: 55_000,
-      sessionShedding: expect.objectContaining({
-        retainedCheckpointId: "checkpoint-5",
-      }),
-    }));
-
-    const checkpointInput = generateTurn.mock.calls.find((call) => call[0].responseFormat)?.[0];
-    const checkpointSource = checkpointInput?.messages.find((message) => message.role === "user")?.content;
-    if (typeof checkpointSource !== "string") throw new Error("Expected checkpoint source.");
-    expect(checkpointSource).toContain('"previousWorkstreamBoundRunCheckpoint"');
-    expect(checkpointSource).not.toContain('"runId"');
-    expect(checkpointSource).toContain('"seq": 11');
-
-    const decisionInput = generateTurn.mock.calls.find((call) => !call[0].responseFormat)?.[0];
-    if (!decisionInput) throw new Error("Expected final decision input.");
-    const sentState = promptStateFromTurn(decisionInput);
-    const sentContext = sentState["context"] as {
-      timeline: Array<{ kind: string; seq: number; current?: true }>;
-      git: {
-        session: { summary?: unknown; recentRunCheckpoints?: unknown; activity: { recent: unknown[] } };
-        current: { workstream: unknown };
-      };
-      run: { workState: unknown };
-    };
-    expect(sentContext.timeline[0]).toMatchObject({ kind: "checkpoint", seq: 11 });
-    expect(sentContext.timeline.at(-1)).toEqual(timeline.at(-1));
-    expect(sentContext.git.session).not.toHaveProperty("summary");
-    expect(sentContext.git.session).not.toHaveProperty("recentRunCheckpoints");
-    expect(sentContext.git.session.activity.recent).toEqual([]);
-    expect(sentContext.git.current.workstream).toEqual(protectedWorkstreamContext());
-    expect(sentContext.run.workState).toEqual(workState);
-  });
-
-  it("ends recovery when the combined checkpoint remains above the soft limit", async () => {
-    const generateTurn = vi.fn(async (turnInput: LlmTurnInput): Promise<LlmTurnOutput> => {
-      if (!turnInput.responseFormat) throw new Error("A normal decision must not be requested.");
-      return { type: "assistant", content: JSON.stringify(validTimelineCheckpointSummary(9)) };
-    });
-    const countInputTokens = vi.fn()
-      .mockResolvedValueOnce({ provider: "fake-provider", model: "test-model", inputTokens: 85_000, exact: true })
-      .mockResolvedValueOnce({ provider: "fake-provider", model: "test-model", inputTokens: 75_000, exact: true })
-      .mockResolvedValueOnce({ provider: "fake-provider", model: "test-model", inputTokens: 72_000, exact: true });
-    const provider: LlmProvider = {
-      name: "fake-provider",
-      version: "test-model",
-      capabilities: {
-        nativeToolCalling: true,
-        structuredOutput: { jsonObject: true, jsonSchema: true },
-      },
-      start() {},
-      stop() {},
-      countInputTokens,
-      generateTurn,
-    };
-    const onContextCompilation = vi.fn();
-
-    await expect(callAgentDecision({
-      provider,
-      stateView: contextPressureState({ timeline: pressureTimelineAfterCheckpoint() }),
-      toolDefinitions: [],
-      toolContextProjectionPolicy: "enforce",
-      onContextCompilation,
-    })).rejects.toBeInstanceOf(ContextRunCapacityError);
-
-    expect(generateTurn).toHaveBeenCalledTimes(1);
-    expect(generateTurn.mock.calls[0]?.[0].responseFormat?.type).toBe("json_schema");
-    expect(onContextCompilation).toHaveBeenCalledWith(expect.objectContaining({
-      mode: "timeline_checkpoint",
-      finalInputTokens: 72_000,
-      recoveryExhausted: true,
-      needsEscalation: true,
-    }));
   });
 
   it("rejects an enforced projection when the measured final request remains over hard limit", async () => {
@@ -938,143 +581,9 @@ describe("callAgentDecision", () => {
     expect(repairedFinalMessages.at(-1)?.content).toContain("Do not write tool-call JSON in assistant text");
   });
 
-  it("combines tool and timeline projection and reuses the checkpoint across a decision repair", async () => {
-    let decisionCalls = 0;
+  it("skips stream checkpointing when tool projection reaches the recovery target", async () => {
     const generateTurn = vi.fn(async (turnInput: LlmTurnInput): Promise<LlmTurnOutput> => {
-      if (turnInput.responseFormat?.type === "json_schema") {
-        return { type: "assistant", content: JSON.stringify(validTimelineCheckpointSummary()) };
-      }
-      decisionCalls++;
-      return decisionCalls === 1
-        ? {
-            type: "assistant",
-            content: "{\"kind\":\"act\",\"action\":{\"mode\":\"single\",\"allowedTools\":[\"read_files\"],\"calls\":[{\"id\":\"call-new\",\"t",
-          }
-        : {
-            type: "assistant",
-            content: "Repaired",
-          };
-    });
-    const countInputTokens = vi.fn(async (turnInput: LlmTurnInput) => {
-      const userPrompt = turnInput.messages.find((message) => message.role === "user")?.content;
-      if (typeof userPrompt !== "string") throw new Error("Expected a user prompt.");
-      const state = parsePromptStateView(userPrompt);
-      const context = state["context"] as {
-        timeline: Array<{ kind: string }>;
-        run: { toolCalls: Array<{ mode: string }> };
-      };
-      const hasCheckpoint = context.timeline.some((event) => event.kind === "checkpoint");
-      const hasToolProjection = context.run.toolCalls.some((call) => call.mode !== "full");
-      return {
-        provider: "fake-provider",
-        model: "test-model",
-        inputTokens: hasCheckpoint ? 55_000 : hasToolProjection ? 75_000 : 85_000,
-        exact: true,
-      };
-    });
-    const provider: LlmProvider = {
-      name: "fake-provider",
-      version: "test-model",
-      capabilities: {
-        nativeToolCalling: true,
-        structuredOutput: { jsonObject: true, jsonSchema: true },
-      },
-      start() {},
-      stop() {},
-      countInputTokens,
-      generateTurn,
-    };
-    const workState = {
-      status: "not_done" as const,
-      blockers: [],
-      verifiedFacts: ["Protected work state"],
-      nextStep: "Continue after checkpointing.",
-    };
-    const stateView = createStateView({
-      context: {
-        timeline: pressureTimeline(),
-        git: {
-          session: { meta: { sessionId: "session-1", resourceCount: 0 }, activity: { recent: [] } },
-          current: {
-            focus: { status: "active", ref: "refs/heads/main", workstreamId: "W-1" },
-            workstream: protectedWorkstreamContext(),
-          },
-        },
-        run: {
-          workState,
-          toolCalls: largeToolCalls(50_000),
-          contextPressure: {
-            mode: "tool_compact",
-            recommendedMode: "timeline_checkpoint",
-            escalationReason: "repeated_unresolved_pressure",
-            unresolvedPressureStreak: 2,
-            compactedCalls: 4,
-            recoverable: true,
-          },
-        },
-      },
-    });
-    const sourceBefore = structuredClone(stateView);
-    const onContextCompilation = vi.fn();
-
-    const decision = await callAgentDecision({
-      provider,
-      stateView,
-      toolDefinitions: [createTool("read_files")],
-      toolContextProjectionPolicy: "enforce",
-      onContextCompilation,
-    });
-
-    expect(decision).toMatchObject({ kind: "reply", message: "Repaired" });
-    expect(stateView).toEqual(sourceBefore);
-    expect(countInputTokens).toHaveBeenCalledTimes(6);
-    expect(generateTurn.mock.calls.filter((call) => call[0].responseFormat?.type === "json_schema")).toHaveLength(1);
-    expect(onContextCompilation).toHaveBeenCalledTimes(2);
-    expect(onContextCompilation.mock.calls[0]?.[0]).toMatchObject({
-      mode: "timeline_checkpoint",
-      candidateInputTokens: 85_000,
-      intermediateInputTokens: 75_000,
-      finalInputTokens: 55_000,
-      timelineCheckpoint: { cacheStatus: "generated", generationAttempts: 1 },
-      targetReached: true,
-    });
-    expect(onContextCompilation.mock.calls[1]?.[0]).toMatchObject({
-      mode: "timeline_checkpoint",
-      timelineCheckpoint: { cacheStatus: "success_hit", generationAttempts: 0 },
-    });
-
-    const finalDecisionInput = generateTurn.mock.calls.filter(
-      (call) => !call[0].responseFormat,
-    ).at(-1)?.[0];
-    const finalUserPrompt = finalDecisionInput?.messages.find((message) => message.role === "user")?.content;
-    if (typeof finalUserPrompt !== "string") throw new Error("Expected final decision prompt.");
-    const sentState = parsePromptStateView(finalUserPrompt);
-    const sentContext = sentState["context"] as {
-      timeline: Array<{ kind: string; current?: true; content?: string }>;
-      git: { current: { workstream: unknown } };
-      run: {
-        workState: unknown;
-        toolCalls: Array<{ mode: string }>;
-        contextPressure: { mode: string; recommendedMode?: string };
-      };
-    };
-    expect(sentContext.timeline[0]?.kind).toBe("checkpoint");
-    expect(sentContext.timeline.at(-1)).toMatchObject({
-      kind: "user",
-      content: pressureTimeline().at(-1)?.content,
-      current: true,
-    });
-    expect(sentContext.git.current.workstream).toEqual(protectedWorkstreamContext());
-    expect(sentContext.run.workState).toEqual(workState);
-    expect(sentContext.run.toolCalls.slice(0, 4).some((call) => call.mode !== "full")).toBe(true);
-    expect(sentContext.run.toolCalls.slice(-6).every((call) => call.mode === "full")).toBe(true);
-    expect(sentContext.run.contextPressure).toMatchObject({ mode: "timeline_checkpoint" });
-    expect(sentContext.run.contextPressure).not.toHaveProperty("recommendedMode");
-  });
-
-  it("skips timeline generation when tool projection reaches the recovery target", async () => {
-    const generateTurn = vi.fn(async (turnInput: LlmTurnInput): Promise<LlmTurnOutput> => {
-      if (turnInput.responseFormat) throw new Error("Timeline checkpoint should not run.");
+      if (turnInput.responseFormat) throw new Error("Stream checkpoint should not run.");
       return {
         type: "assistant",
         content: "Recovered",
@@ -1114,78 +623,6 @@ describe("callAgentDecision", () => {
       finalInputTokens: 58_000,
       targetReached: true,
     }));
-  });
-
-  it("ends context recovery when checkpoint generation fails above the soft limit", async () => {
-    const generateTurn = vi.fn(async (turnInput: LlmTurnInput): Promise<LlmTurnOutput> => {
-      return turnInput.responseFormat
-        ? { type: "assistant", content: "invalid-checkpoint" }
-        : { type: "assistant", content: "Fallback" };
-    });
-    const provider: LlmProvider = {
-      name: "fake-provider",
-      version: "test-model",
-      capabilities: { nativeToolCalling: true, structuredOutput: { jsonObject: true, jsonSchema: true } },
-      start() {},
-      stop() {},
-      countInputTokens: vi.fn().mockResolvedValue({
-        provider: "fake-provider",
-        model: "test-model",
-        inputTokens: 80_000,
-        exact: true,
-      }),
-      generateTurn,
-    };
-    const timeline = pressureTimeline();
-    const onContextCompilation = vi.fn();
-
-    await expect(callAgentDecision({
-      provider,
-      stateView: checkpointRecommendedState(timeline),
-      toolDefinitions: [],
-      toolContextProjectionPolicy: "enforce",
-      onContextCompilation,
-    })).rejects.toBeInstanceOf(ContextRunCapacityError);
-
-    expect(generateTurn.mock.calls.filter((call) => call[0].responseFormat)).toHaveLength(2);
-    expect(generateTurn.mock.calls.every((call) => call[0].responseFormat)).toBe(true);
-    expect(onContextCompilation).toHaveBeenCalledWith(expect.objectContaining({
-      mode: "full",
-      admitted: true,
-      needsEscalation: false,
-      recoveryExhausted: true,
-    }));
-  });
-
-  it("rejects before the decision call when checkpoint failure leaves the request over hard admission", async () => {
-    const generateTurn = vi.fn(async (): Promise<LlmTurnOutput> => ({
-      type: "assistant",
-      content: "invalid-checkpoint",
-    }));
-    const provider: LlmProvider = {
-      name: "fake-provider",
-      version: "test-model",
-      capabilities: { nativeToolCalling: true, structuredOutput: { jsonObject: true, jsonSchema: true } },
-      start() {},
-      stop() {},
-      countInputTokens: vi.fn().mockResolvedValue({
-        provider: "fake-provider",
-        model: "test-model",
-        inputTokens: 101_000,
-        exact: true,
-      }),
-      generateTurn,
-    };
-
-    await expect(callAgentDecision({
-      provider,
-      stateView: checkpointRecommendedState(pressureTimeline()),
-      toolDefinitions: [],
-      toolContextProjectionPolicy: "enforce",
-    })).rejects.toBeInstanceOf(ContextInputLimitError);
-
-    expect(generateTurn).toHaveBeenCalledTimes(2);
-    expect(generateTurn.mock.calls.every((call) => call[0].responseFormat?.type === "json_schema")).toBe(true);
   });
 
   it("sends a deduplicated state view to the model prompt", async () => {
@@ -1239,21 +676,6 @@ describe("callAgentDecision", () => {
           personal: {
             memorySnapshot: "Prefer concise answers.",
           },
-          gitContext: {
-            session: {
-              sessionId: "S-20260627-local",
-              conversationTail: [],
-              conversationMarkdownTail: "# Conversation\n\nlegacy",
-              summary: {
-                text: "Session summary.",
-              },
-              activityTail: [],
-              recentCommits: [],
-              resourceCount: 0,
-            },
-            focus: { status: "none" },
-          },
-          personalMemorySnapshot: "Prefer concise answers.",
         },
         progress: {
           status: "not_done",
@@ -1292,54 +714,36 @@ describe("callAgentDecision", () => {
     const messages = generateTurn.mock.calls[0]?.[0]?.messages ?? [];
     const userPrompt = messages.find((message) => message.role === "user")?.content ?? "";
     const promptStateView = parsePromptStateView(userPrompt);
-    expect(promptStateView).toEqual({
-      context: {
-        timeline: [{
+    expect(promptStateView.context).toMatchObject({
+      temporal: { recent: [{
           kind: "user",
           seq: 1,
           timestamp: new Date(0).toISOString(),
           content: "continue",
           current: true,
-        }],
-        git: {
-          session: {
-            meta: {
-              sessionId: "S-20260627-local",
-              resourceCount: 0,
-            },
-            summary: {
-              text: "Session summary.",
-            },
-            activity: {
-              recent: [],
-            },
-          },
-          current: {
-            focus: { status: "none" },
-          },
-        },
-        tools: {
-          active: ["read_files"],
-        },
-        harness: {
-          feedback: {
-            latest: [{
-              severity: "warning",
-              source: "tool_validation",
-              message: "Fix the next call.",
-            }],
-          },
-        },
-        personal: {
-          memorySnapshot: "Prefer concise answers.",
+      }] },
+      stream: { agentId: "local", scopeKey: "default", recentWork: [] },
+      work: { candidates: [] },
+      resources: { stream: [], ingress: [], activeWorkstream: [] },
+      observations: { revision: "observations:empty", inventory: [], discovery: [], evidence: [] },
+      tools: { active: ["read_files"] },
+      harness: {
+        feedback: {
+          latest: [{
+            severity: "warning",
+            source: "tool_validation",
+            message: "Fix the next call.",
+          }],
         },
       },
+      personal: { memorySnapshot: "Prefer concise answers." },
     });
     expect(promptStateView).not.toHaveProperty("progress");
     expect(promptStateView).not.toHaveProperty("workingFeedback");
     expect(promptStateView).not.toHaveProperty("toolLoad");
     expect(promptStateView).not.toHaveProperty("observations");
     expect(promptStateView).not.toHaveProperty("trace");
+    expect(promptStateView.context).not.toHaveProperty("git");
     expect(promptStateView.context).not.toHaveProperty("gitContext");
     expect(promptStateView.context).not.toHaveProperty("personalMemorySnapshot");
     expect(promptStateView.context).not.toHaveProperty("scratch");
@@ -2106,6 +1510,51 @@ describe("callAgentDecision", () => {
     });
   });
 
+  it("exposes and parses the isolated workstream resolver only when enabled", async () => {
+    const { provider, generateTurn } = createNativeToolProvider([{
+      type: "tool_calls",
+      calls: [{
+        id: "resolve_1",
+        name: "workstream_resolve",
+        input: {
+          purpose: "Continue the project that owns the exact workspace path.",
+          hints: [
+            { kind: "workstream_id", workstreamId: "W-20260721-0001" },
+            { kind: "resource_id", resourceId: `RES-${"A".repeat(24)}` },
+            { kind: "filesystem", path: "/workspace/project" },
+            { kind: "url", url: "https://example.com/project" },
+          ],
+        },
+      }],
+    }]);
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+      workstreamResolutionAvailable: true,
+    });
+
+    const resolverTool = generateTurn.mock.calls[0]?.[0]?.tools
+      ?.find((tool) => tool.name === "workstream_resolve");
+    expect(resolverTool).toBeDefined();
+    expect(resolverTool?.inputSchema).toHaveProperty("properties.purpose");
+    expect(resolverTool?.inputSchema).toHaveProperty("properties.hints.maxItems", 8);
+    expect(decision).toEqual({
+      kind: "resolve_workstream",
+      request: {
+        purpose: "Continue the project that owns the exact workspace path.",
+        hints: [
+          { kind: "workstream_id", workstreamId: "W-20260721-0001" },
+          { kind: "resource_id", resourceId: `RES-${"A".repeat(24)}` },
+          { kind: "filesystem", path: "/workspace/project" },
+          { kind: "url", url: "https://example.com/project" },
+        ],
+      },
+      workingNotes: undefined,
+    });
+  });
+
   it("repairs selected native executable calls with invalid input", async () => {
     const { provider, generateTurn } = createNativeToolProvider([
       {
@@ -2369,66 +1818,6 @@ function pressureTimeline() {
   }));
 }
 
-function pressureTimelineAfterCheckpoint() {
-  return pressureTimeline().map((event) => ({
-    ...event,
-    seq: event.seq + 10,
-  }));
-}
-
-function contextPressureState(input: {
-  timeline: AgentStateView["context"]["timeline"];
-  workState?: NonNullable<AgentStateView["context"]["run"]>["workState"];
-}): AgentStateView {
-  return createStateView({
-    context: {
-      timeline: input.timeline,
-      git: {
-        session: {
-          meta: { sessionId: "session-1", resourceCount: 1 },
-          summary: { text: "Structured session snapshot.", coveredUntilSeq: 8 },
-          recentRunCheckpoints: Array.from({ length: 5 }, (_, index) => runCheckpoint(index + 1)),
-          attachments: { count: 1, recent: [] },
-          activity: {
-            recent: [{
-              seq: 10,
-              type: "workstream_context_committed",
-              at: "2026-07-10T10:00:00.000Z",
-              runId: "run-5",
-              workstreamId: "W-5",
-              commit: "commit-5",
-            }],
-          },
-        },
-        current: {
-          focus: { status: "active", ref: "refs/heads/main", workstreamId: "W-1" },
-          workstream: protectedWorkstreamContext(),
-        },
-      },
-      ...(input.workState ? { run: { workState: input.workState } } : {}),
-    },
-  });
-}
-
-function runCheckpoint(sequence: number) {
-  const fromSeq = sequence * 2 - 1;
-  return {
-    checkpointId: `checkpoint-${sequence}`,
-    commit: `commit-${sequence}`,
-    workstreamId: `W-${sequence}`,
-    runId: `run-${sequence}`,
-    status: "completed" as const,
-    fromSeq,
-    toSeq: fromSeq + 1,
-    sourceHash: String(sequence).repeat(64),
-    strategy: "llm" as const,
-    at: `2026-07-10T09:0${sequence}:00.000Z`,
-    summary: sequence === 5
-      ? `Workstream-bound run checkpoint ${sequence}: ${"x".repeat(300_000)}`
-      : `Workstream-bound run checkpoint ${sequence}.`,
-  };
-}
-
 function checkpointRecommendedState(timeline: ReturnType<typeof pressureTimeline>): AgentStateView {
   return createStateView({
     context: {
@@ -2436,7 +1825,7 @@ function checkpointRecommendedState(timeline: ReturnType<typeof pressureTimeline
       run: {
         contextPressure: {
           mode: "tool_compact",
-          recommendedMode: "timeline_checkpoint",
+          recommendedMode: "stream_checkpoint",
           escalationReason: "repeated_unresolved_pressure",
           unresolvedPressureStreak: 2,
           compactedCalls: 0,
@@ -2447,61 +1836,65 @@ function checkpointRecommendedState(timeline: ReturnType<typeof pressureTimeline
   });
 }
 
-function validTimelineCheckpointSummary(seq = 1) {
-  return {
-    userRequests: [{ seq, text: "Preserve the original request." }],
-    constraints: [],
-    decisions: [],
-    corrections: [],
-    importantFacts: [],
-    unresolvedQuestions: [],
-    references: [],
-    narrative: "The user provided the original request.",
-  };
-}
 
 function protectedWorkstreamContext() {
   return {
-    identity: {
-      ref: "refs/heads/main",
-      workstreamId: "W-1",
-      title: "Protected workstream",
-      objective: "Preserve workstream context during tool projection.",
-    },
-    state: {
-      summary: "The context candidate was measured.",
-      workstreamStatus: "in_progress",
-      lifecycleStatus: "active",
-      repositoryHealth: "ready",
-      blockers: [],
-      next: "Measure the final request.",
-      currentRequest: {
-        id: "R-0001",
-        title: "Enforce tool projection",
-        status: "active",
-        request: "Enforce the tool projection.",
-        acceptance: ["The final request fits."],
-        constraints: [],
-      },
+    ref: "refs/heads/main",
+    workstreamId: "W-1",
+    title: "Protected workstream",
+    objective: "Preserve workstream context during tool projection.",
+    summary: "The context candidate was measured.",
+    workstreamStatus: "in_progress" as const,
+    lifecycleStatus: "active" as const,
+    repositoryHealth: "ready" as const,
+    blockers: [],
+    next: "Measure the final request.",
+    currentRequest: {
+      id: "R-0001",
+      title: "Enforce tool projection",
+      status: "active" as const,
+      request: "Enforce the tool projection.",
+      acceptance: ["The final request fits."],
+      constraints: [],
     },
     resources: [],
-    activity: {
-      recentCommits: [],
-    },
   };
 }
 
 function createStateView(overrides: Partial<AgentStateView> = {}): AgentStateView {
+  const currentEvent = {
+    kind: "user" as const,
+    seq: 1,
+    timestamp: new Date(0).toISOString(),
+    content: "Hii",
+    current: true as const,
+  };
+  const legacyContext = overrides.context as unknown as Record<string, unknown> | undefined;
+  const legacyTimeline = Array.isArray(legacyContext?.["timeline"])
+    ? legacyContext["timeline"] as AgentStateView["context"]["temporal"]["recent"]
+    : undefined;
+  const {
+    timeline: _timeline,
+    git: _git,
+    gitContext: _gitContext,
+    ...contextOverrides
+  } = legacyContext ?? {};
   return {
-    context: {
-      timeline: [{
-        kind: "user",
-        seq: 1,
-        timestamp: new Date(0).toISOString(),
-        content: "Hii",
-        current: true,
-      }],
-    },
     ...overrides,
+    context: {
+      temporal: legacyContext?.["temporal"] as AgentStateView["context"]["temporal"]
+        ?? { recent: legacyTimeline ?? [currentEvent] },
+      current: legacyContext?.["current"] as AgentStateView["context"]["current"]
+        ?? { input: (legacyTimeline ?? [currentEvent]).find((event) => event.current) },
+      stream: legacyContext?.["stream"] as AgentStateView["context"]["stream"]
+        ?? { agentId: "local", scopeKey: "default", recentWork: [] },
+      work: legacyContext?.["work"] as AgentStateView["context"]["work"]
+        ?? { candidates: [] },
+      resources: legacyContext?.["resources"] as AgentStateView["context"]["resources"]
+        ?? { stream: [], ingress: [], activeWorkstream: [] },
+      observations: legacyContext?.["observations"] as AgentStateView["context"]["observations"]
+        ?? { revision: "observations:empty", inventory: [], discovery: [], evidence: [] },
+      ...contextOverrides,
+    },
   };
 }

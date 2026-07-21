@@ -7,6 +7,7 @@ import {
 } from "../../src/ivec/agent-runner/tool-selector.js";
 import { createInitialContextPressureState } from "../../src/ivec/context-pressure-state.js";
 import { createInitialHarnessContext } from "../../src/ivec/harness-context.js";
+import { contextEngineFixture } from "../fixtures/agent-context.js";
 
 function tool(name: string, priority = 0): ToolDefinition {
   return {
@@ -23,6 +24,7 @@ function tool(name: string, priority = 0): ToolDefinition {
 }
 
 function state(userMessage: string): LoopState {
+  const contextEngine = contextEngineFixture({ runId: "run-1", message: userMessage });
   return {
     runId: "run-1",
     currentSeq: 1,
@@ -42,35 +44,24 @@ function state(userMessage: string): LoopState {
     maxIterations: 15,
     consecutiveFailures: 0,
     completedSteps: [],
-    routingAttempts: {
-      successCount: 0,
-      failureCount: 0,
-      maxFailures: 2,
-      resolved: false,
-    },
     runPath: "/tmp/run-1",
     failureHistory: [],
     harnessContext: createInitialHarnessContext({
       contextEngine: {
-        session: {
-          meta: { sessionId: "S-1", assetCount: 0 },
-          conversationTail: [],
-          activityTail: [],
-        },
-        pendingTurn: {
-          fromSeq: 1,
-          toSeq: 1,
-          text: userMessage,
-          at: "2026-07-19T10:00:00.000Z",
-          routingStatus: "bound",
-          workId: "T-1",
-          branch: "task/T-1",
-          runId: "run-1",
+        ...contextEngine,
+        current: {
+          ...contextEngine.current,
+          routing: {
+            status: "bound",
+            workstreamId: "W-1",
+            requestId: "R-1",
+            branch: "main",
+          },
         },
         focus: {
           status: "active",
-          ref: "refs/heads/task/T-1",
-          workId: "T-1",
+          ref: "refs/heads/main",
+          workstreamId: "W-1",
         },
       },
     }),
@@ -81,22 +72,22 @@ function pendingGitContext(
   routingStatus: "unbound" | "clarifying",
   focus: ContextEngineMachineContext["focus"] = {
     status: "active",
-    ref: "refs/heads/task/T-20260630-0001-website",
-    workId: "T-20260630-0001",
+    ref: "refs/heads/main",
+    workstreamId: "W-20260630-0001",
   },
 ): ContextEngineMachineContext {
+  const contextEngine = contextEngineFixture({
+    streamId: "S-20260630-local",
+    runId: "run-1",
+    message: "build a website",
+  });
   return {
-    session: {
-      meta: { sessionId: "S-20260630-local", assetCount: 0 },
-      conversationTail: [],
-      activityTail: [],
-    },
-    pendingTurn: {
-      fromSeq: 1,
-      toSeq: 1,
-      text: "build a website",
-      at: "2026-06-30T10:00:00.000Z",
-      routingStatus,
+    ...contextEngine,
+    current: {
+      ...contextEngine.current,
+      routing: {
+        status: routingStatus,
+      },
     },
     focus,
   };
@@ -124,7 +115,7 @@ describe("selectToolsForDecision", () => {
     expect(selectedNames).not.toContain("pulse");
   });
 
-  it("limits selected tools to git-context routing tools for unbound pending turns", () => {
+  it("keeps legacy workstream-routing tools out of an unbound main-loop decision", () => {
     const current = state("build a website and run it");
     current.harnessContext = {
       ...current.harnessContext,
@@ -137,13 +128,10 @@ describe("selectToolsForDecision", () => {
       tool("git_context_create_workstream", 1),
     ], 12);
 
-    expect(selected.map((entry) => entry.name)).toEqual([
-      "git_context_activate_workstream",
-      "git_context_create_workstream",
-    ]);
+    expect(selected).toEqual([]);
   });
 
-  it("selects safe read and first-task routing tools when a fresh session has no active task", () => {
+  it("does not expose legacy routing controls on a fresh unbound stream", () => {
     const current = state("build a website and run it");
     current.harnessContext = {
       ...current.harnessContext,
@@ -157,10 +145,7 @@ describe("selectToolsForDecision", () => {
     ], 12);
 
     const selectedNames = selected.map((entry) => entry.name);
-    expect(selectedNames).toEqual([
-      "git_context_activate_workstream",
-      "git_context_create_workstream",
-    ]);
+    expect(selectedNames).toEqual([]);
     expect(selectedNames).not.toContain("process_run");
     expect(selectedNames).not.toContain("write_files");
   });
@@ -188,7 +173,7 @@ describe("selectToolsForDecision", () => {
     ]);
   });
 
-  it("counts required first-task routing tools inside the selected tool cap", () => {
+  it("uses the selected tool cap only for safe observation before binding", () => {
     const current = state("create a small website and run it");
     current.harnessContext = {
       ...current.harnessContext,
@@ -207,17 +192,13 @@ describe("selectToolsForDecision", () => {
     ], 3);
 
     const selectedNames = selected.map((entry) => entry.name);
-    expect(selectedNames).toEqual([
-      "search_in_files",
-      "git_context_activate_workstream",
-      "git_context_create_workstream",
-    ]);
+    expect(selectedNames).toEqual(["search_in_files"]);
     expect(selectedNames).not.toContain("write_files");
     expect(selectedNames).not.toContain("create_directory");
     expect(selectedNames).not.toContain("process_run");
   });
 
-  it("reserves the selected tool cap for required active-task routing tools", () => {
+  it("does not reserve main-loop capacity for legacy routing tools", () => {
     const current = state("continue the website and add dark mode");
     current.harnessContext = {
       ...current.harnessContext,
@@ -235,10 +216,7 @@ describe("selectToolsForDecision", () => {
     ], 2);
 
     const selectedNames = selected.map((entry) => entry.name);
-    expect(selectedNames).toEqual([
-      "git_context_activate_workstream",
-      "git_context_create_workstream",
-    ]);
+    expect(selectedNames).toEqual(["read_files"]);
     expect(selectedNames).not.toContain("write_files");
     expect(selectedNames).not.toContain("patch_files");
   });

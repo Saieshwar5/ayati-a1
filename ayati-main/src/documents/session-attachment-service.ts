@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import type { ResourceRef, WorkstreamResourceBinding } from "ayati-git-context";
+import type { ResourceRef, WorkstreamResourceBinding } from "ayati-context-engine";
 import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
 import { resolvePreparedAttachmentMode } from "./document-routing.js";

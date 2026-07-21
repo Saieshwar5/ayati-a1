@@ -29,19 +29,17 @@ pnpm --filter ayati-main dev
 pnpm --filter ayati-main test
 ```
 
-Git Context service:
+Context Engine package:
 
 ```bash
-pnpm --filter ayati-git-context build
-pnpm --filter ayati-git-context start
-pnpm --filter ayati-git-context dev
-pnpm --filter ayati-git-context test
+pnpm --filter ayati-context-engine build
+pnpm --filter ayati-context-engine test
 ```
 
-Normal local use starts Git Context through `ayati-main`; the standalone
-commands are mainly for focused service development and debugging.
+The engine is a library opened in-process by `ayati-main`; it has no standalone
+server command.
 
-Git Context clean reset and catalog recovery are preview-first:
+Context Engine clean reset and catalog recovery are preview-first:
 
 ```bash
 pnpm context:archive-reset
@@ -50,7 +48,7 @@ pnpm context:catalog-rebuild
 pnpm context:catalog-rebuild -- --confirm
 ```
 
-Both mutation commands refuse a live Git Context socket/writer. Archive reset
+Both mutation commands refuse a live Context Engine writer. Archive reset
 preserves `<AYATI_ROOT_DIR>/workspace/`. Catalog rebuild requires an empty V5
 catalog; after an archive reset, start and stop Ayati once before confirming
 rebuild.

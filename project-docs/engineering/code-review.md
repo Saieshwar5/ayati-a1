@@ -13,7 +13,8 @@ Review priorities:
 - Workstream/request selection ambiguity or accidental implicit authority.
 - Regressions that place deliverables in context Git, infer authority from
   binding alone, or allow model-owned lifecycle commits.
-- Protocol/client/server drift across `ayati-main` and `ayati-git-context`.
+- Service-contract/implementation drift across `ayati-main` and
+  `ayati-context-engine`.
 - Missing restart, retry/idempotency, or repository-inspection
   coverage for workstream/resource changes.
 
@@ -24,11 +25,11 @@ pnpm --filter ayati-main build
 pnpm --filter ayati-main test
 ```
 
-For Git Context changes, also prefer:
+For Context Engine changes, also prefer:
 
 ```bash
-pnpm --filter ayati-git-context build
-pnpm --filter ayati-git-context test
+pnpm --filter ayati-context-engine build
+pnpm --filter ayati-context-engine test
 ```
 
 Before merging CLI changes, prefer:

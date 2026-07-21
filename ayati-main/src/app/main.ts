@@ -30,15 +30,15 @@ import imageGenerationProvider from "../image-generation/runtime/index.js";
 import type { AgentUiContext } from "../ui/context.js";
 import type { WorkspaceInteractionEvent } from "../ui/workspace-orchestrator.js";
 import { createAgentFeedbackLedgerFromEnv } from "../ivec/feedback-ledger.js";
-import { createGitContextRuntime } from "./git-context-runtime.js";
-import { startManagedGitContextProcess } from "./git-context-process.js";
+import { startContextEngineHost } from "ayati-context-engine";
+import { createContextEngineRuntime } from "./context-engine-runtime.js";
 import { createChatTurnRuntime } from "./chat-turn-runtime.js";
 import { createSystemEventRuntime } from "./system-event-runtime.js";
 import { ensureWorkspaceRoot } from "../skills/workspace-paths.js";
 import {
-  createHarnessGitContextObserver,
-  recordGitContextObservabilityEvent,
-} from "./git-context-observability.js";
+  createHarnessContextEngineObserver,
+  recordContextEngineObservabilityEvent,
+} from "./context-engine-observability.js";
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(thisDir, "..", "..");
@@ -61,6 +61,7 @@ export async function main(): Promise<void> {
   const memory = await createMemoryRuntime({
     projectRoot,
     clientId: CLIENT_ID,
+    provider,
     embeddingProvider,
   });
 
@@ -167,19 +168,26 @@ export async function main(): Promise<void> {
   });
   content.workspaceFocusWatcher.start();
 
-  const gitContextProcess = await startManagedGitContextProcess({
-    ...runtimeConfig.gitContext,
-    onObservabilityEvent: (event) => recordGitContextObservabilityEvent(feedbackLedger, event),
+  const contextEngineHost = await startContextEngineHost({
+    databasePath: runtimeConfig.contextEngine.databasePath,
+    rootDirectory: runtimeConfig.contextEngine.rootDirectory,
+    observabilitySink: (event) => recordContextEngineObservabilityEvent(feedbackLedger, event),
   });
-  const gitContextService = gitContextProcess;
-  const gitContextRuntime = createGitContextRuntime({
-    service: gitContextService,
-    timezone: runtimeConfig.gitContext.timezone,
-    agentId: runtimeConfig.gitContext.agentId,
-    observer: createHarnessGitContextObserver(feedbackLedger),
+  const contextEngineService = contextEngineHost.service;
+  const contextEngineRuntime = createContextEngineRuntime({
+    service: contextEngineService,
+    timezone: runtimeConfig.contextEngine.timezone,
+    agentId: runtimeConfig.contextEngine.agentId,
+    observer: createHarnessContextEngineObserver(feedbackLedger),
+    onContextCheckpointCommitted: ({ streamId, plan, checkpoint }) => {
+      memory.enqueuePersonalMemoryCheckpoint({
+        userId: CLIENT_ID,
+        streamId,
+        plan,
+        checkpoint,
+      });
+    },
   });
-  await gitContextRuntime.warmActiveContext();
-
   const skills = await createSkillRuntime({
     projectRoot,
     clientId: CLIENT_ID,
@@ -192,7 +200,7 @@ export async function main(): Promise<void> {
     directoryLibrary: content.directoryLibrary,
     workspaceOrchestrator: content.workspaceOrchestrator,
     config: runtimeConfig,
-    gitContextService,
+    contextEngineService: contextEngineService,
   });
 
   staticContext = await loadStaticContext({
@@ -200,8 +208,8 @@ export async function main(): Promise<void> {
     toolDefinitions: skills.runtimeToolDefs,
   });
   appendSkillBlocks(staticContext, skills.additionalSkills);
-  const chatContextRuntime = gitContextRuntime;
-  const systemEventContextRuntime = gitContextRuntime;
+  const chatContextRuntime = contextEngineRuntime;
+  const systemEventContextRuntime = contextEngineRuntime;
   const chatTurnRuntime = createChatTurnRuntime({
     onReply: (clientId, data) => {
       wsServer.send(clientId, data);
@@ -220,6 +228,8 @@ export async function main(): Promise<void> {
     loopConfig: runtimeConfig.agent.loopConfig,
     feedbackLedger,
     chatContextRuntime,
+    contextEngineService,
+    personalMemorySnapshot: (clientId) => memory.personalMemorySnapshotCache.getSnapshot(clientId),
   });
   const systemEventRuntime = createSystemEventRuntime({
     onReply: (clientId, data) => {
@@ -231,6 +241,7 @@ export async function main(): Promise<void> {
     skillActivationManager: skills.skillActivationManager,
     toolWorkingSetManager: skills.toolWorkingSetManager,
     systemEventContextRuntime,
+    contextEngineService,
     dataDir: resolve(projectRoot, "data"),
     documentStore: content.documentStore,
     preparedAttachmentRegistry: content.preparedAttachmentRegistry,
@@ -239,6 +250,7 @@ export async function main(): Promise<void> {
     systemEventPolicy,
     loopConfig: runtimeConfig.agent.loopConfig,
     feedbackLedger,
+    personalMemorySnapshot: (clientId) => memory.personalMemorySnapshotCache.getSnapshot(clientId),
   });
 
   const uploadServer = new UploadServer({
@@ -321,8 +333,8 @@ export async function main(): Promise<void> {
       await embeddingProvider.stop();
       await imageGenerationProvider.stop();
       await engine.stop();
+      await contextEngineHost.stop();
       await feedbackLedger.close();
-      await gitContextProcess.stop();
     })();
     return shutdownPromise;
   };

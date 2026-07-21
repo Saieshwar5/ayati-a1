@@ -11,6 +11,7 @@ export type WorkstreamCompletionFailureCode =
   | "NO_WORKSTREAM_BINDING"
   | "WORKSTREAM_ALREADY_COMPLETED"
   | "COMPLETION_EVIDENCE_MISSING"
+  | "OPEN_WORK_REMAINS"
   | "ACTIVE_BLOCKERS_REMAIN"
   | "USER_INPUT_REQUIRED"
   | "INVALID_COMPLETION_SUMMARY"
@@ -82,6 +83,9 @@ export async function evaluateWorkstreamCompletion(
   if ((state.workState.blockers ?? []).some((item) => item.trim().length > 0)) {
     failures.push({ code: "ACTIVE_BLOCKERS_REMAIN", message: "The workstream request still has active blockers." });
   }
+  if ((state.workState.openWork ?? []).some((item) => item.trim().length > 0)) {
+    failures.push({ code: "OPEN_WORK_REMAINS", message: "The workstream request still has unfinished work." });
+  }
   if (!hasCompletionEvidence(state)) {
     failures.push({
       code: "COMPLETION_EVIDENCE_MISSING",
@@ -127,7 +131,7 @@ export async function evaluateWorkstreamCompletion(
 }
 
 function isWorkstreamBound(state: LoopState): boolean {
-  return state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "bound";
+  return state.harnessContext.contextEngine?.current.routing?.status === "bound";
 }
 
 async function verifyResources(
@@ -243,10 +247,12 @@ function normalizePortableCompletionPath(value: string): string | null {
 }
 
 function hasCompletionEvidence(state: LoopState): boolean {
-  return state.completedSteps.some((step) => step.outcome === "success" && (step.toolSuccessCount ?? 0) > 0)
-    || state.workState.verifiedFacts.length > 0
-    || state.workState.evidence.length > 0
-    || (state.workState.artifacts?.length ?? 0) > 0;
+  return state.completedSteps.some((step) =>
+    step.outcome === "success"
+    && step.validationStatus !== "failed"
+    && step.expectationCheckStatus !== "failed"
+    && (step.toolSuccessCount ?? 0) > 0
+    && (step.toolsUsed ?? []).some(isTaskExecutionTool));
 }
 
 function hasUnresolvedLatestFailure(state: LoopState): boolean {
@@ -257,31 +263,22 @@ function hasUnresolvedLatestFailure(state: LoopState): boolean {
 
 function hasResourceEvidence(state: LoopState, resourceId: string, resolvedPath: string): boolean {
   const candidate = resolvedPath.replace(/\\/g, "/");
-  const containsPath = (value: unknown): boolean => {
-    let text: string;
-    try {
-      text = typeof value === "string" ? value : JSON.stringify(value);
-    } catch {
-      return false;
-    }
-    const normalized = text.replace(/\\/g, "/");
-    return normalized.includes(candidate);
-  };
-  const containsResource = (value: unknown): boolean => {
-    try {
-      return (typeof value === "string" ? value : JSON.stringify(value)).includes(resourceId);
-    } catch {
-      return false;
-    }
-  };
-  return (state.workState.artifacts ?? []).some(containsPath)
-    || state.workState.verifiedFacts.some(containsPath)
-    || state.workState.evidence.some(containsPath)
+  const samePath = (value: string | undefined): boolean =>
+    typeof value === "string" && value.replace(/\\/g, "/") === candidate;
+  return (state.workState.artifacts ?? []).some(samePath)
     || (state.toolContext?.toolCalls ?? []).some((call) => call.status === "success"
-      && (containsPath(call.input)
-        || containsPath(call.output)
-        || containsResource(call.projectionMetadata)
-        || (call.artifacts ?? []).some(containsPath)));
+      && (call.artifacts ?? []).some((artifact) =>
+        samePath(artifact.path)
+        || samePath(artifact.uri)
+        || (artifact.id === resourceId && samePath(artifact.metadata?.["path"] as string | undefined))));
+}
+
+function isTaskExecutionTool(tool: string): boolean {
+  return tool !== "workstream_resolve"
+    && tool !== "workstream_completion"
+    && tool !== "decision_load_tools"
+    && tool !== "ask_user_feedback"
+    && !tool.startsWith("git_context_");
 }
 
 function rejectedWorkState(previous: WorkState, failures: WorkstreamCompletionFailure[]): WorkState {

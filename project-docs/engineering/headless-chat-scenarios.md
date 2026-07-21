@@ -48,7 +48,7 @@ feedback/latest-summary.json
 feedback/triage-summary.json
 ```
 
-Run `pnpm feedback:git-context` for a readable lifecycle table. Also inspect:
+Run `pnpm feedback:context-engine` for a readable lifecycle table. Also inspect:
 
 - run, step, workstream, request, resource, binding, and journal database rows;
 - `<AYATI_ROOT_DIR>/workstreams/<W-*>/workstream.md`;

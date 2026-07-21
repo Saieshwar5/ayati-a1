@@ -2,6 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import {
+  ContextDatabase,
+  SqliteContextEngineService,
+} from "ayati-context-engine";
 import { IVecEngine } from "../../src/ivec/index.js";
 import {
   createChatTurnRuntime,
@@ -15,12 +19,14 @@ import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnInput, LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
 import type { SystemEventPolicyConfig } from "../../src/ivec/system-event-policy.js";
 import type {
-  GitContextPreparedTurn,
-  GitContextRuntime,
-} from "../../src/app/git-context-runtime.js";
+  ContextEnginePreparedTurn,
+  ContextEngineRuntime,
+} from "../../src/app/context-engine-runtime.js";
+import { createContextEngineRuntime } from "../../src/app/context-engine-runtime.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
+import { contextEngineFixture } from "../fixtures/agent-context.js";
 import { nativeDecisionFixture } from "../ivec/native-decision-fixture.js";
 
 const originalAyatiRootDir = process.env["AYATI_ROOT_DIR"];
@@ -91,68 +97,54 @@ function createPreparedTurn(input: {
   role: "user" | "system_event";
   runId?: string;
   messageSeq?: number;
-}): GitContextPreparedTurn {
+}): ContextEnginePreparedTurn {
   const runId = input.runId ?? "R-20260719-0001";
   const messageSeq = input.messageSeq ?? 1;
-  const sessionId = "S-20260719-local";
-  const conversationId = `C-${runId}`;
+  const streamId = "S-20260719-local";
+  const context = contextEngineFixture({ streamId, runId, message: "" });
+  context.agentStream.meta.lastMessageSequence = messageSeq;
+  context.agentStream.recentMessages[0]!.sequence = messageSeq;
+  context.agentStream.recentMessages[0]!.messageId = `M-${runId}`;
+  context.agentStream.recentMessages[0]!.role = input.role;
+  context.current.inputSeq = messageSeq;
+  context.current.runId = runId;
   return {
     status: "ready",
-    sessionId,
-    repoPath: "/tmp/ayati-git-context/S-20260719-local",
-    initialized: false,
-    messageSeq,
+    streamId,
+    streamCreated: false,
+    messageSequence: messageSeq,
     currentMessageId: `M-${runId}`,
-    currentMessageSessionSequence: messageSeq,
-    conversationId,
     inputRole: input.role,
     run: {
       runId,
-      sessionId,
-      conversationId,
+      streamId,
       triggerSeq: messageSeq,
     },
-    context: {
-      session: {
-        meta: { sessionId, resourceCount: 0 },
-        conversationTail: [],
-        activityTail: [],
-      },
-      pendingTurn: {
-        fromSeq: messageSeq,
-        toSeq: messageSeq,
-        text: "",
-        at: "2026-07-19T10:00:00.000Z",
-        routingStatus: "unbound",
-        runId,
-      },
-      focus: { status: "none" },
-    },
+    context,
   };
 }
 
-function createContextRuntime(prepared: GitContextPreparedTurn): GitContextRuntime {
+function createContextRuntime(prepared: ContextEnginePreparedTurn): ContextEngineRuntime {
   const prepareUserTurn = vi.fn(async (
-    input: Parameters<GitContextRuntime["prepareUserTurn"]>[0],
+    input: Parameters<ContextEngineRuntime["prepareUserTurn"]>[0],
   ) => {
     setCurrentMessage(prepared, input.userMessage, input.at, "user");
     return prepared;
   });
   const prepareSystemEventTurn = vi.fn(async (
-    input: Parameters<GitContextRuntime["prepareSystemEventTurn"]>[0],
+    input: Parameters<ContextEngineRuntime["prepareSystemEventTurn"]>[0],
   ) => {
-    setCurrentMessage(prepared, input.systemMessage, input.at, "system");
+    setCurrentMessage(prepared, input.systemMessage, input.at, "system_event");
     return prepared;
   });
   const finalizeRun = vi.fn(async (
-    input: Parameters<GitContextRuntime["finalizeRun"]>[0],
+    input: Parameters<ContextEngineRuntime["finalizeRun"]>[0],
   ) => {
     const workstreamBound = Boolean(input.workstreamCompletion);
     return {
       run: {
         runId: prepared.run.runId,
-        sessionId: prepared.sessionId,
-        conversationId: prepared.conversationId,
+        streamId: prepared.streamId,
         ...(workstreamBound ? {
           workstreamBinding: {
             workstreamId: "W-20260719-0001",
@@ -167,19 +159,17 @@ function createContextRuntime(prepared: GitContextPreparedTurn): GitContextRunti
         stopReason: input.stopReason,
         stepCount: 0,
       },
-      conversation: {
-        conversationId: prepared.conversationId,
-        sessionId: prepared.sessionId,
-        sequence: prepared.messageSeq,
-        filePath: `conversations/${prepared.messageSeq}.md`,
-        status: "committed",
+      assistantMessage: {
+        messageId: `M-assistant-${prepared.run.runId}`,
+        streamId: prepared.streamId,
+        runId: prepared.run.runId,
+        sequence: prepared.messageSequence + 1,
+        role: "assistant" as const,
+        content: input.assistantResponse,
+        contentHash: "sha256:assistant",
+        at: input.at,
       },
-      persistence: {
-        database: "saved",
-        materialization: "not_requested",
-        git: "not_committed",
-      },
-      materialization: { status: "not_requested" },
+      observationRevision: "observations:finalized",
       resourceEffects: { status: "none", events: [] },
       workstreamContextCommit: workstreamBound
         ? {
@@ -192,37 +182,46 @@ function createContextRuntime(prepared: GitContextPreparedTurn): GitContextRunti
         : { status: "not_required" },
     };
   });
+  const checkpointPlan = vi.fn().mockResolvedValue({
+    planId: "PLAN-1",
+    streamId: prepared.streamId,
+    selectedMessages: [],
+    exactTail: prepared.context.agentStream.recentMessages,
+    estimatedCheckpointTokens: 1_200,
+    triggered: false,
+  });
+  const checkpointCommit = vi.fn();
   return {
-    warmActiveContext: vi.fn().mockResolvedValue(undefined),
     prepareUserTurn,
     prepareSystemEventTurn,
     finalizeRun,
     recordRunStep: vi.fn().mockResolvedValue(null),
-    recordSessionAttachments: vi.fn().mockResolvedValue(null),
-    buildActiveContext: vi.fn().mockResolvedValue(prepared.context),
+    contextCheckpointCoordinator: vi.fn().mockReturnValue({
+      plan: checkpointPlan,
+      commit: checkpointCommit,
+    }),
   };
 }
 
 function setCurrentMessage(
-  prepared: GitContextPreparedTurn,
+  prepared: ContextEnginePreparedTurn,
   text: string,
   at: string,
-  role: "user" | "system",
+  role: "user" | "system_event",
 ): void {
-  prepared.context.session.conversationTail = [{
-    seq: prepared.currentMessageSessionSequence,
+  const message = {
     messageId: prepared.currentMessageId,
-    conversationId: prepared.conversationId,
-    conversationSequence: prepared.messageSeq,
-    segmentSequence: 1,
+    streamId: prepared.streamId,
+    runId: prepared.run.runId,
+    sequence: prepared.messageSequence,
     role,
+    content: text,
+    contentHash: `sha256:${prepared.currentMessageId}`,
     at,
-    text,
-  }];
-  if (prepared.context.pendingTurn) {
-    prepared.context.pendingTurn.text = text;
-    prepared.context.pendingTurn.at = at;
-  }
+  };
+  prepared.context.agentStream.recentMessages = [message];
+  prepared.context.current.inputSeq = prepared.messageSequence;
+  prepared.context.current.runId = prepared.run.runId;
 }
 
 type TestEngineOptions =
@@ -231,8 +230,8 @@ type TestEngineOptions =
     "chatContextRuntime" | "systemEventContextRuntime"
   >
   & {
-    chatContextRuntime?: GitContextRuntime;
-    systemEventContextRuntime?: GitContextRuntime;
+    chatContextRuntime?: ContextEngineRuntime;
+    systemEventContextRuntime?: ContextEngineRuntime;
   };
 
 function createEngine(options: TestEngineOptions = {}): IVecEngine {
@@ -250,6 +249,7 @@ function createEngine(options: TestEngineOptions = {}): IVecEngine {
     dataDir: options.dataDir,
     feedbackLedger: options.feedbackLedger,
     chatContextRuntime,
+    contextEngineService: options.contextEngineService,
   });
   const systemEventRuntime = createSystemEventRuntime({
     onReply: options.onReply,
@@ -261,6 +261,7 @@ function createEngine(options: TestEngineOptions = {}): IVecEngine {
     dataDir: options.dataDir,
     systemEventPolicy: options.systemEventPolicy,
     feedbackLedger: options.feedbackLedger,
+    contextEngineService: options.contextEngineService,
   });
   return new IVecEngine({
     provider,
@@ -302,134 +303,6 @@ function createReadTool(): ToolDefinition {
     },
     async execute() {
       return { ok: true, output: "upload handling lives in src/upload.ts" };
-    },
-  };
-}
-
-function createWorkstreamBindingTool(
-  prepared: GitContextPreparedTurn,
-  workingDirectory: string,
-): ToolDefinition {
-  return {
-    name: "git_context_create_workstream",
-    description: "Bind the current run to a fixture workstream.",
-    inputSchema: {
-      type: "object",
-      required: ["title", "objective", "reason"],
-      properties: {
-        title: { type: "string" },
-        objective: { type: "string" },
-        reason: { type: "string" },
-      },
-      additionalProperties: false,
-    },
-    outputSchema: { type: "object" },
-    annotations: {
-      domain: "git_context",
-      readOnly: false,
-      mutatesWorkspace: true,
-      mutatesExternalWorld: false,
-      destructive: false,
-      idempotent: false,
-      retrySafe: false,
-      longRunning: false,
-    },
-    async execute() {
-      const workstreamId = "W-20260719-0001";
-      const requestId = "R-0001";
-      const branch = "main";
-      const resource = {
-        resource: {
-          resourceId: `RES-${"A".repeat(24)}`,
-          kind: "directory" as const,
-          origin: "agent_created" as const,
-          displayName: "One run output",
-          description: "User-visible output directory for the one-run fixture.",
-          aliases: ["one run output"],
-          locator: { kind: "filesystem" as const, path: workingDirectory },
-          version: {
-            key: "directory:one-run",
-            observedAt: "2026-07-19T10:00:00.000Z",
-            exists: true,
-            kind: "directory" as const,
-            entryCount: 0,
-          },
-          availability: "available" as const,
-          metadataStatus: "enriched" as const,
-          createdAt: "2026-07-19T10:00:00.000Z",
-          updatedAt: "2026-07-19T10:00:00.000Z",
-        },
-        role: "primary" as const,
-        access: "mutate" as const,
-        primary: true,
-        requestIds: [requestId],
-        boundAt: "2026-07-19T10:00:00.000Z",
-      };
-      const contextEngine = {
-        ...prepared.context,
-        pendingTurn: {
-          ...prepared.context.pendingTurn!,
-          routingStatus: "bound" as const,
-          workstreamId,
-          branch,
-          runId: prepared.run.runId,
-        },
-        focus: {
-          status: "active" as const,
-          ref: `refs/heads/${branch}`,
-          workstreamId,
-        },
-        workstream: {
-          contextRepositoryPath: join(dirname(workingDirectory), "workstreams", workstreamId),
-          ref: `refs/heads/${branch}`,
-          workstreamId,
-          title: "One run integration",
-          objective: "Create the requested file.",
-          summary: "Create and verify the requested file.",
-          workstreamStatus: "in_progress" as const,
-          lifecycleStatus: "active" as const,
-          repositoryHealth: "ready" as const,
-          blockers: [],
-          next: "Create the requested file.",
-          currentRequest: {
-            id: requestId,
-            title: "Create one-run.txt",
-            status: "active" as const,
-            request: "Create the requested file.",
-            acceptance: ["one-run.txt exists and is verified."],
-            constraints: [],
-          },
-          resources: [resource],
-          recentCommits: [],
-        },
-      };
-      return {
-        ok: true,
-        output: "Bound the existing run to a new workstream.",
-        v2: {
-          transportOk: true,
-          operationStatus: "succeeded",
-          code: "GIT_CONTEXT_WORKSTREAM_CREATED",
-          message: "Bound the existing run to a new workstream.",
-          structuredContent: {
-            status: "ready",
-            mode: "created",
-            sessionId: prepared.sessionId,
-            workstreamId,
-            contextRepositoryPath: join(dirname(workingDirectory), "workstreams", workstreamId),
-            requestId,
-            requestStatus: "active",
-            requestCreated: true,
-            requestDecision: "initial",
-            workstreamCreated: true,
-            branch,
-            resources: [resource],
-            workstreamHead: "a".repeat(40),
-            runId: prepared.run.runId,
-            harnessContext: { contextEngine },
-          },
-        },
-      };
     },
   };
 }
@@ -599,30 +472,72 @@ describe("IVecEngine one-run integration", () => {
     }
   });
 
-  it("binds and mutates on the same run, then acknowledges finalization", async () => {
+  it("resolves in isolation, mutates on the same run, then acknowledges finalization", async () => {
     const dataDir = makeTmpDir();
     const workingDirectory = join(dataDir, "workspace");
     const outputPath = join(workingDirectory, "one-run.txt");
-    const prepared = createPreparedTurn({ role: "user", runId: "R-route-and-write" });
-    const runtime = createContextRuntime(prepared);
-    const routeTool = createWorkstreamBindingTool(prepared, workingDirectory);
+    const database = await ContextDatabase.open({ path: join(dataDir, "context.sqlite") });
+    const service = new SqliteContextEngineService({
+      database,
+      rootDirectory: dataDir,
+      now: () => "2026-07-21T10:00:00.000Z",
+    });
+    const startWorkstreamResolution = vi.spyOn(service, "startWorkstreamResolution");
+    const runtime = createContextEngineRuntime({
+      service,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      scopeKey: "default",
+    });
+    const prepareUserTurn = vi.spyOn(runtime, "prepareUserTurn");
+    const recordRunStep = vi.spyOn(runtime, "recordRunStep");
+    const finalizeRun = vi.spyOn(runtime, "finalizeRun");
     const provider = createProvider([
+      {
+        kind: "resolve_workstream",
+        request: {
+          purpose: "Resolve the durable owner for one-run.txt.",
+          hints: [{ kind: "filesystem", path: workingDirectory }],
+        },
+      },
       {
         kind: "act",
         action: {
           mode: "single",
           calls: [{
-            id: "bind-workstream",
-            tool: "git_context_create_workstream",
+            id: "resolver-search",
+            tool: "resolution_search_workstreams",
+            input: { query: "one-run.txt" },
+            dependsOn: [],
+            purpose: "Search authoritative workstream state",
+          }],
+          allowedTools: ["resolution_search_workstreams"],
+          assertions: [],
+        },
+      },
+      {
+        kind: "act",
+        action: {
+          mode: "single",
+          calls: [{
+            id: "resolver-create",
+            tool: "resolution_create_workstream",
             input: {
               title: "One run file",
-              objective: "Create one-run.txt",
-              reason: "No existing workstream owns this deliverable.",
+              objective: "Create and verify one-run.txt.",
+              initialRequest: {
+                title: "Create one-run.txt",
+                request: "Create the requested one-run.txt file.",
+                acceptance: ["one-run.txt exists with the requested content."],
+                constraints: [],
+              },
+              resources: [],
+              evidence: ["Authoritative catalog search found no owning workstream."],
             },
             dependsOn: [],
-            purpose: "Bind the durable work",
+            purpose: "Create the single owning workstream",
           }],
-          allowedTools: ["git_context_create_workstream"],
+          allowedTools: ["resolution_create_workstream"],
           assertions: [],
         },
       },
@@ -645,13 +560,7 @@ describe("IVecEngine one-run integration", () => {
           kind: "workstream_completion",
           request: {
             summary: "Created and verified one-run.txt.",
-            resources: [{
-              resourceId: `RES-${"A".repeat(24)}`,
-              path: "one-run.txt",
-              kind: "file",
-              description: "Requested text file",
-              aliases: ["one run file"],
-            }],
+            resources: [],
           },
       },
       { kind: "reply", status: "completed", message: "Created one-run.txt." },
@@ -662,7 +571,8 @@ describe("IVecEngine one-run integration", () => {
       provider,
       dataDir,
       chatContextRuntime: runtime,
-      toolExecutor: createToolExecutor([routeTool, writeFilesTool]),
+      contextEngineService: service,
+      toolExecutor: createToolExecutor([writeFilesTool]),
     });
 
     try {
@@ -673,31 +583,48 @@ describe("IVecEngine one-run integration", () => {
         expect(onReply.mock.calls.some(([, response]) => (
           response as { type?: string }
         ).type === "reply")).toBe(true);
-      });
+      }, { timeout: 5_000 });
       expect(readFileSync(outputPath, "utf8")).toBe("same durable run");
-      expect(runtime.recordRunStep).toHaveBeenCalledTimes(2);
-      for (const [input] of vi.mocked(runtime.recordRunStep).mock.calls) {
-        expect(input.turn?.run.runId).toBe("R-route-and-write");
-        expect(input.record.runId).toBe("R-route-and-write");
-      }
-      expect(runtime.finalizeRun).toHaveBeenCalledWith(expect.objectContaining({
-        turn: expect.objectContaining({ run: expect.objectContaining({ runId: "R-route-and-write" }) }),
+      expect(recordRunStep).toHaveBeenCalledOnce();
+      const prepared = await prepareUserTurn.mock.results[0]!.value;
+      expect(recordRunStep).toHaveBeenCalledWith(expect.objectContaining({
+        turn: expect.objectContaining({ run: expect.objectContaining({ runId: prepared.run.runId }) }),
+        record: expect.objectContaining({
+          runId: prepared.run.runId,
+          step: 1,
+          toolCalls: [expect.objectContaining({ tool: "write_files" })],
+        }),
+      }));
+      expect(finalizeRun).toHaveBeenCalledWith(expect.objectContaining({
+        turn: expect.objectContaining({ run: expect.objectContaining({ runId: prepared.run.runId }) }),
         outcome: "done",
         stopReason: "completed",
         workstreamCompletion: expect.objectContaining({ accepted: true }),
       }));
-      expect(onReply).toHaveBeenCalledWith("c1", {
+      expect(onReply).toHaveBeenCalledWith("c1", expect.objectContaining({
         type: "reply",
         content: "Created one-run.txt.",
-        runId: "R-route-and-write",
-        commitStatus: "no_change",
+        runId: prepared.run.runId,
+      }));
+      const startedResolution = await startWorkstreamResolution.mock.results[0]!.value;
+      const resolution = await service.getWorkstreamResolution({
+        activityId: startedResolution.activity.activityId,
       });
+      expect(resolution.activity).toMatchObject({
+        runId: prepared.run.runId,
+        status: "resolved",
+        stepCount: 2,
+      });
+      expect(resolution.steps).toHaveLength(2);
+      expect(resolution.steps.flatMap((step) => step.toolCalls)).toHaveLength(2);
       const terminalReplyIndex = onReply.mock.calls.findIndex(([, response]) => (
         response as { type?: string }
       ).type === "reply");
-      expect(vi.mocked(runtime.finalizeRun).mock.invocationCallOrder[0])
+      expect(finalizeRun.mock.invocationCallOrder[0])
         .toBeLessThan(onReply.mock.invocationCallOrder[terminalReplyIndex]!);
     } finally {
+      await engine.stop();
+      await service.close();
       rmSync(dataDir, { recursive: true, force: true });
     }
   });

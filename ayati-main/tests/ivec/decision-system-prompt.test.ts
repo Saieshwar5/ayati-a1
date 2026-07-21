@@ -9,8 +9,7 @@ describe("stable decision system prompt", () => {
     expect(prompt).toContain("Decision and execution rules:");
     expect(prompt).toContain("Verification and completion:");
     expect(prompt).toContain("User interaction and final replies:");
-    expect(prompt).toContain("git_context_activate_workstream");
-    expect(prompt).toContain("git_context_create_workstream");
+    expect(prompt).toContain("workstream_resolve");
     expect(prompt).toContain("decision_load_tools");
     expect(prompt).toContain("workstream_completion");
     expect(prompt).toContain("ask_user_feedback");
@@ -20,6 +19,8 @@ describe("stable decision system prompt", () => {
     expect(prompt).not.toContain("context.gitContext");
     expect(prompt).not.toContain("State view.progress");
     expect(prompt).not.toContain("selected work branch");
+    expect(prompt).not.toContain("git_context_activate_workstream");
+    expect(prompt).not.toContain("git_context_create_workstream");
     expect(prompt).not.toMatch(/(?<!decision_)load_tools/);
   });
 

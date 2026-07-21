@@ -1,9 +1,9 @@
 import type {
-  GitContextService,
+  ContextEngineService,
   ResourceRole,
   SelectedWorkstreamForRunResponse,
   WorkstreamRequestRoute,
-} from "ayati-git-context";
+} from "ayati-context-engine";
 import { buildContextEngineProjection } from "../../../context-engine/index.js";
 import type { SkillDefinition, ToolDefinition, ToolExecutionContext, ToolResult } from "../../types.js";
 import {
@@ -13,9 +13,10 @@ import {
   succeededContract,
 } from "../contract-helpers.js";
 import { createWorkstreamDiscoveryTools } from "./discovery-tools.js";
+import { createAgentHistoryTools } from "./history-tools.js";
 
 export interface GitContextSkillDeps {
-  service: GitContextService;
+  service: ContextEngineService;
 }
 
 const PROMPT = [
@@ -28,6 +29,7 @@ const PROMPT = [
   "Continue the active request only for the same unfinished outcome. Create a new request in the same workstream for a materially separate outcome on the same durable subject or resources.",
   "Use git_context_find_workstreams and git_context_read_workstream when compact candidates do not prove ownership.",
   "Use git_context_find_resources to locate work by an artifact, path, URL, description, or alias.",
+  "Use agent_history_search for older discussion, run summaries, or evidence omitted from the bounded stream projection. Use agent_history_read with the exact returned ref or sequence range.",
   "Use git_context_activate_workstream for existing ownership and git_context_create_workstream for genuinely distinct durable work.",
   "Casual conversation and isolated list, search, or read work may remain unbound. Persistent mutation requires one immutable workstream/request binding.",
   "Never choose by recency alone. Exact workstream identity, exact resource identity, and explicit continuation are strongest; ask one focused question if mutation ownership remains ambiguous.",
@@ -38,18 +40,19 @@ const PROMPT = [
 export function createGitContextSkill(deps: GitContextSkillDeps): SkillDefinition {
   return {
     id: "git-context",
-    version: "4.0.0",
-    description: "Discover, create, and continue durable workstreams linked to real resources.",
+    version: "5.0.0",
+    description: "Inspect agent-stream history and discover, create, or continue durable workstreams linked to real resources.",
     promptBlock: PROMPT,
     tools: [
       createWorkstreamTool(deps.service),
       activateWorkstreamTool(deps.service),
+      ...createAgentHistoryTools(deps.service),
       ...createWorkstreamDiscoveryTools(deps.service),
     ],
   };
 }
 
-function createWorkstreamTool(service: GitContextService): ToolDefinition {
+function createWorkstreamTool(service: ContextEngineService): ToolDefinition {
   return {
     name: "git_context_create_workstream",
     description: "Create durable context for distinct multi-turn work and bind this run to its initial request.",
@@ -82,18 +85,16 @@ function createWorkstreamTool(service: GitContextService): ToolDefinition {
       const parsed = parseCreateInput(input, context);
       if ("ok" in parsed) return parsed;
       try {
-        const current = await currentRun(service, parsed.sessionId, context);
+        const current = await currentRun(service, parsed.streamId, context);
         const selected = await service.createWorkstreamForRun({
           requestId: toolRequestId(context, "create-workstream"),
-          sessionId: parsed.sessionId,
-          conversationId: current.conversationId,
           runId: current.runId,
           title: parsed.title,
           objective: parsed.objective,
           ...(parsed.resources.length > 0 ? { resources: parsed.resources } : {}),
           at: current.startedAt,
         });
-        return await routingSuccess(service, parsed.sessionId, selected, "created");
+        return await routingSuccess(service, parsed.streamId, selected, "created");
       } catch (error) {
         return routingError(errorMessage(error));
       }
@@ -101,7 +102,7 @@ function createWorkstreamTool(service: GitContextService): ToolDefinition {
   };
 }
 
-function activateWorkstreamTool(service: GitContextService): ToolDefinition {
+function activateWorkstreamTool(service: ContextEngineService): ToolDefinition {
   return {
     name: "git_context_activate_workstream",
     description: "Bind this run to an existing workstream and explicitly continue or create its active request.",
@@ -144,17 +145,15 @@ function activateWorkstreamTool(service: GitContextService): ToolDefinition {
       const parsed = parseActivateInput(input, context);
       if ("ok" in parsed) return parsed;
       try {
-        const current = await currentRun(service, parsed.sessionId, context);
+        const current = await currentRun(service, parsed.streamId, context);
         const selected = await service.activateWorkstreamForRun({
           requestId: toolRequestId(context, "activate-workstream"),
-          sessionId: parsed.sessionId,
-          conversationId: current.conversationId,
           runId: current.runId,
           workstreamId: parsed.workstreamId,
           route: parsed.route,
           at: current.startedAt,
         });
-        return await routingSuccess(service, parsed.sessionId, selected, "activated");
+        return await routingSuccess(service, parsed.streamId, selected, "activated");
       } catch (error) {
         return routingError(errorMessage(error));
       }
@@ -163,27 +162,25 @@ function activateWorkstreamTool(service: GitContextService): ToolDefinition {
 }
 
 async function currentRun(
-  service: GitContextService,
-  sessionId: string,
+  service: ContextEngineService,
+  streamId: string,
   context?: ToolExecutionContext,
-): Promise<{ runId: string; conversationId: string; startedAt: string }> {
-  const active = await service.getActiveContext({ sessionId });
-  const conversation = active.session?.pendingConversationContext.at(-1)?.conversation;
+): Promise<{ runId: string; startedAt: string }> {
+  const active = await service.getAgentContext({ streamId });
   const run = active.run?.run;
-  if (!conversation || conversation.status !== "active" || !run
-    || run.runId !== context?.runId || run.conversationId !== conversation.conversationId) {
-    throw new Error("Workstream routing requires the current prepared run and conversation.");
+  if (!run || run.runId !== context?.runId) {
+    throw new Error("Workstream routing requires the current prepared run.");
   }
-  return { runId: run.runId, conversationId: run.conversationId, startedAt: run.startedAt };
+  return { runId: run.runId, startedAt: run.startedAt };
 }
 
 async function routingSuccess(
-  service: GitContextService,
-  sessionId: string,
+  service: ContextEngineService,
+  streamId: string,
   selected: SelectedWorkstreamForRunResponse,
   mode: "created" | "activated",
 ): Promise<ToolResult> {
-  const active = await service.getActiveContext({ sessionId });
+  const active = await service.getAgentContext({ streamId });
   const workstream = active.activeWorkstream;
   if (!workstream) return routingError("Selected workstream context is unavailable after binding.");
   return okJsonResult({
@@ -193,9 +190,8 @@ async function routingSuccess(
     message: mode === "created" ? "Workstream created and selected." : "Workstream selected.",
     structuredContent: {
       status: "ready",
-      sessionId,
+      streamId,
       workstreamId: selected.workstream.workstreamId,
-      contextRepositoryPath: selected.workstream.contextRepositoryPath,
       branch: selected.workstream.branch,
       mode,
       runId: selected.run.runId,
@@ -233,9 +229,8 @@ function routingOutputSchema(): Record<string, unknown> {
     type: "object",
     properties: {
       status: { const: "ready" },
-      sessionId: { type: "string" },
+      streamId: { type: "string" },
       workstreamId: { type: "string" },
-      contextRepositoryPath: { type: "string" },
       branch: { type: "string" },
       mode: { enum: ["created", "activated"] },
       runId: { type: "string" },
@@ -250,7 +245,7 @@ function routingOutputSchema(): Record<string, unknown> {
       harnessContext: { type: "object" },
     },
     required: [
-      "status", "sessionId", "workstreamId", "contextRepositoryPath", "branch", "mode", "runId",
+      "status", "streamId", "workstreamId", "branch", "mode", "runId",
       "workstreamHead", "workstreamCreated", "requestDecision", "requestCreated",
       "headBeforeSelection", "resources", "harnessContext",
     ],
@@ -263,38 +258,38 @@ function routingAnnotations() {
 }
 
 function parseCreateInput(input: unknown, context?: ToolExecutionContext): {
-  sessionId: string;
+  streamId: string;
   title: string;
   objective: string;
   resources: Array<{ resourceId: string; role: ResourceRole; access: "read" | "mutate"; primary?: boolean }>;
 } | ToolResult {
   const record = objectInput(input);
-  const sessionId = context?.sessionId?.trim();
+  const streamId = context?.sessionId?.trim();
   const title = stringField(record, "title");
   const objective = stringField(record, "objective");
   const reason = stringField(record, "reason");
   const resources = resourceBindings(record["resources"]);
-  if (!sessionId || !title || !objective || !reason || resources === undefined) {
-    return routingError("sessionId, title, objective, reason, and valid resource bindings are required.");
+  if (!streamId || !title || !objective || !reason || resources === undefined) {
+    return routingError("agent stream, title, objective, reason, and valid resource bindings are required.");
   }
-  return { sessionId, title, objective, resources };
+  return { streamId, title, objective, resources };
 }
 
 function parseActivateInput(input: unknown, context?: ToolExecutionContext): {
-  sessionId: string;
+  streamId: string;
   workstreamId: string;
   route: WorkstreamRequestRoute;
 } | ToolResult {
   const record = objectInput(input);
-  const sessionId = context?.sessionId?.trim();
+  const streamId = context?.sessionId?.trim();
   const workstreamId = stringField(record, "workstreamId");
   const reason = stringField(record, "reason");
-  if (!sessionId || !workstreamId || !/^W-\d{8}-\d{4}$/.test(workstreamId) || !reason) {
-    return routingError("sessionId, a valid W-* workstreamId, and reason are required.");
+  if (!streamId || !workstreamId || !/^W-\d{8}-\d{4}$/.test(workstreamId) || !reason) {
+    return routingError("An agent stream, valid W-* workstreamId, and reason are required.");
   }
   const route = parseRequestDecision(record["requestDecision"], reason);
   if (!route) return routingError("Activation requires a complete continue-or-create request decision.");
-  return { sessionId, workstreamId, route };
+  return { streamId, workstreamId, route };
 }
 
 function parseRequestDecision(value: unknown, reason: string): WorkstreamRequestRoute | undefined {
@@ -382,6 +377,6 @@ function errorMessage(error: unknown): string {
 function toolRequestId(context: ToolExecutionContext | undefined, operation: string): string {
   const runId = context?.runId?.trim();
   const callId = context?.callId?.trim();
-  if (!runId || !callId) throw new Error("Git Context routing requires run and tool-call identity.");
+  if (!runId || !callId) throw new Error("Context Engine routing requires run and tool-call identity.");
   return runId + ":" + callId + ":" + operation;
 }

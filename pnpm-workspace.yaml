@@ -1,4 +1,4 @@
 packages:
   - "ayati-main"
   - "ayati-cli"
-  - "ayati-git-context"
+  - "ayati-context-engine"

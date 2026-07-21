@@ -8,7 +8,7 @@ export interface AttachmentSkillDeps {
 const ATTACHMENT_PROMPT_BLOCK = [
   "Unified attachment restoration is built in.",
   "Use attachment_restore when the user refers to a file, document, dataset, or directory listed in the current workstream resources.",
-  "For follow-up work, use the resource display name, alias, path, or resource id from context.git.current.workstream.resources.",
+  "For follow-up work, use the resource display name, alias, path, or resource id from context.resources.activeWorkstream.",
   "If the current run already has attached files, do not restore an older attachment unless the user explicitly asks for the earlier one.",
   "Inputs accept resourceId or a reference such as display name, alias, or filesystem path.",
 ].join("\n");

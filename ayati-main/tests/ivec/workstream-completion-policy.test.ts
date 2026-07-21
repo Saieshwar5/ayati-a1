@@ -8,6 +8,7 @@ import {
   evaluateWorkstreamCompletion,
   isWorkstreamCompletionAvailable,
 } from "../../src/ivec/agent-runner/workstream-completion-policy.js";
+import { contextEngineFixture } from "../fixtures/agent-context.js";
 
 const RESOURCE_ID = "RES-SITE";
 const NOW = "2026-07-19T10:00:00.000Z";
@@ -144,6 +145,42 @@ describe("workstream completion policy", () => {
     ]));
   });
 
+  it("rejects completion while deterministic open work remains", async () => {
+    const result = await evaluateWorkstreamCompletion(workstreamState(resourceRoot, {
+      workState: {
+        ...baseWorkState(),
+        openWork: ["Run the final verification suite."],
+      },
+    }), {
+      summary: "Implemented the requested website changes.",
+      resources: [],
+    });
+
+    expect(result.accepted).toBe(false);
+    if (result.accepted) throw new Error("Expected completion rejection.");
+    expect(result.failures).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "OPEN_WORK_REMAINS" }),
+    ]));
+  });
+
+  it("does not accept resolver or legacy routing steps as task completion evidence", async () => {
+    const result = await evaluateWorkstreamCompletion(workstreamState(resourceRoot, {
+      completedSteps: [{
+        ...successfulStep(),
+        toolsUsed: ["git_context_create_workstream"],
+      }],
+    }), {
+      summary: "Created the requested workstream context.",
+      resources: [],
+    });
+
+    expect(result.accepted).toBe(false);
+    if (result.accepted) throw new Error("Expected completion rejection.");
+    expect(result.failures).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "COMPLETION_EVIDENCE_MISSING" }),
+    ]));
+  });
+
   it("rejects kind mismatches even when the path has evidence", async () => {
     await writeFile(join(resourceRoot, "index.html"), "ready", "utf-8");
     const state = workstreamState(resourceRoot, {
@@ -186,30 +223,25 @@ function completionResource(path: string) {
 }
 
 function workstreamHarnessContext(resourcePath: string) {
+  const contextEngine = contextEngineFixture({ runId: "R-1", message: "Create a website" });
   return createInitialHarnessContext({
     contextEngine: {
-      session: {
-        meta: { sessionId: "S-1", resourceCount: 1 },
-        conversationTail: [],
-        activityTail: [],
-      },
+      ...contextEngine,
       focus: {
         status: "active",
         ref: "refs/heads/main",
         workstreamId: "W-1",
       },
-      pendingTurn: {
-        fromSeq: 1,
-        toSeq: 1,
-        text: "Create a website",
-        at: NOW,
-        routingStatus: "bound",
-        workstreamId: "W-1",
-        branch: "main",
-        runId: "R-1",
+      current: {
+        ...contextEngine.current,
+        routing: {
+          status: "bound",
+          workstreamId: "W-1",
+          requestId: "REQ-1",
+          branch: "main",
+        },
       },
       workstream: {
-        contextRepositoryPath: join(resourcePath, "..", "..", "workstreams", "W-1"),
         ref: "refs/heads/main",
         workstreamId: "W-1",
         title: "Aurora Coffee website",
@@ -294,7 +326,6 @@ function workstreamState(resourcePath: string, input: Partial<LoopState> = {}): 
     maxIterations: 15,
     consecutiveFailures: 0,
     completedSteps: [successfulStep()],
-    routingAttempts: { successCount: 1, failureCount: 0, maxFailures: 2, resolved: true },
     runPath: "",
     failureHistory: [],
     harnessContext: workstreamHarnessContext(resourcePath),

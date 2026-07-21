@@ -10,8 +10,6 @@ Ayati uses one managed root:
     context.db
     context.db-wal
     context.db-shm
-    git-context.sock
-    sessions/
     resources/
 ```
 
@@ -23,7 +21,7 @@ commit generated runtime state.
 SQLite is authoritative for operational lifecycle and resource metadata.
 `workstreams/` is the portable context history. `workspace/` and user-selected
 external paths hold real resources. Do not edit SQLite or context repositories
-while Git Context is running.
+while Context Engine is running.
 
 ## Feedback Traces
 
@@ -38,7 +36,7 @@ feedback/latest-session.json
 
 The compact summary includes outcome, stop reason, tool/step counts,
 verification, binding, request decision, context-repository identity,
-resource count, materialization, resource effects, before/after context HEAD,
+resource count, observation/checkpoint facts, resource effects, before/after context HEAD,
 and context-commit status. `contextEngine.workstreamLifecycle` groups:
 
 - repository identity, selection mode, health, and HEADs;
@@ -54,7 +52,7 @@ commits.
 Run:
 
 ```bash
-pnpm feedback:git-context
+pnpm feedback:context-engine
 ```
 
 to render a workstream-aware markdown lifecycle report from the latest trace.
@@ -62,10 +60,10 @@ to render a workstream-aware markdown lifecycle report from the latest trace.
 ## Archive and Rebuild
 
 `pnpm context:archive-reset` only prints resolved paths. With `--confirm`, it
-archives the database including WAL/SHM, sessions, managed resources, and
+archives the database including WAL/SHM, managed resources, and
 workstreams into a timestamped sibling archive with a manifest. It preserves
-`workspace/` and refuses broad paths or a live daemon/socket.
+`workspace/` and refuses broad paths or a live Context Engine writer.
 
 `pnpm context:catalog-rebuild` scans validated context repositories and previews
 the reconstructible workstream/resource catalog. `--confirm` requires an empty
-initialized V5 database and a stopped daemon.
+initialized V7 database and a stopped daemon.

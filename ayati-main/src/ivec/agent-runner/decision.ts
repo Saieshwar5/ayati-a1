@@ -25,12 +25,10 @@ import type { ToolContractAssertion, ToolDefinition } from "../../skills/types.j
 import type { AgentFeedbackLedger } from "../feedback-ledger.js";
 import type { RunMetrics } from "../metrics.js";
 import { recordOptimizationEvent, recordPromptMetric, recordProviderUsageMetric, recordRunMetric } from "../metrics.js";
-import type { ToolContextProjectionPolicy } from "../types.js";
+import type { AgentContextCheckpointCoordinator, ToolContextProjectionPolicy } from "../types.js";
 import { compileDecisionContext } from "./decision-context-compiler.js";
 import { buildDecisionSystemSections } from "./decision-system-prompt.js";
-import { createTimelineCheckpointCache } from "./timeline-checkpoint-cache.js";
-import type { TimelineCheckpointCacheState } from "./timeline-checkpoint-cache.js";
-import { recordTimelineCheckpointObservability } from "./timeline-checkpoint-observability.js";
+import { recordStreamCheckpointObservability } from "./stream-checkpoint-observability.js";
 import { projectAgentStateViewForPrompt } from "./prompt-context.js";
 import type { RepairCode, RepairSignal } from "./repair-policy.js";
 import {
@@ -43,6 +41,7 @@ import {
   summarizePromptStateView,
   summarizeToolDefinitions,
 } from "./feedback-summary.js";
+import type { WorkstreamResolveRequest } from "../workstream-resolution/types.js";
 
 export type AgentDecisionStatus = "completed" | "failed";
 export type AgentActionMode = "single" | "sequential" | "parallel";
@@ -116,6 +115,11 @@ export type AgentDecision =
       kind: "workstream_completion";
       request: AgentWorkstreamCompletionRequest;
       workingNotes?: string[];
+    }
+  | {
+      kind: "resolve_workstream";
+      request: WorkstreamResolveRequest;
+      workingNotes?: string[];
     };
 
 interface CallAgentDecisionInput {
@@ -126,13 +130,14 @@ interface CallAgentDecisionInput {
   toolLoadingAvailable?: boolean;
   workstreamFeedbackToolAvailable?: boolean;
   workstreamCompletionAvailable?: boolean;
+  workstreamResolutionAvailable?: boolean;
   workstreamBound?: boolean;
   systemContext?: string;
   metrics?: RunMetrics;
   feedbackLedger?: AgentFeedbackLedger;
   feedbackContext?: AgentDecisionFeedbackContext;
   toolContextProjectionPolicy?: ToolContextProjectionPolicy;
-  timelineCheckpointCache?: TimelineCheckpointCacheState;
+  contextCheckpoint?: AgentContextCheckpointCoordinator;
   onContextCompilation?: (receipt: ContextCompilationReceipt) => void;
   onAssistantTextDelta?: (delta: string) => void;
 }
@@ -180,9 +185,9 @@ const PROVIDER_EMPTY_RESPONSE_RETRY_DELAY_MS = 400;
 const TOOL_PROTOCOL_FAILURE_REPLY = "I could not form a valid tool call for this request.";
 const WORKSTREAM_FEEDBACK_TOOL_NAME = "ask_user_feedback";
 const WORKSTREAM_COMPLETION_TOOL_NAME = "workstream_completion";
+const WORKSTREAM_RESOLUTION_TOOL_NAME = "workstream_resolve";
 
 export async function callAgentDecision(input: CallAgentDecisionInput): Promise<AgentDecision> {
-  const timelineCheckpointCache = input.timelineCheckpointCache ?? createTimelineCheckpointCache();
   const contextLimits = resolveModelContextLimits(input.provider);
   const promptStateView = projectAgentStateViewForPrompt(input.stateView);
   const promptSections = buildDecisionPromptSections(promptStateView, input.toolDefinitions, input.toolRoutingSummary);
@@ -221,6 +226,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         toolLoadingAvailable: input.toolLoadingAvailable !== false,
         workstreamFeedbackToolAvailable: input.workstreamFeedbackToolAvailable === true,
         workstreamCompletionAvailable: input.workstreamCompletionAvailable === true,
+        workstreamResolutionAvailable: input.workstreamResolutionAvailable === true,
       });
       recordDecisionFeedback(input, "native_tool_surface", {
         attempt: attempt + 1,
@@ -241,7 +247,6 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         contextLimits,
         decisionAttempt: attempt + 1,
         requestStartedAt: startedAt,
-        timelineCheckpointCache,
       });
       recordRunMetric(input.metrics, metricStage, {
         durationMs: Date.now() - startedAt,
@@ -336,6 +341,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         toolLoadingAvailable: input.toolLoadingAvailable !== false,
         workstreamFeedbackToolAvailable: input.workstreamFeedbackToolAvailable === true,
         workstreamCompletionAvailable: input.workstreamCompletionAvailable === true,
+        workstreamResolutionAvailable: input.workstreamResolutionAvailable === true,
         workstreamBound: input.workstreamBound === true,
       });
       if (violation) {
@@ -453,7 +459,6 @@ async function generateTurnWithEmptyResponseRetry(
     contextLimits: ResolvedModelContextLimits;
     decisionAttempt: number;
     requestStartedAt: number;
-    timelineCheckpointCache: TimelineCheckpointCacheState;
   },
 ): Promise<LlmTurnOutput> {
   const candidateTurnInput: LlmTurnInput = {
@@ -469,7 +474,7 @@ async function generateTurnWithEmptyResponseRetry(
     contextLimits: request.contextLimits,
     decisionAttempt: request.decisionAttempt,
     policy: input.toolContextProjectionPolicy ?? "shadow",
-    timelineCheckpointCache: request.timelineCheckpointCache,
+    contextCheckpoint: input.contextCheckpoint,
     buildPrompt: (stateView) => Object.values(buildDecisionPromptSections(
       stateView,
       input.toolDefinitions,
@@ -498,7 +503,7 @@ async function generateTurnWithEmptyResponseRetry(
       policy: compilation.projection.policy,
     });
   }
-  recordTimelineCheckpointObservability({
+  recordStreamCheckpointObservability({
     compilation,
     decisionAttempt: request.decisionAttempt,
     metrics: input.metrics,
@@ -690,6 +695,12 @@ function summarizeDecisionForFeedback(decision: AgentDecision): Record<string, u
       request: decision.request,
     };
   }
+  if (decision.kind === "resolve_workstream") {
+    return {
+      kind: decision.kind,
+      request: decision.request,
+    };
+  }
   return {
     kind: decision.kind,
     mode: decision.action.mode,
@@ -823,6 +834,7 @@ function validateToolProtocol(
     toolLoadingAvailable: boolean;
     workstreamFeedbackToolAvailable: boolean;
     workstreamCompletionAvailable: boolean;
+    workstreamResolutionAvailable: boolean;
     workstreamBound: boolean;
   },
 ): ToolProtocolViolation | null {
@@ -870,6 +882,32 @@ function validateToolProtocol(
         kind: "tool_protocol_violation",
         reason: "workstream_completion is only available during an active workstream-bound run",
         invalidTools: [WORKSTREAM_COMPLETION_TOOL_NAME],
+        selectedTools,
+        loadToolsUsedAsAction: false,
+        mutationRequiresWorkstreamBinding: false,
+      };
+    }
+    return null;
+  }
+
+  if (decision.kind === "resolve_workstream") {
+    if (!options.workstreamResolutionAvailable || options.workstreamBound) {
+      return {
+        kind: "tool_protocol_violation",
+        reason: "workstream_resolve is only available for an eligible unbound run",
+        invalidTools: [WORKSTREAM_RESOLUTION_TOOL_NAME],
+        selectedTools,
+        loadToolsUsedAsAction: false,
+        mutationRequiresWorkstreamBinding: false,
+      };
+    }
+    if (!decision.request.purpose.trim()
+      || decision.request.purpose.length > 500
+      || decision.request.hints.length > 8) {
+      return {
+        kind: "tool_protocol_violation",
+        reason: "workstream_resolve input is invalid",
+        invalidTools: [WORKSTREAM_RESOLUTION_TOOL_NAME],
         selectedTools,
         loadToolsUsedAsAction: false,
         mutationRequiresWorkstreamBinding: false,
@@ -1183,8 +1221,12 @@ function buildStateViewPromptBreakdown(
 ): Record<string, string | undefined> {
   return {
     "state.context": stringifySection(stateView.context),
-    "state.context.timeline": stringifySection(stateView.context.timeline),
-    "state.context.git": stringifySection(stateView.context.git),
+    "state.context.temporal": stringifySection(stateView.context.temporal),
+    "state.context.current": stringifySection(stateView.context.current),
+    "state.context.stream": stringifySection(stateView.context.stream),
+    "state.context.work": stringifySection(stateView.context.work),
+    "state.context.resources": stringifySection(stateView.context.resources),
+    "state.context.observations": stringifySection(stateView.context.observations),
     "state.context.tools": stringifySection(stateView.context.tools),
     "state.context.harness": stringifySection(stateView.context.harness),
     "state.context.personal": stringifySection(stateView.context.personal),
@@ -1272,9 +1314,49 @@ function buildNativeDecisionTools(
     toolLoadingAvailable: boolean;
     workstreamFeedbackToolAvailable: boolean;
     workstreamCompletionAvailable: boolean;
+    workstreamResolutionAvailable: boolean;
   },
 ): LlmToolSchema[] {
   const controlTools: LlmToolSchema[] = [];
+  if (options.workstreamResolutionAvailable) {
+    controlTools.push({
+      name: WORKSTREAM_RESOLUTION_TOOL_NAME,
+      description: "Resolve and immutably bind this unbound run to exactly one existing or new workstream/request in an isolated control activity. Use for actionable work; the runtime mounts the selected context after this call.",
+      inputSchema: objectSchema({
+        purpose: {
+          type: "string",
+          minLength: 1,
+          maxLength: 500,
+          description: "One concise sentence describing which durable work the current input appears to continue or start.",
+        },
+        hints: {
+          type: "array",
+          maxItems: 8,
+          items: {
+            oneOf: [
+              objectSchema({
+                kind: { const: "workstream_id" },
+                workstreamId: { type: "string", pattern: "^W-[0-9]{8}-[0-9]{4}$" },
+              }, ["kind", "workstreamId"]),
+              objectSchema({
+                kind: { const: "resource_id" },
+                resourceId: { type: "string", pattern: "^RES-[0-9A-F]{24}$" },
+              }, ["kind", "resourceId"]),
+              objectSchema({
+                kind: { const: "filesystem" },
+                path: { type: "string", minLength: 1 },
+              }, ["kind", "path"]),
+              objectSchema({
+                kind: { const: "url" },
+                url: { type: "string", minLength: 1 },
+              }, ["kind", "url"]),
+            ],
+          },
+        },
+        workingNotes: workingNotesSchema(),
+      }, ["purpose"]),
+    });
+  }
   if (options.toolLoadingAvailable) {
     controlTools.push({
       name: "decision_load_tools",
@@ -1484,6 +1566,15 @@ function nativeDecisionToolCallToPayload(toolName: string, input: Record<string,
         ...nativeWorkstreamCompletionPayload(input),
         ...(input["workingNotes"] ? { workingNotes: input["workingNotes"] } : {}),
       };
+    case WORKSTREAM_RESOLUTION_TOOL_NAME:
+      return {
+        kind: "resolve_workstream",
+        request: {
+          purpose: input["purpose"],
+          hints: input["hints"] ?? [],
+        },
+        ...(input["workingNotes"] ? { workingNotes: input["workingNotes"] } : {}),
+      };
     default:
       return {
         kind: "reply",
@@ -1512,6 +1603,12 @@ function nativeDecisionToolCallToDecision(toolName: string, input: Record<string
       return {
         kind: "workstream_completion",
         request: normalizeWorkstreamCompletionRequest(input),
+        workingNotes: normalizeWorkingNotes(input["workingNotes"]),
+      };
+    case WORKSTREAM_RESOLUTION_TOOL_NAME:
+      return {
+        kind: "resolve_workstream",
+        request: normalizeWorkstreamResolveRequest(input),
         workingNotes: normalizeWorkingNotes(input["workingNotes"]),
       };
     default:
@@ -1557,6 +1654,41 @@ function normalizeWorkstreamCompletionRequest(input: unknown): AgentWorkstreamCo
   return {
     summary: typeof record["summary"] === "string" ? record["summary"].trim() : "",
     resources,
+  };
+}
+
+function normalizeWorkstreamResolveRequest(input: unknown): WorkstreamResolveRequest {
+  const record = isPlainObject(input) ? input : {};
+  const hints = Array.isArray(record["hints"])
+    ? record["hints"].flatMap((value): WorkstreamResolveRequest["hints"] => {
+        if (!isPlainObject(value)) return [];
+        switch (value["kind"]) {
+          case "workstream_id":
+            return typeof value["workstreamId"] === "string"
+              ? [{ kind: "workstream_id", workstreamId: value["workstreamId"].trim() }]
+              : [];
+          case "resource_id":
+            return typeof value["resourceId"] === "string"
+              ? [{ kind: "resource_id", resourceId: value["resourceId"].trim() }]
+              : [];
+          case "filesystem":
+            return typeof value["path"] === "string"
+              ? [{ kind: "filesystem", path: value["path"].trim() }]
+              : [];
+          case "url":
+            return typeof value["url"] === "string"
+              ? [{ kind: "url", url: value["url"].trim() }]
+              : [];
+          default:
+            return [];
+        }
+      }).slice(0, 8)
+    : [];
+  return {
+    purpose: typeof record["purpose"] === "string"
+      ? record["purpose"].trim().replace(/\s+/g, " ")
+      : "",
+    hints,
   };
 }
 

@@ -1,5 +1,4 @@
 import type { LoopState, ToolContextState, ToolObservation, WorkState } from "../types.js";
-import type { ContextReadContext } from "../../context-engine/index.js";
 import type { RepairPromptCard } from "./repair-policy.js";
 import { buildPromptToolCallsForRun } from "./run-tool-call-context.js";
 import type { PromptToolCalls } from "./run-tool-call-context.js";
@@ -17,10 +16,6 @@ import type {
 export interface PromptProgressState extends PromptRunWorkStateContext {}
 
 export interface PromptObservations {
-  latest: ToolObservation[];
-}
-
-export interface PromptReadContext {
   latest: ToolObservation[];
 }
 
@@ -79,7 +74,6 @@ export interface AgentStateView {
   workingFeedback?: PromptWorkingFeedback;
   toolLoad?: PromptToolLoadState;
   observations?: PromptObservations;
-  readContext?: PromptReadContext;
   toolCalls?: PromptToolCalls;
   trace?: PromptTrace;
   attachments?: {
@@ -108,14 +102,8 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
   const toolLoad = buildToolLoadView(state.lastToolLoad);
   const workingFeedback = buildWorkingFeedbackView(state);
   const observations = buildObservationsView(state.toolContext);
-  const readContext = buildReadContextView(state.toolContext);
   const contextPack = buildAgentContextPack(state);
-  const activeRunId = state.runId;
-  const toolCalls = buildToolCallsView(
-    state.toolContext,
-    contextPack.gitContext?.readContext,
-    activeRunId,
-  );
+  const toolCalls = buildPromptToolCallsForRun(state.toolContext?.toolCalls);
   const trace = buildTraceView(state);
   const attachments = buildAttachmentState(state);
   const systemEvent = state.systemEvent ? {
@@ -148,7 +136,6 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
     ...(workingFeedback ? { workingFeedback } : {}),
     ...(toolLoad ? { toolLoad } : {}),
     ...(observations ? { observations } : {}),
-    ...(readContext ? { readContext } : {}),
     ...(toolCalls ? { toolCalls } : {}),
     ...(trace ? { trace } : {}),
     ...(attachments ? { attachments } : {}),
@@ -245,20 +232,20 @@ function buildWorkingFeedbackView(state: LoopState): PromptWorkingFeedback | und
 }
 
 function buildPendingTurnWorkingFeedback(state: LoopState): PromptWorkingFeedbackItem | undefined {
-  const pendingTurn = state.harnessContext.contextEngine?.pendingTurn;
-  if (pendingTurn?.routingStatus === "unbound") {
+  const routing = state.harnessContext.contextEngine?.current.routing;
+  if (routing?.status === "unbound") {
     return {
       severity: "warning",
       source: "tool_validation",
-      message: "The current git-context pending turn is unbound. Normal workstream tools are not valid until this turn is routed to an existing workstream or a new workstream.",
+      message: "The current Context Engine pending turn is unbound. Normal workstream tools are not valid until this turn is routed to an existing workstream or a new workstream.",
       retryHint: "Inspect workstream/resource candidates, then activate or create the correct workstream. Ask the user directly if ownership is ambiguous.",
     };
   }
-  if (pendingTurn?.routingStatus === "clarifying") {
+  if (routing?.status === "clarifying") {
     return {
       severity: "warning",
       source: "tool_validation",
-      message: "The current git-context pending turn is clarifying. Do not call executable tools while workstream ownership is unresolved.",
+      message: "The current Context Engine pending turn is clarifying. Do not call executable tools while workstream ownership is unresolved.",
       retryHint: "Ask the user directly which workstream or target they mean.",
     };
   }
@@ -375,67 +362,6 @@ function buildPromptObservations(observations: ToolObservation[] | undefined): T
 function buildObservationsView(toolContext: ToolContextState | undefined): PromptObservations | undefined {
   const latest = buildPromptObservations(toolContext?.recent);
   return latest.length > 0 ? { latest } : undefined;
-}
-
-const READ_CONTEXT_TOOLS = new Set([
-  "inspect_paths",
-  "read_files",
-  "search_in_files",
-  "find_files",
-  "list_directory",
-]);
-
-function buildReadContextView(toolContext: ToolContextState | undefined): PromptReadContext | undefined {
-  const latest = buildPromptObservations(
-    (toolContext?.recent ?? []).filter((observation) => READ_CONTEXT_TOOLS.has(observation.tool)),
-  );
-  return latest.length > 0 ? { latest } : undefined;
-}
-
-function buildToolCallsView(
-  toolContext: ToolContextState | undefined,
-  readContext: ContextReadContext | undefined,
-  activeRunId: string,
-): PromptToolCalls | undefined {
-  const covered = new Map<string, string[]>();
-  const entries = readContext
-    ? [
-        ...readContext.inventory,
-        ...readContext.discovery,
-        ...readContext.evidence,
-        ...readContext.actions,
-      ]
-    : [];
-  for (const entry of entries) {
-    if (entry.runId !== activeRunId) continue;
-    const source = entry.step + ":" + entry.tool + (entry.callId ? ":" + entry.callId : "");
-    covered.set(source, [...(covered.get(source) ?? []), entry.key]);
-  }
-  return buildPromptToolCallsForRun(toolContext?.toolCalls)?.map((call) => {
-    const source = call.step + ":" + call.tool + (call.callId ? ":" + call.callId : "");
-    const readContextKeys = covered.get(source)
-      ?? covered.get(call.step + ":" + call.tool);
-    if (!readContextKeys) return call;
-    return {
-      step: call.step,
-      ...(call.callId ? { callId: call.callId } : {}),
-      tool: call.tool,
-      ...(call.purpose ? { purpose: call.purpose } : {}),
-      input: call.input,
-      status: call.status,
-      ...(call.retention ? { retention: call.retention } : {}),
-      mode: "reference" as const,
-      summary: "Full verified tool context is available in context.git.current.readContext.",
-      readContextKeys,
-      ...(call.operationStatus ? { operationStatus: call.operationStatus } : {}),
-      ...(call.artifacts ? { artifacts: call.artifacts } : {}),
-      ...(call.stepRef ? { stepRef: call.stepRef } : {}),
-      ...(call.evidenceRef ? { evidenceRef: call.evidenceRef } : {}),
-      ...(call.rawOutputChars !== undefined ? { rawOutputChars: call.rawOutputChars } : {}),
-      outputCompacted: true,
-      recoverable: true,
-    };
-  });
 }
 
 function buildTraceView(state: LoopState): PromptTrace | undefined {

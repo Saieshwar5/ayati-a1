@@ -283,11 +283,11 @@ async function runContextToolSelectionCase(config: RuntimeScaleConfig): Promise<
   const operations = [
     await measureOperation("build_state_view", async () => {
       const view = buildAgentStateView(state);
-      if (!view.context.timeline.some((event) => event.current)) {
+      if (!view.context.temporal.recent.some((event) => event.current)) {
         throw new Error("state view fixture was empty.");
       }
     }, {
-      description: "Build bounded model-facing state from large git context and personal memory context.",
+      description: "Build bounded model-facing state from large Context Engine and personal-memory context.",
       fixture,
       iterations: config.longIterations,
       warnIfP95MsAbove: 20,
@@ -819,7 +819,7 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
       openWork: ["Measure memory retrieval", "Measure filesystem scan"],
       blockers: [],
       verifiedFacts: ["Benchmark uses deterministic local fixtures."],
-      evidence: ["Synthetic git context and personal memory stores are seeded."],
+      evidence: ["Synthetic Context Engine and personal-memory stores are seeded."],
       nextStep: "Run non-LLM performance measurements.",
     },
     toolContext: {
@@ -852,12 +852,6 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
         toolFailureCount: 0,
       },
     ],
-    routingAttempts: {
-      successCount: 0,
-      failureCount: 0,
-      maxFailures: 2,
-      resolved: false,
-    },
     runPath: "/tmp/runtime-state-view",
     failureHistory: [],
     harnessContext: {
@@ -868,35 +862,60 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
 }
 
 function buildGitContextFixture(count: number, timestamp: string): ContextEngineMachineContext {
+  const recentMessages = Array.from({ length: count }, (_, index) => ([
+    {
+      messageId: `MSG-${index}-U`,
+      streamId: "ASTREAM-BENCH",
+      runId: `RUN-${index}`,
+      sequence: index * 2 + 1,
+      role: "user" as const,
+      content: `User message ${index} asking about runtime performance, project artifacts, and memory retrieval.`,
+      contentHash: `hash-u-${index}`,
+      at: timestamp,
+    },
+    {
+      messageId: `MSG-${index}-A`,
+      streamId: "ASTREAM-BENCH",
+      runId: `RUN-${index}`,
+      sequence: index * 2 + 2,
+      role: "assistant" as const,
+      content: `Assistant response ${index} describing non-LLM agent performance checks.`,
+      contentHash: `hash-a-${index}`,
+      at: timestamp,
+    },
+  ])).flat();
   return {
-    session: {
+    contextRevision: "context:bench",
+    streamRevision: "stream:bench",
+    observationRevision: "observations:bench",
+    agentStream: {
       meta: {
-        sessionId: "2026-06-17",
+        streamId: "ASTREAM-BENCH",
+        agentId: "local",
+        scopeKey: "default",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        lastMessageSequence: count * 2,
+        lastRunSequence: count,
         resourceCount: 1,
       },
-      conversationTail: Array.from({ length: count }, (_, index) => ([
-        {
-          seq: index * 2 + 1,
-          role: "user" as const,
-          at: timestamp,
-          text: `User message ${index} asking about runtime performance, project artifacts, and memory retrieval.`,
-        },
-        {
-          seq: index * 2 + 2,
-          role: "assistant" as const,
-          at: timestamp,
-          text: `Assistant response ${index} describing non-LLM agent performance checks.`,
-        },
-      ])).flat(),
-      activityTail: [],
+      recentMessages,
+      recentWork: [],
+      resources: [],
     },
+    current: {},
     focus: {
       status: "active",
       ref: "refs/heads/main",
       workstreamId: "W-20260617-0001",
     },
+    observations: {
+      revision: "observations:bench",
+      inventory: [],
+      discovery: [],
+      evidence: [],
+    },
     workstream: {
-      contextRepositoryPath: "/tmp/ayati/workstreams/W-20260617-0001",
       ref: "refs/heads/main",
       workstreamId: "W-20260617-0001",
       title: "Runtime performance analysis",
@@ -934,8 +953,8 @@ function buildGitContextFixture(count: number, timestamp: string): ContextEngine
         requestIds: ["REQ-20260617-0001"],
         boundAt: timestamp,
       }],
-      recentCommits: [],
     },
+    warnings: [],
   };
 }
 

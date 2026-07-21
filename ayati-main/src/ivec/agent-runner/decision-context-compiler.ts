@@ -1,35 +1,32 @@
 import type { LlmProvider } from "../../core/contracts/provider.js";
+import type { ContextCheckpointPlan, ContextCheckpointRecord } from "ayati-context-engine";
 import type { LlmTurnInput } from "../../core/contracts/llm-protocol.js";
 import type { ContextBudgetReport } from "../../prompt/context-budget.js";
 import {
   buildFullContextCompilationReceipt,
-  buildSessionSheddingCompilationReceipt,
-  buildTimelineCheckpointCompilationReceipt,
+  buildStreamCheckpointCompilationReceipt,
+  buildStreamProjectionCompilationReceipt,
   buildToolCompactContextCompilationReceipt,
 } from "../../prompt/context-compilation-receipt.js";
 import type { ContextCompilationReceipt } from "../../prompt/context-compilation-receipt.js";
 import { measureTurnContext } from "../../prompt/context-token-counter.js";
 import type { ResolvedModelContextLimits } from "../../providers/shared/model-context-limits.js";
-import type { ToolContextProjectionPolicy } from "../types.js";
+import type {
+  AgentContextCheckpointCoordinator,
+  ToolContextProjectionPolicy,
+} from "../types.js";
 import type { AgentPromptStateView } from "./prompt-context.js";
 import type { AgentStateView } from "./state-view.js";
 import { planToolContextProjection } from "./tool-context-projection-planner.js";
 import { buildToolContextProjectionCandidate } from "./tool-context-shadow.js";
 import type { ToolContextShadowReceipt } from "./tool-context-shadow.js";
 import {
-  buildSessionContextSheddingCandidate,
-  type SessionContextSheddingReceipt,
-} from "./session-context-shedding.js";
-import { createTimelineCheckpointCache } from "./timeline-checkpoint-cache.js";
-import type { TimelineCheckpointCacheState } from "./timeline-checkpoint-cache.js";
-import { generateTimelineCheckpoint } from "./timeline-checkpoint-generator.js";
-import type { TimelineCheckpointGenerationResult } from "./timeline-checkpoint-generator.js";
-import { buildTimelineCheckpointTurnInput } from "./timeline-checkpoint-projection.js";
-import { planTimelineCheckpoint } from "./timeline-checkpoint.js";
-import type {
-  ExactTimelineEvent,
-  TimelineCheckpointPlan,
-} from "./timeline-checkpoint.js";
+  buildStreamContextProjectionCandidate,
+  type StreamContextProjectionReceipt,
+} from "./stream-context-projection.js";
+import { generateStreamCheckpoint } from "./stream-checkpoint-generator.js";
+import type { StreamCheckpointGenerationResult } from "./stream-checkpoint-generator.js";
+import { buildCommittedStreamCheckpointTurnInput } from "./stream-checkpoint-projection.js";
 
 export interface DecisionContextCompilation {
   candidateBudget: ContextBudgetReport;
@@ -43,11 +40,12 @@ export interface DecisionContextCompilation {
     policy: ToolContextProjectionPolicy;
     receipt: ToolContextShadowReceipt;
   };
-  timelineCheckpoint?: {
-    plan: TimelineCheckpointPlan;
-    generation?: TimelineCheckpointGenerationResult;
+  streamCheckpoint?: {
+    plan: ContextCheckpointPlan;
+    generation?: StreamCheckpointGenerationResult;
+    checkpoint?: ContextCheckpointRecord;
   };
-  sessionShedding?: SessionContextSheddingReceipt;
+  streamProjection?: StreamContextProjectionReceipt;
 }
 
 export async function compileDecisionContext(input: {
@@ -57,7 +55,7 @@ export async function compileDecisionContext(input: {
   contextLimits: ResolvedModelContextLimits;
   decisionAttempt: number;
   policy: ToolContextProjectionPolicy;
-  timelineCheckpointCache?: TimelineCheckpointCacheState;
+  contextCheckpoint?: AgentContextCheckpointCoordinator;
   buildPrompt: (stateView: AgentPromptStateView) => string;
 }): Promise<DecisionContextCompilation> {
   const candidateBudget = await measureTurnContext({
@@ -72,156 +70,169 @@ export async function compileDecisionContext(input: {
     softInputTokens: candidateBudget.softInputTokens,
   });
 
-  if (!toolPlan.triggered) {
+  if (!candidateBudget.softLimitExceeded) {
     return fullCompilation(input.turnInput, candidateBudget, input.decisionAttempt);
   }
 
-  const toolProjection = buildToolContextProjectionCandidate({
-    stateView: input.stateView,
-    requestMessages: input.turnInput.messages,
-    turnInput: input.turnInput,
-    plan: toolPlan,
-    budget: candidateBudget,
-    buildPrompt: input.buildPrompt,
-  });
-  const projectionEvent: "tool_context_projection_shadow" | "tool_context_projection_enforced" =
-    input.policy === "enforce"
-      ? "tool_context_projection_enforced"
-      : "tool_context_projection_shadow";
-  const toolTransformations = toolPlan.calls
-    .filter((call) => call.mode !== "full")
-    .map((call) => ({
-      kind: "tool_call_projection",
-      ...(call.callId ? { callId: call.callId } : {}),
-      tool: call.tool,
-      ...(call.projectorId ? { projectorId: call.projectorId } : {}),
-      from: "full",
-      to: call.mode,
-      reason: call.reason,
-      tokensBefore: call.tokensBefore,
-      tokensAfter: call.tokensAfter,
-    }));
-  const projectionResult = {
-    event: projectionEvent,
-    policy: input.policy,
-    receipt: toolProjection.receipt,
-  };
-
-  if (input.policy !== "enforce") {
-    const compilation = fullCompilation(input.turnInput, candidateBudget, input.decisionAttempt);
-    return {
-      ...compilation,
-      receipt: {
-        ...compilation.receipt,
-        toolProjectionPolicy: input.policy,
-      },
-      projection: projectionResult,
+  let intermediateTurnInput = input.turnInput;
+  let intermediateBudget = candidateBudget;
+  let projectionResult: DecisionContextCompilation["projection"];
+  let toolTransformations: ContextCompilationReceipt["transformations"] = [];
+  if (toolPlan.triggered) {
+    const toolProjection = buildToolContextProjectionCandidate({
+      stateView: input.stateView,
+      requestMessages: input.turnInput.messages,
+      turnInput: input.turnInput,
+      plan: toolPlan,
+      budget: candidateBudget,
+      buildPrompt: input.buildPrompt,
+    });
+    toolTransformations = toolPlan.calls
+      .filter((call) => call.mode !== "full")
+      .map((call) => ({
+        kind: "tool_call_projection",
+        ...(call.callId ? { callId: call.callId } : {}),
+        tool: call.tool,
+        ...(call.projectorId ? { projectorId: call.projectorId } : {}),
+        from: "full",
+        to: call.mode,
+        reason: call.reason,
+        tokensBefore: call.tokensBefore,
+        tokensAfter: call.tokensAfter,
+      }));
+    projectionResult = {
+      event: input.policy === "enforce"
+        ? "tool_context_projection_enforced"
+        : "tool_context_projection_shadow",
+      policy: input.policy,
+      receipt: toolProjection.receipt,
     };
-  }
-
-  const intermediateTurnInput = toolTransformations.length > 0
-    ? toolProjection.turnInput
-    : input.turnInput;
-  const intermediateBudget = toolTransformations.length > 0
-    ? await measureTurnContext({
+    if (input.policy === "enforce" && toolTransformations.length > 0) {
+      intermediateTurnInput = toolProjection.turnInput;
+      intermediateBudget = await measureTurnContext({
         provider: input.provider,
         turnInput: intermediateTurnInput,
         limits: input.contextLimits,
+      });
+    }
+  }
+  const toolCompilation = projectionResult && input.policy === "enforce"
+    ? enforcedToolCompilation({
+        turnInput: intermediateTurnInput,
+        candidateBudget,
+        intermediateBudget,
+        decisionAttempt: input.decisionAttempt,
+        transformations: toolTransformations,
+        projection: projectionResult,
       })
-    : candidateBudget;
-  const toolCompilation = enforcedToolCompilation({
-    turnInput: intermediateTurnInput,
-    candidateBudget,
-    intermediateBudget,
-    decisionAttempt: input.decisionAttempt,
-    transformations: toolTransformations,
-    projection: projectionResult,
-  });
+    : {
+        ...fullCompilation(input.turnInput, candidateBudget, input.decisionAttempt),
+        ...(projectionResult ? { projection: projectionResult } : {}),
+      };
 
   if (!intermediateBudget.softLimitExceeded) {
     return toolCompilation;
   }
 
-  const sessionCandidate = buildSessionContextSheddingCandidate({
+  const projectedToolCalls = input.policy === "enforce" && toolTransformations.length > 0
+    ? toolPlan.projectedCalls
+    : undefined;
+  const streamCandidate = buildStreamContextProjectionCandidate({
     stateView: input.stateView,
-    turnInput: input.turnInput,
-    ...(toolTransformations.length > 0 ? { projectedToolCalls: toolPlan.projectedCalls } : {}),
+    turnInput: intermediateTurnInput,
+    ...(projectedToolCalls ? { projectedToolCalls } : {}),
     buildPrompt: input.buildPrompt,
   });
-  const sessionTurnInput = sessionCandidate.receipt.triggered
-    ? sessionCandidate.turnInput
+  const streamTurnInput = streamCandidate.receipt.triggered
+    ? streamCandidate.turnInput
     : intermediateTurnInput;
-  const sessionBudget = sessionCandidate.receipt.triggered
+  const streamBudget = streamCandidate.receipt.triggered
     ? await measureTurnContext({
         provider: input.provider,
-        turnInput: sessionTurnInput,
+        turnInput: streamTurnInput,
         limits: input.contextLimits,
       })
     : intermediateBudget;
-  const sessionTransformation = sessionCandidate.receipt.triggered ? [{
-    kind: "session_context_shedding",
-    from: "summary_and_recent_history",
-    to: "latest_durable_history_only",
+  const streamTransformation = streamCandidate.receipt.triggered ? [{
+    kind: "stream_context_projection",
+    from: "full_stream_projection",
+    to: "bounded_stream_projection",
     reason: "soft_limit_after_tool_compaction",
     tokensBefore: intermediateBudget.measuredInputTokens,
-    tokensAfter: sessionBudget.measuredInputTokens,
+    tokensAfter: streamBudget.measuredInputTokens,
   }] : [];
-  const sessionCompilation = sessionCandidate.receipt.triggered
-    ? enforcedSessionSheddingCompilation({
-        turnInput: sessionTurnInput,
+  const streamCompilation = streamCandidate.receipt.triggered
+    ? enforcedStreamProjectionCompilation({
+        turnInput: streamTurnInput,
         candidateBudget,
         intermediateBudget,
-        finalBudget: sessionBudget,
+        finalBudget: streamBudget,
         decisionAttempt: input.decisionAttempt,
-        transformations: [...toolTransformations, ...sessionTransformation],
-        projection: projectionResult,
-        shedding: sessionCandidate.receipt,
+        transformations: [...toolTransformations, ...streamTransformation],
+        ...(projectionResult ? { projection: projectionResult } : {}),
+        streamProjection: streamCandidate.receipt,
       })
     : toolCompilation;
 
-  if (!sessionBudget.softLimitExceeded) {
-    return sessionCompilation;
+  if (!streamBudget.softLimitExceeded) {
+    return streamCompilation;
   }
 
-  const timelinePlan = planTimelineCheckpoint({
-    events: exactTimelineEvents(input.stateView),
-    continuityCheckpoint: input.stateView.context.git?.session.recentRunCheckpoints?.at(-1),
-    requiredSavingsTokens: sessionBudget.measuredInputTokens
-      - sessionBudget.recoveryTargetTokens,
-  });
-  if (!timelinePlan.triggered) {
+  const protectFromSeq = currentInputSequence(input.stateView);
+  if (!input.contextCheckpoint || protectFromSeq === undefined) {
     return exhaustedCompilation({
-      ...sessionCompilation,
-      finalBudget: sessionBudget,
-      finalTurnInput: sessionTurnInput,
+      ...streamCompilation,
+      finalBudget: streamBudget,
+      finalTurnInput: streamTurnInput,
       finalBudgetMeasured: true,
-      timelineCheckpoint: { plan: timelinePlan },
+    });
+  }
+  const checkpointPlan = await input.contextCheckpoint.plan({
+    protectFromSeq,
+    requiredSavingsTokens: Math.max(
+      1,
+      streamBudget.measuredInputTokens - streamBudget.recoveryTargetTokens,
+    ),
+    estimatedCheckpointTokens: 1_200,
+  });
+  if (!checkpointPlan.triggered) {
+    return exhaustedCompilation({
+      ...streamCompilation,
+      finalBudget: streamBudget,
+      finalTurnInput: streamTurnInput,
+      finalBudgetMeasured: true,
+      streamCheckpoint: { plan: checkpointPlan },
     });
   }
 
-  const generation = await generateTimelineCheckpoint({
+  const generation = await generateStreamCheckpoint({
     provider: input.provider,
-    plan: timelinePlan,
-    cache: input.timelineCheckpointCache ?? createTimelineCheckpointCache(),
+    plan: checkpointPlan,
     maxInputTokens: input.contextLimits.maxInputTokens
       ?? input.contextLimits.contextWindowTokens - input.contextLimits.outputReserveTokens,
   });
-  if (generation.status !== "success" || !generation.checkpoint || generation.checkpointTokens === undefined) {
+  if (generation.status !== "success" || !generation.summary || generation.tokenCount === undefined) {
     return exhaustedCompilation({
-      ...sessionCompilation,
-      finalBudget: sessionBudget,
-      finalTurnInput: sessionTurnInput,
+      ...streamCompilation,
+      finalBudget: streamBudget,
+      finalTurnInput: streamTurnInput,
       finalBudgetMeasured: true,
-      timelineCheckpoint: { plan: timelinePlan, generation },
+      streamCheckpoint: { plan: checkpointPlan, generation },
     });
   }
-
-  const finalTurnInput = buildTimelineCheckpointTurnInput({
+  const checkpoint = await input.contextCheckpoint.commit({
+    plan: checkpointPlan,
+    summary: generation.summary,
+    tokenCount: generation.tokenCount,
+    provider: input.provider.name,
+    model: input.provider.version,
+  });
+  const finalTurnInput = buildCommittedStreamCheckpointTurnInput({
     stateView: input.stateView,
-    turnInput: input.turnInput,
-    plan: timelinePlan,
-    checkpoint: generation.checkpoint,
-    ...(toolTransformations.length > 0 ? { projectedToolCalls: toolPlan.projectedCalls } : {}),
+    turnInput: streamTurnInput,
+    plan: checkpointPlan,
+    checkpoint,
+    ...(projectedToolCalls ? { projectedToolCalls } : {}),
     buildPrompt: input.buildPrompt,
   });
   const finalBudget = await measureTurnContext({
@@ -229,62 +240,63 @@ export async function compileDecisionContext(input: {
     turnInput: finalTurnInput,
     limits: input.contextLimits,
   });
-  const timelineTransformation = {
-    kind: "timeline_checkpoint",
+  const checkpointTransformation = {
+    kind: "stream_checkpoint",
     from: "exact_events",
-    to: "checkpoint",
+    to: "durable_checkpoint_and_exact_tail",
     reason: "unresolved_context_pressure",
-    coveredFromSeq: generation.checkpoint.coveredFromSeq,
-    coveredToSeq: generation.checkpoint.coveredToSeq,
-    sourceHash: generation.checkpoint.sourceHash,
-    tokensBefore: timelinePlan.selectedSourceTokens,
-    tokensAfter: generation.checkpointTokens,
+    coveredFromSeq: checkpoint.coveredFromSeq,
+    coveredToSeq: checkpoint.coveredToSeq,
+    sourceHash: checkpoint.sourceHash,
+    tokensBefore: streamBudget.measuredInputTokens,
+    tokensAfter: finalBudget.measuredInputTokens,
   };
   return {
     candidateBudget,
-    intermediateBudget: sessionBudget,
+    intermediateBudget: streamBudget,
     finalBudget,
     finalTurnInput,
     finalBudgetMeasured: true,
-    receipt: buildTimelineCheckpointCompilationReceipt({
+    receipt: buildStreamCheckpointCompilationReceipt({
       candidate: candidateBudget,
-      intermediate: sessionBudget,
+      intermediate: streamBudget,
       final: finalBudget,
       decisionAttempt: input.decisionAttempt,
-      transformations: [...toolTransformations, ...sessionTransformation, timelineTransformation],
+      transformations: [...toolTransformations, ...streamTransformation, checkpointTransformation],
       checkpoint: {
-        coveredFromSeq: generation.checkpoint.coveredFromSeq,
-        coveredToSeq: generation.checkpoint.coveredToSeq,
-        sourceEventCount: generation.checkpoint.sourceEventCount,
-        sourceHash: generation.checkpoint.sourceHash,
-        checkpointTokens: generation.checkpointTokens,
-        cacheStatus: generation.cacheStatus === "success_hit" ? "success_hit" : "generated",
+        coveredFromSeq: checkpoint.coveredFromSeq,
+        coveredToSeq: checkpoint.coveredToSeq,
+        sourceEventCount: checkpointPlan.selectedMessages.length
+          + (checkpointPlan.previousCheckpoint ? 1 : 0),
+        sourceHash: checkpoint.sourceHash,
+        checkpointTokens: checkpoint.tokenCount,
+        cacheStatus: "generated",
         generationAttempts: generation.attempts.length,
       },
-      ...(sessionCandidate.receipt.triggered ? {
-        sessionShedding: toSessionSheddingReceipt(
-          sessionCandidate.receipt,
+      ...(streamCandidate.receipt.triggered ? {
+        streamProjection: toStreamProjectionReceipt(
+          streamCandidate.receipt,
           intermediateBudget.measuredInputTokens,
-          sessionBudget.measuredInputTokens,
+          streamBudget.measuredInputTokens,
         ),
       } : {}),
       recoveryExhausted: finalBudget.softLimitExceeded,
     }),
-    projection: projectionResult,
-    ...(sessionCandidate.receipt.triggered ? { sessionShedding: sessionCandidate.receipt } : {}),
-    timelineCheckpoint: { plan: timelinePlan, generation },
+    ...(projectionResult ? { projection: projectionResult } : {}),
+    ...(streamCandidate.receipt.triggered ? { streamProjection: streamCandidate.receipt } : {}),
+    streamCheckpoint: { plan: checkpointPlan, generation, checkpoint },
   };
 }
 
-function enforcedSessionSheddingCompilation(input: {
+function enforcedStreamProjectionCompilation(input: {
   turnInput: LlmTurnInput;
   candidateBudget: ContextBudgetReport;
   intermediateBudget: ContextBudgetReport;
   finalBudget: ContextBudgetReport;
   decisionAttempt: number;
   transformations: ContextCompilationReceipt["transformations"];
-  projection: NonNullable<DecisionContextCompilation["projection"]>;
-  shedding: SessionContextSheddingReceipt;
+  projection?: NonNullable<DecisionContextCompilation["projection"]>;
+  streamProjection: StreamContextProjectionReceipt;
 }): DecisionContextCompilation {
   return {
     candidateBudget: input.candidateBudget,
@@ -292,33 +304,33 @@ function enforcedSessionSheddingCompilation(input: {
     finalBudget: input.finalBudget,
     finalTurnInput: input.turnInput,
     finalBudgetMeasured: true,
-    receipt: buildSessionSheddingCompilationReceipt({
+    receipt: buildStreamProjectionCompilationReceipt({
       candidate: input.candidateBudget,
       intermediate: input.intermediateBudget,
       final: input.finalBudget,
       decisionAttempt: input.decisionAttempt,
       transformations: input.transformations,
-      shedding: toSessionSheddingReceipt(
-        input.shedding,
+      projection: toStreamProjectionReceipt(
+        input.streamProjection,
         input.intermediateBudget.measuredInputTokens,
         input.finalBudget.measuredInputTokens,
       ),
     }),
-    projection: input.projection,
-    sessionShedding: input.shedding,
+    ...(input.projection ? { projection: input.projection } : {}),
+    streamProjection: input.streamProjection,
   };
 }
 
-function toSessionSheddingReceipt(
-  shedding: SessionContextSheddingReceipt,
+function toStreamProjectionReceipt(
+  projection: StreamContextProjectionReceipt,
   tokensBefore: number,
   tokensAfter: number,
-): NonNullable<ContextCompilationReceipt["sessionShedding"]> {
+): NonNullable<ContextCompilationReceipt["streamProjection"]> {
   return {
-    removedSummary: shedding.removedSummary,
-    removedCheckpointCount: shedding.removedCheckpointCount,
-    ...(shedding.retainedCheckpointId ? { retainedCheckpointId: shedding.retainedCheckpointId } : {}),
-    removedActivityCount: shedding.removedActivityCount,
+    removedCandidateCount: projection.removedCandidateCount,
+    removedRecentWorkCount: projection.removedRecentWorkCount,
+    removedResourceCount: projection.removedResourceCount,
+    removedObservationCount: projection.removedObservationCount,
     tokensBefore,
     tokensAfter,
   };
@@ -379,10 +391,10 @@ function enforcedToolCompilation(input: {
   };
 }
 
-function exactTimelineEvents(stateView: AgentStateView): ExactTimelineEvent[] {
-  return stateView.context.timeline.filter(
-    (event): event is ExactTimelineEvent => event.kind !== "checkpoint",
-  );
+function currentInputSequence(stateView: AgentStateView): number | undefined {
+  return stateView.context.current.inputSeq > 0
+    ? stateView.context.current.inputSeq
+    : undefined;
 }
 
 function fullCompilation(

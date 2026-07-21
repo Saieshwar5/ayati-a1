@@ -4,8 +4,15 @@ import type { AgentDecision } from "./decision.js";
 import { isObservationalTool } from "../../skills/tool-taxonomy.js";
 import { isGitContextReadOnlyToolName } from "../../skills/builtins/git-context/tool-policy.js";
 import { isGitContextRoutingToolName } from "./workstream-binding-capability-policy.js";
-import { stepUsesFileMutationTool } from "./workstream-routing-policy.js";
 import { getWorkspaceRoot } from "../../skills/workspace-paths.js";
+
+const FILE_MUTATION_TOOL_NAMES = new Set([
+  "patch_files",
+  "write_files",
+  "delete",
+  "move",
+  "create_directory",
+]);
 
 export function canMarkTerminalReplyDone(state: LoopState): boolean {
   return state.workState.status === "not_done"
@@ -37,7 +44,7 @@ export function shouldRejectTerminalReplyForUnresolvedMutation(
 }
 
 function isWorkstreamBound(state: LoopState): boolean {
-  return state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "bound";
+  return state.harnessContext.contextEngine?.current.routing?.status === "bound";
 }
 
 export function isFileMutationRequest(message: string): boolean {
@@ -146,7 +153,8 @@ function hasUnresolvedFileMutationFailure(state: LoopState): boolean {
 export function latestFileMutationStep(steps: StepSummary[], outcome: "success" | "failed"): StepSummary | undefined {
   return [...steps]
     .reverse()
-    .find((step) => step.outcome === outcome && stepUsesFileMutationTool(step));
+    .find((step) => step.outcome === outcome
+      && (step.toolsUsed ?? []).some((tool) => FILE_MUTATION_TOOL_NAMES.has(tool)));
 }
 
 function isUserInputRequestSentence(sentence: string): boolean {

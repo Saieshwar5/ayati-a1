@@ -5,11 +5,8 @@ import {
   DEFAULT_AYATI_ROOT_DIR,
   DEFAULT_DOCUMENT_EMBED_BATCH_SIZE,
   DEFAULT_DOCUMENT_VECTOR_MIN_CHUNKS,
-  DEFAULT_GIT_CONTEXT_AGENT_ID,
-  DEFAULT_GIT_CONTEXT_REQUEST_TIMEOUT_MS,
-  DEFAULT_GIT_CONTEXT_START_TIMEOUT_MS,
-  DEFAULT_GIT_CONTEXT_STOP_TIMEOUT_MS,
-  DEFAULT_GIT_CONTEXT_TIMEZONE,
+  DEFAULT_CONTEXT_ENGINE_AGENT_ID,
+  DEFAULT_CONTEXT_ENGINE_TIMEZONE,
   DEFAULT_HTTP_ALLOW_ORIGIN,
   DEFAULT_HTTP_HOST,
   DEFAULT_HTTP_PORT,
@@ -39,16 +36,11 @@ describe("ayati runtime config", () => {
       python: {},
       agent: { loopConfig: { maxSelectedTools: DEFAULT_AGENT_MAX_SELECTED_TOOLS } },
       workspace: { root: DEFAULT_WORKSPACE_DIR },
-      gitContext: {
+      contextEngine: {
         rootDirectory: DEFAULT_AYATI_ROOT_DIR,
         databasePath: join(DEFAULT_AYATI_ROOT_DIR, ".ayati", "context.db"),
-        socketPath: join(DEFAULT_AYATI_ROOT_DIR, ".ayati", "git-context.sock"),
-        managed: true,
-        startTimeoutMs: DEFAULT_GIT_CONTEXT_START_TIMEOUT_MS,
-        stopTimeoutMs: DEFAULT_GIT_CONTEXT_STOP_TIMEOUT_MS,
-        requestTimeoutMs: DEFAULT_GIT_CONTEXT_REQUEST_TIMEOUT_MS,
-        timezone: DEFAULT_GIT_CONTEXT_TIMEZONE,
-        agentId: DEFAULT_GIT_CONTEXT_AGENT_ID,
+        timezone: DEFAULT_CONTEXT_ENGINE_TIMEZONE,
+        agentId: DEFAULT_CONTEXT_ENGINE_AGENT_ID,
       },
     });
   });
@@ -66,25 +58,15 @@ describe("ayati runtime config", () => {
       AYATI_DOCUMENT_VECTOR_MIN_CHUNKS: "12",
       AYATI_PYTHON_INTERPRETER: " /usr/bin/python3 ",
       AYATI_AGENT_MAX_SELECTED_TOOLS: "5",
-      AYATI_GIT_CONTEXT_DATABASE: " /tmp/ayati-db/context.db ",
-      AYATI_GIT_CONTEXT_SOCKET: " /tmp/ayati-context.sock ",
-      AYATI_GIT_CONTEXT_MANAGED: "false",
-      AYATI_GIT_CONTEXT_START_TIMEOUT_MS: "1200",
-      AYATI_GIT_CONTEXT_STOP_TIMEOUT_MS: "1300",
-      AYATI_GIT_CONTEXT_REQUEST_TIMEOUT_MS: "1400",
-      AYATI_GIT_CONTEXT_TIMEZONE: " UTC ",
-      AYATI_GIT_CONTEXT_AGENT_ID: " local-agent ",
+      AYATI_CONTEXT_ENGINE_DATABASE: " /tmp/ayati-db/context.db ",
+      AYATI_CONTEXT_ENGINE_TIMEZONE: " UTC ",
+      AYATI_CONTEXT_ENGINE_AGENT_ID: " local-agent ",
     });
 
     expect(config.workspace.root).toBe("/tmp/ayati-runtime/workspace");
-    expect(config.gitContext).toEqual({
+    expect(config.contextEngine).toEqual({
       rootDirectory: "/tmp/ayati-runtime",
       databasePath: "/tmp/ayati-db/context.db",
-      socketPath: "/tmp/ayati-context.sock",
-      managed: false,
-      startTimeoutMs: 1200,
-      stopTimeoutMs: 1300,
-      requestTimeoutMs: 1400,
       timezone: "UTC",
       agentId: "local-agent",
     });
@@ -102,6 +84,20 @@ describe("ayati runtime config", () => {
     });
     expect(config.python.interpreterPath).toBe("/usr/bin/python3");
     expect(config.agent.loopConfig.maxSelectedTools).toBe(5);
+  });
+
+  it("accepts legacy Git Context storage settings during the internal rename", () => {
+    const config = loadAyatiRuntimeConfig({
+      AYATI_GIT_CONTEXT_DATABASE: "/tmp/legacy-context.db",
+      AYATI_GIT_CONTEXT_TIMEZONE: "UTC",
+      AYATI_GIT_CONTEXT_AGENT_ID: "legacy-agent",
+    });
+
+    expect(config.contextEngine).toMatchObject({
+      databasePath: "/tmp/legacy-context.db",
+      timezone: "UTC",
+      agentId: "legacy-agent",
+    });
   });
 
   it("resolves a relative Ayati root from the package project root", () => {

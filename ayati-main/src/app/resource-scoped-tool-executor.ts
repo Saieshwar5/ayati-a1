@@ -1,11 +1,11 @@
 import { lstat } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type {
-  GitContextService,
+  ContextEngineService,
   ResourceRef,
   ResourceMutationTarget,
   WorkstreamResourceBinding,
-} from "ayati-git-context";
+} from "ayati-context-engine";
 import type {
   MountedToolGroup,
   ToolExecutor,
@@ -23,12 +23,12 @@ import {
 
 export function createResourceScopedToolExecutor(input: {
   base: ToolExecutor;
-  gitContext: GitContextService;
+  contextEngine: ContextEngineService;
   workspaceRoot?: string;
 }): ToolExecutor {
   return new ResourceScopedToolExecutor(
     input.base,
-    input.gitContext,
+    input.contextEngine,
     resolve(input.workspaceRoot ?? getWorkspaceRoot()),
   );
 }
@@ -36,7 +36,7 @@ export function createResourceScopedToolExecutor(input: {
 class ResourceScopedToolExecutor implements ToolExecutor {
   constructor(
     private readonly base: ToolExecutor,
-    private readonly gitContext: GitContextService,
+    private readonly contextEngine: ContextEngineService,
     private readonly workspaceRoot: string,
   ) {}
 
@@ -78,7 +78,7 @@ class ResourceScopedToolExecutor implements ToolExecutor {
       return await this.base.execute(toolName, originalInput, context);
     }
 
-    const active = await this.gitContext.getActiveContext({ sessionId: context.sessionId });
+    const active = await this.contextEngine.getAgentContext({ streamId: context.sessionId });
     const activeRun = active.run?.run;
     const binding = activeRun?.runId === context.runId
       ? activeRun.workstreamBinding
@@ -203,9 +203,8 @@ class ResourceScopedToolExecutor implements ToolExecutor {
       );
     }
     const at = new Date().toISOString();
-    const prepared = await this.gitContext.prepareResourceMutation({
+    const prepared = await this.contextEngine.prepareResourceMutation({
       requestId: mutationRequestId(context, "prepare"),
-      sessionId: context.sessionId,
       runId: context.runId,
       workstreamId: binding.workstreamId,
       activeRequestId: binding.requestId,
@@ -220,7 +219,7 @@ class ResourceScopedToolExecutor implements ToolExecutor {
       at,
     });
     const result = await this.base.execute(toolName, scopedInput, scopedContext);
-    const verified = await this.gitContext.verifyResourceMutation({
+    const verified = await this.contextEngine.verifyResourceMutation({
       requestId: mutationRequestId(context, "verify"),
       operationId: prepared.operationId,
       leaseId: prepared.leaseId,

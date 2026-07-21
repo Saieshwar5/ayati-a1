@@ -1,5 +1,5 @@
 import type { SessionInputHandle } from "../../memory/types.js";
-import type { AgentRunHandle } from "ayati-git-context";
+import type { AgentRunHandle } from "ayati-context-engine";
 import type {
   AgentLoopDeps,
   LoopConfig,
@@ -12,9 +12,7 @@ import {
   createInitialHarnessContext,
   type HarnessContextInput,
 } from "../harness-context.js";
-import { createRoutingAttemptState as emptyRoutingAttemptState } from "./workstream-routing-policy.js";
 import { createInitialContextPressureState } from "../context-pressure-state.js";
-import { createTimelineCheckpointCache } from "./timeline-checkpoint-cache.js";
 
 export function buildInitialState(
   deps: AgentLoopDeps,
@@ -46,11 +44,9 @@ export function buildInitialState(
     maxIterations: config.maxIterations,
     consecutiveFailures: 0,
     completedSteps: [],
-    routingAttempts: emptyRoutingAttemptState(),
     runPath: "",
     failureHistory: [],
     contextPressure: createInitialContextPressureState(),
-    timelineCheckpointCache: createTimelineCheckpointCache(),
     attachedDocuments: deps.attachedDocuments ?? [],
     attachmentWarnings: deps.attachmentWarnings ?? [],
     preparedAttachments: [],
@@ -68,7 +64,7 @@ export function resolveInputHandle(deps: AgentLoopDeps): SessionInputHandle {
   }
   if (deps.runHandle) {
     return {
-      sessionId: deps.runHandle.sessionId,
+      sessionId: deps.runHandle.streamId,
       seq: deps.runHandle.triggerSeq ?? 1,
     };
   }

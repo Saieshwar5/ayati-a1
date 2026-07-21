@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { createConnection } from "node:net";
 import {
   cp,
   lstat,
@@ -34,10 +33,9 @@ const confirmed = argumentsList.includes("--confirm");
 const paths = resolveRuntimePaths(process.env);
 
 if (!confirmed) {
-  process.stdout.write([
+  await writeStandardOutput([
     `ayati-root: ${paths.rootDirectory}`,
     `database: ${paths.databasePath}`,
-    `session-data: ${paths.sessionRoot}`,
     `resource-root: ${paths.resourceRoot}`,
     `workstream-root: ${paths.workstreamRoot}`,
     `workspace: ${paths.workspaceRoot} (preserved)`,
@@ -68,11 +66,6 @@ const entries = [
     destination: join(archiveRoot, "database", basename(paths.databasePath) + "-shm"),
   },
   {
-    label: "session-data",
-    source: paths.sessionRoot,
-    destination: join(archiveRoot, "sessions"),
-  },
-  {
     label: "resource-root",
     source: paths.resourceRoot,
     destination: join(archiveRoot, "resources"),
@@ -84,12 +77,13 @@ const entries = [
   },
 ];
 const manifest = {
-  version: 2,
+  version: 3,
+  archivedSchemaVersion: 5,
+  nextSchemaVersion: 6,
   operation: "context_archive_reset",
   createdAt: new Date().toISOString(),
   ayatiRoot: paths.rootDirectory,
   archiveRoot,
-  socketPath: paths.socketPath,
   preservedPaths: [paths.workspaceRoot],
   status: "in_progress",
   entries: entries.map((entry) => ({
@@ -116,7 +110,7 @@ try {
   throw error;
 }
 
-process.stdout.write(`Archived Git Context state to ${archiveRoot}\n`);
+process.stdout.write(`Archived Context Engine state to ${archiveRoot}\n`);
 
 function resolveRuntimePaths(env) {
   const rootDirectory = resolveConfiguredPath(
@@ -128,14 +122,9 @@ function resolveRuntimePaths(env) {
     rootDirectory,
     stateRoot,
     databasePath: resolveConfiguredPath(
-      env["AYATI_GIT_CONTEXT_DATABASE"],
+      env["AYATI_CONTEXT_ENGINE_DATABASE"] ?? env["AYATI_GIT_CONTEXT_DATABASE"],
       join(stateRoot, "context.db"),
     ),
-    socketPath: resolveConfiguredPath(
-      env["AYATI_GIT_CONTEXT_SOCKET"],
-      join(stateRoot, "git-context.sock"),
-    ),
-    sessionRoot: join(stateRoot, "sessions"),
     resourceRoot: join(stateRoot, "resources"),
     workstreamRoot: join(rootDirectory, "workstreams"),
     workspaceRoot: join(rootDirectory, "workspace"),
@@ -157,14 +146,12 @@ function normalizeSpecialPath(value) {
 
 function validateSafePaths(paths) {
   requireExactChild(paths.stateRoot, paths.rootDirectory, ".ayati", "state root");
-  requireExactChild(paths.sessionRoot, paths.stateRoot, "sessions", "session data root");
   requireExactChild(paths.resourceRoot, paths.stateRoot, "resources", "resource root");
   requireExactChild(paths.workstreamRoot, paths.rootDirectory, "workstreams", "workstream root");
   requireExactChild(paths.workspaceRoot, paths.rootDirectory, "workspace", "workspace root");
   for (const [label, value] of [
     ["Ayati root", paths.rootDirectory],
     ["database parent", dirname(paths.databasePath)],
-    ["session data root", paths.sessionRoot],
     ["resource root", paths.resourceRoot],
     ["workstream root", paths.workstreamRoot],
   ]) {
@@ -172,13 +159,10 @@ function validateSafePaths(paths) {
       throw new Error(`Refusing to archive unsafe ${label}: ${value}`);
     }
   }
-  if (pathsOverlap(paths.sessionRoot, paths.resourceRoot)
-    || pathsOverlap(paths.sessionRoot, paths.workstreamRoot)
-    || pathsOverlap(paths.resourceRoot, paths.workstreamRoot)
-    || isWithin(paths.databasePath, paths.sessionRoot)
+  if (pathsOverlap(paths.resourceRoot, paths.workstreamRoot)
     || isWithin(paths.databasePath, paths.resourceRoot)
     || isWithin(paths.databasePath, paths.workstreamRoot)) {
-    throw new Error("Refusing to archive overlapping Git Context paths.");
+    throw new Error("Refusing to archive overlapping Context Engine paths.");
   }
 }
 
@@ -208,31 +192,12 @@ function isWithin(value, parent) {
 }
 
 async function refuseLiveRuntime(paths) {
-  if (await socketAcceptsConnections(paths.socketPath)) {
-    throw new Error(`Refusing to archive while the Git Context socket is live: ${paths.socketPath}`);
-  }
   const lockPath = paths.databasePath + ".writer-lock";
   const owner = await readWriterOwner(join(lockPath, "owner.json"));
   const pid = Number(owner?.pid);
   if (Number.isInteger(pid) && pid > 0 && isProcessAlive(pid)) {
-    throw new Error(`Refusing to archive while Git Context writer PID ${pid} is live.`);
+    throw new Error(`Refusing to archive while Context Engine writer PID ${pid} is live.`);
   }
-}
-
-function socketAcceptsConnections(socketPath) {
-  return new Promise((resolveConnection) => {
-    const socket = createConnection({ path: socketPath });
-    let settled = false;
-    const finish = (connected) => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      resolveConnection(connected);
-    };
-    socket.once("connect", () => finish(true));
-    socket.once("error", () => finish(false));
-    socket.setTimeout(300, () => finish(false));
-  });
 }
 
 function isProcessAlive(pid) {
@@ -300,4 +265,10 @@ async function writeManifest(archiveRoot, manifest) {
     JSON.stringify(manifest, null, 2) + "\n",
     "utf8",
   );
+}
+
+function writeStandardOutput(value) {
+  return new Promise((resolveWrite) => {
+    process.stdout.write(value, resolveWrite);
+  });
 }

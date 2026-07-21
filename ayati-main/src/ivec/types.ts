@@ -3,6 +3,7 @@ import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { SkillActivationManager } from "../skills/activation-manager.js";
 import type { ToolLoadResult, ToolWorkingSetManager } from "./agent-runner/tool-working-set.js";
 import type { RepairCode, RepairPromptCard } from "./agent-runner/repair-policy.js";
+import type { WorkstreamResolutionCoordinator } from "./workstream-resolution/types.js";
 import type {
   ArtifactRef,
   AssertionResult,
@@ -38,16 +39,18 @@ import type {
 import type { AgentFeedbackLedger } from "./feedback-ledger.js";
 import type { HarnessContext, HarnessContextInput } from "./harness-context.js";
 import type { ContextPressureState } from "./context-pressure-state.js";
-import type { TimelineCheckpointCacheState } from "./agent-runner/timeline-checkpoint-cache.js";
 import type {
   AgentRunHandle,
+  ContextCheckpointPlan,
+  ContextCheckpointRecord,
+  ContextCheckpointSummary,
   ResourceKind,
   ResourceOrigin,
   ResourcePublicLocator,
   ResourceRole,
   RunOutcome,
   RunStopReason,
-} from "ayati-git-context";
+} from "ayati-context-engine";
 
 export type SystemEventApprovalState = "not_needed" | "pending" | "granted" | "rejected";
 export type WorkstreamSummaryRunStatus = "completed" | "failed" | "stuck";
@@ -203,15 +206,6 @@ export interface ReadProgressState {
   signatures: string[];
 }
 
-export interface RoutingAttemptState {
-  successCount: number;
-  failureCount: number;
-  maxFailures: number;
-  resolved: boolean;
-  lastTool?: string;
-  lastError?: string;
-}
-
 export interface LoopState {
   runId: string;
   currentSeq: number;
@@ -248,14 +242,12 @@ export interface LoopState {
   maxIterations: number;
   consecutiveFailures: number;
   completedSteps: StepSummary[];
-  routingAttempts: RoutingAttemptState;
   runPath: string;
   failureHistory: FailureRecord[];
   contextPressure?: ContextPressureState;
   contextLimitReached?: boolean;
   runLimitReached?: boolean;
   interrupted?: boolean;
-  timelineCheckpointCache?: TimelineCheckpointCacheState;
   readProgress?: ReadProgressState;
   attachedDocuments?: ManagedDocumentManifest[];
   attachmentWarnings?: string[];
@@ -435,6 +427,21 @@ export type FinalResponseStreamEvent =
     };
 export type OnFinalResponseStreamCallback = (event: FinalResponseStreamEvent) => void;
 
+export interface AgentContextCheckpointCoordinator {
+  plan(input: {
+    protectFromSeq: number;
+    requiredSavingsTokens: number;
+    estimatedCheckpointTokens: number;
+  }): Promise<ContextCheckpointPlan>;
+  commit(input: {
+    plan: ContextCheckpointPlan;
+    summary: ContextCheckpointSummary;
+    tokenCount: number;
+    provider: string;
+    model: string;
+  }): Promise<ContextCheckpointRecord>;
+}
+
 // --- Deps ---
 
 export interface AgentLoopDeps {
@@ -465,6 +472,8 @@ export interface AgentLoopDeps {
     record: ContextRunStepRecord,
     currentContext: HarnessContextInput,
   ) => void | HarnessContextInput | Promise<void | HarnessContextInput>;
+  contextCheckpoint?: AgentContextCheckpointCoordinator;
+  workstreamResolution?: WorkstreamResolutionCoordinator;
   feedbackLedger?: AgentFeedbackLedger;
   config?: Partial<LoopConfig>;
   dataDir: string;

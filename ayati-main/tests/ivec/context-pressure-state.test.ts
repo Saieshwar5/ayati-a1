@@ -72,7 +72,7 @@ describe("context pressure state", () => {
     expect(laterFull.mode).toBe("tool_compact");
   });
 
-  it("recommends a timeline checkpoint after two unresolved iterations", () => {
+  it("recommends an agent-stream checkpoint after two unresolved iterations", () => {
     const first = updateContextPressureState({
       receipt: unresolvedReceipt(),
       iteration: 2,
@@ -87,7 +87,7 @@ describe("context pressure state", () => {
     expect(first.recommendedMode).toBeUndefined();
     expect(second.mode).toBe("tool_compact");
     expect(second.unresolvedPressureStreak).toBe(2);
-    expect(second.recommendedMode).toBe("timeline_checkpoint");
+    expect(second.recommendedMode).toBe("stream_checkpoint");
     expect(second.escalationReason).toBe("repeated_unresolved_pressure");
   });
 
@@ -112,7 +112,7 @@ describe("context pressure state", () => {
 
     expect(first.mode).toBe("full");
     expect(first.unresolvedPressureStreak).toBe(1);
-    expect(second.recommendedMode).toBe("timeline_checkpoint");
+    expect(second.recommendedMode).toBe("stream_checkpoint");
   });
 
   it("does not advance unresolved pressure from a shadow projection", () => {
@@ -129,7 +129,7 @@ describe("context pressure state", () => {
     expect(state.recommendedMode).toBeUndefined();
   });
 
-  it("recommends a timeline checkpoint immediately near the admission limit", () => {
+  it("recommends an agent-stream checkpoint immediately near the admission limit", () => {
     const state = updateContextPressureState({
       receipt: unresolvedReceipt({
         finalInputTokens: 86_000,
@@ -139,7 +139,7 @@ describe("context pressure state", () => {
     });
 
     expect(state.unresolvedPressureStreak).toBe(1);
-    expect(state.recommendedMode).toBe("timeline_checkpoint");
+    expect(state.recommendedMode).toBe("stream_checkpoint");
     expect(state.escalationReason).toBe("near_admission_limit");
   });
 
@@ -207,7 +207,7 @@ describe("context pressure state", () => {
       iteration: 3,
     });
 
-    expect(recovered.recommendedMode).toBe("timeline_checkpoint");
+    expect(recovered.recommendedMode).toBe("stream_checkpoint");
     expect(recovered.escalationReason).toBe("near_admission_limit");
     expect(recovered.unresolvedPressureStreak).toBe(0);
   });

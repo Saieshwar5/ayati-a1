@@ -11,9 +11,11 @@ import { pulseTool } from "../../src/skills/builtins/pulse/index.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnInput } from "../../src/core/contracts/llm-protocol.js";
 import type {
-  GitContextPreparedTurn,
-  GitContextRuntime,
-} from "../../src/app/git-context-runtime.js";
+  ContextEnginePreparedTurn,
+  ContextEngineRuntime,
+} from "../../src/app/context-engine-runtime.js";
+import { contextEngineFixture } from "../fixtures/agent-context.js";
+import { canBindTcpSocket } from "../fixtures/runtime-capabilities.js";
 
 let nextPort = 9200;
 
@@ -100,28 +102,24 @@ function messageContentToText(content: unknown): string {
     .join("\n");
 }
 
-function createReadyChatContextRuntime(): GitContextRuntime {
-  const prepared = readyGitContextPreparedTurn();
+function createReadyChatContextRuntime(): ContextEngineRuntime {
+  const prepared = readyContextEnginePreparedTurn();
   return {
-    prepareUserTurn: vi.fn(async (input: Parameters<GitContextRuntime["prepareUserTurn"]>[0]) => {
-      prepared.context.session.conversationTail = [{
-        seq: prepared.currentMessageSessionSequence,
-        messageId: prepared.currentMessageId,
-        conversationId: prepared.conversationId,
-        conversationSequence: prepared.messageSeq,
-        segmentSequence: 1,
-        role: "user",
-        at: input.at,
-        text: input.userMessage,
-      }];
+    prepareUserTurn: vi.fn(async (input: Parameters<ContextEngineRuntime["prepareUserTurn"]>[0]) => {
+      const currentMessage = prepared.context.agentStream.recentMessages.find(
+        (message) => message.messageId === prepared.currentMessageId,
+      );
+      if (currentMessage) {
+        currentMessage.content = input.userMessage;
+        currentMessage.at = input.at;
+      }
       return prepared;
     }),
-    warmActiveContext: vi.fn().mockResolvedValue(undefined),
-    finalizeRun: vi.fn(async (input: Parameters<GitContextRuntime["finalizeRun"]>[0]) => ({
+    prepareSystemEventTurn: vi.fn(async () => prepared),
+    finalizeRun: vi.fn(async (input: Parameters<ContextEngineRuntime["finalizeRun"]>[0]) => ({
       run: {
         runId: prepared.run.runId,
-        sessionId: prepared.sessionId,
-        conversationId: prepared.conversationId,
+        streamId: prepared.streamId,
         status: input.outcome,
         trigger: "user",
         startedAt: "2026-06-27T10:00:00.000Z",
@@ -129,57 +127,64 @@ function createReadyChatContextRuntime(): GitContextRuntime {
         stopReason: input.stopReason,
         stepCount: 0,
       },
-      conversation: {
-        conversationId: prepared.conversationId,
-        sessionId: prepared.sessionId,
-        sequence: prepared.messageSeq,
-        filePath: "conversations/1.md",
-        status: "committed",
+      assistantMessage: {
+        messageId: "M-20260627-0002",
+        streamId: prepared.streamId,
+        runId: prepared.run.runId,
+        sequence: prepared.messageSequence + 1,
+        role: "assistant" as const,
+        content: input.assistantResponse,
+        contentHash: "sha256:assistant",
+        at: input.at,
       },
-      persistence: {
-        database: "saved",
-        materialization: "not_requested",
-        git: "not_committed",
-      },
-      materialization: { status: "not_requested" },
+      observationRevision: prepared.context.observationRevision,
       resourceEffects: { status: "none", events: [] },
       workstreamContextCommit: { status: "not_required" },
     })),
     recordRunStep: vi.fn().mockResolvedValue(prepared.context),
-    recordSessionAttachments: vi.fn().mockResolvedValue(null),
-    buildActiveContext: vi.fn().mockResolvedValue(prepared.context),
+    contextCheckpointCoordinator: vi.fn().mockReturnValue({
+      plan: vi.fn().mockResolvedValue({
+        planId: "PLAN-upload-test",
+        streamId: prepared.streamId,
+        selectedMessages: [],
+        exactTail: prepared.context.agentStream.recentMessages,
+        estimatedCheckpointTokens: 1_200,
+        triggered: false,
+      }),
+      commit: vi.fn(async () => {
+        throw new Error("The upload-server fixture does not commit context checkpoints.");
+      }),
+    }),
   };
 }
 
-function readyGitContextPreparedTurn(): GitContextPreparedTurn {
+function readyContextEnginePreparedTurn(): ContextEnginePreparedTurn {
+  const streamId = "S-20260627-local";
+  const runId = "R-20260627-0001";
+  const currentMessageId = "M-20260627-0001";
+  const context = contextEngineFixture({
+    streamId,
+    runId,
+    message: "",
+  });
+  context.agentStream.recentMessages[0]!.messageId = currentMessageId;
   return {
     status: "ready",
-    sessionId: "S-20260627-local",
-    repoPath: "/tmp/ayati-git-context/S-20260627-local",
-    initialized: false,
-    messageSeq: 1,
-    currentMessageId: "M-20260627-0001",
-    currentMessageSessionSequence: 1,
-    conversationId: "C-20260627-0001",
+    streamId,
+    streamCreated: false,
+    messageSequence: 1,
+    currentMessageId,
     inputRole: "user",
     run: {
-      runId: "R-20260627-0001",
-      sessionId: "S-20260627-local",
-      conversationId: "C-20260627-0001",
+      runId,
+      streamId,
       triggerSeq: 1,
     },
-    context: {
-      session: {
-        meta: { sessionId: "S-20260627-local", resourceCount: 0 },
-        conversationTail: [],
-        activityTail: [],
-      },
-      focus: { status: "none" },
-    },
+    context,
   };
 }
 
-describe("UploadServer", () => {
+describe.runIf(canBindTcpSocket())("UploadServer", () => {
   it("saves multipart uploads and returns saved-file metadata", async () => {
     const dataDir = makeTmpDir();
     const port = getPort();

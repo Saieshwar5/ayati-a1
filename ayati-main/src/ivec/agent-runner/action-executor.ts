@@ -8,7 +8,7 @@ import type {
 } from "../types.js";
 import type { ToolExecutor } from "../../skills/tool-executor.js";
 import type { ToolDefinition, ToolResult } from "../../skills/types.js";
-import type { WorkstreamResourceBinding } from "ayati-git-context";
+import type { WorkstreamResourceBinding } from "ayati-context-engine";
 import type { RunMetrics } from "../metrics.js";
 import { recordRunMetric } from "../metrics.js";
 import { uniqueArtifacts } from "../../verification/artifact-assertions.js";

@@ -9,7 +9,7 @@ workstream = long-lived continuity for one coherent body of work
 request = one bounded intention inside a workstream
 run = one compute, audit, and recovery boundary for one accepted event
 resource = a real file, directory, URL, dataset, database, repository, or external object
-session = a temporary conversation and runtime container
+agent stream = slow continuity across many runs and clients
 ```
 
 A website, learning journey, recurring research topic, maintained automation,
@@ -36,8 +36,6 @@ ambiguous before mutation, it asks one focused question.
       resources.json
   .ayati/
     context.db               authoritative catalog and run journals
-    git-context.sock
-    sessions/                optional materialized session evidence
     resources/               immutable managed attachment bytes
 ```
 
@@ -66,7 +64,7 @@ mutation access to a workstream context repository.
 
 ## Resources
 
-The resource catalog is the shared identity layer for sessions and
+The resource catalog is the shared identity layer for agent streams and
 workstreams. A resource has:
 
 - a stable `RES-*` identity;
@@ -114,30 +112,54 @@ immutable storage; a managed-blob locator exposes identity without leaking the
 private storage path into prompts. Referenced files remain at their canonical
 path.
 
-An attachment can remain session-only, become a workstream input or reference,
+An attachment can remain stream-scoped, become a workstream input or reference,
 or help discover an existing workstream. Workstream Git records metadata and
 relationships only.
 
 ## Discovery and Selection
 
-The model-facing controls are:
+The main model sees one ownership control: `workstream_resolve`. It supplies a
+concise purpose and optional exact workstream, resource, filesystem, or URL
+hints. Hints improve the resolver's starting point but never grant ownership
+or mutation authority.
 
-- `git_context_find_workstreams`
-- `git_context_read_workstream`
-- `git_context_create_workstream`
-- `git_context_activate_workstream`
-- `git_context_set_workstream_star`
-- `git_context_bind_resources`
-- `git_context_inspect_resource`
+An isolated resolver activity owns the discovery tools. It searches and reads
+workstreams, checks resource owners, inspects a new locator when needed, and
+then activates one workstream, creates one workstream, or publishes one
+clarification. Its state and complete journal are separate from main run steps
+and WorkState. The main loop waits for the activity and receives only a typed
+metadata receipt; the selected workstream/request context arrives through the
+fresh authoritative Context Engine projection.
+
+The main prompt sees the result in one bounded lane:
+
+```text
+context.work = {
+  candidates: WorkstreamCandidate[]       // zero to five; empty once bound
+  resolution?: {
+    activityId, runId, status, purpose, stepCount, result?, updatedAt
+  }
+  active?: {
+    workstreamId, title, objective, summary, currentRequest, resources, ...
+  }                                       // exactly one when bound
+}
+```
+
+`workstream_resolve` returns only receipt metadata such as activity, status,
+selected workstream/request ids, private step count, and context revision. The
+authoritative workstream content is read from `context.work.active`, not
+duplicated into the tool result.
 
 Candidate ordering is deterministic and explained. Exact identity, resource
 ownership, and explicit unfinished-request continuation are strongest. Text
 relevance, unfinished state, explicit stars, recency, and frequency organize
 the remaining catalog. A star is a user preference, never mutation authority.
 
-Reading a candidate does not bind the run. Creating or activating a
-workstream binds the already-prepared run; it never allocates another run.
-Once bound, the workstream/request identity is immutable.
+Reading a candidate does not bind the run. The resolver's terminal create or
+activate operation binds the already-prepared run; it never allocates another
+run. Once bound, the workstream/request identity is immutable. At most five
+recent/relevant candidates are mounted while unbound, and only the single
+active workstream is mounted after binding.
 
 Activating an existing workstream requires an explicit choice:
 
@@ -151,14 +173,16 @@ A recent workstream never silently owns the current turn.
 
 Every accepted user message or system event creates one run atomically.
 
-- An unbound run may converse, list, read, search, inspect, and route.
+- An unbound run may converse and use safe observational tools. Actionable
+  ownership resolution runs through the isolated resolver.
 - A workstream-bound run may use resources according to their declared access.
 - Mutation without a binding is rejected with a stable repair code.
 - Binding refreshes context; the model then makes a fresh mutation decision.
   Mutation calls are never deferred or replayed.
 
-One run may observe first and bind later without changing its run id or losing
-earlier step evidence.
+One run may observe first and bind later without changing its run id. Resolver
+steps remain in their own journal and do not become task-step or completion
+evidence.
 
 ## Exact Resource Mutation
 
@@ -180,7 +204,7 @@ before/after resource observations are authoritative.
 
 Finalization has three independent operational results:
 
-1. conversation/run closure;
+1. assistant-message append and run closure;
 2. verified resource effects;
 3. an optional workstream-context commit.
 
@@ -195,8 +219,9 @@ acknowledged. A dirty context repository, mismatched HEAD, unverified resource
 operation, or uncertain commit identity produces failure or
 `recovery_required`, never a false success.
 
-Reusable read context is reset only after a newly created workstream-context
-commit. Failed, skipped, no-change, and unbound finalizations preserve it.
+Reusable observations are resource-versioned and remain available while their
+sources are relevant. Workstream commits do not erase unrelated stream
+observations.
 
 ## Recovery
 
@@ -204,7 +229,7 @@ SQLite journals run finalization and resource mutation operations for
 idempotent restart recovery. A running run with no mutation or finalization
 journal closes as `incomplete/interrupted`. Verified dirty resource changes
 are never deleted automatically. An unresolved mutation recovery state blocks
-another run in the same session until safety is restored.
+another run in the same agent stream until safety is restored.
 
 Catalog rebuild scans only validated context repositories. It reconstructs
 workstream and resource relationships from their committed context, but
@@ -225,16 +250,18 @@ revert the real-world resource.
 
 ## Primary Source Paths
 
-- `ayati-git-context/src/contracts.ts`
-- `ayati-git-context/src/resources/`
-- `ayati-git-context/src/workstreams/`
-- `ayati-git-context/src/services/resource-catalog-service.ts`
-- `ayati-git-context/src/services/resource-mutation-service.ts`
-- `ayati-git-context/src/services/workstream-lifecycle-service.ts`
-- `ayati-git-context/src/services/workstream-discovery-service.ts`
-- `ayati-git-context/src/services/workstream-binding-service.ts`
-- `ayati-git-context/src/services/workstream-finalization-service.ts`
+- `ayati-context-engine/src/contracts.ts`
+- `ayati-context-engine/src/resources/`
+- `ayati-context-engine/src/workstreams/`
+- `ayati-context-engine/src/services/resource-catalog-service.ts`
+- `ayati-context-engine/src/services/resource-mutation-service.ts`
+- `ayati-context-engine/src/services/workstream-lifecycle-service.ts`
+- `ayati-context-engine/src/services/workstream-discovery-service.ts`
+- `ayati-context-engine/src/services/workstream-binding-service.ts`
+- `ayati-context-engine/src/repositories/workstream-resolution-records.ts`
+- `ayati-context-engine/src/services/workstream-finalization-service.ts`
 - `ayati-main/src/app/resource-scoped-tool-executor.ts`
-- `ayati-main/src/app/git-context-runtime.ts`
+- `ayati-main/src/app/context-engine-runtime.ts`
 - `ayati-main/src/ivec/agent-runner/workstream-binding-capability-policy.ts`
+- `ayati-main/src/ivec/workstream-resolution/`
 - `ayati-main/src/skills/builtins/git-context/`

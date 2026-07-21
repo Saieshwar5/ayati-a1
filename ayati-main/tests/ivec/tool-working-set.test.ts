@@ -8,6 +8,7 @@ import { createInitialHarnessContext } from "../../src/ivec/harness-context.js";
 import { createInitialContextPressureState } from "../../src/ivec/context-pressure-state.js";
 import type { ContextEngineMachineContext } from "../../src/context-engine/index.js";
 import { deriveWorkstreamBindingCapabilityPolicy } from "../../src/ivec/agent-runner/workstream-binding-capability-policy.js";
+import { contextEngineFixture } from "../fixtures/agent-context.js";
 
 function tool(name: string, description = name): ToolDefinition {
   return {
@@ -48,12 +49,6 @@ function state(userMessage: string): LoopState {
     maxIterations: 15,
     consecutiveFailures: 0,
     completedSteps: [],
-    routingAttempts: {
-      successCount: 0,
-      failureCount: 0,
-      maxFailures: 2,
-      resolved: false,
-    },
     runPath: "",
     failureHistory: [],
     harnessContext: createInitialHarnessContext({
@@ -244,7 +239,7 @@ describe("ToolWorkingSetManager", () => {
     ]));
   });
 
-  it("keeps workstream-routing tools visible until routing resolves", () => {
+  it("never mounts legacy workstream-resolution tools in the main loop", () => {
     const catalog = new ToolCatalog([
       skill("git-context", [
         tool("git_context_inspect_resource"),
@@ -260,21 +255,13 @@ describe("ToolWorkingSetManager", () => {
     });
 
     manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 });
-    expect(manager.listActive({ runId: "r1" })).toEqual([
-      "git_context_inspect_resource",
-      "git_context_activate_workstream",
-      "git_context_create_workstream",
-    ]);
+    expect(manager.listActive({ runId: "r1" })).toEqual([]);
 
     manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 2 });
-    expect(manager.listActive({ runId: "r1" })).toContain("git_context_create_workstream");
+    expect(manager.listActive({ runId: "r1" })).toEqual([]);
 
     manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 3 });
-    expect(manager.listActive({ runId: "r1" })).toEqual([
-      "git_context_inspect_resource",
-      "git_context_activate_workstream",
-      "git_context_create_workstream",
-    ]);
+    expect(manager.listActive({ runId: "r1" })).toEqual([]);
 
     runState.completedSteps.push({
       step: 3,
@@ -290,7 +277,7 @@ describe("ToolWorkingSetManager", () => {
     expect(manager.listActive({ runId: "r1" })).toEqual([]);
   });
 
-  it("preloads resource inspection plus activate and create when no workstream owns the run", () => {
+  it("leaves workstream discovery and binding to the isolated resolver", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
         tool("write_files"),
@@ -315,14 +302,10 @@ describe("ToolWorkingSetManager", () => {
 
     manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 });
 
-    expect(manager.listActive({ runId: "r1" })).toEqual([
-      "git_context_inspect_resource",
-      "git_context_activate_workstream",
-      "git_context_create_workstream",
-    ]);
+    expect(manager.listActive({ runId: "r1" })).toEqual([]);
   });
 
-  it("keeps fresh-session routing controls visible under the tool cap", () => {
+  it("does not spend a fresh stream's main-loop tool budget on resolution", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
         tool("write_files"),
@@ -359,22 +342,11 @@ describe("ToolWorkingSetManager", () => {
 
     manager.prepareForDecision(runState, context);
 
-    expect(manager.listActive(context)).toEqual(expect.arrayContaining([
-      "find_files",
-      "search_in_files",
-      "read_files",
-      "git_context_inspect_resource",
-      "git_context_activate_workstream",
-      "git_context_create_workstream",
-    ]));
-    expect(manager.listActive(context)).toContain("git_context_activate_workstream");
-    expect(manager.listActive(context)).toContain("git_context_create_workstream");
-    expect(manager.listActive(context)).toContain("git_context_inspect_resource");
-    expect(executor.list(context)).toContain("git_context_activate_workstream");
-    expect(executor.list(context)).toContain("git_context_create_workstream");
+    expect(manager.listActive(context)).toEqual([]);
+    expect(executor.list(context)).toEqual([]);
   });
 
-  it("uses the full routing window when a recent workstream exists but the turn is unbound", () => {
+  it("does not infer ownership from a recent workstream", () => {
     const catalog = new ToolCatalog([
       skill("git-context", [
         tool("git_context_active"),
@@ -399,13 +371,7 @@ describe("ToolWorkingSetManager", () => {
 
     manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 });
 
-    expect(manager.listActive({ runId: "r1" })).toEqual([
-      "git_context_find_workstreams",
-      "git_context_read_workstream",
-      "git_context_inspect_resource",
-      "git_context_activate_workstream",
-      "git_context_create_workstream",
-    ]);
+    expect(manager.listActive({ runId: "r1" })).toEqual([]);
   });
 
   it("keeps mutation tools unavailable while workstream ownership is unbound", () => {
@@ -443,22 +409,11 @@ describe("ToolWorkingSetManager", () => {
     });
     const context = { clientId: "c1", runId: "decision:s1:1", sessionId: "s1", stepNumber: 1 };
 
-    const result = manager.prepareForDecision(runState, context);
+    manager.prepareForDecision(runState, context);
     const active = manager.listActive(context);
 
-    expect(active).toEqual(expect.arrayContaining([
-      "find_files",
-      "search_in_files",
-      "read_files",
-      "git_context_inspect_resource",
-      "git_context_activate_workstream",
-      "git_context_create_workstream",
-    ]));
+    expect(active).toEqual([]);
     expect(active).not.toContain("write_files");
-    expect(result.unavailable).toEqual(expect.arrayContaining([{
-      tool: "write_files",
-      reason: "requires_workstream_binding",
-    }]));
     expect(executor.list(context)).toEqual(active);
   });
 
@@ -499,11 +454,7 @@ describe("ToolWorkingSetManager", () => {
         { tool: "write_files", reason: "requires_workstream_binding" },
       ],
     });
-    expect(manager.listActive(context)).toEqual([
-      "git_context_inspect_resource",
-      "git_context_activate_workstream",
-      "git_context_create_workstream",
-    ]);
+    expect(manager.listActive(context)).toEqual([]);
   });
 
   it("loads resource binding and rejects the pre-binding inspector after binding", () => {
@@ -533,7 +484,7 @@ describe("ToolWorkingSetManager", () => {
     expect(manager.listActive(context)).toEqual(["git_context_bind_resources"]);
   });
 
-  it("removes routing controls immediately after successful create or switch routing", () => {
+  it("ignores a legacy routing execution record because those tools are never mounted", () => {
     const catalog = new ToolCatalog([
       skill("git-context", [
         tool("git_context_find_workstreams"),
@@ -560,7 +511,7 @@ describe("ToolWorkingSetManager", () => {
     expect(manager.listActive(context)).toEqual([]);
   });
 
-  it("does not re-add routing tools after a routing tool already ran in the loop", () => {
+  it("does not re-add legacy routing tools from historical task steps", () => {
     const catalog = new ToolCatalog([
       skill("git-context", [
         tool("git_context_find_workstreams"),
@@ -580,9 +531,7 @@ describe("ToolWorkingSetManager", () => {
 
     manager.prepareForDecision(runState, { clientId: "c1", runId: "real-run", sessionId: "s1", stepNumber: 2 });
 
-    expect(manager.listActive({ runId: "real-run" })).toEqual([
-      "git_context_find_workstreams",
-    ]);
+    expect(manager.listActive({ runId: "real-run" })).toEqual([]);
   });
 
   it("removes workstream-routing controls when the run is bound", () => {
@@ -621,11 +570,7 @@ describe("ToolWorkingSetManager", () => {
 
 function contextEngineWithFocus(focus: ContextEngineMachineContext["focus"]): ContextEngineMachineContext {
   return {
-    session: {
-      meta: { sessionId: "s1", resourceCount: 0 },
-      conversationTail: [],
-      activityTail: [],
-    },
+    ...contextEngineFixture({ streamId: "s1", runId: "r1", message: "continue the website" }),
     focus,
   };
 }
@@ -636,12 +581,13 @@ function contextEngineWithPendingTurn(
 ): ContextEngineMachineContext {
   return {
     ...contextEngineWithFocus(focus),
-    pendingTurn: {
-      routingStatus,
-      fromSeq: 1,
-      toSeq: 1,
-      text: "continue the website",
-      at: "2026-07-07T08:00:00.000Z",
+    current: {
+      inputSeq: 1,
+      runId: "r1",
+      routing: {
+        status: routingStatus,
+        ...(routingStatus === "bound" ? { workstreamId: "W-1", requestId: "R-1" } : {}),
+      },
     },
   };
 }

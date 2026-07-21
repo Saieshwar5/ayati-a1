@@ -1,26 +1,95 @@
-import type { LoopState } from "../types.js";
 import type { ContextEngineMachineContext } from "../../context-engine/index.js";
+import type { LoopState } from "../types.js";
 import { harnessContextFromState } from "../harness-context.js";
-import type { ExactTimelineEvent, TimelineEvent } from "./timeline-checkpoint.js";
+import type { AgentTemporalEvent, AgentTemporalExactEvent } from "./agent-context-events.js";
 
-export type { ExactTimelineEvent, TimelineEvent } from "./timeline-checkpoint.js";
+export type { AgentTemporalEvent, AgentTemporalExactEvent } from "./agent-context-events.js";
 
 const LIMITS = {
   memoryChars: 1_200,
 };
 
 export interface AgentContextPack {
-  timeline: TimelineEvent[];
-  gitContext?: ContextEngineMachineContext;
+  temporal: {
+    checkpoint?: ContextEngineMachineContext["agentStream"]["checkpoint"] extends infer Value
+      ? Value
+      : never;
+    recent: AgentTemporalEvent[];
+  };
+  current: {
+    inputSeq: number;
+    runId: string;
+    routing?: {
+      status: "unbound" | "bound" | "clarifying";
+      workstreamId?: string;
+      requestId?: string;
+    };
+  };
+  stream: {
+    agentId: string;
+    scopeKey: string;
+    recentWork: ContextEngineMachineContext["agentStream"]["recentWork"];
+  };
+  work: {
+    candidates: NonNullable<ContextEngineMachineContext["workstreamCandidates"]>;
+    active?: ContextEngineMachineContext["workstream"];
+    resolution?: ContextEngineMachineContext["workstreamResolution"];
+  };
+  resources: {
+    stream: ContextEngineMachineContext["agentStream"]["resources"];
+    ingress: NonNullable<ContextEngineMachineContext["ingressResources"]>;
+    activeWorkstream: NonNullable<ContextEngineMachineContext["workstream"]>["resources"];
+  };
+  observations: ContextEngineMachineContext["observations"];
   personalMemorySnapshot?: string;
 }
 
 export function buildAgentContextPack(state: LoopState): AgentContextPack {
   const harnessContext = harnessContextFromState(state);
-  const gitContext = harnessContext.contextEngine;
+  const context = harnessContext.contextEngine;
+  const recent = buildTimeline(state, context);
+  const currentInput = recent.find((event) => "current" in event && event.current === true);
   return {
-    timeline: buildTimeline(state, gitContext),
-    ...(gitContext ? { gitContext } : {}),
+    temporal: {
+      ...(context?.agentStream.checkpoint ? { checkpoint: context.agentStream.checkpoint } : {}),
+      recent,
+    },
+    current: {
+      inputSeq: currentInput?.seq ?? state.currentSeq,
+      runId: state.runId,
+      ...(context?.current.routing ? {
+        routing: {
+          status: context.current.routing.status,
+          ...(context.current.routing.workstreamId
+            ? { workstreamId: context.current.routing.workstreamId }
+            : {}),
+          ...(context.current.routing.requestId
+            ? { requestId: context.current.routing.requestId }
+            : {}),
+        },
+      } : {}),
+    },
+    stream: {
+      agentId: context?.agentStream.meta.agentId ?? "local",
+      scopeKey: context?.agentStream.meta.scopeKey ?? "default",
+      recentWork: context?.agentStream.recentWork ?? [],
+    },
+    work: {
+      candidates: context?.workstreamCandidates ?? [],
+      ...(context?.workstream ? { active: context.workstream } : {}),
+      ...(context?.workstreamResolution ? { resolution: context.workstreamResolution } : {}),
+    },
+    resources: {
+      stream: context?.agentStream.resources ?? [],
+      ingress: context?.ingressResources ?? [],
+      activeWorkstream: context?.workstream?.resources ?? [],
+    },
+    observations: context?.observations ?? {
+      revision: "observations:empty",
+      inventory: [],
+      discovery: [],
+      evidence: [],
+    },
     ...(harnessContext.personalMemorySnapshot.trim()
       ? { personalMemorySnapshot: truncate(harnessContext.personalMemorySnapshot, LIMITS.memoryChars) }
       : {}),
@@ -29,72 +98,68 @@ export function buildAgentContextPack(state: LoopState): AgentContextPack {
 
 function buildTimeline(
   state: LoopState,
-  gitContext: ContextEngineMachineContext | undefined,
-): TimelineEvent[] {
-  const records = gitContext?.session.conversationTail ?? [];
-  const currentRecordIndex = findCurrentConversationRecordIndex(state, records);
+  context: ContextEngineMachineContext | undefined,
+): AgentTemporalEvent[] {
+  const messages = context?.agentStream.recentMessages ?? [];
+  const currentRecordIndex = findCurrentMessageIndex(state, messages);
   if (state.currentMessageId && currentRecordIndex < 0) {
     throw new Error(
-      `CURRENT_INPUT_CONTEXT_MISMATCH: message ${state.currentMessageId} is not present in the prepared conversation context.`,
+      `CURRENT_INPUT_CONTEXT_MISMATCH: message ${state.currentMessageId} is not present in the prepared agent-stream context.`,
     );
   }
-  const fromGit = records
-    .map((record, index): ExactTimelineEvent => {
-      const current = index === currentRecordIndex;
-      if (record.role === "assistant") {
-        return {
-          kind: "assistant",
-          seq: record.seq,
-          timestamp: record.at,
-          content: record.text,
-          ...(record.kind === "feedback_question" ? { responseKind: "feedback", expectsUserResponse: true } : {}),
-          ...(assistantExpectsUserResponse(record.text) ? { expectsUserResponse: true } : {}),
-          ...(current ? { current: true } : {}),
-        };
-      }
-      if (record.role === "system") {
-        return {
-          kind: "system",
-          seq: record.seq,
-          timestamp: record.at,
-          content: record.text,
-          ...(current ? { current: true } : {}),
-        };
-      }
+  const fromStream = messages.map((message, index): AgentTemporalExactEvent => {
+    const current = index === currentRecordIndex;
+    if (message.role === "assistant") {
       return {
-        kind: "user",
-        seq: record.seq,
-        timestamp: record.at,
-        content: record.text,
+        kind: "assistant",
+        seq: message.sequence,
+        timestamp: message.at,
+        content: message.content,
+        ...(assistantExpectsUserResponse(message.content) ? { expectsUserResponse: true } : {}),
         ...(current ? { current: true } : {}),
       };
-    });
+    }
+    if (message.role === "system_event") {
+      return {
+        kind: "system",
+        seq: message.sequence,
+        timestamp: message.at,
+        content: message.content,
+        ...(current ? { current: true } : {}),
+      };
+    }
+    return {
+      kind: "user",
+      seq: message.sequence,
+      timestamp: message.at,
+      content: message.content,
+      ...(current ? { current: true } : {}),
+    };
+  });
 
-  const timeline = orderTimeline(ensureCurrentEvent(state, fromGit));
+  const timeline = orderTimeline(ensureCurrentEvent(state, fromStream));
   verifyCurrentUserInput(state, timeline);
   return timeline;
 }
 
-function findCurrentConversationRecordIndex(
+function findCurrentMessageIndex(
   state: LoopState,
-  records: ContextEngineMachineContext["session"]["conversationTail"],
+  messages: ContextEngineMachineContext["agentStream"]["recentMessages"],
 ): number {
   if (state.currentMessageId) {
-    return records.findIndex((record) => record.messageId === state.currentMessageId);
+    return messages.findIndex((message) => message.messageId === state.currentMessageId);
   }
-  for (let index = records.length - 1; index >= 0; index--) {
-    const record = records[index];
-    if (record?.role === "user" && normalizeText(record.text) === normalizeText(state.userMessage)) {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message?.role === "user" && normalizeText(message.content) === normalizeText(state.userMessage)) {
       return index;
     }
   }
   return -1;
 }
 
-function ensureCurrentEvent(state: LoopState, events: ExactTimelineEvent[]): ExactTimelineEvent[] {
-  if (events.some((event) => event.current)) {
-    return events;
-  }
+function ensureCurrentEvent(state: LoopState, events: AgentTemporalExactEvent[]): AgentTemporalExactEvent[] {
+  if (events.some((event) => event.current)) return events;
   const seq = Math.max(1, ...events.map((event) => event.seq), state.currentSeq || 1);
   if (state.inputKind === "system_event" && state.systemEvent) {
     return [
@@ -122,7 +187,7 @@ function ensureCurrentEvent(state: LoopState, events: ExactTimelineEvent[]): Exa
   ];
 }
 
-function orderTimeline(events: ExactTimelineEvent[]): ExactTimelineEvent[] {
+function orderTimeline(events: AgentTemporalExactEvent[]): AgentTemporalExactEvent[] {
   const currentEvent = events.find((event) => event.current);
   return [
     ...events.filter((event) => !event.current).sort((a, b) => a.seq - b.seq),
@@ -130,14 +195,16 @@ function orderTimeline(events: ExactTimelineEvent[]): ExactTimelineEvent[] {
   ];
 }
 
-function verifyCurrentUserInput(state: LoopState, timeline: ExactTimelineEvent[]): void {
+function verifyCurrentUserInput(state: LoopState, timeline: AgentTemporalExactEvent[]): void {
   if (state.inputKind !== "user_message") return;
   const current = timeline.filter((event) => event.current === true);
   const event = current[0];
   const content = event && "content" in event ? event.content : undefined;
-  if (current.length !== 1 || event?.kind !== "user" || normalizeText(content ?? "") !== normalizeText(state.userMessage)) {
+  if (current.length !== 1
+    || event?.kind !== "user"
+    || normalizeText(content ?? "") !== normalizeText(state.userMessage)) {
     throw new Error(
-      "CURRENT_INPUT_CONTEXT_MISMATCH: the projected timeline does not contain exactly one current user message matching the incoming request.",
+      "CURRENT_INPUT_CONTEXT_MISMATCH: the projected temporal lane does not contain exactly one current user message matching the incoming request.",
     );
   }
 }
@@ -153,8 +220,6 @@ function normalizeText(value: string): string {
 
 function truncate(value: string, maxChars: number): string {
   const compact = value.replace(/\s+/g, " ").trim();
-  if (compact.length <= maxChars) {
-    return compact;
-  }
+  if (compact.length <= maxChars) return compact;
   return `${compact.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
 }

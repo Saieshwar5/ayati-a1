@@ -1,4 +1,4 @@
-import type { GitContextService, WorkstreamResourceBinding } from "ayati-git-context";
+import type { ContextEngineService, WorkstreamResourceBinding } from "ayati-context-engine";
 import { describe, expect, it, vi } from "vitest";
 import { createGitContextSkill } from "../../src/skills/builtins/git-context/index.js";
 
@@ -11,11 +11,11 @@ describe("model-facing workstream and resource routing", () => {
     const selected = selectedResponse("initial", true);
     const createWorkstreamForRun = vi.fn(async () => selected);
     const service = {
-      getActiveContext: vi.fn()
+      getAgentContext: vi.fn()
         .mockResolvedValueOnce(activeContext(false))
         .mockResolvedValueOnce(activeContext(true)),
       createWorkstreamForRun,
-    } as unknown as GitContextService;
+    } as unknown as ContextEngineService;
     const tool = createGitContextSkill({ service }).tools
       .find((candidate) => candidate.name === "git_context_create_workstream")!;
 
@@ -30,7 +30,6 @@ describe("model-facing workstream and resource routing", () => {
       status: "ready",
       mode: "created",
       workstreamId: WORKSTREAM_ID,
-      contextRepositoryPath: workstream().contextRepositoryPath,
       requestDecision: "initial",
       requestId: "R-0001",
       resources: [expect.objectContaining({
@@ -42,8 +41,6 @@ describe("model-facing workstream and resource routing", () => {
     });
     expect(createWorkstreamForRun).toHaveBeenCalledWith(expect.objectContaining({
       requestId: "RUN-1:create-workstream:create-workstream",
-      sessionId: "S-1",
-      conversationId: "C-1",
       runId: "RUN-1",
       title: "Durable research notes",
       objective: "Continue the research across sessions.",
@@ -54,11 +51,11 @@ describe("model-facing workstream and resource routing", () => {
   it("activates existing durable context with an explicit new-request decision", async () => {
     const activateWorkstreamForRun = vi.fn(async () => selectedResponse("create", false));
     const service = {
-      getActiveContext: vi.fn()
+      getAgentContext: vi.fn()
         .mockResolvedValueOnce(activeContext(false))
         .mockResolvedValueOnce(activeContext(true)),
       activateWorkstreamForRun,
-    } as unknown as GitContextService;
+    } as unknown as ContextEngineService;
     const tool = createGitContextSkill({ service }).tools
       .find((candidate) => candidate.name === "git_context_activate_workstream")!;
 
@@ -106,7 +103,7 @@ describe("model-facing workstream and resource routing", () => {
       context: workstreamContext(),
       opened: true as const,
     }));
-    const service = { findWorkstreams, readWorkstream } as unknown as GitContextService;
+    const service = { findWorkstreams, readWorkstream } as unknown as ContextEngineService;
     const tools = createGitContextSkill({ service }).tools;
 
     const found = await tools.find((tool) => tool.name === "git_context_find_workstreams")!
@@ -119,12 +116,11 @@ describe("model-facing workstream and resource routing", () => {
     expect(opened.ok).toBe(true);
     expect(findWorkstreams).toHaveBeenCalledWith(expect.objectContaining({
       query: "website",
-      sessionId: "S-1",
+      streamId: "S-1",
     }));
     expect(readWorkstream).toHaveBeenCalledWith(expect.objectContaining({
       requestId: "RUN-1:open:open-workstream",
       workstreamId: WORKSTREAM_ID,
-      sessionId: "S-1",
       runId: "RUN-1",
     }));
   });
@@ -136,7 +132,7 @@ describe("model-facing workstream and resource routing", () => {
       mutationEligible: true,
       warnings: [],
     }));
-    const service = { inspectResourceForRun } as unknown as GitContextService;
+    const service = { inspectResourceForRun } as unknown as ContextEngineService;
     const tool = createGitContextSkill({ service }).tools
       .find((candidate) => candidate.name === "git_context_inspect_resource")!;
 
@@ -151,7 +147,6 @@ describe("model-facing workstream and resource routing", () => {
     expect(result.ok).toBe(true);
     expect(inspectResourceForRun).toHaveBeenCalledWith(expect.objectContaining({
       requestId: "RUN-1:inspect-resource:inspect-resource",
-      sessionId: "S-1",
       runId: "RUN-1",
       locator: { kind: "filesystem", path: "/home/user/existing-project" },
       kind: "directory",
@@ -169,9 +164,9 @@ describe("model-facing workstream and resource routing", () => {
       bindings: [resourceBinding()],
     }));
     const service = {
-      getActiveContext: vi.fn(async () => activeContext(true)),
+      getAgentContext: vi.fn(async () => activeContext(true)),
       bindResourcesForRun,
-    } as unknown as GitContextService;
+    } as unknown as ContextEngineService;
     const tool = createGitContextSkill({ service }).tools
       .find((candidate) => candidate.name === "git_context_bind_resources")!;
 
@@ -202,9 +197,9 @@ describe("model-facing workstream and resource routing", () => {
     const setWorkstreamStar = vi.fn(async () => ({ workstreamId: WORKSTREAM_ID, starred: true }));
     const explicit = activeContext(false, "Star this workstream.");
     const service = {
-      getActiveContext: vi.fn(async () => explicit),
+      getAgentContext: vi.fn(async () => explicit),
       setWorkstreamStar,
-    } as unknown as GitContextService;
+    } as unknown as ContextEngineService;
     const tool = createGitContextSkill({ service }).tools
       .find((candidate) => candidate.name === "git_context_set_workstream_star")!;
 
@@ -219,14 +214,13 @@ describe("model-facing workstream and resource routing", () => {
       requestId: "RUN-1:star:set-star",
       workstreamId: WORKSTREAM_ID,
       starred: true,
-      sessionId: "S-1",
       runId: "RUN-1",
     }));
 
     const autonomousService = {
-      getActiveContext: vi.fn(async () => activeContext(false, "Continue the website.")),
+      getAgentContext: vi.fn(async () => activeContext(false, "Continue the website.")),
       setWorkstreamStar: vi.fn(),
-    } as unknown as GitContextService;
+    } as unknown as ContextEngineService;
     const autonomousTool = createGitContextSkill({ service: autonomousService }).tools
       .find((candidate) => candidate.name === "git_context_set_workstream_star")!;
     const refused = await autonomousTool.execute({
@@ -253,7 +247,7 @@ function workstream() {
     title: "Website",
     objective: "Build and improve the website.",
     status: "active" as const,
-    createdSessionId: "S-1",
+    createdByRunId: "RUN-1",
     createdAt: NOW,
     updatedAt: NOW,
   };
@@ -335,8 +329,7 @@ function selectedResponse(decision: "initial" | "create", created: boolean) {
     workstream: workstream(),
     run: {
       runId: "RUN-1",
-      sessionId: "S-1",
-      conversationId: "C-1",
+      streamId: "S-1",
       workstreamBinding: {
         workstreamId: WORKSTREAM_ID,
         requestId: decision === "initial" ? "R-0001" : "R-0002",
@@ -356,51 +349,34 @@ function selectedResponse(decision: "initial" | "create", created: boolean) {
 function activeContext(selected: boolean, userText = "Add the menu.") {
   return {
     contextRevision: "sha256:test",
-    session: {
-      session: {
-        sessionId: "S-1",
-        repositoryPath: "/ayati/.ayati/sessions/S-1",
-        head: "b".repeat(40),
-        date: "2026-07-17",
-        timezone: "Asia/Kolkata",
-        status: "open" as const,
+    streamRevision: "sha256:stream",
+    observationRevision: "observations:empty",
+    stream: {
+      stream: {
+        streamId: "S-1",
+        agentId: "local",
+        scopeKey: "default",
+        lastMessageSequence: 1,
+        lastRunSequence: 1,
+        createdAt: NOW,
+        updatedAt: NOW,
       },
-      summary: "",
-      pendingConversation: [{
-        conversationId: "C-1",
-        sessionId: "S-1",
+      recentMessages: [{
+        messageId: "M-1",
+        streamId: "S-1",
         sequence: 1,
-        filePath: "conversation.md",
-        status: "active" as const,
+        role: "user" as const,
+        content: userText,
+        runId: "RUN-1",
+        at: NOW,
       }],
-      pendingConversationContext: [{
-        conversation: {
-          conversationId: "C-1",
-          sessionId: "S-1",
-          sequence: 1,
-          filePath: "conversation.md",
-          status: "active" as const,
-        },
-        messages: [{
-          messageId: "M-1",
-          conversationId: "C-1",
-          sessionSequence: 1,
-          segmentSequence: 1,
-          role: "user" as const,
-          content: userText,
-          at: NOW,
-        }],
-        contentHash: "sha256:test",
-      }],
-      pendingDigest: "",
-      recentCommits: [],
+      recentWork: [],
       resources: { count: 1, recent: [resourceBinding().resource] },
     },
     run: {
       run: {
         runId: "RUN-1",
-        sessionId: "S-1",
-        conversationId: "C-1",
+        streamId: "S-1",
         status: "running" as const,
         trigger: "user" as const,
         startedAt: NOW,
@@ -433,6 +409,7 @@ function activeContext(selected: boolean, userText = "Add the menu.") {
     ...(selected ? { activeWorkstream: workstreamContext() } : {}),
     workstreamCandidates: [],
     ingressResources: [],
+    observations: { revision: "observations:empty", inventory: [], discovery: [], evidence: [] },
     warnings: [],
   };
 }

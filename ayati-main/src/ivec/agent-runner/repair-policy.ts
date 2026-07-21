@@ -216,7 +216,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     source: "runner.pending_turn",
     message: "The current pending turn is not bound to a workstream.",
     allowedNextActions: [
-      "Use git-context read/search tools if needed.",
+      "Use the git_context_* read/search tools if needed.",
       "Then call git_context_activate_workstream or git_context_create_workstream.",
       "Ask the user directly if workstream ownership is ambiguous.",
     ],

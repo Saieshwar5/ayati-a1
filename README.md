@@ -11,8 +11,8 @@ tools, plugins, clients, and memory behavior evolve independently.
 
 - `ayati-main`: daemon, harness, providers, tools, memory, WebSocket/HTTP
   servers, plugins, Pulse, and system events.
-- `ayati-git-context`: independent local SQLite-and-Git service for sessions,
-  runs, workstreams, requests, resources, discovery, steps, finalization, and
+- `ayati-context-engine`: in-process SQLite-and-Git engine for streams, runs,
+  workstreams, requests, resources, checkpoints, history, finalization, and
   recovery.
 - `ayati-cli`: Ink/React terminal client.
 - `project-docs`: stable product and engineering context.
@@ -67,8 +67,6 @@ Set one root with `AYATI_ROOT_DIR`:
   workstreams/     context-only Git repositories
   .ayati/
     context.db
-    git-context.sock
-    sessions/
     resources/     immutable admitted attachment bytes
 ```
 
@@ -95,9 +93,10 @@ Mutation calls are not deferred or replayed.
 
 ## Finalization
 
-One finalization operation closes the run and conversation, records verified
-resource effects, reduces workstream context when useful, and creates at most
-one context-only commit. Deliverables are never staged into workstream Git.
+One finalization operation closes the run, appends its immutable assistant
+message, records verified resource effects, reduces workstream context when
+useful, and creates at most one context-only commit. Deliverables are never
+staged into workstream Git.
 
 Final text may stream, but the terminal envelope is sent only after durable
 finalization acknowledgement. Failure or uncertain recovery state cannot be
@@ -152,8 +151,8 @@ Default endpoints:
 pnpm build
 pnpm test
 
-pnpm --filter ayati-git-context build
-pnpm --filter ayati-git-context test
+pnpm --filter ayati-context-engine build
+pnpm --filter ayati-context-engine test
 pnpm --filter ayati-main build
 pnpm --filter ayati-main test
 pnpm --filter ayati-cli build
@@ -164,7 +163,7 @@ Feedback-enabled daemon:
 
 ```bash
 pnpm dev:main:feedback
-pnpm feedback:git-context
+pnpm feedback:context-engine
 ```
 
 Safe context-state operations are preview-first:

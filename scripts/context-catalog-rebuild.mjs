@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { createConnection } from "node:net";
 import { lstat, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import {
@@ -15,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import {
   ContextDatabase,
   rebuildWorkstreamCatalog,
-} from "../ayati-git-context/dist/index.js";
+} from "../ayati-context-engine/dist/index.js";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const mainRoot = join(repositoryRoot, "ayati-main");
@@ -32,7 +31,7 @@ if (confirm) {
   await refuseLiveRuntime(paths);
   if (!await exists(paths.databasePath)) {
     throw new Error(
-      "Catalog rebuild requires an initialized V5 database; start and stop Ayati once first.",
+      "Catalog rebuild requires an initialized V7 database; start and stop Ayati once first.",
     );
   }
 }
@@ -62,12 +61,8 @@ function resolveRuntimePaths(env) {
     rootDirectory,
     stateRoot,
     databasePath: resolveConfiguredPath(
-      env["AYATI_GIT_CONTEXT_DATABASE"],
+      env["AYATI_CONTEXT_ENGINE_DATABASE"] ?? env["AYATI_GIT_CONTEXT_DATABASE"],
       join(stateRoot, "context.db"),
-    ),
-    socketPath: resolveConfiguredPath(
-      env["AYATI_GIT_CONTEXT_SOCKET"],
-      join(stateRoot, "git-context.sock"),
     ),
     workstreamRoot: join(rootDirectory, "workstreams"),
   };
@@ -135,30 +130,11 @@ function isBroadDirectory(value) {
 }
 
 async function refuseLiveRuntime(paths) {
-  if (await socketAcceptsConnections(paths.socketPath)) {
-    throw new Error(`Refusing to rebuild while the Git Context socket is live: ${paths.socketPath}`);
-  }
   const owner = await readWriterOwner(join(paths.databasePath + ".writer-lock", "owner.json"));
   const pid = Number(owner?.pid);
   if (Number.isInteger(pid) && pid > 0 && isProcessAlive(pid)) {
-    throw new Error(`Refusing to rebuild while Git Context writer PID ${pid} is live.`);
+    throw new Error(`Refusing to rebuild while Context Engine writer PID ${pid} is live.`);
   }
-}
-
-function socketAcceptsConnections(socketPath) {
-  return new Promise((resolveConnection) => {
-    const socket = createConnection({ path: socketPath });
-    let settled = false;
-    const finish = (connected) => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      resolveConnection(connected);
-    };
-    socket.once("connect", () => finish(true));
-    socket.once("error", () => finish(false));
-    socket.setTimeout(300, () => finish(false));
-  });
 }
 
 function isProcessAlive(pid) {

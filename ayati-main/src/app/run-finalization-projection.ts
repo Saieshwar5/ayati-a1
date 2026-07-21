@@ -2,7 +2,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import {
   RUN_FINALIZATION_LIMITS,
   type WorkstreamCompletionRecord,
-} from "ayati-git-context";
+} from "ayati-context-engine";
 import {
   compactOptionalText,
   compactText,
@@ -12,7 +12,7 @@ import type { AgentLoopResult, AgentResourceRecord, WorkState } from "../ivec/ty
 
 export interface AgentRunFinalizationProjection {
   assistantResponse: string;
-  conversationSummary: string;
+  streamSummary: string;
   summary: string;
   next?: string;
   workState?: WorkState;
@@ -29,10 +29,10 @@ export function buildAgentRunFinalizationProjection(input: {
     : undefined;
   const fallback = input.fallbackSummary?.trim()
     || "Run finalized with outcome " + input.result.outcome + ".";
-  const conversationSummary = requiredText(
+  const streamSummary = requiredText(
     input.result.workstreamSummary?.summary || input.result.content,
     fallback,
-    RUN_FINALIZATION_LIMITS.conversationSummaryChars,
+    RUN_FINALIZATION_LIMITS.streamSummaryChars,
   );
   const summary = requiredText(
     workState?.summary || input.result.content,
@@ -46,7 +46,7 @@ export function buildAgentRunFinalizationProjection(input: {
   return {
     // This is the user-visible truth and is never replaced by its compact projection.
     assistantResponse: input.result.content,
-    conversationSummary,
+    streamSummary,
     summary,
     ...(next ? { next } : {}),
     ...(workState ? { workState } : {}),

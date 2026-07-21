@@ -1,4 +1,6 @@
 export const GIT_CONTEXT_READ_ONLY_TOOL_NAMES = [
+  "agent_history_search",
+  "agent_history_read",
   "git_context_find_workstreams",
   "git_context_read_workstream",
   "git_context_find_resources",

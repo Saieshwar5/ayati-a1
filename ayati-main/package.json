@@ -27,7 +27,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
-    "ayati-git-context": "workspace:*",
+    "ayati-context-engine": "workspace:*",
     "@lancedb/lancedb": "^0.27.2",
     "cheerio": "^1.2.0",
     "decimal.js": "^10.6.0",

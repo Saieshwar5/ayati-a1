@@ -20,6 +20,12 @@ context windows, or internal work lists. Every accepted message or system event
 creates one run. Conversation and observational work can finish unbound;
 durable work binds that same run to one workstream and request.
 
+Continuity lives in one slow-growing agent stream across clients and runs.
+Fast-growing WorkState, steps, tool calls, and verification remain inside the
+current run. Under measured pressure Ayati creates a durable anchored
+checkpoint, while exact older discussion and evidence remain available through
+explicit history search/read tools.
+
 Durable work is represented by two separate concepts:
 
 - A workstream is compact long-lived context: objective, requests, progress,
@@ -52,6 +58,6 @@ Current packages:
 - `ayati-main`: daemon, harness, providers, tools, memory, events, WebSocket,
   and HTTP APIs.
 - `ayati-cli`: Ink/React terminal client.
-- `ayati-git-context`: local SQLite-and-Git service that owns sessions, runs,
-  workstream context, resources, discovery, mutation journals, and
-  finalization.
+- `ayati-context-engine`: local SQLite-and-Git service that owns agent streams,
+  immutable messages, runs, checkpoints, history, reusable observations,
+  workstream context, resources, mutation journals, and finalization.

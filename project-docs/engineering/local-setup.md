@@ -33,8 +33,8 @@ pnpm --filter ayati-cli start
 Mental model:
 
 - `ayati-main` is the app's persistent agent daemon.
-- `ayati-main` starts and supervises the local `ayati-git-context` service by
-  default; users do not need to start it separately.
+- `ayati-main` opens `ayati-context-engine` in-process and owns its lifecycle;
+  users do not start a second service.
 - Durable context is stored in independent `W-*` repositories under
   `<AYATI_ROOT_DIR>/workstreams/`; real outputs stay in `workspace/` or the
   user-selected resource path.

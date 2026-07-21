@@ -1,38 +1,58 @@
+import type { AgentContextProjection, StreamMessage } from "ayati-context-engine";
 import type {
-  ActiveContext,
-} from "ayati-git-context";
-import { isAbsolute, resolve } from "node:path";
-import type {
-  ContextCommitSummary,
-  ContextConversationRecord,
+  ContextCurrentRouting,
   ContextEngineMachineContext,
+  ContextWorkstreamProjection,
 } from "./contracts.js";
 
 export function buildContextEngineProjection(
-  active: ActiveContext,
+  context: AgentContextProjection,
 ): ContextEngineMachineContext {
-  if (!active.session) return emptyProjection();
-
-  const activeWorkstream = active.activeWorkstream;
-  const run = active.run?.run;
+  const stream = context.stream;
+  const run = context.run?.run;
+  const input = currentInput(context);
+  const activeWorkstream = context.activeWorkstream;
+  const workstreamResolution = context.workstreamResolution;
   const workstreamBound = Boolean(
     activeWorkstream
       && run?.workstreamBinding?.workstreamId === activeWorkstream.workstream.workstreamId,
   );
 
   return {
-    session: {
-      meta: {
-        sessionId: active.session.session.sessionId,
-        date: active.session.session.date,
-        timezone: active.session.session.timezone,
-        repoKind: "daily_session",
-        resourceCount: active.session.resources?.count ?? 0,
-      },
-      conversationTail: conversationRecords(active),
-      summary: { text: active.session.summary },
-      activityTail: [],
-      recentCommits: active.session.recentCommits.map(commitSummary),
+    contextRevision: context.contextRevision,
+    streamRevision: context.streamRevision,
+    ...(context.runRevision ? { runRevision: context.runRevision } : {}),
+    observationRevision: context.observationRevision,
+    agentStream: stream
+      ? {
+          meta: {
+            streamId: stream.stream.streamId,
+            agentId: stream.stream.agentId,
+            scopeKey: stream.stream.scopeKey,
+            createdAt: stream.stream.createdAt,
+            updatedAt: stream.stream.updatedAt,
+            lastMessageSequence: stream.stream.lastMessageSequence,
+            lastRunSequence: stream.stream.lastRunSequence,
+            resourceCount: stream.resources?.count ?? 0,
+          },
+          ...(stream.checkpoint ? { checkpoint: stream.checkpoint } : {}),
+          recentMessages: stream.recentMessages,
+          recentWork: stream.recentWork,
+          resources: stream.resources?.recent ?? [],
+        }
+      : emptyAgentStream(),
+    current: {
+      ...(input ? { inputSeq: input.sequence } : {}),
+      ...(run ? { runId: run.runId } : {}),
+      ...(run && stream ? {
+        routing: currentRouting({
+          binding: run.workstreamBinding,
+          branch: workstreamBound ? activeWorkstream?.workstream.branch : undefined,
+          resolutionStatus: workstreamResolution?.runId === run.runId
+            ? workstreamResolution.status
+            : undefined,
+        }),
+      } : {}),
     },
     focus: workstreamBound && activeWorkstream
       ? {
@@ -41,106 +61,88 @@ export function buildContextEngineProjection(
           workstreamId: activeWorkstream.workstream.workstreamId,
         }
       : { status: "none" },
-    ...(active.readContext ? { readContext: active.readContext } : {}),
-    workstreamCandidates: active.workstreamCandidates ?? [],
-    ingressResources: active.ingressResources ?? [],
-    ...(workstreamBound && activeWorkstream
-      ? {
-          pendingTurn: {
-            fromSeq: currentConversationSequence(active),
-            toSeq: currentConversationSequence(active),
-            text: latestInputText(active),
-            at: latestInputAt(active),
-            routingStatus: "bound" as const,
-            workstreamId: activeWorkstream.workstream.workstreamId,
-            branch: activeWorkstream.workstream.branch,
-            runId: run!.runId,
-          },
-          workstream: {
-            contextRepositoryPath: activeWorkstream.workstream.contextRepositoryPath,
-            ref: "refs/heads/" + activeWorkstream.workstream.branch,
-            workstreamId: activeWorkstream.workstream.workstreamId,
-            title: activeWorkstream.title,
-            objective: activeWorkstream.objective,
-            summary: activeWorkstream.summary,
-            workstreamStatus: activeWorkstream.workstreamStatus
-              ?? (activeWorkstream.latestOutcome === "done"
-                ? "done"
-                : activeWorkstream.latestOutcome === "blocked"
-                  ? "blocked"
-                  : "in_progress"),
-            lifecycleStatus: activeWorkstream.lifecycleStatus ?? "active",
-            repositoryHealth: activeWorkstream.repositoryHealth ?? "ready",
-            ...(activeWorkstream.currentFocus ? { currentFocus: activeWorkstream.currentFocus } : {}),
-            blockers: activeWorkstream.blockers ?? [],
-            ...(activeWorkstream.next ? { next: activeWorkstream.next } : {}),
-            ...(activeWorkstream.currentRequest ? { currentRequest: activeWorkstream.currentRequest } : {}),
-            resources: activeWorkstream.resources ?? [],
-            recentCommits: activeWorkstream.recentCommits.map(commitSummary),
-          },
-        }
+    observations: context.observations,
+    ...(context.run ? { run: context.run } : {}),
+    ...(!workstreamBound && context.workstreamCandidates && context.workstreamCandidates.length > 0
+      ? { workstreamCandidates: context.workstreamCandidates.slice(0, 5) }
       : {}),
+    ...(workstreamResolution ? { workstreamResolution } : {}),
+    ...(context.ingressResources && context.ingressResources.length > 0
+      ? { ingressResources: context.ingressResources }
+      : {}),
+    ...(workstreamBound && activeWorkstream
+      ? { workstream: projectWorkstream(activeWorkstream) }
+      : {}),
+    warnings: context.warnings,
   };
 }
 
-function emptyProjection(): ContextEngineMachineContext {
+function emptyAgentStream(): ContextEngineMachineContext["agentStream"] {
   return {
-    session: {
-      meta: { sessionId: "unavailable", resourceCount: 0 },
-      conversationTail: [],
-      activityTail: [],
+    meta: {
+      streamId: "unavailable",
+      agentId: "local",
+      scopeKey: "default",
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+      lastMessageSequence: 0,
+      lastRunSequence: 0,
+      resourceCount: 0,
     },
-    focus: { status: "none" },
+    recentMessages: [],
+    recentWork: [],
+    resources: [],
   };
 }
 
-function conversationRecords(active: ActiveContext): ContextConversationRecord[] {
-  return (active.session?.pendingConversationContext ?? []).flatMap((context) =>
-    context.messages.map((message) => ({
-      seq: message.sessionSequence,
-      messageId: message.messageId,
-      conversationId: message.conversationId,
-      conversationSequence: context.conversation.sequence,
-      segmentSequence: message.segmentSequence,
-      role: message.role === "system_event" ? "system" as const : message.role,
-      at: message.at,
-      text: message.content,
-    })),
-  );
+function currentInput(context: AgentContextProjection): StreamMessage | undefined {
+  const runId = context.run?.run.runId;
+  if (!runId) return undefined;
+  return [...(context.stream?.recentMessages ?? [])]
+    .reverse()
+    .find((message) => message.runId === runId && message.role !== "assistant");
 }
 
-function currentConversationSequence(active: ActiveContext): number {
-  return active.session?.pendingConversation.at(-1)?.sequence ?? 1;
-}
-
-function latestInputText(active: ActiveContext): string {
-  const messages = active.session?.pendingConversationContext.at(-1)?.messages ?? [];
-  return [...messages].reverse().find((message) => message.role !== "assistant")?.content ?? "";
-}
-
-function latestInputAt(active: ActiveContext): string {
-  const messages = active.session?.pendingConversationContext.at(-1)?.messages ?? [];
-  return [...messages].reverse().find((message) => message.role !== "assistant")?.at
-    ?? new Date(0).toISOString();
-}
-
-function commitSummary(
-  commit: NonNullable<ActiveContext["session"]>["recentCommits"][number],
-): ContextCommitSummary {
-  const resources = (commit.assets ?? []).flatMap((asset) => {
-    if (isAbsolute(asset.path)) return [{ ...asset, path: resolve(asset.path) }];
-    return [];
-  });
+function currentRouting(input: {
+  binding?: { workstreamId: string; requestId: string };
+  branch?: string;
+  resolutionStatus?: string;
+}): ContextCurrentRouting {
   return {
-    commit: commit.commit,
-    subject: commit.subject,
-    ...(commit.conversationSummary ? { conversationSummary: commit.conversationSummary } : {}),
-    ...(commit.workSummary ? { workSummary: commit.workSummary } : {}),
-    ...(resources.length > 0 ? { resources } : {}),
-    ...(commit.outcome ? { outcome: commit.outcome } : {}),
-    ...(commit.validation ? { validation: commit.validation } : {}),
-    ...(commit.committedAt ? { at: commit.committedAt } : {}),
-    ...(commit.workstreamId ? { workstreamId: commit.workstreamId } : {}),
-    ...(commit.runId ? { runId: commit.runId } : {}),
+    status: input.binding
+      ? "bound"
+      : input.resolutionStatus === "needs_user_input"
+        ? "clarifying"
+        : "unbound",
+    ...(input.binding ? {
+      workstreamId: input.binding.workstreamId,
+      requestId: input.binding.requestId,
+    } : {}),
+    ...(input.branch ? { branch: input.branch } : {}),
+  };
+}
+
+function projectWorkstream(
+  context: NonNullable<AgentContextProjection["activeWorkstream"]>,
+): ContextWorkstreamProjection {
+  return {
+    ref: "refs/heads/" + context.workstream.branch,
+    workstreamId: context.workstream.workstreamId,
+    title: context.title,
+    objective: context.objective,
+    summary: context.summary,
+    workstreamStatus: context.workstreamStatus
+      ?? (context.latestOutcome === "done"
+        ? "done"
+        : context.latestOutcome === "blocked"
+          ? "blocked"
+          : "in_progress"),
+    lifecycleStatus: context.lifecycleStatus ?? "active",
+    repositoryHealth: context.repositoryHealth ?? "ready",
+    ...(context.currentFocus ? { currentFocus: context.currentFocus } : {}),
+    blockers: context.blockers ?? [],
+    ...(context.next ? { next: context.next } : {}),
+    ...(context.currentRequest ? { currentRequest: context.currentRequest } : {}),
+    resources: context.resources ?? [],
   };
 }

@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { GitContextService, WorkstreamResourceBinding } from "ayati-git-context";
+import type { ContextEngineService, WorkstreamResourceBinding } from "ayati-context-engine";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createResourceScopedToolExecutor } from "../../src/app/resource-scoped-tool-executor.js";
 import { createToolExecutor, type ToolExecutor } from "../../src/skills/tool-executor.js";
@@ -33,7 +33,7 @@ describe("resource-scoped tool executor", () => {
     const service = serviceFor(unboundActiveContext("R-unbound"));
     const executor = createResourceScopedToolExecutor({
       base: createToolExecutor([listDirectoryTool]),
-      gitContext: service,
+      contextEngine: service,
       workspaceRoot: workspace,
     });
 
@@ -57,7 +57,7 @@ describe("resource-scoped tool executor", () => {
     const service = serviceFor(unboundActiveContext("R-unbound", [resource("RES-REF", reference)]));
     const executor = createResourceScopedToolExecutor({
       base: createToolExecutor([listDirectoryTool]),
-      gitContext: service,
+      contextEngine: service,
       workspaceRoot: workspace,
     });
 
@@ -81,7 +81,7 @@ describe("resource-scoped tool executor", () => {
     ]));
     const executor = createResourceScopedToolExecutor({
       base: createToolExecutor([readFilesTool]),
-      gitContext: service,
+      contextEngine: service,
       workspaceRoot: workspace,
     });
 
@@ -100,7 +100,7 @@ describe("resource-scoped tool executor", () => {
     const outside = tempDirectory("ayati-unbound-outside-");
     const executor = createResourceScopedToolExecutor({
       base: createToolExecutor([listDirectoryTool]),
-      gitContext: serviceFor(unboundActiveContext("R-unbound")),
+      contextEngine: serviceFor(unboundActiveContext("R-unbound")),
       workspaceRoot: workspace,
     });
 
@@ -119,7 +119,7 @@ describe("resource-scoped tool executor", () => {
     const service = serviceFor(unboundActiveContext("R-unbound"));
     const executor = createResourceScopedToolExecutor({
       base: createToolExecutor([writeFilesTool]),
-      gitContext: service,
+      contextEngine: service,
       workspaceRoot: workspace,
     });
 
@@ -139,7 +139,7 @@ describe("resource-scoped tool executor", () => {
     writeFileSync(join(site, "index.html"), "ready\n", "utf-8");
     const executor = createResourceScopedToolExecutor({
       base: createToolExecutor([listDirectoryTool]),
-      gitContext: serviceFor(boundActiveContext([binding("RES-SITE", site)])),
+      contextEngine: serviceFor(boundActiveContext([binding("RES-SITE", site)])),
       workspaceRoot: workspace,
     });
 
@@ -159,7 +159,7 @@ describe("resource-scoped tool executor", () => {
     const execute = vi.fn(async () => ({ ok: true, output: "should not run" }));
     const executor = createResourceScopedToolExecutor({
       base: baseExecutor(execute, ["read_files"]),
-      gitContext: serviceFor(boundActiveContext([
+      contextEngine: serviceFor(boundActiveContext([
         binding("RES-ONE", first),
         binding("RES-TWO", second, { primary: false }),
       ])),
@@ -181,7 +181,7 @@ describe("resource-scoped tool executor", () => {
     ]));
     const executor = createResourceScopedToolExecutor({
       base: createToolExecutor([writeFilesTool]),
-      gitContext: service,
+      contextEngine: service,
     });
 
     const result = await executor.execute("write_files", {
@@ -198,7 +198,7 @@ describe("resource-scoped tool executor", () => {
     const service = serviceFor(boundActiveContext([binding("RES-SITE", site)]));
     const executor = createResourceScopedToolExecutor({
       base: createToolExecutor([writeFilesTool]),
-      gitContext: service,
+      contextEngine: service,
     });
 
     const result = await executor.execute("write_files", {
@@ -210,7 +210,6 @@ describe("resource-scoped tool executor", () => {
     expect(result.ok).toBe(true);
     expect(readFileSync(join(site, "index.html"), "utf-8")).toContain("Aurora Coffee");
     expect(service.prepareResourceMutation).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: "S-1",
       runId: "R-1",
       workstreamId: "W-1",
       activeRequestId: "REQ-1",
@@ -242,7 +241,7 @@ describe("resource-scoped tool executor", () => {
     ]));
     const executor = createResourceScopedToolExecutor({
       base: createToolExecutor([readFilesTool, patchFilesTool]),
-      gitContext: service,
+      contextEngine: service,
     });
 
     const readResult = await executor.execute("read_files", {
@@ -282,7 +281,7 @@ describe("resource-scoped tool executor", () => {
     const execute = vi.fn(async () => ({ ok: true, output: "should not run" }));
     const executor = createResourceScopedToolExecutor({
       base: baseExecutor(execute, ["read_files"]),
-      gitContext: serviceFor(boundActiveContext([
+      contextEngine: serviceFor(boundActiveContext([
         binding("RES-INDEX", index, { kind: "file" }),
       ])),
     });
@@ -304,7 +303,7 @@ describe("resource-scoped tool executor", () => {
     });
     const executor = createResourceScopedToolExecutor({
       base: createToolExecutor([writeFilesTool]),
-      gitContext: service,
+      contextEngine: service,
     });
 
     const result = await executor.execute("write_files", {
@@ -321,7 +320,7 @@ describe("resource-scoped tool executor", () => {
     const service = serviceFor(boundActiveContext([binding("RES-SITE", site)]));
     const executor = createResourceScopedToolExecutor({
       base: baseExecutor(execute, ["write_files"]),
-      gitContext: service,
+      contextEngine: service,
     });
 
     const result = await executor.execute("write_files", {
@@ -342,7 +341,7 @@ describe("resource-scoped tool executor", () => {
     const service = serviceFor(boundActiveContext([binding("RES-SITE", site)]));
     const executor = createResourceScopedToolExecutor({
       base: baseExecutor(execute, ["write_files"]),
-      gitContext: service,
+      contextEngine: service,
     });
 
     const result = await executor.execute("write_files", {
@@ -362,7 +361,7 @@ describe("resource-scoped tool executor", () => {
     const service = serviceFor(boundActiveContext([binding("RES-SITE", site)]));
     const executor = createResourceScopedToolExecutor({
       base: baseExecutor(execute, ["process_run"]),
-      gitContext: service,
+      contextEngine: service,
     });
 
     const unbounded = await executor.execute("process_run", {
@@ -426,15 +425,15 @@ function serviceFor(
   verification: { verified: boolean; status: string } = { verified: true, status: "verified" },
 ) {
   return {
-    getActiveContext: vi.fn(async () => activeContext),
+    getAgentContext: vi.fn(async () => activeContext),
     prepareResourceMutation: vi.fn(async () => ({
       operationId: "OP-1",
       leaseId: "LEASE-1",
       lockToken: "LOCK-1",
     })),
     verifyResourceMutation: vi.fn(async () => verification),
-  } as unknown as GitContextService & {
-    getActiveContext: ReturnType<typeof vi.fn>;
+  } as unknown as ContextEngineService & {
+    getAgentContext: ReturnType<typeof vi.fn>;
     prepareResourceMutation: ReturnType<typeof vi.fn>;
     verifyResourceMutation: ReturnType<typeof vi.fn>;
   };
@@ -492,8 +491,7 @@ function boundActiveContext(resources: WorkstreamResourceBinding[]) {
     run: {
       run: {
         runId: "R-1",
-        sessionId: "S-1",
-        conversationId: "C-1",
+        streamId: "S-1",
         workstreamBinding: {
           workstreamId: "W-1",
           requestId: "REQ-1",

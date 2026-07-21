@@ -1,9 +1,9 @@
 import type {
-  GitContextService,
+  ContextEngineService,
   ResourceKind,
   ResourceRole,
   WorkstreamDiscoveryView,
-} from "ayati-git-context";
+} from "ayati-context-engine";
 import type { ToolDefinition, ToolExecutionContext, ToolResult } from "../../types.js";
 import {
   commonAnnotations,
@@ -12,7 +12,7 @@ import {
   succeededContract,
 } from "../contract-helpers.js";
 
-export function createWorkstreamDiscoveryTools(service: GitContextService): ToolDefinition[] {
+export function createWorkstreamDiscoveryTools(service: ContextEngineService): ToolDefinition[] {
   return [
     findWorkstreamsTool(service),
     readWorkstreamTool(service),
@@ -23,7 +23,7 @@ export function createWorkstreamDiscoveryTools(service: GitContextService): Tool
   ];
 }
 
-function findWorkstreamsTool(service: GitContextService): ToolDefinition {
+function findWorkstreamsTool(service: ContextEngineService): ToolDefinition {
   return {
     name: "git_context_find_workstreams",
     description: "Search durable workstreams by identity, subject, request, resource path, unfinished state, star, recency, or frequency.",
@@ -49,8 +49,8 @@ function findWorkstreamsTool(service: GitContextService): ToolDefinition {
     },
     async execute(input, context): Promise<ToolResult> {
       const record = objectInput(input);
-      const sessionId = context?.sessionId?.trim();
-      if (!sessionId) return discoveryError("Workstream discovery requires the current session.");
+      const streamId = context?.sessionId?.trim();
+      if (!streamId) return discoveryError("Workstream discovery requires the current agent stream.");
       const query = optionalString(record, "query");
       const paths = stringArray(record["paths"]);
       const view = discoveryView(record["view"]);
@@ -66,7 +66,7 @@ function findWorkstreamsTool(service: GitContextService): ToolDefinition {
           ...(view ? { view } : {}),
           ...(record["includeArchived"] === true ? { includeArchived: true } : {}),
           ...(limit ? { limit } : {}),
-          sessionId,
+          streamId,
         });
         return okJsonResult({
           code: "GIT_CONTEXT_WORKSTREAMS_FOUND",
@@ -80,7 +80,7 @@ function findWorkstreamsTool(service: GitContextService): ToolDefinition {
   };
 }
 
-function readWorkstreamTool(service: GitContextService): ToolDefinition {
+function readWorkstreamTool(service: ContextEngineService): ToolDefinition {
   return {
     name: "git_context_read_workstream",
     description: "Open committed workstream/request/resource context without binding the run.",
@@ -113,7 +113,6 @@ function readWorkstreamTool(service: GitContextService): ToolDefinition {
       try {
         const result = await service.readWorkstream({
           requestId: identity.requestId + ":open-workstream",
-          sessionId: identity.sessionId,
           runId: identity.runId,
           workstreamId,
           at: new Date().toISOString(),
@@ -130,7 +129,7 @@ function readWorkstreamTool(service: GitContextService): ToolDefinition {
   };
 }
 
-function setWorkstreamStarTool(service: GitContextService): ToolDefinition {
+function setWorkstreamStarTool(service: ContextEngineService): ToolDefinition {
   return {
     name: "git_context_set_workstream_star",
     description: "Star or unstar a workstream only on the user's explicit instruction.",
@@ -168,11 +167,10 @@ function setWorkstreamStarTool(service: GitContextService): ToolDefinition {
         return discoveryError("A valid workstream id, star value, reason, and current run are required.");
       }
       try {
-        const active = await service.getActiveContext({ sessionId: identity.sessionId });
+        const active = await service.getAgentContext({ streamId: identity.streamId });
         const run = active.run?.run;
         if (!run || run.runId !== identity.runId) return discoveryError("Star changes require the current run.");
-        const userText = active.session?.pendingConversationContext
-          .flatMap((conversation) => conversation.messages)
+        const userText = active.stream?.recentMessages
           .filter((message) => message.role === "user")
           .at(-1)?.content ?? "";
         if (!hasExplicitStarInstruction(userText, record["starred"])) {
@@ -180,7 +178,6 @@ function setWorkstreamStarTool(service: GitContextService): ToolDefinition {
         }
         const result = await service.setWorkstreamStar({
           requestId: identity.requestId + ":set-star",
-          sessionId: identity.sessionId,
           runId: identity.runId,
           workstreamId,
           starred: record["starred"],
@@ -198,7 +195,7 @@ function setWorkstreamStarTool(service: GitContextService): ToolDefinition {
   };
 }
 
-function findResourcesTool(service: GitContextService): ToolDefinition {
+function findResourcesTool(service: ContextEngineService): ToolDefinition {
   return {
     name: "git_context_find_resources",
     description: "Find files, directories, URLs, media, datasets, databases, repositories, or external objects and their owning workstreams.",
@@ -247,7 +244,7 @@ function findResourcesTool(service: GitContextService): ToolDefinition {
   };
 }
 
-function inspectResourceTool(service: GitContextService): ToolDefinition {
+function inspectResourceTool(service: ContextEngineService): ToolDefinition {
   return {
     name: "git_context_inspect_resource",
     description: "Before workstream binding, register or refresh a user-provided filesystem path, URL, or external object in Ayati's durable resource catalog so it can identify and bind the correct workstream.",
@@ -290,7 +287,6 @@ function inspectResourceTool(service: GitContextService): ToolDefinition {
       try {
         const result = await service.inspectResourceForRun({
           requestId: identity.requestId + ":inspect-resource",
-          sessionId: identity.sessionId,
           runId: identity.runId,
           locator,
           ...(resourceKind(record["kind"]) ? { kind: resourceKind(record["kind"]) } : {}),
@@ -312,7 +308,7 @@ function inspectResourceTool(service: GitContextService): ToolDefinition {
   };
 }
 
-function bindResourcesTool(service: GitContextService): ToolDefinition {
+function bindResourcesTool(service: ContextEngineService): ToolDefinition {
   return {
     name: "git_context_bind_resources",
     description: "Link exact resources to the already selected workstream/request with read or mutate access.",
@@ -353,14 +349,13 @@ function bindResourcesTool(service: GitContextService): ToolDefinition {
       const bindings = parseBindings(objectInput(input)["bindings"]);
       if (!identity || !bindings) return discoveryError("Valid resource bindings and current run identity are required.");
       try {
-        const active = await service.getActiveContext({ sessionId: identity.sessionId });
+        const active = await service.getAgentContext({ streamId: identity.streamId });
         const binding = active.run?.run.runId === identity.runId
           ? active.run.run.workstreamBinding
           : undefined;
         if (!binding) return discoveryError("Bind resources only after selecting a workstream for this run.");
         const result = await service.bindResourcesForRun({
           requestId: identity.requestId + ":bind-resources",
-          sessionId: identity.sessionId,
           runId: identity.runId,
           workstreamId: binding.workstreamId,
           bindings,
@@ -455,14 +450,14 @@ function controlAnnotations(idempotent: boolean) {
 }
 
 function executionIdentity(context?: ToolExecutionContext): {
-  sessionId: string;
+  streamId: string;
   runId: string;
   requestId: string;
 } | undefined {
-  const sessionId = context?.sessionId?.trim();
+  const streamId = context?.sessionId?.trim();
   const runId = context?.runId?.trim();
   const callId = context?.callId?.trim();
-  return sessionId && runId && callId ? { sessionId, runId, requestId: runId + ":" + callId } : undefined;
+  return streamId && runId && callId ? { streamId, runId, requestId: runId + ":" + callId } : undefined;
 }
 
 function discoveryView(value: unknown): WorkstreamDiscoveryView | undefined {

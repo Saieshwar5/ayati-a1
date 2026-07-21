@@ -8,9 +8,10 @@ import {
 import type { AgentDecision } from "../../src/ivec/agent-runner/decision.js";
 import type { LoopState } from "../../src/ivec/types.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
+import { contextEngineFixture } from "../fixtures/agent-context.js";
 
 describe("workstream binding capability policy", () => {
-  it("allows observation and routing controls while an existing run is unbound", () => {
+  it("allows observation but keeps legacy resolution tools outside an unbound main loop", () => {
     const policy = deriveWorkstreamBindingCapabilityPolicy(state("unbound"));
     const visible = filterToolsByWorkstreamBinding(policy, [
       tool("read_files"),
@@ -27,9 +28,6 @@ describe("workstream binding capability policy", () => {
     expect(visible).toEqual([
       "read_files",
       "search_in_files",
-      "git_context_inspect_resource",
-      "git_context_activate_workstream",
-      "git_context_create_workstream",
     ]);
   });
 
@@ -90,18 +88,20 @@ describe("workstream binding capability policy", () => {
     )).toBe(true);
   });
 
-  it("closes routing after the failure limit without exposing counters to prompt context", () => {
+  it("does not offer a second resolver activity for the same run", () => {
     const current = state("unbound");
-    current.routingAttempts = {
-      successCount: 0,
-      failureCount: 2,
-      maxFailures: 2,
-      resolved: false,
+    current.harnessContext.contextEngine!.workstreamResolution = {
+      activityId: "WSR-1",
+      runId: "R-1",
+      status: "failed",
+      purpose: "Resolve current ownership.",
+      stepCount: 2,
+      updatedAt: "2026-07-21T10:00:00.000Z",
     };
 
     const policy = deriveWorkstreamBindingCapabilityPolicy(current);
     expect(policy).toMatchObject({
-      routingFailureLimitReached: true,
+      routingFailureLimitReached: false,
       routingAvailable: false,
     });
   });
@@ -111,6 +111,8 @@ function state(
   routingStatus?: "unbound" | "bound" | "clarifying",
   userMessage = "Create a file",
 ): LoopState {
+  const contextEngine = contextEngineFixture({ message: userMessage });
+  const status = routingStatus ?? "unbound";
   return {
     runId: "R-1",
     currentSeq: 1,
@@ -130,33 +132,20 @@ function state(
     maxIterations: 20,
     consecutiveFailures: 0,
     completedSteps: [],
-    routingAttempts: {
-      successCount: 0,
-      failureCount: 0,
-      maxFailures: 2,
-      resolved: false,
-    },
     runPath: "",
     failureHistory: [],
     harnessContext: {
       personalMemorySnapshot: "",
       contextEngine: {
-        session: {
-          meta: { sessionId: "S-1", resourceCount: 0 },
-          conversationTail: [],
-          activityTail: [],
-        },
-        ...(routingStatus ? {
-          pendingTurn: {
-            fromSeq: 1,
-            toSeq: 1,
-            text: userMessage,
-            at: "2026-07-19T10:00:00.000Z",
-            routingStatus,
-            runId: "R-1",
+        ...contextEngine,
+        current: {
+          ...contextEngine.current,
+          routing: {
+            status,
+            ...(status === "bound" ? { workstreamId: "W-1", requestId: "REQ-1" } : {}),
           },
-        } : {}),
-        focus: routingStatus === "bound"
+        },
+        focus: status === "bound"
           ? { status: "active", ref: "refs/heads/main", workstreamId: "W-1" }
           : { status: "none" },
       },

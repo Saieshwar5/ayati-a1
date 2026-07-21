@@ -179,6 +179,9 @@ export interface MemoryConsolidationJobPayload {
   userId: string;
   sessionId: string;
   sessionPath: string;
+  checkpointId?: string;
+  coveredFromSeq?: number;
+  coveredToSeq?: number;
   handoffSummary?: string | null;
   reason: string;
   turns: Array<{

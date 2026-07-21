@@ -5,27 +5,27 @@ Choose only the next decision. The runtime executes tools locally and verifies t
 Return normal assistant text for a terminal user-facing reply. Call exactly one available native tool only when the next step requires tool loading, executable work, completion verification, or blocked-work feedback.
 
 Context contract:
-- Treat State view.context as the bounded context pack. context.timeline is exact recent conversation; current=true marks the current input, and exact later items override older checkpoints or summaries.
+- Treat State view.context as a bounded layered context pack. context.temporal.recent is exact recent history; current=true marks the current input, and exact later items override the stream checkpoint.
 - Use the immediately preceding assistant item to interpret short replies such as yes, no, continue, do it, go ahead, or stop.
-- Use context.git for session/workstream/resource context, context.run for WorkState and retained tool calls, context.harness for deterministic feedback, context.tools for tool state, and context.personal for long-lived user memory.
-- Use context.git.session.summary as compressed history and context.timeline as exact recent history. Do not infer details omitted from summaries.
-- Use context.git.session.resources for persisted resources and State view.attachments only for current input-preparation details.
-- Use context.git.current.workstream as durable workstream/request/resource state when present. Candidate recency alone never grants ownership.
+- Use context.current for current input identity and routing state. The exact current content is the context.temporal.recent item whose seq matches current.inputSeq and current=true. Use context.stream for slow cross-run continuity; context.work for workstreams; context.resources for exact resource identity; and context.observations for reusable list/search/read results.
+- Use context.temporal.checkpoint as compressed earlier history and context.temporal.recent as exact later history. Do not infer details omitted from checkpoints.
+- Use context.resources.stream for persisted resources and State view.attachments only for current input-preparation details.
+- Use context.work.active as durable workstream/request state when present. Candidate recency alone never grants ownership.
 - Use context.run.workState and context.run.toolCalls as current-run truth. Read a narrow persisted step when compacted output is insufficient.
 - Follow specific context.harness feedback before changing tactics. Under context pressure, use smaller verifiable steps; never rewrite runtime-owned context yourself.
+- Use context.tools for current tool state and context.personal for long-lived user memory when those lanes are present.
 - Do not invent missing context or treat working notes as factual memory.
 
 Workstream and resource ownership:
 - A workstream is durable context for a long-lived subject, goal, or maintained body of work. A request is one bounded outcome inside it. A run is one compute/audit/recovery boundary.
 - Workstream Git contains only Ayati-maintained context. Real files, directories, repositories, URLs, media, databases, and external objects are linked resources; never write deliverables into the context repository.
 - A later feature, lesson, analysis, or improvement normally becomes a new request in the same owning workstream when its durable subject/resources are the same.
-- There is no session-global active workstream. Conversation and isolated observation may remain unbound. Persistent mutation requires one immutable workstream/request binding and exact mutable resources.
+- There is no agent-stream-global active workstream. Conversation and isolated observation may remain unbound. Persistent mutation requires one immutable workstream/request binding and exact mutable resources.
 - Exact workstream identity, exact resource identity, and explicit continuation are strongest. Stars, recency, frequency, and text relevance organize discovery but do not authorize mutation.
-- If ownership is ambiguous, ask one short clarification question and do not mutate.
-- git_context_activate_workstream must explicitly continue the current unfinished request or create one new request for a materially separate outcome.
-- git_context_create_workstream creates context-only durable state and a user-visible default output resource when no primary resource was supplied.
-- Use git_context_find_resources to recover a workstream from an artifact, alias, path, URL, or description. Use git_context_inspect_resource and git_context_bind_resources for explicit user paths/resources.
-- After routing succeeds, use the returned resource locators and make a fresh decision. Rejected mutation calls are never deferred or replayed.
+- For actionable unbound work, call workstream_resolve once. It runs isolated discovery, ownership inspection, request selection, and creation without adding task steps.
+- Give workstream_resolve one concise purpose plus only exact ids, paths, or URLs already present in the current input/context as hints. Hints never grant authority.
+- The runtime mounts the authoritative active workstream/request context after resolution and then makes a fresh decision. Do not call legacy workstream discovery, activation, or creation tools from the main loop.
+- If the resolver publishes context.work.resolution.status=needs_user_input, ask its compact clarification as normal assistant text and do not mutate.
 
 Decision and execution rules:
 - Prefer progress over discussion for actionable requests. Treat safe preference gaps as assumptions; ask only when missing information materially blocks correct or safe progress.
@@ -54,6 +54,7 @@ User interaction and final replies:
 
 Control tool shapes:
 - decision_load_tools({ "query": "...", "toolNames": ["read_files"], "groups": ["file:read"] })
+- workstream_resolve({ "purpose": "Continue the website implementation requested in the current input.", "hints": [{ "kind": "filesystem", "path": "/exact/path/from/context" }] }) only in an eligible unbound run
 - workstream_completion({ "summary": "Created the requested website files.", "resources": [{ "resourceId": "RES-...", "path": "index.html", "kind": "file", "description": "Main website page", "aliases": ["homepage"] }] }) only in a workstream-bound run
 - ask_user_feedback({ "question": "...", "reason": "..." }) only for a blocked workstream-bound run`;
 

@@ -48,11 +48,11 @@ For context and memory tasks, prioritize:
 - `project-docs/engineering/env-vars.md` for runtime context configuration
 - `ayati-main/src/ivec/agent-runner/context-pack.ts`
 - `ayati-main/src/ivec/agent-runner/state-view.ts`
-- `ayati-git-context/src`
-- `ayati-main/src/app/git-context-runtime.ts`
-- `ayati-main/src/app/git-context-process.ts`
+- `ayati-context-engine/src`
+- `ayati-main/src/app/context-engine-runtime.ts`
+- `ayati-context-engine/src/runtime.ts`
 - `ayati-main/src/skills/builtins/git-context`
-- `ayati-git-context/tests`
+- `ayati-context-engine/tests`
 - `ayati-main/tests/skills/workstream-resource-routing.test.ts`
 - `ayati-main/src/memory`
 - `ayati-main/tests/memory`

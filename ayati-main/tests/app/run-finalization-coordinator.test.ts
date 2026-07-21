@@ -1,15 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
-import type { FinalizeRunResponse } from "ayati-git-context";
+import type { FinalizeRunResponse } from "ayati-context-engine";
 import {
   finalizeAgentRun,
   isWorkstreamBoundRun,
 } from "../../src/app/run-finalization-coordinator.js";
 import { buildAgentRunFinalizationProjection } from "../../src/app/run-finalization-projection.js";
 import type {
-  GitContextPreparedTurn,
-  GitContextRuntime,
-} from "../../src/app/git-context-runtime.js";
+  ContextEnginePreparedTurn,
+  ContextEngineRuntime,
+} from "../../src/app/context-engine-runtime.js";
 import type { AgentLoopResult } from "../../src/ivec/types.js";
+import { contextEngineFixture } from "../fixtures/agent-context.js";
 
 describe("run finalization coordinator", () => {
   it("finalizes a direct zero-step run through the single durable path", async () => {
@@ -79,7 +80,7 @@ describe("run finalization coordinator", () => {
     const request = finalizeRun.mock.calls[0]?.[0];
     expect(request).toBeDefined();
     expect(request?.assistantResponse).toBe(question);
-    expect(request?.conversationSummary.length).toBeLessThanOrEqual(2_000);
+    expect(request?.streamSummary.length).toBeLessThanOrEqual(2_000);
     expect(request?.summary.length).toBeLessThanOrEqual(2_000);
     expect(request?.next.length).toBeLessThanOrEqual(1_000);
     expect(request?.workState.userInputNeeded.length).toBeLessThanOrEqual(500);
@@ -126,45 +127,37 @@ describe("run finalization coordinator", () => {
   });
 });
 
-function runtime(finalizeRun: ReturnType<typeof vi.fn>): GitContextRuntime {
-  return { finalizeRun } as unknown as GitContextRuntime;
+function runtime(finalizeRun: ReturnType<typeof vi.fn>): ContextEngineRuntime {
+  return { finalizeRun } as unknown as ContextEngineRuntime;
 }
 
-function preparedTurn(runId: string, bound: boolean): GitContextPreparedTurn {
+function preparedTurn(runId: string, bound: boolean): ContextEnginePreparedTurn {
+  const contextEngine = contextEngineFixture({ runId, message: "Build the page" });
   return {
     status: "ready",
-    sessionId: "S-1",
-    repoPath: "/session",
-    initialized: false,
-    messageSeq: 1,
+    streamId: "S-1",
+    streamCreated: false,
+    messageSequence: 1,
     currentMessageId: "M-1",
-    currentMessageSessionSequence: 1,
-    conversationId: "C-1",
     inputRole: "user",
     run: {
       runId,
-      sessionId: "S-1",
-      conversationId: "C-1",
+      streamId: "S-1",
       triggerSeq: 1,
     },
     context: {
-      session: {
-        meta: { sessionId: "S-1", resourceCount: 0 },
-        conversationTail: [],
-        activityTail: [],
-      },
-      ...(bound ? {
-        pendingTurn: {
-          fromSeq: 1,
-          toSeq: 1,
-          text: "Build the page",
-          at: "2026-07-19T10:00:00.000Z",
-          routingStatus: "bound" as const,
-          workstreamId: "W-1",
-          branch: "main",
-          runId,
+      ...contextEngine,
+      current: {
+        ...contextEngine.current,
+        routing: {
+          status: bound ? "bound" : "unbound",
+          ...(bound ? {
+            workstreamId: "W-1",
+            requestId: "REQ-1",
+            branch: "main",
+          } : {}),
         },
-      } : {}),
+      },
       ...(bound ? {
         workstream: workstreamContext(),
       } : {}),
@@ -177,7 +170,6 @@ function preparedTurn(runId: string, bound: boolean): GitContextPreparedTurn {
 
 function workstreamContext() {
   return {
-    contextRepositoryPath: "/ayati/workstreams/W-1",
     ref: "refs/heads/main",
     workstreamId: "W-1",
     title: "Website",
@@ -222,7 +214,6 @@ function workstreamContext() {
       requestIds: ["REQ-1"],
       boundAt: "2026-07-19T10:00:00.000Z",
     }],
-    recentCommits: [],
   };
 }
 
@@ -303,9 +294,8 @@ function finalizationResponse(runId: string, bound = false): FinalizeRunResponse
   return {
     run: {
       runId,
-      sessionId: "S-1",
-      conversationId: "C-1",
-      triggerSeq: 1,
+      streamId: "S-1",
+      trigger: "user",
       status: "done",
       stopReason: "completed",
       stepCount: 0,
@@ -319,19 +309,7 @@ function finalizationResponse(runId: string, bound = false): FinalizeRunResponse
         },
       } : {}),
     },
-    conversation: {
-      conversationId: "C-1",
-      sessionId: "S-1",
-      sequence: 1,
-      filePath: "conversations/1.md",
-      status: "closed",
-    },
-    persistence: {
-      database: "saved",
-      materialization: "not_requested",
-      git: "not_committed",
-    },
-    materialization: { status: "not_requested" },
+    observationRevision: "observations:empty",
     resourceEffects: { status: "none", events: [] },
     workstreamContextCommit: { status: "not_required" },
   };

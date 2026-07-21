@@ -6,7 +6,7 @@ import type { PreparedAttachmentRegistry } from "../documents/prepared-attachmen
 import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
 import type { AgentResponseKind, RunRecorder, SessionInputHandle } from "../memory/types.js";
-import type { AgentRunHandle, FinalizeRunResponse } from "ayati-git-context";
+import type { AgentRunHandle, ContextEngineService, FinalizeRunResponse } from "ayati-context-engine";
 import type { SkillActivationManager } from "../skills/activation-manager.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition } from "../skills/types.js";
@@ -33,18 +33,20 @@ import type {
   LoopConfig,
   SystemEventApprovalState,
 } from "../ivec/types.js";
+import { createWorkstreamResolutionCoordinator } from "../ivec/workstream-resolution/runner.js";
 import { buildStaticSystemContext } from "./static-prompt.js";
 import type {
-  GitContextPreparedTurn,
-  GitContextRuntime,
-} from "./git-context-runtime.js";
+  ContextEnginePreparedTurn,
+  ContextEngineRuntime,
+} from "./context-engine-runtime.js";
 import { finalizeAgentRun, isWorkstreamBoundRun } from "./run-finalization-coordinator.js";
 
 export interface CreateSystemEventRuntimeOptions {
   onReply?: (clientId: string, data: unknown) => void;
   provider?: LlmProvider;
   staticContext?: StaticContext;
-  systemEventContextRuntime: GitContextRuntime;
+  systemEventContextRuntime: ContextEngineRuntime;
+  contextEngineService?: ContextEngineService;
   toolExecutor?: ToolExecutor;
   skillActivationManager?: SkillActivationManager;
   toolWorkingSetManager?: ToolWorkingSetManager;
@@ -57,6 +59,7 @@ export interface CreateSystemEventRuntimeOptions {
   directoryLibrary?: DirectoryLibrary;
   systemEventPolicy?: SystemEventPolicyConfig;
   feedbackLedger?: AgentFeedbackLedger;
+  personalMemorySnapshot?: (clientId: string) => string;
 }
 
 interface SystemEventExecutionPlan {
@@ -93,7 +96,8 @@ class AppSystemEventRuntime implements SystemEventRuntime {
   private readonly onReply?: (clientId: string, data: unknown) => void;
   private readonly provider?: LlmProvider;
   private readonly staticContext?: StaticContext;
-  private readonly systemEventContextRuntime: GitContextRuntime;
+  private readonly systemEventContextRuntime: ContextEngineRuntime;
+  private readonly contextEngineService?: ContextEngineService;
   private readonly toolExecutor?: ToolExecutor;
   private readonly skillActivationManager?: SkillActivationManager;
   private readonly toolWorkingSetManager?: ToolWorkingSetManager;
@@ -106,12 +110,14 @@ class AppSystemEventRuntime implements SystemEventRuntime {
   private readonly directoryLibrary?: DirectoryLibrary;
   private readonly systemEventPolicy?: SystemEventPolicyConfig;
   private readonly feedbackLedger?: AgentFeedbackLedger;
+  private readonly personalMemorySnapshot?: (clientId: string) => string;
 
   constructor(options: CreateSystemEventRuntimeOptions) {
     this.onReply = options.onReply;
     this.provider = options.provider;
     this.staticContext = options.staticContext;
     this.systemEventContextRuntime = options.systemEventContextRuntime;
+    this.contextEngineService = options.contextEngineService;
     this.toolExecutor = options.toolExecutor;
     this.skillActivationManager = options.skillActivationManager;
     this.toolWorkingSetManager = options.toolWorkingSetManager;
@@ -124,13 +130,14 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     this.directoryLibrary = options.directoryLibrary;
     this.systemEventPolicy = options.systemEventPolicy;
     this.feedbackLedger = options.feedbackLedger;
+    this.personalMemorySnapshot = options.personalMemorySnapshot;
   }
 
   async processSystemEvent(input: SystemEventRuntimeInput): Promise<void> {
     const { clientId, event } = input;
     let inputHandle: SessionInputHandle | null = null;
     let runHandle: AgentRunHandle | null = null;
-    let preparedContextTurn: GitContextPreparedTurn | null = null;
+    let preparedContextTurn: ContextEnginePreparedTurn | null = null;
     let finalizationAttempted = false;
     const incomingMessage = event.summary;
     const systemEventPlan = this.buildSystemEventExecutionPlan(event);
@@ -198,15 +205,27 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         runRecorder: systemEventRunRecorder,
         inputHandle,
         runHandle,
-        recordRunStep: async (record, currentContext) => {
+        recordRunStep: async (record) => {
           const context = await this.systemEventContextRuntime.recordRunStep({
-            clientId,
             turn: preparedContextTurn,
             record,
-            currentContext: currentContext.contextEngine,
           });
           return context ? { contextEngine: context } : undefined;
         },
+        contextCheckpoint: this.systemEventContextRuntime.contextCheckpointCoordinator(preparedContextTurn),
+        ...(this.contextEngineService
+          ? {
+              workstreamResolution: createWorkstreamResolutionCoordinator({
+                provider: this.provider,
+                service: this.contextEngineService,
+                runId: runHandle.runId,
+                streamId: inputHandle.sessionId,
+                currentInput: incomingMessage,
+                inputContextRevision: preparedContextTurn.context.contextRevision,
+                now: this.nowProvider,
+              }),
+            }
+          : {}),
         clientId,
         inputKind: "system_event",
         systemEvent: event,
@@ -222,7 +241,12 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         config: this.loopConfig,
         dataDir: this.dataDir ?? "data",
         systemContext: buildStaticSystemContext(this.staticContext),
-        harnessContext: { contextEngine: preparedContextTurn.context },
+        harnessContext: {
+          contextEngine: preparedContextTurn.context,
+          ...(this.personalMemorySnapshot
+            ? { personalMemorySnapshot: this.personalMemorySnapshot(clientId) }
+            : {}),
+        },
         feedbackLedger: this.feedbackLedger,
         fileLibrary: this.fileLibrary,
         directoryLibrary: this.directoryLibrary,
@@ -250,7 +274,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         const message = err instanceof Error ? err.message : "Unknown runtime failure";
         this.feedbackLedger?.record({
           clientId,
-          sessionId: runHandle.sessionId,
+          sessionId: runHandle.streamId,
           runId: runHandle.runId,
           stage: "run",
           event: "failed",
@@ -276,7 +300,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     clientId: string,
     event: AyatiSystemEvent,
     plan: SystemEventExecutionPlan,
-  ): Promise<GitContextPreparedTurn> {
+  ): Promise<ContextEnginePreparedTurn> {
     const turn = await this.systemEventContextRuntime.prepareSystemEventTurn({
       clientId,
       systemMessage: this.formatSystemEventConversationMessage(event, plan),
@@ -285,30 +309,30 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     const contextEngine = turn.context;
     this.feedbackLedger?.record({
       clientId,
-      sessionId: turn.sessionId,
-      seq: turn.messageSeq,
+      sessionId: turn.streamId,
+      seq: turn.messageSequence,
       stage: "context_engine",
       event: "prepared",
       data: {
         status: turn.status,
-        messageSeq: turn.messageSeq,
+        messageSequence: turn.messageSequence,
         contextEngine: buildContextEngineFeedbackSummary({
           context: contextEngine,
           routeSource: "runtime",
         }),
-        pendingTurnStatus: contextEngine.pendingTurn?.routingStatus ?? "none",
+        pendingTurnStatus: contextEngine.current.routing?.status ?? "none",
         context: summarizeHarnessContext({ contextEngine }),
       },
     });
     this.feedbackLedger?.record({
       clientId,
-      sessionId: turn.sessionId,
-      seq: turn.messageSeq,
+      sessionId: turn.streamId,
+      seq: turn.messageSequence,
       stage: "context_engine",
       event: "pending_turn_snapshot",
       data: {
-        status: contextEngine.pendingTurn?.routingStatus ?? "none",
-        pendingTurn: contextEngine.pendingTurn,
+        status: contextEngine.current.routing?.status ?? "none",
+        routing: contextEngine.current.routing,
         contextEngine: buildContextEngineFeedbackSummary({
           context: contextEngine,
           routeSource: "runtime",
@@ -320,14 +344,14 @@ class AppSystemEventRuntime implements SystemEventRuntime {
 
   private async completeSystemEventContextRun(
     clientId: string,
-    prepared: GitContextPreparedTurn,
+    prepared: ContextEnginePreparedTurn,
     result: AgentLoopResult,
   ): Promise<FinalizeRunResponse> {
     const workstreamBound = isWorkstreamBoundRun(prepared, result);
     this.feedbackLedger?.record({
       clientId,
-      sessionId: prepared.sessionId,
-      seq: prepared.messageSeq,
+      sessionId: prepared.streamId,
+      seq: prepared.messageSequence,
       runId: prepared.run.runId,
       stage: "context_engine",
       event: "run_finalization_started",
@@ -346,8 +370,8 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     });
     this.feedbackLedger?.record({
       clientId,
-      sessionId: prepared.sessionId,
-      seq: prepared.messageSeq,
+      sessionId: prepared.streamId,
+      seq: prepared.messageSequence,
       runId: finalized.run.runId,
       stage: "context_engine",
       event: "run_finalization_completed",
@@ -355,7 +379,8 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         outcome: finalized.run.status,
         stopReason: finalized.run.stopReason,
         workstreamBinding: finalized.run.workstreamBinding,
-        materialization: finalized.materialization,
+        assistantMessageId: finalized.assistantMessage?.messageId,
+        observationRevision: finalized.observationRevision,
         resourceEffects: finalized.resourceEffects,
         workstreamContextCommit: finalized.workstreamContextCommit,
       },
@@ -363,10 +388,10 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     return finalized;
   }
 
-  private inputHandleFromSystemContextTurn(turn: GitContextPreparedTurn): SessionInputHandle {
+  private inputHandleFromSystemContextTurn(turn: ContextEnginePreparedTurn): SessionInputHandle {
     return {
-      sessionId: turn.sessionId,
-      seq: turn.messageSeq,
+      sessionId: turn.streamId,
+      seq: turn.messageSequence,
     };
   }
 

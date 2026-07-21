@@ -51,7 +51,7 @@ importers:
         specifier: ^4.0.18
         version: 4.1.8(@types/node@25.9.1)(vite@8.0.16(@types/node@25.9.1)(esbuild@0.28.0)(tsx@4.22.4))
 
-  ayati-git-context:
+  ayati-context-engine:
     devDependencies:
       '@types/node':
         specifier: ^25.2.1
@@ -71,9 +71,9 @@ importers:
       '@lancedb/lancedb':
         specifier: ^0.27.2
         version: 0.27.2(apache-arrow@18.1.0)
-      ayati-git-context:
+      ayati-context-engine:
         specifier: workspace:*
-        version: link:../ayati-git-context
+        version: link:../ayati-context-engine
       cheerio:
         specifier: ^1.2.0
         version: 1.2.0

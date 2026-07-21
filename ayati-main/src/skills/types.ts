@@ -1,5 +1,5 @@
 import type { AgentUiContext } from "../ui/context.js";
-import type { WorkstreamResourceBinding } from "ayati-git-context";
+import type { WorkstreamResourceBinding } from "ayati-context-engine";
 
 export interface SkillPromptBlock {
   id: string;

@@ -1,16 +1,16 @@
 # Current State
 
-Last updated: 2026-07-19
+Last updated: 2026-07-20
 
 Ayati uses one-run execution with context-only workstreams and a shared resource
 catalog.
 
 ```text
-session conversation + one run
+slow agent stream continuity + fast one-input run context
 + workstream/request context Git
 + real resources and exact mutation journals
-+ personal/episodic memory
--> bounded context projection
++ independent personal/episodic memory
+-> bounded agent-facing lanes
 ```
 
 The harness remains:
@@ -21,18 +21,24 @@ context pack -> decision -> action executor -> deterministic verification -> pro
 
 ## Implemented
 
-- Protocol 36 and clean SQLite schema V5.
-- One atomic preparation operation for session, conversation, message, run,
-  WorkState, and idempotency receipt.
+- Protocol 37 and clean SQLite schema V7 with isolated resolver journals and
+  no compatibility reader for older schema versions.
+- One atomic preparation operation for agent stream, immutable ingress message,
+  run, WorkState, and idempotency receipt.
+- One default `local/default` stream across clients and system events.
 - One immutable optional workstream/request binding on the existing run.
 - Structured `recordRunStep` persistence with ordered tool calls,
-  verification, WorkState, and rebuilt reusable read context.
-- One truthful finalization operation with separate materialization, verified
-  resource effects, and optional workstream-context commit results.
+  verification, WorkState, and resource-versioned list/search/read observations.
+- Pressure-only durable checkpoints with exact anchors, deterministic
+  projection, one repair, and atomic active-pointer update.
+- Bounded exact history search/read over messages, runs, and evidence.
+- Checkpoint-range personal-memory extraction and an independent prompt lane.
+- One truthful finalization operation with immutable assistant-message append,
+  verified resource effects, and optional workstream-context commit results.
 - Managed `W-*` context repositories containing only `workstream.md`, request
   files, and `resources.json`.
 - A SQLite resource catalog with descriptions, aliases, locators, versions,
-  availability, session/workstream relationships, and reverse discovery.
+  availability, stream/workstream relationships, and reverse discovery.
 - Immutable content-addressed uploaded resources.
 - Deterministic discovery using exact identity/resource ownership,
   continuation, text, unfinished, star, recency, and frequency signals.
@@ -58,6 +64,8 @@ context pack -> decision -> action executor -> deterministic verification -> pro
 - General tools cannot write workstream context files.
 - Failed or uncertain finalization cannot produce a successful terminal commit
   state.
+- Stream continuity does not contain action logs; run state owns steps and tool
+  calls.
 
 ## Remaining Priorities
 

@@ -1186,10 +1186,11 @@ function largeContextUpdateRelevantDocCase(): BenchmarkCase {
                         content: [
                           "# Context Pack Limits",
                           "",
-                          "The context pack keeps timeline, workstream/resource context, and personal memory bounded.",
+                          "The context pack keeps temporal, workstream/resource, observation, run, and personal-memory lanes bounded.",
                           "",
-                          "- timeline contains chronological session events ending with the current input.",
-                          "- context.git.current contains compact workstream/request state and public resources.",
+                          "- context.temporal.recent contains exact later agent-stream messages ending with the current input.",
+                          "- context.work.active contains compact workstream/request state.",
+                          "- context.resources contains public stream, ingress, and active-workstream resources.",
                           "- workstream resources are capped in the model-facing pack.",
                           "",
                         ].join("\n"),
@@ -1798,8 +1799,7 @@ async function runCase(input: RunCaseInput): Promise<BenchmarkCaseResult> {
     toolDefinitions: toolExecutor?.definitions() ?? [],
     runRecorder: noopRunRecorder,
     runHandle: {
-      sessionId: "bench-session",
-      conversationId: `bench-conversation-${input.caseId}`,
+      streamId: "bench-stream",
       runId: input.caseId,
       triggerSeq: 1,
     },
@@ -2156,10 +2156,11 @@ async function createLargeContextFixture(): Promise<string> {
   await writeFile(join(root, "docs", "runtime", "context-pack.md"), [
     "# Context Pack Limits",
     "",
-    "The context pack keeps timeline, workstream/resource context, and personal memory bounded.",
+    "The context pack keeps temporal, workstream/resource, observation, run, and personal-memory lanes bounded.",
     "",
-    "- timeline contains chronological session events ending with the current input.",
-    "- context.git.current contains compact workstream/request state and public resources.",
+    "- context.temporal.recent contains exact later agent-stream messages ending with the current input.",
+    "- context.work.active contains compact workstream/request state.",
+    "- context.resources contains public stream, ingress, and active-workstream resources.",
     "",
   ].join("\n"), "utf-8");
   await writeFile(join(root, "docs", "runtime", "verification.md"), "# Verification\n\nDeterministic verification checks tool-owned contracts.\n", "utf-8");

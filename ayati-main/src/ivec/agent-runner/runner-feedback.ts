@@ -78,7 +78,7 @@ export function recordToolWorkingSetFeedback(input: {
     toolContextRunId: input.toolContextRunId,
     runId: input.runHandle.runId,
     workstreamBound: policy.workstreamBound,
-    pendingTurnStatus: input.state.harnessContext.contextEngine?.pendingTurn?.routingStatus,
+    pendingTurnStatus: input.state.harnessContext.contextEngine?.current.routing?.status,
     capabilities,
     deterministicLoad: summarizeToolLoadResult(input.deterministicToolLoad),
     visible: summarizeToolDefinitions(input.visibleTools),
@@ -157,7 +157,7 @@ export function buildToolExposureWarningCodes(
 ): string[] {
   const warningCodes: string[] = [];
   const policy = deriveWorkstreamBindingCapabilityPolicy(state);
-  const pendingTurnStatus = state.harnessContext.contextEngine?.pendingTurn?.routingStatus;
+  const pendingTurnStatus = state.harnessContext.contextEngine?.current.routing?.status;
   const normalTools = normalWorkstreamToolNames(selectedTools);
   const unsafeNormalTools = normalTools.filter((tool) => !isObservationalTool(tool));
   if ((pendingTurnStatus === "unbound" || pendingTurnStatus === "clarifying") && unsafeNormalTools.length > 0) {
@@ -167,11 +167,6 @@ export function buildToolExposureWarningCodes(
     warningCodes.push("mutation_tools_selected_without_workstream_binding");
   }
   return uniqueStrings(warningCodes);
-}
-
-export function latestCompletedWorkstreamRoutingToolNames(state: LoopState): string[] {
-  const latestStep = state.completedSteps.at(-1);
-  return uniqueStrings((latestStep?.toolsUsed ?? []).filter(isGitContextRoutingToolName));
 }
 
 export function recordActionFeedback(
@@ -242,28 +237,30 @@ export function recordActionFeedback(
 }
 
 export function summarizeDecisionInputState(stateView: AgentStateView): Record<string, unknown> {
-  const latestUser = [...stateView.context.timeline].reverse().find((event) => event.kind === "user");
-  const latestAssistantQuestion = [...stateView.context.timeline].reverse()
+  const latestUser = [...stateView.context.temporal.recent].reverse().find((event) => event.kind === "user");
+  const latestAssistantQuestion = [...stateView.context.temporal.recent].reverse()
     .find((event) => event.kind === "assistant" && event.expectsUserResponse);
   const attachmentCount = Object.values(stateView.attachments ?? {})
     .reduce((count, value) => count + (Array.isArray(value) ? value.length : 0), 0);
 
   return {
-    timelineEventCount: stateView.context.timeline.length,
+    temporalEventCount: stateView.context.temporal.recent.length,
     latestUserInput: latestUser && "content" in latestUser ? latestUser.content : undefined,
     pendingAssistantQuestion: latestAssistantQuestion && "content" in latestAssistantQuestion
       ? latestAssistantQuestion.content
       : undefined,
-    gitSessionId: readContextSessionId(stateView.context.gitContext?.session),
-    gitWorkstreamId: stateView.context.gitContext?.workstream?.workstreamId,
-    gitWorkstreamTitle: stateView.context.gitContext?.workstream?.title,
-    gitWorkstreamStatus: stateView.context.gitContext?.workstream?.workstreamStatus,
+    agentStreamScope: stateView.context.stream.scopeKey,
+    workstreamId: stateView.context.work.active?.workstreamId,
+    workstreamTitle: stateView.context.work.active?.title,
+    workstreamStatus: stateView.context.work.active?.workstreamStatus,
     workStatus: stateView.progress?.status,
     blockerCount: stateView.progress?.blockers?.length ?? 0,
     verifiedFactCount: stateView.progress?.verifiedFacts?.length ?? 0,
     recentToolCallCount: stateView.toolCalls?.length ?? 0,
     recentObservationCount: stateView.observations?.latest.length ?? 0,
-    recentReadContextCount: stateView.readContext?.latest.length ?? 0,
+    reusableObservationCount: stateView.context.observations.inventory.length
+      + stateView.context.observations.discovery.length
+      + stateView.context.observations.evidence.length,
     recentTraceStepCount: stateView.trace?.recentSteps?.length ?? 0,
     recentFailureCount: stateView.trace?.recentFailures?.length ?? 0,
     attachmentCount,
@@ -327,16 +324,7 @@ function normalWorkstreamToolNames(tools: ToolDefinition[]): string[] {
 }
 
 function isWorkstreamBound(state: LoopState): boolean {
-  return state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "bound";
-}
-
-function readContextSessionId(
-  session: NonNullable<LoopState["harnessContext"]["contextEngine"]>["session"] | undefined,
-): string | undefined {
-  if (!session) {
-    return undefined;
-  }
-  return session.meta?.sessionId ?? (session as unknown as { sessionId?: string }).sessionId;
+  return state.harnessContext.contextEngine?.current.routing?.status === "bound";
 }
 
 function uniqueStrings(values: string[]): string[] {

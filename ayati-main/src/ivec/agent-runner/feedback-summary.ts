@@ -28,40 +28,43 @@ export function summarizePromptStateView(
   stateView: AgentPromptStateView,
 ): Record<string, unknown> {
   const context = stateView.context;
-  const gitCurrent = context.git?.current;
   const harness = context.harness;
   const run = context.run;
   return {
     fingerprint: fingerprintPayload(stateView),
     contextKeys: Object.keys(context),
-    timeline: {
-      count: context.timeline.length,
-      currentCount: context.timeline.filter((event) => "current" in event && event.current === true).length,
+    temporal: {
+      count: context.temporal.recent.length,
+      currentCount: context.temporal.recent.filter((event) => "current" in event && event.current === true).length,
+      hasCheckpoint: Boolean(context.temporal.checkpoint),
       latestUserPreview: previewString(
-        [...context.timeline].reverse().find((event) => event.kind === "user" && "content" in event)?.content,
+        [...context.temporal.recent].reverse().find((event) => event.kind === "user" && "content" in event)?.content,
         180,
       ),
     },
-    git: context.git ? {
-      sessionId: context.git.session.meta.sessionId,
-      sessionSummaryChars: context.git.session.summary?.text.length ?? 0,
-      sessionActivityCount: context.git.session.activity.recent.length,
-      pendingTurnStatus: gitCurrent?.pendingTurn?.routingStatus,
-      pendingTurnRange: gitCurrent?.pendingTurn ? {
-        fromSeq: gitCurrent.pendingTurn.fromSeq,
-        toSeq: gitCurrent.pendingTurn.toSeq,
-      } : undefined,
-      focusStatus: gitCurrent?.focus.status,
-      activeWorkstreamId: gitCurrent?.focus.status === "active" ? gitCurrent.focus.workstreamId : undefined,
-      workstream: gitCurrent?.workstream ? {
-        workstreamId: gitCurrent.workstream.identity.workstreamId,
-        title: gitCurrent.workstream.identity.title,
-        status: gitCurrent.workstream.state.workstreamStatus,
-        blockerCount: gitCurrent.workstream.state.blockers.length,
-        recentCommitCount: gitCurrent.workstream.activity.recentCommits.length,
-        resourceCount: gitCurrent.workstream.resources.length,
-      } : undefined,
-    } : undefined,
+    stream: {
+      agentId: context.stream.agentId,
+      scopeKey: context.stream.scopeKey,
+      recentWorkCount: context.stream.recentWork.length,
+      routingStatus: context.current.routing?.status,
+    },
+    work: context.work.active ? {
+      workstreamId: context.work.active.workstreamId,
+      title: context.work.active.title,
+      status: context.work.active.workstreamStatus,
+      blockerCount: context.work.active.blockers.length,
+      candidateCount: context.work.candidates.length,
+    } : { candidateCount: context.work.candidates.length },
+    resources: {
+      streamCount: context.resources.stream.length,
+      ingressCount: context.resources.ingress.length,
+      activeWorkstreamCount: context.resources.activeWorkstream.length,
+    },
+    observations: {
+      inventory: context.observations.inventory.length,
+      discovery: context.observations.discovery.length,
+      evidence: context.observations.evidence.length,
+    },
     tools: context.tools ? {
       activeCount: context.tools.active.length,
       active: context.tools.active,
@@ -146,6 +149,13 @@ export function summarizeDecision(decision: AgentDecision): Record<string, unkno
       resourceCount: decision.request.resources.length,
     };
   }
+  if (decision.kind === "resolve_workstream") {
+    return {
+      kind: "resolve_workstream",
+      purposePreview: previewString(decision.request.purpose, 240),
+      hintCount: decision.request.hints.length,
+    };
+  }
   return {
     kind: "act",
     action: summarizeAgentAction(decision.action),
@@ -221,21 +231,20 @@ export function summarizeContextEngine(
   if (!context) {
     return undefined;
   }
-  const sessionMeta = readContextSessionMeta(context.session);
   return {
-    sessionId: sessionMeta.sessionId,
-    conversationTailCount: context.session.conversationTail.length,
-    conversationMarkdownChars: context.session.conversationMarkdownTail?.length ?? 0,
-    sessionSummaryChars: context.session.summary?.text.length ?? 0,
-    activityCount: context.session.activityTail.length,
-    recentCommitCount: context.session.recentCommits?.length ?? 0,
-    resourceCount: sessionMeta.resourceCount,
-    pendingWriteCount: context.pendingWrites?.length ?? 0,
-    pendingTurnStatus: context.pendingTurn?.routingStatus,
-    pendingTurnRange: context.pendingTurn ? {
-      fromSeq: context.pendingTurn.fromSeq,
-      toSeq: context.pendingTurn.toSeq,
-    } : undefined,
+    streamId: context.agentStream.meta.streamId,
+    exactMessageCount: context.agentStream.recentMessages.length,
+    hasCheckpoint: Boolean(context.agentStream.checkpoint),
+    recentWorkCount: context.agentStream.recentWork.length,
+    resourceCount: context.agentStream.meta.resourceCount,
+    routingStatus: context.current.routing?.status,
+    currentSequence: context.current.inputSeq,
+    contextRevisions: {
+      context: context.contextRevision,
+      stream: context.streamRevision,
+      run: context.runRevision,
+      observations: context.observationRevision,
+    },
     focusStatus: context.focus.status,
     activeWorkstreamId: context.focus.status === "active" ? context.focus.workstreamId : undefined,
     workstream: context.workstream ? {
@@ -243,19 +252,14 @@ export function summarizeContextEngine(
       title: context.workstream.title,
       status: context.workstream.workstreamStatus,
       blockerCount: context.workstream.blockers.length,
-      recentCommitCount: context.workstream.recentCommits.length,
       resourceCount: context.workstream.resources.length,
     } : undefined,
+    observationCounts: {
+      inventory: context.observations.inventory.length,
+      discovery: context.observations.discovery.length,
+      evidence: context.observations.evidence.length,
+    },
   };
-}
-
-function readContextSessionMeta(
-  session: ContextEngineMachineContext["session"],
-): ContextEngineMachineContext["session"]["meta"] {
-  if (session.meta) {
-    return session.meta;
-  }
-  throw new Error("Git Context session metadata is required for feedback summaries.");
 }
 
 export function fingerprintPayload(value: unknown): FeedbackPayloadFingerprint {

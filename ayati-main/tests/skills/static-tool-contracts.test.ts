@@ -19,6 +19,9 @@ import {
   processStopTool,
 } from "../../src/skills/builtins/process/index.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
+import { canCaptureNodeSubprocessOutput } from "../fixtures/runtime-capabilities.js";
+
+const supportsSubprocessOutput = canCaptureNodeSubprocessOutput();
 
 describe("static built-in tool contracts", () => {
   let tmp: string;
@@ -148,7 +151,7 @@ describe("static built-in tool contracts", () => {
     await expect(stat(destination)).rejects.toThrow();
   });
 
-  it("verifies focused process run and lifecycle contracts", async () => {
+  it.runIf(supportsSubprocessOutput)("verifies focused process run and lifecycle contracts", async () => {
     const executor = createToolExecutor([
       processRunTool,
       processStartTool,

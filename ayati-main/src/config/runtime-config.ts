@@ -15,11 +15,8 @@ export const DEFAULT_DOCUMENT_VECTOR_MIN_CHUNKS = 40;
 export const DEFAULT_AGENT_MAX_SELECTED_TOOLS = 15;
 export const DEFAULT_AYATI_ROOT_DIR = resolve(projectRoot, "ayati");
 export const DEFAULT_WORKSPACE_DIR = join(DEFAULT_AYATI_ROOT_DIR, "workspace");
-export const DEFAULT_GIT_CONTEXT_TIMEZONE = "Asia/Kolkata";
-export const DEFAULT_GIT_CONTEXT_AGENT_ID = "local";
-export const DEFAULT_GIT_CONTEXT_START_TIMEOUT_MS = 10_000;
-export const DEFAULT_GIT_CONTEXT_STOP_TIMEOUT_MS = 10_000;
-export const DEFAULT_GIT_CONTEXT_REQUEST_TIMEOUT_MS = 30_000;
+export const DEFAULT_CONTEXT_ENGINE_TIMEZONE = "Asia/Kolkata";
+export const DEFAULT_CONTEXT_ENGINE_AGENT_ID = "local";
 
 export interface HttpRuntimeConfig {
   host: string;
@@ -47,14 +44,9 @@ export interface WorkspaceRuntimeConfig {
   root: string;
 }
 
-export interface GitContextRuntimeConfig {
+export interface ContextEngineRuntimeConfig {
   rootDirectory: string;
   databasePath: string;
-  socketPath: string;
-  managed: boolean;
-  startTimeoutMs: number;
-  stopTimeoutMs: number;
-  requestTimeoutMs: number;
   timezone: string;
   agentId: string;
 }
@@ -65,7 +57,7 @@ export interface AyatiRuntimeConfig {
   python: PythonRuntimeConfig;
   agent: AgentRuntimeConfig;
   workspace: WorkspaceRuntimeConfig;
-  gitContext: GitContextRuntimeConfig;
+  contextEngine: ContextEngineRuntimeConfig;
 }
 
 export function loadAyatiRuntimeConfig(env: NodeJS.ProcessEnv = process.env): AyatiRuntimeConfig {
@@ -79,7 +71,7 @@ export function loadAyatiRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Ay
     python: loadPythonRuntimeConfig(env),
     agent: loadAgentRuntimeConfig(env),
     workspace,
-    gitContext: loadGitContextRuntimeConfig(env, rootDirectory),
+    contextEngine: loadContextEngineRuntimeConfig(env, rootDirectory),
   };
 }
 
@@ -134,35 +126,23 @@ function loadWorkspaceRuntimeConfig(rootDirectory: string): WorkspaceRuntimeConf
   };
 }
 
-function loadGitContextRuntimeConfig(
+function loadContextEngineRuntimeConfig(
   env: NodeJS.ProcessEnv,
   rootDirectory: string,
-): GitContextRuntimeConfig {
+): ContextEngineRuntimeConfig {
   return {
     rootDirectory,
     databasePath: resolveConfiguredPath(
-      env["AYATI_GIT_CONTEXT_DATABASE"],
+      trimOptional(env["AYATI_CONTEXT_ENGINE_DATABASE"])
+        ?? env["AYATI_GIT_CONTEXT_DATABASE"],
       join(rootDirectory, ".ayati", "context.db"),
     ),
-    socketPath: resolveConfiguredPath(
-      env["AYATI_GIT_CONTEXT_SOCKET"],
-      join(rootDirectory, ".ayati", "git-context.sock"),
-    ),
-    managed: !isEnvFalse(env["AYATI_GIT_CONTEXT_MANAGED"]),
-    startTimeoutMs: parsePositiveInt(
-      env["AYATI_GIT_CONTEXT_START_TIMEOUT_MS"],
-      DEFAULT_GIT_CONTEXT_START_TIMEOUT_MS,
-    ),
-    stopTimeoutMs: parsePositiveInt(
-      env["AYATI_GIT_CONTEXT_STOP_TIMEOUT_MS"],
-      DEFAULT_GIT_CONTEXT_STOP_TIMEOUT_MS,
-    ),
-    requestTimeoutMs: parsePositiveInt(
-      env["AYATI_GIT_CONTEXT_REQUEST_TIMEOUT_MS"],
-      DEFAULT_GIT_CONTEXT_REQUEST_TIMEOUT_MS,
-    ),
-    timezone: trimOptional(env["AYATI_GIT_CONTEXT_TIMEZONE"]) ?? DEFAULT_GIT_CONTEXT_TIMEZONE,
-    agentId: trimOptional(env["AYATI_GIT_CONTEXT_AGENT_ID"]) ?? DEFAULT_GIT_CONTEXT_AGENT_ID,
+    timezone: trimOptional(env["AYATI_CONTEXT_ENGINE_TIMEZONE"])
+      ?? trimOptional(env["AYATI_GIT_CONTEXT_TIMEZONE"])
+      ?? DEFAULT_CONTEXT_ENGINE_TIMEZONE,
+    agentId: trimOptional(env["AYATI_CONTEXT_ENGINE_AGENT_ID"])
+      ?? trimOptional(env["AYATI_GIT_CONTEXT_AGENT_ID"])
+      ?? DEFAULT_CONTEXT_ENGINE_AGENT_ID,
   };
 }
 

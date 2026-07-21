@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertContextIsAdmissible,
   buildFullContextCompilationReceipt,
-  buildTimelineCheckpointCompilationReceipt,
+  buildStreamCheckpointCompilationReceipt,
   buildToolCompactContextCompilationReceipt,
   ContextInputLimitError,
 } from "../../src/prompt/context-compilation-receipt.js";
@@ -71,8 +71,8 @@ describe("context compilation receipt", () => {
     expect(() => assertContextIsAdmissible(receipt)).not.toThrow();
   });
 
-  it("records intermediate and final measurements for a timeline checkpoint", () => {
-    const receipt = buildTimelineCheckpointCompilationReceipt({
+  it("records intermediate and final measurements for an agent-stream checkpoint", () => {
+    const receipt = buildStreamCheckpointCompilationReceipt({
       candidate: report({ measuredInputTokens: 85_000 }),
       intermediate: report({ measuredInputTokens: 75_000 }),
       final: report({
@@ -82,7 +82,7 @@ describe("context compilation receipt", () => {
       }),
       decisionAttempt: 2,
       transformations: [{
-        kind: "timeline_checkpoint",
+        kind: "stream_checkpoint",
         coveredFromSeq: 1,
         coveredToSeq: 4,
         sourceHash: "abc",
@@ -102,13 +102,13 @@ describe("context compilation receipt", () => {
 
     expect(receipt).toMatchObject({
       decisionAttempt: 2,
-      mode: "timeline_checkpoint",
+      mode: "stream_checkpoint",
       candidateInputTokens: 85_000,
       intermediateInputTokens: 75_000,
       finalInputTokens: 55_000,
       targetReached: true,
       admitted: true,
-      timelineCheckpoint: {
+      streamCheckpoint: {
         sourceHash: "abc",
         checkpointTokens: 800,
       },

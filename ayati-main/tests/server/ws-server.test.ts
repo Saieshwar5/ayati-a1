@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { WsServer } from "../../src/server/index.js";
 import WebSocket from "ws";
+import { canBindTcpSocket } from "../fixtures/runtime-capabilities.js";
 
 let server: WsServer | null = null;
 
@@ -38,7 +39,7 @@ afterEach(async () => {
   }
 });
 
-describe("WsServer", () => {
+describe.runIf(canBindTcpSocket())("WsServer", () => {
   it("should start and listen on the given port", async () => {
     const port = getPort();
     const onMessage = vi.fn();

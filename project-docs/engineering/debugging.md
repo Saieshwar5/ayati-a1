@@ -4,9 +4,9 @@ Start with:
 
 ```bash
 git status --short
-pnpm --filter ayati-git-context build
+pnpm --filter ayati-context-engine build
 pnpm --filter ayati-main build
-pnpm --filter ayati-git-context test
+pnpm --filter ayati-context-engine test
 pnpm --filter ayati-main test
 ```
 
@@ -17,10 +17,10 @@ Key owners:
   `system-event-runtime.ts`
 - harness: `ayati-main/src/ivec/agent-runner/`
 - resource scopes: `ayati-main/src/app/resource-scoped-tool-executor.ts`
-- Git Context process/runtime: `ayati-main/src/app/git-context-process.ts` and
-  `git-context-runtime.ts`
-- service: `ayati-git-context/src/services/sqlite-git-context-service.ts`
-- workstreams/resources: `ayati-git-context/src/workstreams/`, `src/resources/`,
+- Context Engine host/runtime: `ayati-context-engine/src/runtime.ts` and
+  `ayati-main/src/app/context-engine-runtime.ts`
+- service: `ayati-context-engine/src/services/sqlite-context-engine-service.ts`
+- workstreams/resources: `ayati-context-engine/src/workstreams/`, `src/resources/`,
   and their focused services
 - WebSocket/HTTP: `ayati-main/src/server/`
 
@@ -29,6 +29,6 @@ rows, explicit request decision, resource locator/version, context repository
 status and HEAD, and finalization journal. Never repair by placing deliverables
 in the context repository or editing runtime-owned records by hand.
 
-Use `pnpm feedback:git-context` for the compact lifecycle report. Keep the
+Use `pnpm feedback:context-engine` for the compact lifecycle report. Keep the
 daemon stopped before archive/reset, catalog rebuild, or direct database
 inspection that requires a consistent snapshot.

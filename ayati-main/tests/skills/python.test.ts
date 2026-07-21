@@ -3,6 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createPythonSkill } from "../../src/skills/builtins/python/index.js";
+import { canCaptureNodeSubprocessOutput } from "../fixtures/runtime-capabilities.js";
+
+const supportsSubprocessOutput = canCaptureNodeSubprocessOutput();
 
 function parseOutput(result: { ok: boolean; output?: string; error?: string }) {
   expect(result.output).toBeTruthy();
@@ -123,7 +126,7 @@ describe("python skill", () => {
     expect(existsSync(String(artifacts["manifestPath"]))).toBe(true);
   });
 
-  it("executes inline code with the managed interpreter and captures generated artifacts", async () => {
+  it.runIf(supportsSubprocessOutput)("executes inline code with the managed interpreter and captures generated artifacts", async () => {
     const dataDir = createTempDir("ayati-python-data-");
     tempDirs.push(dataDir);
     const interpreterDir = createTempDir("ayati-python-bin-");

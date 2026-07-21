@@ -1,127 +1,150 @@
 # Context and Memory
 
-Ayati separates operational truth, durable work continuity, user memory, and
-prompt projection.
+Ayati separates stream continuity, current-run execution, durable work,
+resources, reusable observations, and personal memory. They have different
+growth rates and different authority.
 
 ## Ownership
 
-- Git Context SQLite: sessions, conversations, runs, steps, WorkState,
-  workstreams, requests, resources, bindings, discovery indexes, idempotency,
-  and recovery journals.
+- Context Engine SQLite V7: agent streams, immutable messages, runs, steps,
+  WorkState, checkpoints, reusable observations, workstreams, requests,
+  resources, discovery indexes, isolated workstream-resolution activities and
+  steps, idempotency, and recovery journals.
 - Workstream Git: compact portable `workstream.md`, request files, and
   `resources.json` only.
 - Real resource locations: project files, documents, media, URLs, databases,
   repositories, and external objects.
-- Personal memory: stable facts, preferences, and time-scoped facts about the
-  user.
-- Episodic memory: semantic recall over prior closed experience.
-- Daemon cache: bounded projections only; never authoritative lifecycle state.
+- Personal memory: stable, evolving, and time-scoped facts about the user.
+- Episodic memory: semantic recall over prior experience.
+- Active-run projection: the harness keeps the latest authoritative service
+  response for the current turn; it does not maintain a second context cache.
 
-## Session Continuity
+## Agent Stream Continuity
 
-A daily session groups conversation and operational history. It does not own
-durable work. Every accepted message or system event creates one run
-atomically with its message and initial WorkState. Direct replies are valid
-zero-step runs.
-
-Optional session materialization is evidence and debugging support, not the
-source of workstream truth.
-
-## Workstream Continuity
-
-A workstream is selected only when the current run has clear durable ownership.
-It carries objective, current focus, request state, progress, blockers, next
-action, and resource relationships. Later runs reconstruct continuity from the
-catalog and committed context rather than from a session-global active item.
-
-Resource identity is part of recall. Exact path/URL/external-object ownership
-can locate a workstream even when its title or user wording changes.
-
-## Requests and Runs
-
-Requests bound a concrete intention inside one long-lived workstream. At most
-one request is active. Activating an existing workstream explicitly continues
-that request or creates a separate request.
-
-A run may begin unbound, perform observation, and later bind to one
-workstream/request without changing its run id. Binding is immutable. The next
-user answer or event creates a new run.
-
-## Prompt Projection
-
-The prompt receives a bounded projection, not raw database rows or internal
-paths.
-
-- `context.session`: recent conversation, compact summary/checkpoints,
-  attachments, and relevant activity.
-- `context.git.candidates`: explained workstream candidates.
-- `context.git.current`: selected workstream/request and public resource
-  locators when bound.
-- `context.git.ingressResources`: resources admitted for the current turn.
-- `context.readContext`: reusable inventory, discovery, evidence, and action
-  entries derived from persisted run steps.
-- `context.run`: WorkState, ordered current-run tool calls, and context pressure.
-- `context.personal`: selected personal and episodic memory.
-- `context.tools`: current capability surface.
-- `context.harness`: compact repair information.
-
-Run ids, storage paths, context-repository paths, runtime mode names, routing
-counters, and deferred mutation state are not model-facing prompt data.
-
-## Reusable Read Context
+An agent stream is the slow-growing continuity boundary across many runs and
+communication clients. The default local identity is:
 
 ```text
-readContext = {
-  revision,
-  afterCommitRunId?,
-  inventory,
-  discovery,
-  evidence,
-  actions
-}
+agentId = local
+scopeKey = default
 ```
 
-Entries are rebuilt from authoritative structured run steps. Current-run tool
-calls are not duplicated in reusable context. A newly created
-workstream-context commit resets the reusable window; no-change, failed,
-unbound, and skipped finalizations do not.
+The stream contains immutable `user`, `system_event`, and `assistant`
+messages, a pressure checkpoint plus exact tail, recent completed-work
+references, relevant resources, and reusable observations. It does not contain
+action logs. Older exact content remains queryable through stable history
+references.
 
-## Resources and Attachments
+Every accepted input creates one run. There are no daily context sessions,
+conversation segments, rollover jobs, or optional transcript materialization.
 
-Attachments are admitted before routing. Uploaded bytes use immutable managed
-storage and a public managed-blob identity. Referenced resources stay at their
-canonical path. Both can remain session-only or be bound to a workstream.
+## Run Context
 
-Descriptions and aliases make resources searchable without parsing every file
-on every turn. Version observations detect changed, missing, or deleted
-resources; they do not turn SQLite into a content backup.
+A run is the fast-growing compute, audit, finalization, and recovery boundary
+for one accepted input. It contains:
 
-## WorkState
+- current WorkState;
+- ordered structured steps;
+- complete tool-call inputs/results or hashes;
+- deterministic verification and evidence;
+- pressure and recovery state.
 
-WorkState is the sparse current-run progress projection: status, summary, open
-work, blockers, verified facts, evidence, and optional user-input need. The
-progress reducer updates it only from deterministic execution/verification.
-Workstream finalization reduces durable continuity from the final WorkState and
-accepted completion evidence.
+A run may remain unbound for conversation or observation, or gain one
+immutable workstream/request binding. Finalization projects only the small
+facts that need to survive into stream or workstream continuity.
+
+Workstream resolution is a separate bounded control activity keyed to the
+same run. It has private state, full private step history, limits, and usage
+accounting. It cannot update main WorkState or append `run_steps`; its terminal
+typed result is committed by Context Engine and then mounted into the main
+projection. An unfinished activity is marked interrupted on restart and is
+not resumed.
+
+## Agent-Facing Prompt Lanes
+
+The model receives an explicit bounded projection:
+
+- `context.temporal`: durable checkpoint and exact recent message tail;
+- `context.current`: current input sequence/run identity and routing state; the
+  exact input content appears once in `context.temporal.recent`;
+- `context.stream`: stream identity and recent work references;
+- `context.work`: at most five candidates, compact resolution metadata, and
+  the optional single active workstream/request;
+- `context.resources`: stream, ingress, and active-workstream resources;
+- `context.observations`: valid reusable inventory/discovery/evidence;
+- `context.personal`: compact personal-memory snapshot;
+- `context.tools`: current capability surface;
+- `context.harness`: compact repair feedback;
+- `context.run`: WorkState, current-run calls, and pressure state.
+
+Internal database paths, context-repository paths, observation authority
+fields, idempotency data, and recovery journals are not model-facing.
+
+There is intentionally no reusable `actions` lane. Action truth already lives
+in the run step journal and is reduced into WorkState, workstream continuity,
+resource effects, or exact evidence when it must survive.
+
+## Reusable Observations
+
+Only successful read-only tools with purpose `list`, `search`, or `read`
+produce reusable observations:
+
+- `inventory`: bounded list results;
+- `discovery`: bounded search results;
+- `evidence`: bounded read results with an exact run/step/call reference.
+
+Each observation records the versions of referenced resources. A resource
+version change invalidates the observation before projection. Current-run tool
+calls are not duplicated in this lane, and mutations never become reusable
+observations.
+
+## Durable Pressure Checkpoints
+
+Checkpoints are created only under measured context pressure:
+
+1. Measure the whole provider candidate, including system prompt, tool schemas,
+   and prompt context.
+2. Compact tool results when policy permits.
+3. Apply deterministic bounded stream projection.
+4. If pressure remains, ask Context Engine for a plan over a complete prefix of
+   terminal runs before the protected current input.
+5. Generate a structured summary with exact message-sequence anchors, allowing
+   at most one repair.
+6. Atomically commit the checkpoint and active pointer.
+7. Rebuild and measure the checkpoint-plus-exact-tail candidate.
+
+The default checkpoint estimate is 1,200 tokens. A checkpoint never grants
+authority; every statement cites an exact retained message sequence. Failed or
+unnecessary plans do not change durable state.
+
+## Exact History Access
+
+`agent_history_search` searches older messages, run summaries, and evidence.
+It returns stable refs such as `message:*`, `seq:*`, `run:*`, or an exact
+run/step/call evidence ref. `agent_history_read` reads a ref or inclusive
+sequence range with deterministic bounds and continuation cursors.
+
+Search defaults to 10 hits and caps at 25. Reads cap at 50 messages and 32,000
+characters. History retrieval does not inject unbounded transcripts into every
+decision.
 
 ## Personal and Episodic Memory
 
-Personal memory is independent from workstreams. A preference may influence
-many workstreams without belonging to any one of them. Episodic recall supplies
-relevant prior experience but does not grant resource access or mutation
-authority.
+Personal memory is independent from streams and workstreams. A preference may
+influence many kinds of work without belonging to any one of them. Automatic
+personal-memory extraction runs on newly committed checkpoint event ranges,
+using only exact user/assistant messages covered by that checkpoint. Accepted
+memory cards regenerate the compact snapshot used by later runs.
 
-## Context Pressure
+Episodic recall remains a separate semantic retrieval system. Neither memory
+system grants resource access or mutation authority.
 
-Token admission is deterministic and measured. The runtime trims lower-value
-reusable/context-history material before exact current input, current
-workstream/request/resource ownership, recent steps, and WorkState. If safe
-admission is still impossible, the run finalizes as
-`incomplete/context_limit`; it does not silently discard ownership facts.
+## Context Pressure and Recovery
 
-## Recovery
+Pressure preserves exact current input, binding/resource ownership, WorkState,
+and recent run evidence before lower-value projections. If the final bounded
+candidate remains inadmissible, the run ends as `incomplete/context_limit`.
 
 Startup closes an abandoned safe run as `incomplete/interrupted`. Journaled
-finalizations and resource operations resume idempotently. Verified dirty
-resource state is preserved and unresolved recovery blocks another run in the
-same session.
+finalizations and resource operations resume idempotently. Unresolved recovery
+blocks another run in the same agent stream.

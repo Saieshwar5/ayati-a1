@@ -11,7 +11,7 @@ import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
 import type { WorkspaceOrchestrator } from "../ui/workspace-orchestrator.js";
 import type { AyatiRuntimeConfig } from "../config/runtime-config.js";
-import type { GitContextService } from "ayati-git-context";
+import type { ContextEngineService } from "ayati-context-engine";
 import { builtInSkillsProvider } from "../skills/provider.js";
 import { createToolExecutor, type ToolExecutor } from "../skills/tool-executor.js";
 import type { SkillDefinition, SkillsProvider, SkillPromptBlock, ToolDefinition } from "../skills/types.js";
@@ -42,7 +42,7 @@ export interface SkillRuntimeOptions {
   directoryLibrary: DirectoryLibrary;
   workspaceOrchestrator: WorkspaceOrchestrator;
   config: AyatiRuntimeConfig;
-  gitContextService: GitContextService;
+  contextEngineService: ContextEngineService;
 }
 
 export interface SkillRuntime {
@@ -83,7 +83,7 @@ export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<
       directoryLibrary: options.directoryLibrary,
     }),
     createGitContextSkill({
-      service: options.gitContextService,
+      service: options.contextEngineService,
     }),
     createUiSkill({
       workspaceOrchestrator: options.workspaceOrchestrator,
@@ -103,7 +103,7 @@ export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<
   const baseToolExecutor = createToolExecutor(baseToolDefs);
   const toolExecutor = createResourceScopedToolExecutor({
     base: baseToolExecutor,
-    gitContext: options.gitContextService,
+    contextEngine: options.contextEngineService,
     workspaceRoot: options.config.workspace.root,
   });
   const toolCatalog = new ToolCatalog(allRuntimeSkills);

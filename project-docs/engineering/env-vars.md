@@ -23,29 +23,27 @@ This is the single filesystem root for managed work:
 
 - `<root>/workspace/`: default visible output when the user gives no path;
 - `<root>/workstreams/`: context-only `W-*` repositories;
-- `<root>/.ayati/`: SQLite, sessions, immutable managed resources, and socket.
+- `<root>/.ayati/`: Context Engine SQLite and immutable managed resources.
 
 When unset, the backend uses `ayati-main/ayati`. Model-facing tool calls still
 use canonical absolute resource paths.
 
-## Git Context
+## Context Engine
 
 ```env
-AYATI_GIT_CONTEXT_DATABASE=
-AYATI_GIT_CONTEXT_SOCKET=
-AYATI_GIT_CONTEXT_MANAGED=true
-AYATI_GIT_CONTEXT_START_TIMEOUT_MS=10000
-AYATI_GIT_CONTEXT_STOP_TIMEOUT_MS=10000
-AYATI_GIT_CONTEXT_REQUEST_TIMEOUT_MS=30000
-AYATI_GIT_CONTEXT_TIMEZONE=Asia/Kolkata
-AYATI_GIT_CONTEXT_AGENT_ID=local
+AYATI_CONTEXT_ENGINE_DATABASE=
+AYATI_CONTEXT_ENGINE_TIMEZONE=Asia/Kolkata
+AYATI_CONTEXT_ENGINE_AGENT_ID=local
 ```
 
-Database and socket defaults are `<root>/.ayati/context.db` and
-`<root>/.ayati/git-context.sock`. The daemon normally manages one compatible
-local child process. Set `AYATI_GIT_CONTEXT_MANAGED=false` only when another
-supervisor owns that socket. Parent-PID and root values passed to the child are
-internal process inputs.
+The database defaults to `<root>/.ayati/context.db`. The daemon opens one
+in-process engine, acquires the database writer lock, completes startup
+recovery, and closes it during daemon shutdown.
+
+The previous `AYATI_GIT_CONTEXT_DATABASE`, `AYATI_GIT_CONTEXT_TIMEZONE`, and
+`AYATI_GIT_CONTEXT_AGENT_ID` names remain accepted during the internal naming
+transition. Socket, managed-process, and transport-timeout settings have been
+removed.
 
 ## HTTP and Uploads
 

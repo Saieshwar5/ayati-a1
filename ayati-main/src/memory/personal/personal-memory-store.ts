@@ -797,7 +797,9 @@ export class PersonalMemoryStore {
   }
 
   enqueueConsolidationJob(payload: MemoryConsolidationJobPayload, now = this.nowIso()): string {
-    const jobId = `session:${payload.userId}:${payload.sessionId}`;
+    const jobId = payload.checkpointId
+      ? `checkpoint:${payload.userId}:${payload.checkpointId}`
+      : `session:${payload.userId}:${payload.sessionId}`;
     this.requireDb().prepare(`
       INSERT INTO memory_consolidation_jobs (
         job_id,

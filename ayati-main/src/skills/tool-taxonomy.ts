@@ -83,6 +83,7 @@ const ROUTING_ONLY: ToolPhase[] = ["routing"];
 
 export const NATIVE_CONTROL_TOOL_NAMES = [
   "decision_load_tools",
+  "workstream_resolve",
   "ask_user_feedback",
   "workstream_completion",
 ] as const;
@@ -240,6 +241,8 @@ export const TOOL_TAXONOMY: Readonly<Record<string, ToolTaxonomyEntry>> = buildT
   git_context_inspect_resource: control(["workstream_routing"], "one_step", ["routing"], { loadGroups: ["resource:discovery"] }),
   git_context_bind_resources: control(["workstream_mutation"], "one_step", ["workstream_bound"], { loadGroups: ["resource:binding"] }),
   git_context_set_workstream_star: control(["workstream_preference"], "one_step", ["routing", "workstream_bound"], { loadGroups: ["workstream:preferences"] }),
+  agent_history_search: search(["conversation_read", "enquiry_read", "evidence_access"], "run", READ_ONLY_PHASES, { loadGroups: ["agent-history"] }),
+  agent_history_read: readOnly(["conversation_read", "enquiry_read", "evidence_access"], "run", READ_ONLY_PHASES, { loadGroups: ["agent-history"] }),
 
   workspace_get_state: readOnly(["enquiry_read", "ui_control"], "phase", ["enquiry", "workstream_bound"], { loadGroups: ["ui:workspace"] }),
   workspace_set_layout: workspaceMutation(["ui_control"], "one_step", WORKSTREAM_BOUND_ONLY, { loadGroups: ["ui:workspace"] }),

@@ -132,7 +132,7 @@ function evaluateRecovery(input: {
     unresolvedPressureStreak: nextStreak,
     lastRecoveryEvaluationIteration: input.iteration,
     ...(shouldRecommendTimeline ? {
-      recommendedMode: laterRecommendedMode(input.current.recommendedMode, "timeline_checkpoint"),
+      recommendedMode: laterRecommendedMode(input.current.recommendedMode, "stream_checkpoint"),
       escalationReason: nearAdmissionLimit || input.current.escalationReason === "near_admission_limit"
         ? "near_admission_limit"
         : input.current.escalationReason ?? "repeated_unresolved_pressure",
@@ -146,8 +146,8 @@ function laterRecommendedMode(
 ): ContextPressureRecommendedMode {
   if (!current) return observed;
   const order: ContextPressureRecommendedMode[] = [
-    "session_shed",
-    "timeline_checkpoint",
+    "stream_project",
+    "stream_checkpoint",
     "step_ledger",
   ];
   return order.indexOf(observed) > order.indexOf(current) ? observed : current;
@@ -160,8 +160,8 @@ function laterContextMode(
   const order: ContextCompilationMode[] = [
     "full",
     "tool_compact",
-    "session_shed",
-    "timeline_checkpoint",
+    "stream_project",
+    "stream_checkpoint",
     "step_ledger",
   ];
   return order.indexOf(observed) > order.indexOf(current) ? observed : current;

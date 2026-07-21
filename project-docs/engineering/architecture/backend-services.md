@@ -3,13 +3,13 @@
 Major backend services and stores:
 
 - `IVecEngine`: coordinates user messages, system events, context building, provider calls, tool execution, replies, and notifications.
-- `ManagedGitContextProcess`: starts, health-checks, and stops the independent
-  local Git Context server with the daemon.
-- `GitContextRuntime`: typed daemon-side adapter for session, workstream, request,
-  run, and context-projection operations.
-- `SqliteGitContextService`: server-side owner of the context catalog, session
-  lifecycle, workstream/resource selection, request lifecycle, run journal, and Git
-  finalization coordination.
+- `ContextEngineHost`: acquires the exclusive writer lock, opens SQLite, runs
+  startup recovery, exposes the service, and drains it during daemon shutdown.
+- `ContextEngineRuntime`: typed daemon-side adapter for agent-stream, workstream,
+  request, run, checkpoint, history, and context-projection operations.
+- `SqliteContextEngineService`: in-process owner of agent-stream continuity, the
+  context catalog, workstream/resource selection, request lifecycle, run journals,
+  reusable observations, checkpoints, and Git finalization coordination.
 - `PersonalMemoryStore`: canonical user memory storage for personalization.
 - `PersonalMemorySnapshotCache`: prompt-ready personal memory snapshots.
 - `EpisodicMemoryIndexer`: indexes episodic records when embeddings are available.
@@ -29,10 +29,10 @@ Major backend services and stores:
 
 Daemon-specific responsibilities:
 
-- Keep the Git Context server and runtime state available across client
-  sessions.
+- Keep one Context Engine host and the default agent stream available across
+  independent client connections and system events.
 - Keep durable lifecycle mutations deterministic: the agent may express
-  routing intent, but Git Context owns request allocation, resource journals,
+  routing intent, but Context Engine owns request allocation, resource journals,
   workstream reduction, finalization, and context commits.
 - Accept inputs from multiple future communication channels.
 - Use the tool executor as the computer-access layer.

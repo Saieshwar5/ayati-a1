@@ -1,19 +1,21 @@
+import type { AgentContextProjection, ResourceRef } from "ayati-context-engine";
 import { describe, expect, it } from "vitest";
-import type { ActiveContext, ResourceRef } from "ayati-git-context";
 import { buildContextEngineProjection } from "../../src/context-engine/index.js";
+import type { AgentContextPack } from "../../src/ivec/agent-runner/context-pack.js";
 import {
   projectAgentPromptContext,
   projectAgentStateViewForPrompt,
 } from "../../src/ivec/agent-runner/prompt-context.js";
 import { buildPromptToolCallsForRun } from "../../src/ivec/agent-runner/run-tool-call-context.js";
+import { agentContextFixture } from "../fixtures/agent-context.js";
 
 describe("context engine projection", () => {
   it("projects native workstream state and exact resource bindings", () => {
-    const active = activeWorkstreamContext();
-    const projection = buildContextEngineProjection(active);
+    const source = activeWorkstreamContext();
+    const projection = buildContextEngineProjection(source);
 
     expect(projection).not.toHaveProperty("task");
-    expect(projection).not.toHaveProperty("taskCandidates");
+    expect(projection).not.toHaveProperty("session");
     expect(projection.workstream).toMatchObject({
       workstreamId: "W-20260714-0001",
       workstreamStatus: "in_progress",
@@ -31,10 +33,10 @@ describe("context engine projection", () => {
     ]);
   });
 
-  it("keeps workstream candidates and resource discovery reasons unchanged", () => {
-    const active = activeWorkstreamContext();
-    active.workstreamCandidates = [{
-      workstreamId: "W-20260714-0002",
+  it("keeps workstream candidates and deterministic discovery reasons unchanged", () => {
+    const source = agentContextFixture({ streamId: "S-20260714-local" });
+    source.workstreamCandidates = Array.from({ length: 7 }, (_, index) => ({
+      workstreamId: `W-20260714-000${index + 2}`,
       title: "Machine learning course",
       objective: "Learn machine learning in bounded lessons.",
       status: "active",
@@ -47,40 +49,86 @@ describe("context engine projection", () => {
       discovery: { tier: "definite", reasons: ["exact_resource_id", "owned_resource"] },
       starred: true,
       boundRunsLast30Days: 4,
-    }];
+    }));
 
-    const projection = buildContextEngineProjection(active);
+    const projection = buildContextEngineProjection(source);
 
     expect(projection.workstreamCandidates?.[0]).toMatchObject({
       workstreamId: "W-20260714-0002",
       discovery: { reasons: ["exact_resource_id", "owned_resource"] },
       starred: true,
     });
+    expect(projection.workstreamCandidates).toHaveLength(5);
+    expect(projection.workstream).toBeUndefined();
   });
 
-  it("exposes public resource locators while hiding run and storage identities from prompts", () => {
-    const active = activeWorkstreamContext();
-    active.readContext = {
-      revision: "read-1",
-      afterCommitRunId: "RUN-previous",
+  it("mounts compact resolver metadata and suppresses candidates after binding", () => {
+    const source = activeWorkstreamContext();
+    source.workstreamCandidates = [{
+      workstreamId: "W-20260714-0002",
+      title: "Different workstream",
+      objective: "Should not remain mounted after binding.",
+      status: "active",
+      head: "e".repeat(40),
+      primaryResources: [],
+      updatedAt: "2026-07-14T11:00:00.000Z",
+      discovery: { tier: "candidate", reasons: ["recent"] },
+      starred: false,
+      boundRunsLast30Days: 0,
+    }];
+    source.workstreamResolution = {
+      activityId: "WR-0123456789ABCDEF01234567",
+      runId: source.run!.run.runId,
+      status: "resolved",
+      purpose: "Resolve the Aurora Coffee workstream.",
+      stepCount: 2,
+      result: {
+        status: "resolved",
+        kind: "continued_request",
+        workstreamId: "W-20260714-0001",
+        requestId: "REQ-1",
+      },
+      updatedAt: "2026-07-14T11:00:00.000Z",
+    };
+
+    const machine = buildContextEngineProjection(source);
+    const pack = contextPack(machine);
+
+    expect(machine.workstreamCandidates).toBeUndefined();
+    expect(pack.work.candidates).toEqual([]);
+    expect(pack.work.active?.workstreamId).toBe("W-20260714-0001");
+    expect(pack.work.resolution).toMatchObject({
+      status: "resolved",
+      stepCount: 2,
+      result: { requestId: "REQ-1" },
+    });
+  });
+
+  it("separates temporal, stream, work, resource, observation, and run prompt lanes", () => {
+    const source = activeWorkstreamContext();
+    source.observations = {
+      revision: "observations:read-1",
       inventory: [],
       discovery: [],
       evidence: [{
-        key: "evidence:read_files:brief.md",
-        runId: "RUN-1",
-        step: 1,
-        callId: "read-brief",
-        tool: "read_files",
+        observationId: "OBS-1",
+        streamId: "S-20260714-local",
+        sourceRunId: "RUN-1",
+        sourceStep: 1,
+        sourceCallId: "read-brief",
+        kind: "evidence",
+        queryKey: "read_files:brief",
         purpose: "Read the brief.",
-        resources: ["RES-0123456789ABCDEF01234567"],
-        input: { path: "/workspace/aurora-coffee-site/brief.md" },
-        output: "brief",
-        verification: { passed: true },
+        preview: "brief",
+        retention: "evidence_only",
+        resources: [{
+          resourceId: "RES-0123456789ABCDEF01234567",
+          versionKey: "version-1",
+        }],
         createdAt: "2026-07-14T10:00:02.000Z",
       }],
-      actions: [],
     };
-    const projection = buildContextEngineProjection(active);
+    const machine = buildContextEngineProjection(source);
     const toolCalls = buildPromptToolCallsForRun([{
       step: 1,
       callId: "read-brief",
@@ -93,85 +141,95 @@ describe("context engine projection", () => {
     }]);
     const prompt = projectAgentStateViewForPrompt({
       context: projectAgentPromptContext({
-        context: { timeline: [], gitContext: projection },
+        context: contextPack(machine),
         run: { toolCalls },
       }),
     });
 
-    expect(prompt.context.git?.current.workstream?.resources[0]?.resource.locator).toEqual({
+    expect(Object.keys(prompt.context)).toEqual(expect.arrayContaining([
+      "temporal",
+      "current",
+      "stream",
+      "work",
+      "resources",
+      "observations",
+      "run",
+    ]));
+    expect(prompt.context.resources.activeWorkstream[0]?.resource.locator).toEqual({
       kind: "filesystem",
       path: "/workspace/aurora-coffee-site",
     });
-    expect(prompt.context.git?.current.workstream?.identity.workstreamId).toBe("W-20260714-0001");
-    expect(prompt.context.git?.current.workstream).not.toHaveProperty("contextRepositoryPath");
-    expect(prompt.context.git?.current.pendingTurn).not.toHaveProperty("runId");
-    expect(prompt.context.git?.current.readContext).not.toHaveProperty("afterCommitRunId");
+    expect(prompt.context.observations.evidence[0]).not.toHaveProperty("streamId");
+    expect(prompt.context.observations.evidence[0]).not.toHaveProperty("sourceRunId");
     expect(prompt.context.run?.toolCalls?.[0]?.stepRef).toEqual({ step: 1, callId: "read-brief" });
-    expect(JSON.stringify(prompt.context)).not.toContain('"runId"');
-    expect(JSON.stringify(prompt.context)).not.toContain("/internal/workstreams/");
   });
 
-  it("does not reinterpret relative context-commit paths as deliverable paths", () => {
-    const active = activeWorkstreamContext();
-    if (!active.session) throw new Error("Expected a session fixture.");
-    active.session.recentCommits = [{
-      commit: "d".repeat(40),
-      subject: "workstream: update context",
-      committedAt: "2026-07-14T10:30:00.000Z",
-      assets: [{ path: "index.html", description: "Relative legacy metadata" }],
-      workstreamId: "W-20260714-0001",
-      runId: "RUN-1",
-    }];
+  it("never exposes context repository paths or an action-history lane to the model", () => {
+    const machine = buildContextEngineProjection(activeWorkstreamContext());
+    const prompt = projectAgentPromptContext({ context: contextPack(machine) });
+    const encoded = JSON.stringify(prompt);
 
-    const prompt = projectAgentStateViewForPrompt({
-      context: projectAgentPromptContext({
-        context: { timeline: [], gitContext: buildContextEngineProjection(active) },
-      }),
-    });
-
-    expect(prompt.context.git?.session.recentCommits?.[0]).toMatchObject({
-      commit: "d".repeat(40),
-      workstreamId: "W-20260714-0001",
-    });
-    expect(prompt.context.git?.session.recentCommits?.[0]).not.toHaveProperty("resources");
-    expect(prompt.context.git?.session.recentCommits?.[0]).not.toHaveProperty("runId");
+    expect(prompt).not.toHaveProperty("actions");
+    expect(prompt.stream).not.toHaveProperty("repositoryPath");
+    expect(encoded).not.toContain("/internal/workstreams/");
+    expect(encoded).not.toContain("conversationId");
+    expect(encoded).not.toContain("sessionId");
   });
 });
 
-function activeWorkstreamContext(): ActiveContext {
-  const boundResource = resource("/workspace/aurora-coffee-site");
+function contextPack(context: ReturnType<typeof buildContextEngineProjection>): AgentContextPack {
+  const recent = context.agentStream.recentMessages.map((message) => ({
+    kind: message.role === "system_event" ? "system" as const : message.role,
+    seq: message.sequence,
+    timestamp: message.at,
+    content: message.content,
+    ...(message.runId === context.run?.run.runId && message.role !== "assistant"
+      ? { current: true as const }
+      : {}),
+  }));
   return {
-    contextRevision: "revision-1",
-    session: {
-      session: {
-        sessionId: "S-20260714-local",
-        repositoryPath: "/internal/sessions/2026-07-14",
-        head: "a".repeat(40),
-        date: "2026-07-14",
-        timezone: "UTC",
-        status: "open",
-      },
-      summary: "",
-      pendingConversation: [{
-        conversationId: "C-1",
-        sessionId: "S-20260714-local",
-        sequence: 1,
-        filePath: "conversations/000001.pending.md",
-        status: "active",
-      }],
-      pendingConversationContext: [{
-        conversation: {
-          conversationId: "C-1",
-          sessionId: "S-20260714-local",
-          sequence: 1,
-          filePath: "conversations/000001.pending.md",
-          status: "active",
+    temporal: { recent },
+    current: {
+      inputSeq: context.current.inputSeq ?? 1,
+      runId: context.current.runId ?? "RUN-1",
+      ...(context.current.routing ? {
+        routing: {
+          status: context.current.routing.status,
+          ...(context.current.routing.workstreamId
+            ? { workstreamId: context.current.routing.workstreamId }
+            : {}),
+          ...(context.current.routing.requestId
+            ? { requestId: context.current.routing.requestId }
+            : {}),
         },
-        messages: [],
-        contentHash: "sha256:" + "b".repeat(64),
-      }],
-      pendingDigest: "digest",
-      recentCommits: [],
+      } : {}),
+    },
+    stream: {
+      agentId: context.agentStream.meta.agentId,
+      scopeKey: context.agentStream.meta.scopeKey,
+      recentWork: context.agentStream.recentWork,
+    },
+    work: {
+      candidates: context.workstreamCandidates ?? [],
+      ...(context.workstream ? { active: context.workstream } : {}),
+      ...(context.workstreamResolution ? { resolution: context.workstreamResolution } : {}),
+    },
+    resources: {
+      stream: context.agentStream.resources,
+      ingress: context.ingressResources ?? [],
+      activeWorkstream: context.workstream?.resources ?? [],
+    },
+    observations: context.observations,
+  };
+}
+
+function activeWorkstreamContext(): AgentContextProjection {
+  const boundResource = resource("/workspace/aurora-coffee-site");
+  const source = agentContextFixture({ streamId: "S-20260714-local" });
+  return {
+    ...source,
+    stream: {
+      ...source.stream!,
       resources: { count: 1, recent: [boundResource] },
     },
     activeWorkstream: {
@@ -209,38 +267,16 @@ function activeWorkstreamContext(): ActiveContext {
       }],
     },
     run: {
+      ...source.run!,
       run: {
-        runId: "RUN-1",
-        sessionId: "S-20260714-local",
-        conversationId: "C-1",
+        ...source.run!.run,
         workstreamBinding: {
           workstreamId: "W-20260714-0001",
           requestId: "REQ-1",
           boundAt: "2026-07-14T10:00:01.000Z",
         },
-        status: "running",
-        trigger: "user",
-        startedAt: "2026-07-14T10:00:00.000Z",
-        stepCount: 0,
       },
-      workState: {
-        runId: "RUN-1",
-        revision: 0,
-        afterStep: 0,
-        status: "not_done",
-        summary: "Homepage implementation is in progress.",
-        openWork: [],
-        blockers: [],
-        facts: [],
-        evidence: [],
-        artifacts: [],
-        nextStep: null,
-        userInputNeeded: [],
-        updatedAt: "2026-07-14T10:00:00.000Z",
-      },
-      steps: [],
     },
-    warnings: [],
   };
 }
 

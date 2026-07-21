@@ -32,7 +32,15 @@ export function nativeDecisionFixture(response: unknown): LlmTurnOutput {
       const request = objectRecord(parsed["request"]);
       return toolTurn("workstream_completion", {
         summary: request["summary"],
-        assets: request["assets"],
+        resources: request["resources"] ?? request["assets"],
+        ...(parsed["workingNotes"] ? { workingNotes: parsed["workingNotes"] } : {}),
+      });
+    }
+    case "resolve_workstream": {
+      const request = objectRecord(parsed["request"]);
+      return toolTurn("workstream_resolve", {
+        purpose: request["purpose"],
+        hints: request["hints"] ?? [],
         ...(parsed["workingNotes"] ? { workingNotes: parsed["workingNotes"] } : {}),
       });
     }

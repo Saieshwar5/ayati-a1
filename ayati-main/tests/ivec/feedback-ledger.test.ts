@@ -8,6 +8,7 @@ import {
   buildContextEngineFeedbackSummary,
   buildFeedbackTriageSummary,
 } from "../../src/ivec/feedback-ledger.js";
+import { contextEngineFixture } from "../fixtures/agent-context.js";
 
 let tempDir = "";
 
@@ -249,71 +250,7 @@ describe("AsyncAgentFeedbackLedger", () => {
           toolCalls: 1,
           warnings: [],
           contextEngine: buildContextEngineFeedbackSummary({
-            context: {
-              session: {
-                meta: {
-                  sessionId: "session-1",
-                  resourceCount: 0,
-                },
-                conversationTail: [],
-                activityTail: [],
-              },
-              pendingTurn: {
-                fromSeq: 3,
-                toSeq: 3,
-                text: "continue upload UI",
-                at: "2026-06-23T10:00:00.000Z",
-                routingStatus: "bound",
-                workstreamId: "W-1",
-                branch: "main",
-                runId: "run-3",
-              },
-              focus: {
-                status: "active",
-                ref: "refs/heads/main",
-                workstreamId: "W-1",
-              },
-              workstream: {
-                contextRepositoryPath: "/ayati/workstreams/W-1",
-                ref: "refs/heads/main",
-                workstreamId: "W-1",
-                title: "Upload UI",
-                objective: "Improve upload UI",
-                summary: "Upload UI remains in progress.",
-                workstreamStatus: "in_progress",
-                lifecycleStatus: "active",
-                repositoryHealth: "ready",
-                blockers: [],
-                resources: [{
-                  resource: {
-                    resourceId: "resource-1",
-                    kind: "file",
-                    origin: "user_reference",
-                    displayName: "mock.png",
-                    description: "Upload UI mockup",
-                    aliases: ["mockup"],
-                    locator: { kind: "filesystem", path: "/ayati/workspace/mock.png" },
-                    version: {
-                      key: "sha256:mock",
-                      observedAt: "2026-06-23T09:00:00.000Z",
-                      exists: true,
-                      kind: "file",
-                      sha256: "mock",
-                    },
-                    availability: "available",
-                    metadataStatus: "enriched",
-                    createdAt: "2026-06-23T09:00:00.000Z",
-                    updatedAt: "2026-06-23T09:00:00.000Z",
-                  },
-                  role: "input",
-                  access: "read",
-                  primary: false,
-                  requestIds: ["R-0001"],
-                  boundAt: "2026-06-23T09:00:00.000Z",
-                }],
-                recentCommits: [],
-              },
-            },
+            context: boundFeedbackContext(),
             routeStatus: "ready",
             routeMode: "activated",
             routeSource: "auto",
@@ -450,94 +387,6 @@ describe("AsyncAgentFeedbackLedger", () => {
     expect(triage.findings?.map((finding) => finding.code)).toEqual(["healthy_run"]);
   });
 
-  it("updates the latest summary when conversation persistence arrives after final reply", async () => {
-    const times = [
-      new Date("2026-07-18T10:00:00.000Z"),
-      new Date("2026-07-18T10:00:01.000Z"),
-    ];
-    let index = 0;
-    const ledger = new AsyncAgentFeedbackLedger({
-      dataDir: tempDir,
-      enabled: true,
-      now: () => times[index++] ?? times.at(-1)!,
-    });
-    ledger.record({
-      sessionId: "S-1",
-      seq: 4,
-      stage: "final",
-      event: "reply",
-      data: {
-        feedbackSummary: {
-          status: "completed",
-          responseKind: "reply",
-          iterations: 1,
-          toolCalls: 0,
-          actionSteps: 0,
-          verificationPassed: false,
-          contextEngine: {
-            finalizationStatus: "not_started",
-            committed: false,
-          },
-          warnings: [],
-        },
-      },
-    });
-    ledger.record({
-      sessionId: "S-1",
-      seq: 4,
-      runId: "run-4",
-      stage: "git_context_service",
-      event: "run_finalization_completed",
-      data: {
-        outcome: "done",
-        stopReason: "completed",
-        materialization: { status: "not_requested" },
-        workstreamContextCommit: { status: "not_required" },
-      },
-    });
-    await ledger.flush();
-
-    ledger.record({
-      sessionId: "S-1",
-      seq: 4,
-      stage: "git_context_service",
-      event: "conversation_persisted",
-      data: {
-        conversationPersistence: {
-          database: "saved",
-          materialization: "not_requested",
-          git: "not_committed",
-          plannedPath: "conversations/000004.pending.md",
-        },
-      },
-    });
-    await ledger.flush();
-
-    const summary = JSON.parse(await readFile(
-      join(tempDir, "feedback", "latest-summary.json"),
-      "utf-8",
-    ));
-    expect(summary.conversationPersistence).toEqual({
-      database: "saved",
-      materialization: "not_requested",
-      git: "not_committed",
-      plannedPath: "conversations/000004.pending.md",
-    });
-    expect(summary.execution).toEqual({
-      verification: "not_applicable",
-      finalization: "completed",
-      commit: "not_required",
-    });
-    const triage = JSON.parse(await readFile(
-      join(tempDir, "feedback", "triage-summary.json"),
-      "utf-8",
-    ));
-    expect(triage).toMatchObject({
-      outcome: "healthy",
-      findings: [{ code: "healthy_conversation", severity: "info" }],
-    });
-  });
-
   it("merges decision repair signals into the latest summary warnings", async () => {
     const times = [
       new Date("2026-06-23T10:00:00.000Z"),
@@ -594,7 +443,7 @@ describe("AsyncAgentFeedbackLedger", () => {
     ]);
   });
 
-  it("projects cache and persistence telemetry and triages persistence failures", async () => {
+  it("projects V6 context and observation telemetry and triages persistence failures", async () => {
     const ledger = new AsyncAgentFeedbackLedger({
       dataDir: tempDir,
       enabled: true,
@@ -613,22 +462,18 @@ describe("AsyncAgentFeedbackLedger", () => {
       seq: 5,
       runId: "run-5",
       stage: "context_engine",
-      event: "harness_context_refresh_completed",
+      event: "run_step_persisted",
       data: {
+        step: 1,
+        workStateRevision: 1,
         contextRevision: "revision-5",
-        previousRevision: "revision-4",
-        readContextRevision: "read-revision-5",
-        readContextAfterCommitRunId: "run-4",
-        readContextCounts: {
+        observationRevision: "observations-5",
+        observationCounts: {
           inventory: 1,
           discovery: 2,
           evidence: 3,
-          actions: 1,
-          total: 7,
+          total: 6,
         },
-        hits: 3,
-        misses: 1,
-        refreshes: 2,
       },
     });
     ledger.record({
@@ -643,20 +488,15 @@ describe("AsyncAgentFeedbackLedger", () => {
 
     const summary = JSON.parse(await readFile(join(tempDir, "feedback", "latest-summary.json"), "utf-8"));
     expect(summary.contextEngine).toMatchObject({
-      cacheStatus: "fresh",
       contextRevision: "revision-5",
-      previousContextRevision: "revision-4",
-      cacheHits: 3,
-      cacheMisses: 1,
-      cacheRefreshes: 2,
-      readContextRevision: "read-revision-5",
-      readContextAfterCommitRunId: "run-4",
-      readContextCounts: {
+      workStateRevision: 1,
+      lastPersistedStep: 1,
+      observationRevision: "observations-5",
+      observationCounts: {
         inventory: 1,
         discovery: 2,
         evidence: 3,
-        actions: 1,
-        total: 7,
+        total: 6,
       },
     });
     expect(summary.warnings).toContain("run_step_persistence_failed");
@@ -1009,7 +849,7 @@ describe("AsyncAgentFeedbackLedger", () => {
     expect(triage.findings).toEqual([expect.objectContaining({ code: "healthy_run" })]);
   });
 
-  it("reduces one-run Git Context events into the workstream lifecycle summary", async () => {
+  it("reduces one-run Context Engine events into the workstream lifecycle summary", async () => {
     const ledger = new AsyncAgentFeedbackLedger({
       dataDir: tempDir,
       enabled: true,
@@ -1236,3 +1076,60 @@ describe("AsyncAgentFeedbackLedger", () => {
     expect(warn).toHaveBeenCalled();
   });
 });
+
+function boundFeedbackContext(): ReturnType<typeof contextEngineFixture> {
+  const context = contextEngineFixture({
+    runId: "run-3",
+    message: "continue upload UI",
+  });
+  context.current.routing = {
+    status: "bound",
+    workstreamId: "W-1",
+    requestId: "R-0001",
+    branch: "main",
+  };
+  context.focus = {
+    status: "active",
+    ref: "refs/heads/main",
+    workstreamId: "W-1",
+  };
+  context.workstream = {
+    ref: "refs/heads/main",
+    workstreamId: "W-1",
+    title: "Upload UI",
+    objective: "Improve upload UI",
+    summary: "Upload UI remains in progress.",
+    workstreamStatus: "in_progress",
+    lifecycleStatus: "active",
+    repositoryHealth: "ready",
+    blockers: [],
+    resources: [{
+      resource: {
+        resourceId: "RES-0123456789ABCDEF01234567",
+        kind: "file",
+        origin: "user_reference",
+        displayName: "mock.png",
+        description: "Upload UI mockup",
+        aliases: ["mockup"],
+        locator: { kind: "filesystem", path: "/ayati/workspace/mock.png" },
+        version: {
+          key: "sha256:mock",
+          observedAt: "2026-06-23T09:00:00.000Z",
+          exists: true,
+          kind: "file",
+          sha256: "mock",
+        },
+        availability: "available",
+        metadataStatus: "enriched",
+        createdAt: "2026-06-23T09:00:00.000Z",
+        updatedAt: "2026-06-23T09:00:00.000Z",
+      },
+      role: "input",
+      access: "read",
+      primary: false,
+      requestIds: ["R-0001"],
+      boundAt: "2026-06-23T09:00:00.000Z",
+    }],
+  };
+  return context;
+}

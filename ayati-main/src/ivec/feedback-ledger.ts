@@ -7,12 +7,8 @@ import {
   mergeFeedbackWorkstreamLifecycle,
   readFeedbackWorkstreamLifecycle,
   type FeedbackWorkstreamLifecycle,
-} from "./git-context-feedback-model.js";
-import { buildGitContextLifecycleFindings } from "./git-context-feedback-triage.js";
-import {
-  readFeedbackConversationPersistenceState,
-  type FeedbackConversationPersistenceState,
-} from "./conversation-persistence-feedback.js";
+} from "./context-engine-feedback-model.js";
+import { buildContextEngineLifecycleFindings } from "./context-engine-feedback-triage.js";
 import {
   deriveFeedbackExecutionOutcome,
   type FeedbackExecutionEvidence,
@@ -53,7 +49,6 @@ export interface AgentFeedbackLatestSummary {
   actionSteps?: number;
   verificationPassed?: boolean;
   basedOnVerifiedFacts?: boolean;
-  conversationPersistence?: FeedbackConversationPersistenceState;
   execution?: FeedbackExecutionOutcome;
   contextEngine?: AgentFeedbackContextEngineSummary;
   warnings: string[];
@@ -80,36 +75,24 @@ export interface AgentFeedbackContextEngineSummary {
   runId?: string;
   committed?: boolean;
   commit?: string;
-  conversationRefs?: Array<{
-    fromSeq: number;
-    toSeq: number;
-  }>;
   pendingWriteCount?: number;
   resourceCount?: number;
   recentRunCount?: number;
   recentEvidenceCount?: number;
   contextRevision?: string;
-  previousContextRevision?: string;
-  cacheStatus?: "hit" | "miss" | "fresh";
-  cacheHits?: number;
-  cacheMisses?: number;
-  cacheRefreshes?: number;
   workstreamBound?: boolean;
   runOutcome?: "done" | "incomplete" | "failed" | "blocked" | "needs_user_input";
   stopReason?: "completed" | "run_limit" | "context_limit" | "failed" | "blocked" | "needs_user_input" | "interrupted";
-  materializationStatus?: "not_requested" | "materialized";
   commitStatus?: "not_required" | "no_change" | "committed";
   headBefore?: string;
   headAfter?: string;
   workStateRevision?: number;
   lastPersistedStep?: number;
-  readContextRevision?: string;
-  readContextAfterCommitRunId?: string;
-  readContextCounts?: {
+  observationRevision?: string;
+  observationCounts?: {
     inventory: number;
     discovery: number;
     evidence: number;
-    actions: number;
     total: number;
   };
   workstreamLifecycle?: FeedbackWorkstreamLifecycle;
@@ -190,10 +173,6 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
   private droppedEvents = 0;
   private readonly feedbackSignals = new Map<string, Set<string>>();
   private readonly contextEngineSignals = new Map<string, AgentFeedbackContextEngineSummary>();
-  private readonly conversationPersistenceSignals = new Map<
-    string,
-    FeedbackConversationPersistenceState
-  >();
   private readonly latestSummaries = new Map<string, AgentFeedbackLatestSummary>();
 
   constructor(options: AgentFeedbackLedgerOptions) {
@@ -219,7 +198,6 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
     };
     this.recordFeedbackSignals(event);
     this.recordContextEngineSignals(event);
-    this.recordConversationPersistenceSignal(event);
 
     if (this.queue.length >= this.maxQueueSize) {
       this.queue.shift();
@@ -384,9 +362,6 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
     if (event.stage === "action" && event.event === "failed") {
       signals.add("action_failed");
     }
-    if (event.stage === "context_engine" && event.event === "harness_context_refresh_failed") {
-      signals.add("context_refresh_failed");
-    }
     if (event.stage === "context_engine" && event.event === "run_step_persistence_failed") {
       signals.add("run_step_persistence_failed");
     }
@@ -424,14 +399,6 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
     }
   }
 
-  private recordConversationPersistenceSignal(event: AgentFeedbackEvent): void {
-    const key = feedbackScopeKey(event);
-    const persistence = conversationPersistenceFromEvent(event);
-    if (key && persistence) {
-      this.conversationPersistenceSignals.set(key, persistence);
-    }
-  }
-
   private buildLatestSummary(event: AgentFeedbackEvent): AgentFeedbackLatestSummary {
     const feedbackSummary = readFeedbackSummary(event) ?? {};
     const rawWarnings = Array.isArray(feedbackSummary["warnings"]) ? feedbackSummary["warnings"] : [];
@@ -448,10 +415,6 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
       readContextEngineFeedbackSummary(feedbackSummary["contextEngine"]),
       this.contextEngineSignals.get(feedbackScopeKey(event) ?? ""),
     );
-    const conversationPersistence = readFeedbackConversationPersistenceState(
-      feedbackSummary["conversationPersistence"],
-    ) ?? this.conversationPersistenceSignals.get(feedbackScopeKey(event) ?? "");
-
     const summary: AgentFeedbackLatestSummary = {
       updatedAt: event.ts,
       tsMs: event.tsMs,
@@ -465,7 +428,6 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
       ...(typeof feedbackSummary["toolLoadDecisions"] === "number" ? { toolLoadDecisions: feedbackSummary["toolLoadDecisions"] } : {}),
       ...(typeof feedbackSummary["actionSteps"] === "number" ? { actionSteps: feedbackSummary["actionSteps"] } : {}),
       ...(typeof feedbackSummary["basedOnVerifiedFacts"] === "boolean" ? { basedOnVerifiedFacts: feedbackSummary["basedOnVerifiedFacts"] } : {}),
-      ...(conversationPersistence ? { conversationPersistence } : {}),
       ...(contextEngine ? { contextEngine } : {}),
       warnings,
       rawPath: feedbackRelativePath(event).replace(/\\/g, "/"),
@@ -485,15 +447,11 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
       this.contextEngineSignals.get(feedbackScopeKey(event) ?? ""),
     );
     const signalWarnings = this.feedbackSignals.get(feedbackScopeKey(event) ?? "") ?? new Set<string>();
-    const conversationPersistence = this.conversationPersistenceSignals.get(
-      feedbackScopeKey(event) ?? "",
-    );
     const next: AgentFeedbackLatestSummary = {
       ...summary,
       updatedAt: event.ts,
       tsMs: event.tsMs,
       ...(event.runId ? { runId: event.runId } : {}),
-      ...(conversationPersistence ? { conversationPersistence } : {}),
       ...(contextEngine ? { contextEngine } : {}),
       warnings: uniqueStrings([
         ...summary.warnings,
@@ -563,18 +521,17 @@ export function buildContextEngineFeedbackSummary(input: {
   workstreamBound?: boolean;
   runOutcome?: AgentFeedbackContextEngineSummary["runOutcome"];
   stopReason?: AgentFeedbackContextEngineSummary["stopReason"];
-  materializationStatus?: AgentFeedbackContextEngineSummary["materializationStatus"];
   commitStatus?: AgentFeedbackContextEngineSummary["commitStatus"];
   headBefore?: string;
   headAfter?: string;
   committed?: boolean;
   commit?: string;
-  conversationRefs?: AgentFeedbackContextEngineSummary["conversationRefs"];
   warningCodes?: string[];
   workstreamLifecycle?: FeedbackWorkstreamLifecycle;
 }): AgentFeedbackContextEngineSummary | undefined {
   const context = input.context;
-  const pendingTurn = context?.pendingTurn;
+  const current = context?.current;
+  const pendingTurn = current?.routing;
   const workstream = context?.workstream;
   const focus = context?.focus;
   const activeWorkstreamId = focus?.status === "active" ? focus.workstreamId : undefined;
@@ -586,12 +543,11 @@ export function buildContextEngineFeedbackSummary(input: {
     ?? pendingTurn?.workstreamId
     ?? workstream?.workstreamId
     ?? activeWorkstreamId;
-  const runId = input.runId ?? pendingTurn?.runId;
+  const runId = input.runId ?? current?.runId;
   const candidate = context?.workstreamCandidates?.find((item) => item.workstreamId === workstreamId);
   const contextWorkstreamLifecycle = workstreamId ? compactFeedbackWorkstreamLifecycle({
     repository: {
       workstreamId,
-      contextRepositoryPath: workstream?.contextRepositoryPath,
       branch,
       health: candidate?.repositoryHealth,
       headBefore: candidate?.head,
@@ -606,24 +562,22 @@ export function buildContextEngineFeedbackSummary(input: {
     } : undefined,
   }) : undefined;
   const workstreamLifecycle = mergeFeedbackWorkstreamLifecycle(contextWorkstreamLifecycle, input.workstreamLifecycle);
-  const readContext = context?.readContext;
-  const readContextCounts = readContext ? {
-    inventory: readContext.inventory.length,
-    discovery: readContext.discovery.length,
-    evidence: readContext.evidence.length,
-    actions: readContext.actions.length,
-    total: readContext.inventory.length
-      + readContext.discovery.length
-      + readContext.evidence.length
-      + readContext.actions.length,
+  const observations = context?.observations;
+  const observationCounts = observations ? {
+    inventory: observations.inventory.length,
+    discovery: observations.discovery.length,
+    evidence: observations.evidence.length,
+    total: observations.inventory.length
+      + observations.discovery.length
+      + observations.evidence.length,
   } : undefined;
 
   return compactContextEngineFeedbackSummary({
-    ...(input.pendingTurnStatus ?? pendingTurn?.routingStatus ? { pendingTurnStatus: input.pendingTurnStatus ?? pendingTurn?.routingStatus } : {}),
-    ...(pendingTurn ? {
+    ...(input.pendingTurnStatus ?? pendingTurn?.status ? { pendingTurnStatus: input.pendingTurnStatus ?? pendingTurn?.status } : {}),
+    ...(current?.inputSeq !== undefined ? {
       pendingTurnRange: {
-        fromSeq: pendingTurn.fromSeq,
-        toSeq: pendingTurn.toSeq,
+        fromSeq: current.inputSeq,
+        toSeq: current.inputSeq,
       },
     } : {}),
     ...(input.routeStatus ? { routeStatus: input.routeStatus } : {}),
@@ -638,22 +592,16 @@ export function buildContextEngineFeedbackSummary(input: {
     ...(input.workstreamBound !== undefined ? { workstreamBound: input.workstreamBound } : {}),
     ...(input.runOutcome ? { runOutcome: input.runOutcome } : {}),
     ...(input.stopReason ? { stopReason: input.stopReason } : {}),
-    ...(input.materializationStatus ? { materializationStatus: input.materializationStatus } : {}),
     ...(input.commitStatus ? { commitStatus: input.commitStatus } : {}),
     ...(input.headBefore ? { headBefore: input.headBefore } : {}),
     ...(input.headAfter ? { headAfter: input.headAfter } : {}),
     ...(input.committed !== undefined ? { committed: input.committed } : {}),
     ...(input.commit ? { commit: input.commit } : {}),
-    ...(input.conversationRefs && input.conversationRefs.length > 0 ? { conversationRefs: input.conversationRefs } : {}),
-    ...((context?.pendingWrites?.length ?? 0) > 0 ? { pendingWriteCount: context!.pendingWrites!.length } : {}),
     ...(workstream ? {
       resourceCount: workstream.resources.length,
     } : {}),
-    ...(readContext ? { readContextRevision: readContext.revision } : {}),
-    ...(readContext?.afterCommitRunId
-      ? { readContextAfterCommitRunId: readContext.afterCommitRunId }
-      : {}),
-    ...(readContextCounts ? { readContextCounts } : {}),
+    ...(observations ? { observationRevision: observations.revision } : {}),
+    ...(observationCounts ? { observationCounts } : {}),
     ...(input.warningCodes && input.warningCodes.length > 0 ? { warningCodes: uniqueStrings(input.warningCodes) } : {}),
     ...(workstreamLifecycle ? { workstreamLifecycle } : {}),
   });
@@ -665,7 +613,7 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
   const contextEngine = summary.contextEngine;
   const executionTriage = executionTriageInput(summary);
 
-  findings.push(...buildGitContextLifecycleFindings({
+  findings.push(...buildContextEngineLifecycleFindings({
     lifecycle: contextEngine?.workstreamLifecycle,
     pendingTurnStatus: contextEngine?.pendingTurnStatus,
     workstreamBound: contextEngine?.workstreamBound,
@@ -707,7 +655,7 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
       code: "context_refresh_failed",
       severity: "error",
       title: "Fresh context could not be loaded",
-      details: "The harness invalidated its local context but could not refresh it from the Git Context Engine.",
+      details: "The harness invalidated its local context but could not refresh it from the Context Engine.",
       recommendation: "Inspect the matching trace id and service request before trusting later agent decisions.",
     });
   }
@@ -717,7 +665,7 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
       code: "run_step_persistence_failed",
       severity: "error",
       title: "Run step was not durably acknowledged",
-      details: "The harness queued a run step but the Git Context Engine did not acknowledge persistence.",
+      details: "The harness queued a run step but the Context Engine did not acknowledge persistence.",
       recommendation: "Inspect the run id and step number; do not treat the run audit trail as complete.",
     });
   }
@@ -843,7 +791,7 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
       code: "normal_tool_before_routing",
       severity: "error",
       title: "Normal tool was chosen before routing",
-      details: "The decision selected a non git-context tool before workstream ownership was resolved.",
+      details: "The decision selected a non-Context-Engine tool before workstream ownership was resolved.",
       recommendation: "Check the projected state view and selected tool list; the model should only see routing and observational tools until a workstream binding exists.",
     });
   }
@@ -854,7 +802,7 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
       severity: "error",
       title: "Routing state and tool surface disagreed",
       details: "Feedback saw pending routing while the selected executable tool surface included normal workstream tools.",
-      recommendation: "Inspect context.git.current.pendingTurn and tool selector filtering for the same decision iteration.",
+      recommendation: "Inspect context.current.routing and tool selector filtering for the same decision iteration.",
     });
   }
 
@@ -863,7 +811,7 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
       code: "context_engine_commit_failed",
       severity: "error",
       title: "Context-engine finalization failed",
-      details: "The run could not be committed to the git context engine.",
+      details: "The run could not be committed to the Context Engine.",
       recommendation: "Inspect the context-engine finalization event and service error before changing model behavior.",
     });
   }
@@ -879,7 +827,7 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
       code: "workstream_bound_run_not_committed",
       severity: "warning",
       title: "Workstream-bound run was not committed",
-      details: "The run had a git-context workstream/run binding but no committed context-engine result.",
+      details: "The run had a Context Engine workstream/run binding but no committed Context Engine result.",
       recommendation: "Check whether app-level finalization ran after the agent loop returned.",
     });
   }
@@ -1063,7 +1011,7 @@ const REPAIR_TRIAGE_FINDINGS: ReadonlyArray<[string, AgentFeedbackTriageFinding]
     severity: "error",
     title: "Pending turn was unbound before tool work",
     details: "The model attempted normal workstream work while the current turn was not bound to a workstream.",
-    recommendation: "Use git-context read/search/create/activate/clarify tools before normal workstream work.",
+    recommendation: "Use the git_context_* read/search/create/activate/clarify tools before normal workstream work.",
   }],
   ["R_PENDING_TURN_CLARIFYING", {
     code: "R_PENDING_TURN_CLARIFYING",
@@ -1118,53 +1066,12 @@ function contextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFeedbac
   );
 }
 
-function conversationPersistenceFromEvent(
-  event: AgentFeedbackEvent,
-): FeedbackConversationPersistenceState | undefined {
-  const fromSummary = readFeedbackConversationPersistenceState(
-    readFeedbackSummary(event)?.["conversationPersistence"],
-  );
-  const fromEvent = event.event === "conversation_persisted"
-    ? readFeedbackConversationPersistenceState(event.data?.["conversationPersistence"])
-    : undefined;
-  return fromEvent ?? fromSummary;
-}
-
 function hasCompactSummarySignal(event: AgentFeedbackEvent): boolean {
-  return contextEngineFeedbackFromEvent(event) !== undefined
-    || conversationPersistenceFromEvent(event) !== undefined;
+  return contextEngineFeedbackFromEvent(event) !== undefined;
 }
 
 function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFeedbackContextEngineSummary | undefined {
   const data = event.data ?? {};
-  if (event.event === "harness_context_cache_hit" || event.event === "harness_context_cache_miss") {
-    return compactContextEngineFeedbackSummary({
-      cacheStatus: event.event.endsWith("_hit") ? "hit" : "miss",
-      ...(readStringValue(data["revision"]) ? { contextRevision: readStringValue(data["revision"]) } : {}),
-      ...(readNumberValue(data["hits"]) !== undefined ? { cacheHits: readNumberValue(data["hits"]) } : {}),
-      ...(readNumberValue(data["misses"]) !== undefined ? { cacheMisses: readNumberValue(data["misses"]) } : {}),
-      ...(readNumberValue(data["refreshes"]) !== undefined ? { cacheRefreshes: readNumberValue(data["refreshes"]) } : {}),
-    });
-  }
-  if (event.event === "harness_context_refresh_completed") {
-    return compactContextEngineFeedbackSummary({
-      cacheStatus: "fresh",
-      ...(readStringValue(data["contextRevision"]) ? { contextRevision: readStringValue(data["contextRevision"]) } : {}),
-      ...(readStringValue(data["previousRevision"]) ? { previousContextRevision: readStringValue(data["previousRevision"]) } : {}),
-      ...(readNumberValue(data["hits"]) !== undefined ? { cacheHits: readNumberValue(data["hits"]) } : {}),
-      ...(readNumberValue(data["misses"]) !== undefined ? { cacheMisses: readNumberValue(data["misses"]) } : {}),
-      ...(readNumberValue(data["refreshes"]) !== undefined ? { cacheRefreshes: readNumberValue(data["refreshes"]) } : {}),
-      ...(readStringValue(data["readContextRevision"])
-        ? { readContextRevision: readStringValue(data["readContextRevision"]) }
-        : {}),
-      ...(readStringValue(data["readContextAfterCommitRunId"])
-        ? { readContextAfterCommitRunId: readStringValue(data["readContextAfterCommitRunId"]) }
-        : {}),
-      ...(readContextCounts(data["readContextCounts"])
-        ? { readContextCounts: readContextCounts(data["readContextCounts"]) }
-        : {}),
-    });
-  }
   if (event.event === "run_started") {
     return compactContextEngineFeedbackSummary({
       ...(event.runId ? { runId: event.runId } : {}),
@@ -1212,7 +1119,6 @@ function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFe
   }
   if (event.event === "run_finalization_completed") {
     const binding = readRecordValue(data["workstreamBinding"]);
-    const materialization = readRecordValue(data["materialization"]);
     const commit = readRecordValue(data["workstreamContextCommit"]);
     const commitStatus = readCommitStatus(commit?.["status"]);
     const workstreamId = readStringValue(binding?.["workstreamId"]);
@@ -1226,7 +1132,6 @@ function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFe
       workstreamBound: Boolean(binding),
       runOutcome: readFinalizationOutcome(data["outcome"]),
       stopReason: readRunStopReason(data["stopReason"]),
-      materializationStatus: readMaterializationStatus(materialization?.["status"]),
       commitStatus,
       finalizationStatus: commitStatus ?? "failed",
       committed: commitStatus === "committed",
@@ -1263,6 +1168,15 @@ function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFe
         ? { workStateRevision: readNumberValue(data["workStateRevision"]) }
         : {}),
       ...(readNumberValue(data["step"]) !== undefined ? { lastPersistedStep: readNumberValue(data["step"]) } : {}),
+      ...(readStringValue(data["contextRevision"])
+        ? { contextRevision: readStringValue(data["contextRevision"]) }
+        : {}),
+      ...(readStringValue(data["observationRevision"])
+        ? { observationRevision: readStringValue(data["observationRevision"]) }
+        : {}),
+      ...(readObservationCounts(data["observationCounts"])
+        ? { observationCounts: readObservationCounts(data["observationCounts"]) }
+        : {}),
       ...(event.runId ? { runId: event.runId } : {}),
     });
   }
@@ -1298,7 +1212,6 @@ function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFe
       ...(readStringValue(data["branch"]) ? { branch: readStringValue(data["branch"]) } : {}),
       ...(readStringValue(data["ref"]) ? { ref: readStringValue(data["ref"]) } : {}),
       ...(readStringValue(data["runId"]) ? { runId: readStringValue(data["runId"]) } : {}),
-      ...(readConversationRefs(data["conversationRefs"]) ? { conversationRefs: readConversationRefs(data["conversationRefs"]) } : {}),
     });
   }
   if (event.event === "route_result") {
@@ -1311,7 +1224,6 @@ function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFe
       ...(readStringValue(data["branch"]) ? { branch: readStringValue(data["branch"]) } : {}),
       ...(readStringValue(data["ref"]) ? { ref: readStringValue(data["ref"]) } : {}),
       ...(readStringValue(data["runId"]) ? { runId: readStringValue(data["runId"]) } : {}),
-      ...(readConversationRefs(data["conversationRefs"]) ? { conversationRefs: readConversationRefs(data["conversationRefs"]) } : {}),
     });
   }
   if (event.event === "routed") {
@@ -1324,7 +1236,6 @@ function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFe
       ...(readStringValue(data["branch"]) ? { branch: readStringValue(data["branch"]) } : {}),
       ...(readStringValue(data["ref"]) ? { ref: readStringValue(data["ref"]) } : {}),
       ...(readStringValue(data["runId"]) ? { runId: readStringValue(data["runId"]) } : {}),
-      ...(readConversationRefs(data["conversationRefs"]) ? { conversationRefs: readConversationRefs(data["conversationRefs"]) } : {}),
     });
   }
   if (event.event === "agent_routed") {
@@ -1366,29 +1277,21 @@ function readContextEngineFeedbackSummary(value: unknown): AgentFeedbackContextE
     ...(readStringValue(record["runId"]) ? { runId: readStringValue(record["runId"]) } : {}),
     ...(typeof record["committed"] === "boolean" ? { committed: record["committed"] } : {}),
     ...(readStringValue(record["commit"]) ? { commit: readStringValue(record["commit"]) } : {}),
-    ...(readConversationRefs(record["conversationRefs"]) ? { conversationRefs: readConversationRefs(record["conversationRefs"]) } : {}),
     ...(readNumberValue(record["pendingWriteCount"]) !== undefined ? { pendingWriteCount: readNumberValue(record["pendingWriteCount"]) } : {}),
     ...(readNumberValue(record["resourceCount"]) !== undefined ? { resourceCount: readNumberValue(record["resourceCount"]) } : {}),
     ...(readNumberValue(record["recentRunCount"]) !== undefined ? { recentRunCount: readNumberValue(record["recentRunCount"]) } : {}),
     ...(readNumberValue(record["recentEvidenceCount"]) !== undefined ? { recentEvidenceCount: readNumberValue(record["recentEvidenceCount"]) } : {}),
     ...(readStringValue(record["contextRevision"]) ? { contextRevision: readStringValue(record["contextRevision"]) } : {}),
-    ...(readStringValue(record["previousContextRevision"]) ? { previousContextRevision: readStringValue(record["previousContextRevision"]) } : {}),
-    ...(readCacheStatus(record["cacheStatus"]) ? { cacheStatus: readCacheStatus(record["cacheStatus"]) } : {}),
-    ...(readNumberValue(record["cacheHits"]) !== undefined ? { cacheHits: readNumberValue(record["cacheHits"]) } : {}),
-    ...(readNumberValue(record["cacheMisses"]) !== undefined ? { cacheMisses: readNumberValue(record["cacheMisses"]) } : {}),
-    ...(readNumberValue(record["cacheRefreshes"]) !== undefined ? { cacheRefreshes: readNumberValue(record["cacheRefreshes"]) } : {}),
     ...(typeof record["workstreamBound"] === "boolean" ? { workstreamBound: record["workstreamBound"] } : {}),
     ...(readFinalizationOutcome(record["runOutcome"]) ? { runOutcome: readFinalizationOutcome(record["runOutcome"]) } : {}),
     ...(readRunStopReason(record["stopReason"]) ? { stopReason: readRunStopReason(record["stopReason"]) } : {}),
-    ...(readMaterializationStatus(record["materializationStatus"]) ? { materializationStatus: readMaterializationStatus(record["materializationStatus"]) } : {}),
     ...(readCommitStatus(record["commitStatus"]) ? { commitStatus: readCommitStatus(record["commitStatus"]) } : {}),
     ...(readStringValue(record["headBefore"]) ? { headBefore: readStringValue(record["headBefore"]) } : {}),
     ...(readStringValue(record["headAfter"]) ? { headAfter: readStringValue(record["headAfter"]) } : {}),
     ...(readNumberValue(record["workStateRevision"]) !== undefined ? { workStateRevision: readNumberValue(record["workStateRevision"]) } : {}),
     ...(readNumberValue(record["lastPersistedStep"]) !== undefined ? { lastPersistedStep: readNumberValue(record["lastPersistedStep"]) } : {}),
-    ...(readStringValue(record["readContextRevision"]) ? { readContextRevision: readStringValue(record["readContextRevision"]) } : {}),
-    ...(readStringValue(record["readContextAfterCommitRunId"]) ? { readContextAfterCommitRunId: readStringValue(record["readContextAfterCommitRunId"]) } : {}),
-    ...(readContextCounts(record["readContextCounts"]) ? { readContextCounts: readContextCounts(record["readContextCounts"]) } : {}),
+    ...(readStringValue(record["observationRevision"]) ? { observationRevision: readStringValue(record["observationRevision"]) } : {}),
+    ...(readObservationCounts(record["observationCounts"]) ? { observationCounts: readObservationCounts(record["observationCounts"]) } : {}),
     ...(readFeedbackWorkstreamLifecycle(record["workstreamLifecycle"])
       ? { workstreamLifecycle: readFeedbackWorkstreamLifecycle(record["workstreamLifecycle"]) }
       : {}),
@@ -1410,7 +1313,6 @@ function mergeContextEngineFeedbackSummary(
     ...left,
     ...right,
     pendingTurnRange: right.pendingTurnRange ?? left.pendingTurnRange,
-    conversationRefs: right.conversationRefs ?? left.conversationRefs,
     workstreamLifecycle: mergeFeedbackWorkstreamLifecycle(left.workstreamLifecycle, right.workstreamLifecycle),
     warningCodes: uniqueStrings([
       ...(left.warningCodes ?? []),
@@ -1436,29 +1338,21 @@ function compactContextEngineFeedbackSummary(
   if (value.runId) output.runId = value.runId;
   if (value.committed !== undefined) output.committed = value.committed;
   if (value.commit) output.commit = value.commit;
-  if (value.conversationRefs && value.conversationRefs.length > 0) output.conversationRefs = value.conversationRefs;
   if (value.pendingWriteCount !== undefined) output.pendingWriteCount = value.pendingWriteCount;
   if (value.resourceCount !== undefined) output.resourceCount = value.resourceCount;
   if (value.recentRunCount !== undefined) output.recentRunCount = value.recentRunCount;
   if (value.recentEvidenceCount !== undefined) output.recentEvidenceCount = value.recentEvidenceCount;
   if (value.contextRevision) output.contextRevision = value.contextRevision;
-  if (value.previousContextRevision) output.previousContextRevision = value.previousContextRevision;
-  if (value.cacheStatus) output.cacheStatus = value.cacheStatus;
-  if (value.cacheHits !== undefined) output.cacheHits = value.cacheHits;
-  if (value.cacheMisses !== undefined) output.cacheMisses = value.cacheMisses;
-  if (value.cacheRefreshes !== undefined) output.cacheRefreshes = value.cacheRefreshes;
   if (value.workstreamBound !== undefined) output.workstreamBound = value.workstreamBound;
   if (value.runOutcome) output.runOutcome = value.runOutcome;
   if (value.stopReason) output.stopReason = value.stopReason;
-  if (value.materializationStatus) output.materializationStatus = value.materializationStatus;
   if (value.commitStatus) output.commitStatus = value.commitStatus;
   if (value.headBefore) output.headBefore = value.headBefore;
   if (value.headAfter) output.headAfter = value.headAfter;
   if (value.workStateRevision !== undefined) output.workStateRevision = value.workStateRevision;
   if (value.lastPersistedStep !== undefined) output.lastPersistedStep = value.lastPersistedStep;
-  if (value.readContextRevision) output.readContextRevision = value.readContextRevision;
-  if (value.readContextAfterCommitRunId) output.readContextAfterCommitRunId = value.readContextAfterCommitRunId;
-  if (value.readContextCounts) output.readContextCounts = value.readContextCounts;
+  if (value.observationRevision) output.observationRevision = value.observationRevision;
+  if (value.observationCounts) output.observationCounts = value.observationCounts;
   const workstreamLifecycle = compactFeedbackWorkstreamLifecycle(value.workstreamLifecycle);
   if (workstreamLifecycle) output.workstreamLifecycle = workstreamLifecycle;
   if (value.warningCodes && value.warningCodes.length > 0) output.warningCodes = uniqueStrings(value.warningCodes);
@@ -1536,34 +1430,28 @@ function readWorkstreamRequestStatus(
     : undefined;
 }
 
-function readCacheStatus(value: unknown): AgentFeedbackContextEngineSummary["cacheStatus"] {
-  return value === "hit" || value === "miss" || value === "fresh" ? value : undefined;
-}
-
 function readNumberValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function readContextCounts(
+function readObservationCounts(
   value: unknown,
-): AgentFeedbackContextEngineSummary["readContextCounts"] {
+): AgentFeedbackContextEngineSummary["observationCounts"] {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
   const inventory = readNumberValue(record["inventory"]);
   const discovery = readNumberValue(record["discovery"]);
   const evidence = readNumberValue(record["evidence"]);
-  const actions = readNumberValue(record["actions"]);
   const total = readNumberValue(record["total"]);
   if (
     inventory === undefined
     || discovery === undefined
     || evidence === undefined
-    || actions === undefined
     || total === undefined
   ) {
     return undefined;
   }
-  return { inventory, discovery, evidence, actions, total };
+  return { inventory, discovery, evidence, total };
 }
 
 function readStringArray(value: unknown): string[] {
@@ -1632,12 +1520,6 @@ function readRunStopReason(value: unknown): AgentFeedbackContextEngineSummary["s
     : undefined;
 }
 
-function readMaterializationStatus(
-  value: unknown,
-): AgentFeedbackContextEngineSummary["materializationStatus"] {
-  return value === "not_requested" || value === "materialized" ? value : undefined;
-}
-
 function readCommitStatus(value: unknown): AgentFeedbackContextEngineSummary["commitStatus"] {
   return value === "not_required" || value === "no_change" || value === "committed"
     ? value
@@ -1652,22 +1534,6 @@ function readPendingTurnRange(value: unknown): AgentFeedbackContextEngineSummary
   const fromSeq = readNumberValue(record["fromSeq"]);
   const toSeq = readNumberValue(record["toSeq"]);
   return fromSeq !== undefined && toSeq !== undefined ? { fromSeq, toSeq } : undefined;
-}
-
-function readConversationRefs(value: unknown): AgentFeedbackContextEngineSummary["conversationRefs"] | undefined {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-  const refs = value.flatMap((item) => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) {
-      return [];
-    }
-    const record = item as Record<string, unknown>;
-    const fromSeq = readNumberValue(record["fromSeq"]);
-    const toSeq = readNumberValue(record["toSeq"]);
-    return fromSeq !== undefined && toSeq !== undefined ? [{ fromSeq, toSeq }] : [];
-  });
-  return refs.length > 0 ? refs : undefined;
 }
 
 function sanitizePathPart(value: string): string {

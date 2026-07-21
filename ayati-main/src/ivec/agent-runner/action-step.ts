@@ -52,7 +52,7 @@ export interface ExecuteActionStepInput {
 }
 
 export async function executeActionStep(input: ExecuteActionStepInput): Promise<ExecuteActionStepResult> {
-  const runHandle = input.runHandle ?? requireRunHandle(input.deps);
+  const runHandle = input.runHandle ?? memoryRunHandle(requireRunHandle(input.deps));
   const workstreamResources = isWorkstreamBound(input.state)
     ? input.state.harnessContext.contextEngine?.workstream?.resources
     : undefined;
@@ -112,8 +112,18 @@ export async function executeActionStep(input: ExecuteActionStepInput): Promise<
   };
 }
 
+function memoryRunHandle(
+  handle: ReturnType<typeof requireRunHandle>,
+): MemoryRunHandle {
+  return {
+    sessionId: handle.streamId,
+    runId: handle.runId,
+    triggerSeq: handle.triggerSeq,
+  };
+}
+
 function isWorkstreamBound(state: LoopState): boolean {
-  return state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "bound";
+  return state.harnessContext.contextEngine?.current.routing?.status === "bound";
 }
 
 export async function applyToolStateUpdates(state: LoopState, deps: AgentLoopDeps, calls: ActToolCallRecord[]): Promise<void> {

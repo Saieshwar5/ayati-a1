@@ -12,7 +12,7 @@ High-risk runtime capabilities:
 - SQLite database tools.
 - Plugin webhooks.
 - Upload handling.
-- Git Context workstream/resource lifecycle mutation.
+- Context Engine workstream/resource lifecycle mutation.
 
 Resources and context repositories are separate security boundaries:
 

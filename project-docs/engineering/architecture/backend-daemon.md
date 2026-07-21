@@ -12,8 +12,9 @@ Core responsibilities:
 - Start WebSocket chat transport.
 - Start HTTP upload/artifact/Pulse API.
 - Start plugins and system-event worker.
-- Supervise the local Git Context service and consume its typed session, task,
-  request, run, and context-projection operations.
+- Open and close the in-process Context Engine host and consume its typed
+  agent-stream, workstream, request, run, checkpoint, history, and
+  context-projection operations.
 - Manage personal memory stores and episodic recall services.
 - Register a hidden tool catalog and expose only a capped run-scoped working set of tool schemas.
 - Execute the IVec decision-action-reducer agent loop.

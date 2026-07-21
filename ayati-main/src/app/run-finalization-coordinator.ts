@@ -1,14 +1,14 @@
-import type { FinalizeRunResponse } from "ayati-git-context";
+import type { FinalizeRunResponse } from "ayati-context-engine";
 import type { AgentLoopResult } from "../ivec/types.js";
 import type {
-  GitContextPreparedTurn,
-  GitContextRuntime,
-} from "./git-context-runtime.js";
+  ContextEnginePreparedTurn,
+  ContextEngineRuntime,
+} from "./context-engine-runtime.js";
 import { buildAgentRunFinalizationProjection } from "./run-finalization-projection.js";
 
 export async function finalizeAgentRun(input: {
-  runtime: GitContextRuntime;
-  turn: GitContextPreparedTurn;
+  runtime: ContextEngineRuntime;
+  turn: ContextEnginePreparedTurn;
   result: AgentLoopResult;
   at: string;
   fallbackSummary?: string;
@@ -24,7 +24,7 @@ export async function finalizeAgentRun(input: {
     outcome: input.result.outcome,
     stopReason: input.result.stopReason,
     assistantResponse: projection.assistantResponse,
-    conversationSummary: projection.conversationSummary,
+    streamSummary: projection.streamSummary,
     summary: projection.summary,
     validation: finalizationValidation(input.result, workstreamBound),
     ...(projection.next ? { next: projection.next } : {}),
@@ -41,15 +41,15 @@ export async function finalizeAgentRun(input: {
 }
 
 export function isWorkstreamBoundRun(
-  turn: GitContextPreparedTurn,
+  turn: ContextEnginePreparedTurn,
   result: AgentLoopResult,
 ): boolean {
   return isWorkstreamBoundResult(result)
-    || turn.context.pendingTurn?.routingStatus === "bound";
+    || turn.context.current.routing?.status === "bound";
 }
 
 export function isWorkstreamBoundResult(result: AgentLoopResult): boolean {
-  return result.harnessContext?.contextEngine?.pendingTurn?.routingStatus === "bound";
+  return result.harnessContext?.contextEngine?.current.routing?.status === "bound";
 }
 
 function finalizationValidation(

@@ -11,8 +11,8 @@ Working rules:
 
 - Keep changes scoped to the request.
 - Treat `ayati-main` as the persistent agent daemon.
-- Treat `ayati-git-context` as the sole owner of Git Context SQLite and Git
-  mutations; use its typed protocol from the daemon.
+- Treat `ayati-context-engine` as the sole owner of Context Engine SQLite and Git
+  mutations; use its typed service interface from the daemon.
 - Treat `ayati-cli` as one client surface, not the owner of agent intelligence.
 - Treat `src/ivec/agent-runner` as the current harness implementation.
 - Preserve the decision-action-reducer model: context pack, decision, action executor, deterministic verification, progress reducer.
@@ -47,9 +47,9 @@ Product rules:
 Important source entry points:
 
 - `ayati-main/src/app/main.ts`
-- `ayati-main/src/app/git-context-process.ts`
-- `ayati-git-context/src/server-main.ts`
-- `ayati-git-context/src/services/sqlite-git-context-service.ts`
+- `ayati-context-engine/src/runtime.ts`
+- `ayati-context-engine/src/services/sqlite-context-engine-service.ts`
+- `ayati-main/src/app/context-engine-runtime.ts`
 - `ayati-main/src/ivec/index.ts`
 - `ayati-main/src/ivec/agent-runner/runner.ts`
 - `ayati-main/src/ivec/agent-runner/context-pack.ts`

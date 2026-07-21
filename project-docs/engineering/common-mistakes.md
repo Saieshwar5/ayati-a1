@@ -28,7 +28,7 @@ Avoid these:
 - Editing `workstream.md`, request files, or `resources.json` directly from
   general tools instead of letting runtime finalization own them.
 - Loading every workstream repository, old conversation, or raw output record into the
-  default prompt instead of using compact active context, git-context retrieval,
+  default prompt instead of using compact active context, Context Engine retrieval,
   and narrower domain-tool calls.
 - Committing attachments, deliverables, raw transcripts, runtime databases, or
   external-action payloads into workstream context Git.

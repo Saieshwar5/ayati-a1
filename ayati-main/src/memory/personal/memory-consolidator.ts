@@ -64,6 +64,16 @@ export class MemoryConsolidator {
     return jobId;
   }
 
+  enqueueCheckpoint(payload: MemoryConsolidationJobPayload & {
+    checkpointId: string;
+    coveredFromSeq: number;
+    coveredToSeq: number;
+  }): string {
+    const jobId = this.store.enqueueConsolidationJob(payload, this.nowIso());
+    this.scheduleProcessing();
+    return jobId;
+  }
+
   scheduleProcessing(): void {
     if (this.processingPromise || this.shuttingDown) {
       return;
@@ -331,18 +341,24 @@ export class MemoryConsolidator {
       `## Existing ${sectionTitle(sectionId)}`,
       existing || "(none)",
       "",
-      "## Session Handoff Summary",
-      payload.handoffSummary?.trim() || "(none)",
-      "",
+      ...(!payload.checkpointId
+        ? [
+          "## Session Handoff Summary",
+          payload.handoffSummary?.trim() || "(none)",
+          "",
+        ]
+        : []),
       ...(chunkInfo
         ? [
-          "## Session Chunk",
-          `Chunk ${chunkInfo.index + 1} of ${chunkInfo.count}; total session turns: ${chunkInfo.totalTurns}.`,
+          payload.checkpointId ? "## Checkpoint Message Chunk" : "## Session Chunk",
+          `Chunk ${chunkInfo.index + 1} of ${chunkInfo.count}; total input turns: ${chunkInfo.totalTurns}.`,
           "Extract only memories supported by this chunk. A later merge pass will remove duplicates and corrections.",
           "",
         ]
         : []),
-      "## Session Conversation",
+      payload.checkpointId
+        ? `## Exact Checkpointed Messages (${payload.coveredFromSeq}-${payload.coveredToSeq})`
+        : "## Session Conversation",
       turns || "(none)",
       "",
       "Return JSON with this exact shape:",

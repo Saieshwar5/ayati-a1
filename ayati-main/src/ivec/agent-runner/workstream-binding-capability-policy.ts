@@ -8,12 +8,9 @@ import {
 } from "../../skills/tool-taxonomy.js";
 import {
   GIT_CONTEXT_UNBOUND_RUN_ROUTING_TOOL_NAMES,
-  GIT_CONTEXT_ROUTING_SUPPORT_TOOL_NAMES,
-  GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
   isGitContextBoundResourceToolName,
   isGitContextAllowedDuringPendingRouting,
   isGitContextRoutingSupportToolName,
-  isGitContextTurnRoutingToolName,
 } from "../../skills/builtins/git-context/tool-policy.js";
 import type { LoopState } from "../types.js";
 import type { AgentDecision } from "./decision.js";
@@ -50,33 +47,20 @@ export interface CapabilityToolSummary {
 export function deriveWorkstreamBindingCapabilityPolicy(
   state: LoopState,
 ): WorkstreamBindingCapabilityPolicy {
-  const pendingTurnStatus = state.harnessContext.contextEngine?.pendingTurn?.routingStatus;
+  const pendingTurnStatus = state.harnessContext.contextEngine?.current.routing?.status;
   const workstreamBound = pendingTurnStatus === "bound";
   const routingSuppressed = state.inputKind === "user_message"
     && isClearlyConversationOnlyRequest(state.userMessage);
-  const attempts = state.routingAttempts ?? {
-    successCount: 0,
-    failureCount: 0,
-    maxFailures: 2,
-    resolved: false,
-  };
-  const routingFailureLimitReached = attempts.failureCount >= attempts.maxFailures;
-  const routingResolved = attempts.resolved
-    || attempts.successCount > 0
-    || state.completedSteps.some((step) =>
-      step.outcome !== "failed"
-      && (step.toolsUsed ?? []).some(isGitContextTurnRoutingToolName));
   const routingAvailable = !workstreamBound
     && pendingTurnStatus !== "clarifying"
     && !routingSuppressed
-    && !routingResolved
-    && !routingFailureLimitReached;
+    && state.harnessContext.contextEngine?.workstreamResolution?.runId !== state.runId;
   return {
     workstreamBound,
     ...(pendingTurnStatus ? { pendingTurnStatus } : {}),
     routingSuppressed,
     routingAvailable,
-    routingFailureLimitReached,
+    routingFailureLimitReached: false,
     allowToolLoading: pendingTurnStatus !== "clarifying",
   };
 }
@@ -85,6 +69,7 @@ export function isToolAllowedByWorkstreamBinding(
   policy: WorkstreamBindingCapabilityPolicy,
   toolName: string,
 ): boolean {
+  if (LEGACY_MAIN_LOOP_RESOLUTION_TOOLS.has(toolName)) return false;
   const taxonomy = getToolTaxonomy(toolName);
   if (!taxonomy) return false;
   if (policy.workstreamBound) {
@@ -122,16 +107,10 @@ export function toolPhaseForWorkstreamBinding(
 }
 
 export function requiredRoutingControls(
-  policy: WorkstreamBindingCapabilityPolicy,
-  state: LoopState,
+  _policy: WorkstreamBindingCapabilityPolicy,
+  _state: LoopState,
 ): string[] {
-  if (!policy.routingAvailable) return [];
-  return state.harnessContext.contextEngine?.focus.status === "none"
-    ? [...GIT_CONTEXT_UNBOUND_RUN_ROUTING_TOOL_NAMES]
-    : [
-        ...GIT_CONTEXT_ROUTING_SUPPORT_TOOL_NAMES,
-        ...GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
-      ];
+  return [];
 }
 
 export function deterministicToolsForWorkstreamBinding(
@@ -147,6 +126,7 @@ export function isDecisionAllowedByWorkstreamBinding(
 ): boolean {
   if (decision.kind === "reply") return true;
   if (decision.kind === "load_tools") return policy.allowToolLoading;
+  if (decision.kind === "resolve_workstream") return policy.routingAvailable;
   if (decision.kind !== "act" || decision.action.calls.length === 0) return false;
   return decision.action.calls.every((call) => isToolAllowedByWorkstreamBinding(policy, call.tool))
     && decision.action.allowedTools.every((tool) => isToolAllowedByWorkstreamBinding(policy, tool));
@@ -197,3 +177,11 @@ export function isToolAvailableInDerivedPhase(
 function isWorkstreamRoutingControl(taxonomy: ToolTaxonomyEntry): boolean {
   return taxonomy.purpose === "control" && taxonomy.roles.includes("workstream_routing");
 }
+
+const LEGACY_MAIN_LOOP_RESOLUTION_TOOLS = new Set<string>([
+  "git_context_find_workstreams",
+  "git_context_read_workstream",
+  "git_context_find_resources",
+  "git_context_inspect_resource",
+  ...GIT_CONTEXT_UNBOUND_RUN_ROUTING_TOOL_NAMES,
+]);

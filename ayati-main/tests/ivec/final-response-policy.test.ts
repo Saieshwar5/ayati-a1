@@ -10,8 +10,10 @@ import {
   isUsableFinalResponseMessage,
   shouldRejectTerminalReplyForUnresolvedMutation,
 } from "../../src/ivec/agent-runner/final-response-policy.js";
+import { contextEngineFixture } from "../fixtures/agent-context.js";
 
 function state(input: Partial<LoopState> = {}): LoopState {
+  const contextEngine = contextEngineFixture({ runId: "R-1", message: "update the html file" });
   return {
     runId: "R-1",
     currentSeq: 1,
@@ -28,30 +30,19 @@ function state(input: Partial<LoopState> = {}): LoopState {
     maxIterations: 15,
     consecutiveFailures: 0,
     completedSteps: [],
-    routingAttempts: {
-      successCount: 0,
-      failureCount: 0,
-      maxFailures: 2,
-      resolved: false,
-    },
     runPath: "",
     failureHistory: [],
     harnessContext: createInitialHarnessContext({
       contextEngine: {
-        session: {
-          meta: { sessionId: "S-1", resourceCount: 0 },
-          conversationTail: [],
-          activityTail: [],
-        },
-        pendingTurn: {
-          fromSeq: 1,
-          toSeq: 1,
-          text: "update the html file",
-          at: "2026-07-19T10:00:00.000Z",
-          routingStatus: "bound",
-          workstreamId: "W-1",
-          branch: "main",
-          runId: "R-1",
+        ...contextEngine,
+        current: {
+          ...contextEngine.current,
+          routing: {
+            status: "bound",
+            workstreamId: "W-1",
+            requestId: "REQ-1",
+            branch: "main",
+          },
         },
         focus: {
           status: "active",

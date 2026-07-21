@@ -3,8 +3,8 @@ import type { ContextBudgetReport } from "./context-budget.js";
 export type ContextCompilationMode =
   | "full"
   | "tool_compact"
-  | "session_shed"
-  | "timeline_checkpoint"
+  | "stream_project"
+  | "stream_checkpoint"
   | "step_ledger";
 
 export interface ContextCompilationReceipt {
@@ -29,7 +29,7 @@ export interface ContextCompilationReceipt {
   toolProjectionPolicy?: "shadow" | "enforce";
   targetReached?: boolean;
   needsEscalation?: boolean;
-  timelineCheckpoint?: {
+  streamCheckpoint?: {
     coveredFromSeq: number;
     coveredToSeq: number;
     sourceEventCount: number;
@@ -38,11 +38,11 @@ export interface ContextCompilationReceipt {
     cacheStatus: "generated" | "success_hit";
     generationAttempts: number;
   };
-  sessionShedding?: {
-    removedSummary: boolean;
-    removedCheckpointCount: number;
-    retainedCheckpointId?: string;
-    removedActivityCount: number;
+  streamProjection?: {
+    removedCandidateCount: number;
+    removedRecentWorkCount: number;
+    removedResourceCount: number;
+    removedObservationCount: number;
     tokensBefore: number;
     tokensAfter: number;
   };
@@ -63,18 +63,18 @@ export interface ContextCompilationReceipt {
   }>;
 }
 
-export function buildSessionSheddingCompilationReceipt(input: {
+export function buildStreamProjectionCompilationReceipt(input: {
   candidate: ContextBudgetReport;
   intermediate: ContextBudgetReport;
   final: ContextBudgetReport;
   decisionAttempt: number;
   transformations: ContextCompilationReceipt["transformations"];
-  shedding: NonNullable<ContextCompilationReceipt["sessionShedding"]>;
+  projection: NonNullable<ContextCompilationReceipt["streamProjection"]>;
 }): ContextCompilationReceipt {
   return {
     schemaVersion: 1,
     decisionAttempt: input.decisionAttempt,
-    mode: "session_shed",
+    mode: "stream_project",
     provider: input.final.provider,
     model: input.final.model,
     candidateInputTokens: input.candidate.measuredInputTokens,
@@ -93,25 +93,25 @@ export function buildSessionSheddingCompilationReceipt(input: {
     toolProjectionPolicy: "enforce",
     targetReached: input.final.measuredInputTokens <= input.final.recoveryTargetTokens,
     needsEscalation: input.final.softLimitExceeded,
-    sessionShedding: input.shedding,
+    streamProjection: input.projection,
     transformations: input.transformations,
   };
 }
 
-export function buildTimelineCheckpointCompilationReceipt(input: {
+export function buildStreamCheckpointCompilationReceipt(input: {
   candidate: ContextBudgetReport;
   intermediate: ContextBudgetReport;
   final: ContextBudgetReport;
   decisionAttempt: number;
   transformations: ContextCompilationReceipt["transformations"];
-  checkpoint: NonNullable<ContextCompilationReceipt["timelineCheckpoint"]>;
-  sessionShedding?: NonNullable<ContextCompilationReceipt["sessionShedding"]>;
+  checkpoint: NonNullable<ContextCompilationReceipt["streamCheckpoint"]>;
+  streamProjection?: NonNullable<ContextCompilationReceipt["streamProjection"]>;
   recoveryExhausted?: boolean;
 }): ContextCompilationReceipt {
   return {
     schemaVersion: 1,
     decisionAttempt: input.decisionAttempt,
-    mode: "timeline_checkpoint",
+    mode: "stream_checkpoint",
     provider: input.final.provider,
     model: input.final.model,
     candidateInputTokens: input.candidate.measuredInputTokens,
@@ -130,8 +130,8 @@ export function buildTimelineCheckpointCompilationReceipt(input: {
     toolProjectionPolicy: "enforce",
     targetReached: input.final.measuredInputTokens <= input.final.recoveryTargetTokens,
     needsEscalation: input.final.softLimitExceeded,
-    timelineCheckpoint: input.checkpoint,
-    ...(input.sessionShedding ? { sessionShedding: input.sessionShedding } : {}),
+    streamCheckpoint: input.checkpoint,
+    ...(input.streamProjection ? { streamProjection: input.streamProjection } : {}),
     ...(input.recoveryExhausted ? { recoveryExhausted: true } : {}),
     transformations: input.transformations,
   };

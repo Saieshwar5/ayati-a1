@@ -18,10 +18,11 @@ import type {
 } from "../memory/types.js";
 import type {
   AgentRunHandle,
+  ContextEngineService,
   FinalizeRunResponse,
   ResourceAdmission,
   ResourceKind,
-} from "ayati-git-context";
+} from "ayati-context-engine";
 import {
   appendPulseProposalQuestion,
   PulseProposalReflectionService,
@@ -52,11 +53,12 @@ import type {
   FinalResponseStreamKind,
   LoopConfig,
 } from "../ivec/types.js";
+import { createWorkstreamResolutionCoordinator } from "../ivec/workstream-resolution/runner.js";
 import { buildStaticSystemContext } from "./static-prompt.js";
 import type {
-  GitContextPreparedTurn,
-  GitContextRuntime,
-} from "./git-context-runtime.js";
+  ContextEnginePreparedTurn,
+  ContextEngineRuntime,
+} from "./context-engine-runtime.js";
 import {
   finalizeAgentRun,
   isWorkstreamBoundResult,
@@ -71,7 +73,8 @@ export interface CreateChatTurnRuntimeOptions {
   toolExecutor?: ToolExecutor;
   skillActivationManager?: SkillActivationManager;
   toolWorkingSetManager?: ToolWorkingSetManager;
-  chatContextRuntime: GitContextRuntime;
+  chatContextRuntime: ContextEngineRuntime;
+  contextEngineService?: ContextEngineService;
   loopConfig?: Partial<LoopConfig>;
   now?: () => Date;
   dataDir?: string;
@@ -80,6 +83,7 @@ export interface CreateChatTurnRuntimeOptions {
   fileLibrary?: FileLibrary;
   directoryLibrary?: DirectoryLibrary;
   feedbackLedger?: AgentFeedbackLedger;
+  personalMemorySnapshot?: (clientId: string) => string;
 }
 
 interface RegisteredChatAttachments {
@@ -136,7 +140,9 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   private readonly fileLibrary?: FileLibrary;
   private readonly directoryLibrary?: DirectoryLibrary;
   private readonly feedbackLedger?: AgentFeedbackLedger;
-  private readonly chatContextRuntime: GitContextRuntime;
+  private readonly chatContextRuntime: ContextEngineRuntime;
+  private readonly contextEngineService?: ContextEngineService;
+  private readonly personalMemorySnapshot?: (clientId: string) => string;
   private readonly pulseProposalReflectionService = new PulseProposalReflectionService();
   private readonly turnSerializer = new AsyncKeySerializer();
 
@@ -158,6 +164,8 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     this.directoryLibrary = options.directoryLibrary;
     this.feedbackLedger = options.feedbackLedger;
     this.chatContextRuntime = options.chatContextRuntime;
+    this.contextEngineService = options.contextEngineService;
+    this.personalMemorySnapshot = options.personalMemorySnapshot;
   }
 
   async processChat(input: ChatTurnRuntimeInput): Promise<void> {
@@ -196,7 +204,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   private async processChatUnlocked(input: ChatTurnRuntimeInput): Promise<void> {
     let inputHandle: SessionInputHandle | null = null;
     let runHandle: AgentRunHandle | null = null;
-    let chatContextTurn: GitContextPreparedTurn | null = null;
+    let chatContextTurn: ContextEnginePreparedTurn | null = null;
     let liveFinalResponseStream: LiveReplyStream | null = null;
     let finalizationAttempted = false;
 
@@ -227,7 +235,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
 
       if (this.provider) {
         await this.associateRegisteredAttachmentsWithRun(registeredAttachments, runHandle.runId);
-        const harnessContext = this.harnessContextFromPreparedTurn(chatContextTurn);
+        const harnessContext = this.harnessContextFromPreparedTurn(input.clientId, chatContextTurn);
         const toolDefinitions = this.toolExecutor?.definitions({
           clientId: input.clientId,
           runId: runHandle.runId,
@@ -242,15 +250,27 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           runRecorder: chatRunRecorder,
           inputHandle,
           runHandle,
-          recordRunStep: async (record, currentContext) => {
+          recordRunStep: async (record) => {
             const context = await this.chatContextRuntime.recordRunStep({
-              clientId: input.clientId,
               turn: chatContextTurn,
               record,
-              currentContext: currentContext.contextEngine,
             });
             return context ? { contextEngine: context } : undefined;
           },
+          contextCheckpoint: this.chatContextRuntime.contextCheckpointCoordinator(chatContextTurn),
+          ...(this.contextEngineService
+            ? {
+                workstreamResolution: createWorkstreamResolutionCoordinator({
+                  provider: this.provider,
+                  service: this.contextEngineService,
+                  runId: runHandle.runId,
+                  streamId: inputHandle.sessionId,
+                  currentInput: input.content,
+                  inputContextRevision: chatContextTurn.context.contextRevision,
+                  now: this.nowProvider,
+                }),
+              }
+            : {}),
           clientId: input.clientId,
           uiContext: input.uiContext,
           initialUserMessage: input.content,
@@ -342,7 +362,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         const message = err instanceof Error ? err.message : "Unknown runtime failure";
         this.feedbackLedger?.record({
           clientId: input.clientId,
-          sessionId: runHandle.sessionId,
+          sessionId: runHandle.streamId,
           runId: runHandle.runId,
           stage: "run",
           event: "failed",
@@ -382,7 +402,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     userMessage: string,
     resources: ResourceAdmission[],
     at: string,
-  ): Promise<GitContextPreparedTurn> {
+  ): Promise<ContextEnginePreparedTurn> {
     const turn = await this.chatContextRuntime.prepareUserTurn({
       clientId,
       userMessage,
@@ -393,30 +413,30 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
 
     this.feedbackLedger?.record({
       clientId,
-      sessionId: turn.sessionId,
-      seq: turn.messageSeq,
+      sessionId: turn.streamId,
+      seq: turn.messageSequence,
       stage: "context_engine",
       event: "prepared",
       data: {
         status: turn.status,
-        messageSeq: turn.messageSeq,
+        messageSequence: turn.messageSequence,
         contextEngine: buildContextEngineFeedbackSummary({
           context: contextEngine,
           routeSource: "runtime",
         }),
-        pendingTurnStatus: contextEngine.pendingTurn?.routingStatus ?? "none",
+        pendingTurnStatus: contextEngine.current.routing?.status ?? "none",
         context: summarizeHarnessContext({ contextEngine }),
       },
     });
     this.feedbackLedger?.record({
       clientId,
-      sessionId: turn.sessionId,
-      seq: turn.messageSeq,
+      sessionId: turn.streamId,
+      seq: turn.messageSequence,
       stage: "context_engine",
       event: "pending_turn_snapshot",
       data: {
-        status: contextEngine.pendingTurn?.routingStatus ?? "none",
-        pendingTurn: contextEngine.pendingTurn,
+        status: contextEngine.current.routing?.status ?? "none",
+        routing: contextEngine.current.routing,
         contextEngine: buildContextEngineFeedbackSummary({
           context: contextEngine,
           routeSource: "runtime",
@@ -428,14 +448,14 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
 
   private async finalizeChatContextRun(
     clientId: string,
-    prepared: GitContextPreparedTurn,
+    prepared: ContextEnginePreparedTurn,
     result: AgentLoopResult,
   ): Promise<ReplyCommitStatus> {
     const workstreamBound = isWorkstreamBoundRun(prepared, result);
     this.feedbackLedger?.record({
       clientId,
-      sessionId: prepared.sessionId,
-      seq: prepared.messageSeq,
+      sessionId: prepared.streamId,
+      seq: prepared.messageSequence,
       runId: prepared.run.runId,
       stage: "context_engine",
       event: "run_finalization_started",
@@ -457,13 +477,13 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
 
   private recordFinalizationCompleted(
     clientId: string,
-    prepared: GitContextPreparedTurn,
+    prepared: ContextEnginePreparedTurn,
     finalized: FinalizeRunResponse,
   ): void {
     this.feedbackLedger?.record({
       clientId,
-      sessionId: prepared.sessionId,
-      seq: prepared.messageSeq,
+      sessionId: prepared.streamId,
+      seq: prepared.messageSequence,
       runId: finalized.run.runId,
       stage: "context_engine",
       event: "run_finalization_completed",
@@ -471,7 +491,8 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         outcome: finalized.run.status,
         stopReason: finalized.run.stopReason,
         workstreamBinding: finalized.run.workstreamBinding,
-        materialization: finalized.materialization,
+        assistantMessageId: finalized.assistantMessage?.messageId,
+        observationRevision: finalized.observationRevision,
         resourceEffects: finalized.resourceEffects,
         workstreamContextCommit: finalized.workstreamContextCommit,
       },
@@ -480,7 +501,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
 
   private async completeFailedChatContextRun(
     clientId: string,
-    prepared: GitContextPreparedTurn,
+    prepared: ContextEnginePreparedTurn,
     runHandle: AgentRunHandle,
     error: unknown,
   ): Promise<void> {
@@ -506,29 +527,33 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           nextStep: "Retry or continue the workstream.",
         },
         completedSteps: [],
-        harnessContext: createInitialHarnessContext(this.harnessContextFromPreparedTurn(prepared)),
+        harnessContext: createInitialHarnessContext(this.harnessContextFromPreparedTurn(clientId, prepared)),
       });
     } catch (finalizationError) {
       devWarn(`[${clientId}] git memory failed-run finalization failed: ${errMessage(finalizationError)}`);
     }
   }
 
-  private inputHandleFromChatContextTurn(turn: GitContextPreparedTurn): SessionInputHandle {
+  private inputHandleFromChatContextTurn(turn: ContextEnginePreparedTurn): SessionInputHandle {
     return {
-      sessionId: turn.sessionId,
-      seq: turn.messageSeq,
+      sessionId: turn.streamId,
+      seq: turn.messageSequence,
       ...(turn.currentMessageId ? { currentMessageId: turn.currentMessageId } : {}),
     };
   }
 
   private harnessContextFromPreparedTurn(
-    turn: GitContextPreparedTurn | null,
+    clientId: string,
+    turn: ContextEnginePreparedTurn | null,
   ): HarnessContextInput {
     if (!turn) {
       return {};
     }
     return {
       contextEngine: turn.context,
+      ...(this.personalMemorySnapshot
+        ? { personalMemorySnapshot: this.personalMemorySnapshot(clientId) }
+        : {}),
     };
   }
 
@@ -548,7 +573,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         currentUserMessage: userMessage,
         assistantResponse: result.content,
         workstreamSummary: result.workstreamSummary,
-        memoryContext: promptMemoryContextFromGitContext(result.harnessContext?.contextEngine),
+        memoryContext: promptMemoryContextFromContextEngine(result.harnessContext?.contextEngine),
         toolDefinitions,
         now: this.nowProvider(),
       });
@@ -1065,18 +1090,18 @@ function formatAttachmentLabel(attachment: ChatAttachmentInput): string {
   return "path" in attachment ? attachment.path : "attachment";
 }
 
-function promptMemoryContextFromGitContext(
+function promptMemoryContextFromContextEngine(
   context: ContextEngineMachineContext | undefined,
 ): PromptMemoryContext {
-  const sessionId = readGitContextSessionId(context?.session);
-  const conversationTurns: ConversationTurn[] = (context?.session.conversationTail ?? [])
-    .filter(isUserAssistantGitContextMessage)
+  const streamId = context?.agentStream.meta.streamId;
+  const conversationTurns: ConversationTurn[] = (context?.agentStream.recentMessages ?? [])
+    .filter(isUserAssistantContextEngineMessage)
     .map((message) => ({
       role: message.role,
-      content: message.text ?? "",
+      content: message.content,
       timestamp: message.at,
-      sessionPath: `git-context:${sessionId ?? ""}`,
-      seq: message.seq,
+      sessionPath: `agent-stream:${streamId ?? ""}`,
+      seq: message.sequence,
     }));
 
   return {
@@ -1088,18 +1113,9 @@ function promptMemoryContextFromGitContext(
   };
 }
 
-function readGitContextSessionId(
-  session: ContextEngineMachineContext["session"] | undefined,
-): string | undefined {
-  if (!session) {
-    return undefined;
-  }
-  return session.meta?.sessionId ?? (session as unknown as { sessionId?: string }).sessionId;
-}
-
-function isUserAssistantGitContextMessage(
-  message: ContextEngineMachineContext["session"]["conversationTail"][number],
-): message is ContextEngineMachineContext["session"]["conversationTail"][number] & {
+function isUserAssistantContextEngineMessage(
+  message: ContextEngineMachineContext["agentStream"]["recentMessages"][number],
+): message is ContextEngineMachineContext["agentStream"]["recentMessages"][number] & {
   role: "user" | "assistant";
 } {
   return message.role === "user" || message.role === "assistant";
