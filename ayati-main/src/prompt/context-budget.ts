@@ -7,6 +7,7 @@ export interface ContextBudget {
   maxInputTokens?: number;
   outputReserveTokens: number;
   inputCapacityTokens: number;
+  preparationInputTokens: number;
   recoveryTargetTokens: number;
   softInputTokens: number;
   hardInputTokens: number;
@@ -51,12 +52,19 @@ export function calculateContextBudget(limits: ResolvedModelContextLimits): Cont
   if (limits.recoveryTargetTokens >= limits.softInputTokens) {
     throw new Error("Recovery target must be smaller than the soft input limit.");
   }
+  if (limits.preparationInputTokens <= 0) {
+    throw new Error("Preparation trigger must be positive.");
+  }
+  if (limits.preparationInputTokens >= limits.recoveryTargetTokens) {
+    throw new Error("Preparation trigger must be smaller than the recovery target.");
+  }
 
   return {
     contextWindowTokens: limits.contextWindowTokens,
     ...(limits.maxInputTokens !== undefined ? { maxInputTokens: limits.maxInputTokens } : {}),
     outputReserveTokens: limits.outputReserveTokens,
     inputCapacityTokens,
+    preparationInputTokens: limits.preparationInputTokens,
     recoveryTargetTokens: limits.recoveryTargetTokens,
     softInputTokens: limits.softInputTokens,
     hardInputTokens: limits.hardInputTokens,

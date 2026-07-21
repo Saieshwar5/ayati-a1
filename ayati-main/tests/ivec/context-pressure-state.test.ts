@@ -227,17 +227,20 @@ function unresolvedReceipt(
 
 function receipt(overrides: Partial<ContextCompilationReceipt> = {}): ContextCompilationReceipt {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     decisionAttempt: 1,
     mode: "full",
     provider: "test",
     model: "test-128k",
     candidateInputTokens: 72_000,
     finalInputTokens: 72_000,
+    preparationInputTokens: 55_000,
     recoveryTargetTokens: 60_000,
     softInputTokens: 70_000,
     hardInputTokens: 100_000,
     admissionLimitTokens: 95_000,
+    forcedBarrierTokens: 85_000,
+    nextDecisionReserveTokens: 10_000,
     softLimitExceeded: true,
     hardLimitExceeded: false,
     admitted: true,

@@ -8,7 +8,7 @@ export type ContextCompilationMode =
   | "step_ledger";
 
 export interface ContextCompilationReceipt {
-  schemaVersion: 1;
+  schemaVersion: 2;
   decisionAttempt: number;
   mode: ContextCompilationMode;
   provider: string;
@@ -16,10 +16,18 @@ export interface ContextCompilationReceipt {
   candidateInputTokens: number;
   intermediateInputTokens?: number;
   finalInputTokens: number;
+  preparationInputTokens: number;
   recoveryTargetTokens: number;
   softInputTokens: number;
   hardInputTokens: number;
   admissionLimitTokens: number;
+  forcedBarrierTokens: number;
+  nextDecisionReserveTokens: number;
+  preparationLeadTokens?: number;
+  manifestPolicyVersion?: number;
+  laneEstimates?: Record<"system" | "session" | "work", number>;
+  candidateLaneEstimates?: Record<"system" | "session" | "work", number>;
+  toolSchemaTokens?: number;
   softLimitExceeded: boolean;
   candidateHardLimitExceeded?: boolean;
   hardLimitExceeded: boolean;
@@ -47,6 +55,27 @@ export interface ContextCompilationReceipt {
     tokensAfter: number;
   };
   recoveryExhausted?: boolean;
+  forcedRecovery?: boolean;
+  candidate?: {
+    candidateId: string;
+    laneId: string;
+    kind: "durable_checkpoint" | "run_focus" | "resolver_focus";
+    status: "preparing" | "ready" | "adopted" | "stale" | "failed" | "discarded";
+    targetReached: boolean;
+  };
+  candidateAction?: "none" | "measured" | "adopted" | "rejected" | "awaited";
+  candidateReason?: string;
+  backgroundPreparation?: {
+    triggered: boolean;
+    deduplicated: boolean;
+    overlappedForeground: boolean;
+    durationMs?: number;
+    attempts?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+    costUsd?: number;
+  };
   transformations: Array<{
     kind: string;
     callId?: string;
@@ -72,7 +101,7 @@ export function buildStreamProjectionCompilationReceipt(input: {
   projection: NonNullable<ContextCompilationReceipt["streamProjection"]>;
 }): ContextCompilationReceipt {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     decisionAttempt: input.decisionAttempt,
     mode: "stream_project",
     provider: input.final.provider,
@@ -80,10 +109,12 @@ export function buildStreamProjectionCompilationReceipt(input: {
     candidateInputTokens: input.candidate.measuredInputTokens,
     intermediateInputTokens: input.intermediate.measuredInputTokens,
     finalInputTokens: input.final.measuredInputTokens,
+    preparationInputTokens: input.final.preparationInputTokens,
     recoveryTargetTokens: input.final.recoveryTargetTokens,
     softInputTokens: input.final.softInputTokens,
     hardInputTokens: input.final.hardInputTokens,
     admissionLimitTokens: input.final.admissionLimitTokens,
+    ...forcedBarrierReceiptFields(input.final),
     softLimitExceeded: input.candidate.softLimitExceeded,
     candidateHardLimitExceeded: input.candidate.hardLimitExceeded,
     hardLimitExceeded: input.final.hardLimitExceeded,
@@ -109,7 +140,7 @@ export function buildStreamCheckpointCompilationReceipt(input: {
   recoveryExhausted?: boolean;
 }): ContextCompilationReceipt {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     decisionAttempt: input.decisionAttempt,
     mode: "stream_checkpoint",
     provider: input.final.provider,
@@ -117,10 +148,12 @@ export function buildStreamCheckpointCompilationReceipt(input: {
     candidateInputTokens: input.candidate.measuredInputTokens,
     intermediateInputTokens: input.intermediate.measuredInputTokens,
     finalInputTokens: input.final.measuredInputTokens,
+    preparationInputTokens: input.final.preparationInputTokens,
     recoveryTargetTokens: input.final.recoveryTargetTokens,
     softInputTokens: input.final.softInputTokens,
     hardInputTokens: input.final.hardInputTokens,
     admissionLimitTokens: input.final.admissionLimitTokens,
+    ...forcedBarrierReceiptFields(input.final),
     softLimitExceeded: input.candidate.softLimitExceeded,
     candidateHardLimitExceeded: input.candidate.hardLimitExceeded,
     hardLimitExceeded: input.final.hardLimitExceeded,
@@ -144,17 +177,19 @@ export function buildToolCompactContextCompilationReceipt(input: {
   transformations: ContextCompilationReceipt["transformations"];
 }): ContextCompilationReceipt {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     decisionAttempt: input.decisionAttempt,
     mode: "tool_compact",
     provider: input.final.provider,
     model: input.final.model,
     candidateInputTokens: input.candidate.measuredInputTokens,
     finalInputTokens: input.final.measuredInputTokens,
+    preparationInputTokens: input.final.preparationInputTokens,
     recoveryTargetTokens: input.final.recoveryTargetTokens,
     softInputTokens: input.final.softInputTokens,
     hardInputTokens: input.final.hardInputTokens,
     admissionLimitTokens: input.final.admissionLimitTokens,
+    ...forcedBarrierReceiptFields(input.final),
     softLimitExceeded: input.candidate.softLimitExceeded,
     candidateHardLimitExceeded: input.candidate.hardLimitExceeded,
     hardLimitExceeded: input.final.hardLimitExceeded,
@@ -173,22 +208,68 @@ export function buildFullContextCompilationReceipt(
   decisionAttempt: number,
 ): ContextCompilationReceipt {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     decisionAttempt,
     mode: "full",
     provider: report.provider,
     model: report.model,
     candidateInputTokens: report.measuredInputTokens,
     finalInputTokens: report.measuredInputTokens,
+    preparationInputTokens: report.preparationInputTokens,
     recoveryTargetTokens: report.recoveryTargetTokens,
     softInputTokens: report.softInputTokens,
     hardInputTokens: report.hardInputTokens,
     admissionLimitTokens: report.admissionLimitTokens,
+    ...forcedBarrierReceiptFields(report),
     softLimitExceeded: report.softLimitExceeded,
     hardLimitExceeded: report.hardLimitExceeded,
     admitted: !report.admissionLimitExceeded,
     countSource: report.countSource,
     transformations: [],
+  };
+}
+
+export function enrichContextCompilationReceipt(
+  receipt: ContextCompilationReceipt,
+  input: {
+    preparationLeadTokens: number;
+    manifestPolicyVersion: number;
+    laneEstimates: Record<"system" | "session" | "work", number>;
+    candidateLaneEstimates?: Record<"system" | "session" | "work", number>;
+    toolSchemaTokens: number;
+    forcedRecovery: boolean;
+    candidate?: ContextCompilationReceipt["candidate"];
+    candidateAction?: ContextCompilationReceipt["candidateAction"];
+    candidateReason?: string;
+    backgroundPreparation?: ContextCompilationReceipt["backgroundPreparation"];
+  },
+): ContextCompilationReceipt {
+  return {
+    ...receipt,
+    preparationLeadTokens: input.preparationLeadTokens,
+    manifestPolicyVersion: input.manifestPolicyVersion,
+    laneEstimates: input.laneEstimates,
+    ...(input.candidateLaneEstimates ? { candidateLaneEstimates: input.candidateLaneEstimates } : {}),
+    toolSchemaTokens: input.toolSchemaTokens,
+    ...(input.forcedRecovery ? { forcedRecovery: true } : {}),
+    ...(input.candidate ? { candidate: input.candidate } : {}),
+    ...(input.candidateAction ? { candidateAction: input.candidateAction } : {}),
+    ...(input.candidateReason ? { candidateReason: input.candidateReason } : {}),
+    ...(input.backgroundPreparation ? { backgroundPreparation: input.backgroundPreparation } : {}),
+  };
+}
+
+function forcedBarrierReceiptFields(report: ContextBudgetReport): {
+  forcedBarrierTokens: number;
+  nextDecisionReserveTokens: number;
+} {
+  const nextDecisionReserveTokens = Math.max(
+    8_000,
+    report.softInputTokens - report.recoveryTargetTokens,
+  );
+  return {
+    nextDecisionReserveTokens,
+    forcedBarrierTokens: Math.max(1, report.admissionLimitTokens - nextDecisionReserveTokens),
   };
 }
 
@@ -209,7 +290,7 @@ export class ContextRunCapacityError extends Error {
 
   constructor(receipt: ContextCompilationReceipt) {
     super(
-      `Decision input remains at ${receipt.finalInputTokens} tokens after context recovery, at or above the ${receipt.softInputTokens}-token soft limit.`,
+      `Decision input remains at ${receipt.finalInputTokens} tokens after context recovery, at or above the ${receipt.forcedBarrierTokens}-token forced recovery barrier.`,
     );
     this.name = "ContextRunCapacityError";
     this.receipt = receipt;

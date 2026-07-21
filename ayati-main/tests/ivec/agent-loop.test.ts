@@ -828,7 +828,7 @@ describe("agentLoop one-run lifecycle", () => {
         countInputTokens: vi.fn().mockResolvedValue({
           provider: "mock",
           model: "1.0.0",
-          inputTokens: 80_000,
+          inputTokens: 90_000,
           exact: true,
         }),
         generateTurn: vi.fn(),

@@ -18,6 +18,12 @@ The service returns slow stream continuity and fast run context separately.
 The daemon maps them into temporal, current, stream, work, resources,
 observations, personal, tools, harness, and run prompt lanes.
 
+One runtime-owned context-preparation manager is created for the run. Before a
+primary decision it builds a typed lane manifest, validates any ready
+source-hashed candidate against the current exact tail, measures the whole
+serialized request, and may start one disposable background preparation job.
+The manager is not an agent and exposes no model-facing tool.
+
 ```text
 context pack -> decision -> action executor -> deterministic verification -> progress reducer
 ```
@@ -32,10 +38,13 @@ calls may also create resource-versioned reusable observations.
 
 ## Pressure and History
 
-The compiler measures the whole provider candidate. Tool-result compaction and
-deterministic stream projection run before a pressure-only durable checkpoint.
-A committed checkpoint replaces a complete terminal prefix with an anchored
-summary while retaining exact messages in SQLite.
+The compiler measures the whole provider candidate. Stable deduplication,
+invalid-observation removal, recoverable tool-result projection, and
+deterministic bounds run before semantic recovery. A durable checkpoint is
+generated without mutation and commits only after adoption validation; its
+fresh Context Engine projection replaces the loop projection. If durable
+recovery is insufficient, a 1,600-token anchored focus overlay may replace
+only covered older prompt material for the rest of that run.
 
 Older content is recovered explicitly with `agent_history_search` and
 `agent_history_read`; it is not copied into every prompt.

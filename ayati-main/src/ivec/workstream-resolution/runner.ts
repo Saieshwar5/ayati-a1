@@ -7,6 +7,13 @@ import type {
 import type { LlmProvider } from "../../core/contracts/provider.js";
 import type { LlmTurnOutput } from "../../core/contracts/llm-protocol.js";
 import { buildContextEngineProjection } from "../../context-engine/index.js";
+import { resolveModelContextLimits } from "../../providers/shared/model-context-limits.js";
+import { ContextPreparationManager } from "../context-preparation/manager.js";
+import {
+  compileResolverContext,
+  ResolverContextLimitError,
+} from "../context-preparation/resolver-admission.js";
+import { resolveResolverContextLimits } from "../context-preparation/policy.js";
 import {
   callWorkstreamResolutionDecision,
   ResolutionDecisionError,
@@ -86,6 +93,12 @@ async function runWorkstreamResolution(
     at: startedAt,
   });
   const activityId = started.activity.activityId;
+  const contextPreparation = new ContextPreparationManager({
+    laneId: `resolver:${activityId}`,
+    provider: input.provider,
+    now,
+  });
+  const contextLimits = resolveResolverContextLimits(resolveModelContextLimits(input.provider));
   let state = initialResolutionState(
     input.request.purpose,
     initialCandidates(initialContext),
@@ -94,6 +107,7 @@ async function runWorkstreamResolution(
   let toolCallCount = 0;
   let failedSteps = 0;
 
+  try {
   for (let turn = 1; turn <= LIMITS.maxTurns; turn++) {
     const snapshot = resolutionContextSnapshot({
       activityId,
@@ -111,12 +125,26 @@ async function runWorkstreamResolution(
     let decision: ResolutionDecisionRecord;
     let records: ResolutionToolCallRecord[];
     let terminal: WorkstreamResolutionOutcome | undefined;
+    let persistedSnapshot: ResolutionDecisionContext = snapshot;
+    let preparationUsage: WorkstreamResolutionUsage | undefined;
+    let contextLimitFailure: ResolverContextLimitError | undefined;
 
     try {
-      const selected = await callWorkstreamResolutionDecision({
+      const compilation = await compileResolverContext({
         provider: input.provider,
         context: snapshot,
+        limits: contextLimits,
+        manager: contextPreparation,
+        allowBackgroundPreparation: true,
+        allowSynchronousSemanticRecovery: true,
+      });
+      persistedSnapshot = compilation.persistedContext;
+      preparationUsage = resolutionPreparationUsage(compilation.backgroundUsage);
+      const selected = await callWorkstreamResolutionDecision({
+        provider: input.provider,
+        context: compilation.context,
         maxParallelCalls: LIMITS.maxParallelCalls,
+        turnInput: compilation.turnInput,
       });
       raw = selected.raw;
       decision = selected.decision;
@@ -139,9 +167,16 @@ async function runWorkstreamResolution(
       records = executed.records;
       terminal = executed.terminal;
     } catch (error) {
+      if (error instanceof ResolverContextLimitError) {
+        contextLimitFailure = error;
+        persistedSnapshot = error.persistedContext;
+        preparationUsage = resolutionPreparationUsage(error.backgroundUsage);
+      }
       if (error instanceof ResolutionDecisionError) raw = error.raw;
       decision = { calls: [] };
-      records = [decisionFailureRecord(turn, error)];
+      records = contextLimitFailure
+        ? [resolverContextLimitFailureRecord(turn, contextLimitFailure)]
+        : [decisionFailureRecord(turn, error)];
     }
 
     toolCallCount += decision.calls.length;
@@ -161,7 +196,7 @@ async function runWorkstreamResolution(
       verification,
       stateAfter: structuredClone(state),
     };
-    const usage = resolutionUsage(raw);
+    const usage = addResolutionUsage(resolutionUsage(raw), preparationUsage);
     const persisted = await input.service.recordWorkstreamResolutionStep({
       requestId: `${activityId}:step:${turn}`,
       activityId,
@@ -169,7 +204,7 @@ async function runWorkstreamResolution(
         version: 1,
         step: turn,
         status: passed ? "completed" : "failed",
-        context: snapshot,
+        context: persistedSnapshot,
         decision,
         toolCalls: records,
         verification,
@@ -179,6 +214,21 @@ async function runWorkstreamResolution(
       },
     });
     history.push(step);
+
+    if (contextLimitFailure) {
+      return await finishFailedResolution({
+        service: input.service,
+        activityId,
+        runId: input.runId,
+        streamId: input.streamId,
+        state,
+        stepCount: persisted.activity.stepCount,
+        code: "WORKSTREAM_RESOLUTION_CONTEXT_LIMIT",
+        message: contextLimitFailure.message,
+        retryable: true,
+        at: now().toISOString(),
+      });
+    }
 
     if (terminal) {
       const latest = await input.service.getAgentContext({
@@ -219,6 +269,9 @@ async function runWorkstreamResolution(
     retryable: true,
     at: now().toISOString(),
   });
+  } finally {
+    contextPreparation.close("resolver_finalized");
+  }
 }
 
 function resolutionContextSnapshot(input: {
@@ -313,6 +366,61 @@ function resolutionUsage(raw: LlmTurnOutput | undefined): WorkstreamResolutionUs
       ? { cachedInputTokens: raw.usage.cachedInputTokens }
       : {}),
     ...(raw.cost ? { costUsd: raw.cost.totalCostUsd } : {}),
+  };
+}
+
+function resolutionPreparationUsage(
+  background: import("../context-preparation/types.js").ContextPreparationBackgroundUsage | undefined,
+): WorkstreamResolutionUsage | undefined {
+  if (!background?.usage && !background?.cost) return undefined;
+  return {
+    provider: background.usage?.provider,
+    model: background.usage?.model,
+    inputTokens: background.usage?.inputTokens ?? 0,
+    outputTokens: background.usage?.outputTokens ?? 0,
+    totalTokens: background.usage?.totalTokens ?? 0,
+    ...(background.usage?.cachedInputTokens !== undefined
+      ? { cachedInputTokens: background.usage.cachedInputTokens }
+      : {}),
+    ...(background.cost ? { costUsd: background.cost.totalCostUsd } : {}),
+  };
+}
+
+function addResolutionUsage(
+  decision: WorkstreamResolutionUsage | undefined,
+  preparation: WorkstreamResolutionUsage | undefined,
+): WorkstreamResolutionUsage | undefined {
+  if (!decision) return preparation;
+  if (!preparation) return decision;
+  return {
+    provider: decision.provider ?? preparation.provider,
+    model: decision.model ?? preparation.model,
+    inputTokens: decision.inputTokens + preparation.inputTokens,
+    outputTokens: decision.outputTokens + preparation.outputTokens,
+    totalTokens: decision.totalTokens + preparation.totalTokens,
+    ...((decision.cachedInputTokens ?? 0) + (preparation.cachedInputTokens ?? 0) > 0
+      ? { cachedInputTokens: (decision.cachedInputTokens ?? 0) + (preparation.cachedInputTokens ?? 0) }
+      : {}),
+    ...((decision.costUsd ?? 0) + (preparation.costUsd ?? 0) > 0
+      ? { costUsd: (decision.costUsd ?? 0) + (preparation.costUsd ?? 0) }
+      : {}),
+  };
+}
+
+function resolverContextLimitFailureRecord(
+  turn: number,
+  error: ResolverContextLimitError,
+): ResolutionToolCallRecord {
+  return {
+    id: `resolution-context-${turn}`,
+    tool: "resolution_decision",
+    input: {},
+    status: "failed",
+    error: {
+      code: "WORKSTREAM_RESOLUTION_CONTEXT_LIMIT",
+      message: error.message,
+      retryable: true,
+    },
   };
 }
 

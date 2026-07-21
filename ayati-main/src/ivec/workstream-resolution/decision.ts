@@ -3,6 +3,7 @@ import type {
   LlmMessage,
   LlmToolCall,
   LlmToolSchema,
+  LlmTurnInput,
   LlmTurnOutput,
 } from "../../core/contracts/llm-protocol.js";
 import type {
@@ -61,6 +62,16 @@ export interface ResolutionDecisionContext {
   priorResolution?: unknown;
   state: ResolutionWorkState;
   history: ResolutionStepHistory[];
+  projectedHistory?: {
+    candidateIds: string[];
+    ownershipIds: string[];
+    requestIds: string[];
+    heads: string[];
+    descriptions: string[];
+    evidenceRefs: string[];
+  };
+  focus?: import("../context-preparation/types.js").RunFocusSummary;
+  contextPreparation?: import("../../prompt/context-compilation-receipt.js").ContextCompilationReceipt;
   remaining: {
     turns: number;
     toolCalls: number;
@@ -76,6 +87,7 @@ export async function callWorkstreamResolutionDecision(input: {
   provider: LlmProvider;
   context: ResolutionDecisionContext;
   maxParallelCalls: number;
+  turnInput?: LlmTurnInput;
 }): Promise<ResolutionDecisionOutput> {
   if (!input.provider.capabilities.nativeToolCalling) {
     throw new ResolutionDecisionError(
@@ -83,19 +95,9 @@ export async function callWorkstreamResolutionDecision(input: {
       `Provider ${input.provider.name} does not support native resolver tools.`,
     );
   }
-  const messages: LlmMessage[] = [
-    { role: "system", content: SYSTEM_PROMPT },
-    {
-      role: "user",
-      content: `Resolution context:\n${JSON.stringify(input.context, null, 2)}`,
-    },
-  ];
-  const raw = await input.provider.generateTurn({
-    messages,
-    tools: resolutionToolSchemas(),
-    toolChoice: "required",
-    parallelToolCalls: true,
-  });
+  const raw = await input.provider.generateTurn(
+    input.turnInput ?? buildWorkstreamResolutionTurnInput(input.context),
+  );
   if (raw.type !== "tool_calls" || raw.calls.length === 0) {
     throw new ResolutionDecisionError(
       "RESOLUTION_TOOL_CALL_REQUIRED",
@@ -168,7 +170,25 @@ function validateDecisionCalls(
   return { calls: normalized };
 }
 
-function resolutionToolSchemas(): LlmToolSchema[] {
+export function buildWorkstreamResolutionTurnInput(
+  context: ResolutionDecisionContext,
+): LlmTurnInput {
+  const messages: LlmMessage[] = [
+    { role: "system", content: SYSTEM_PROMPT },
+    {
+      role: "user",
+      content: `Resolution context:\n${JSON.stringify(context, null, 2)}`,
+    },
+  ];
+  return {
+    messages,
+    tools: resolutionToolSchemas(),
+    toolChoice: "required",
+    parallelToolCalls: true,
+  };
+}
+
+export function resolutionToolSchemas(): LlmToolSchema[] {
   return [
     {
       name: "resolution_search_workstreams",

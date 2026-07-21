@@ -167,7 +167,7 @@ describe("Context Engine runtime", () => {
       requiredSavingsTokens: 800,
       estimatedCheckpointTokens: 1_200,
     });
-    const checkpoint = await coordinator.commit({
+    const committed = await coordinator.commit({
       plan,
       summary: checkpointSummary(),
       tokenCount: 220,
@@ -175,7 +175,8 @@ describe("Context Engine runtime", () => {
       model: "test-model",
     });
 
-    expect(checkpoint.checkpointId).toBe("CHK-1");
+    expect(committed.checkpoint.checkpointId).toBe("CHK-1");
+    expect(committed.context.contextRevision).toBeDefined();
     expect(fixture.planContextCheckpoint).toHaveBeenCalledWith(expect.objectContaining({
       streamId: "S-1",
       protectFromSeq: 2,
@@ -185,7 +186,11 @@ describe("Context Engine runtime", () => {
       plan,
       tokenCount: 220,
     }));
-    expect(onCommitted).toHaveBeenCalledWith({ streamId: "S-1", plan, checkpoint });
+    expect(onCommitted).toHaveBeenCalledWith({
+      streamId: "S-1",
+      plan,
+      checkpoint: committed.checkpoint,
+    });
   });
 });
 

@@ -99,6 +99,7 @@ describe("llm runtime config", () => {
       contextWindowTokens: 200_000,
       maxInputTokens: 180_000,
       outputReserveTokens: 12_000,
+      preparationInputTokens: 80_000,
       recoveryTargetTokens: 90_000,
       softInputTokens: 110_000,
       hardInputTokens: 150_000,
@@ -108,6 +109,7 @@ describe("llm runtime config", () => {
       contextWindowTokens: 200_000,
       maxInputTokens: 180_000,
       outputReserveTokens: 12_000,
+      preparationInputTokens: 80_000,
       recoveryTargetTokens: 90_000,
       softInputTokens: 110_000,
       hardInputTokens: 150_000,
@@ -117,6 +119,7 @@ describe("llm runtime config", () => {
       contextWindowTokens: 200_000,
       maxInputTokens: 180_000,
       outputReserveTokens: 12_000,
+      preparationInputTokens: 80_000,
       recoveryTargetTokens: 90_000,
       softInputTokens: 110_000,
       hardInputTokens: 150_000,
@@ -148,6 +151,22 @@ describe("llm runtime config", () => {
       softInputTokens: 70_000,
       hardInputTokens: 100_000,
     })).rejects.toThrow("recoveryTargetTokens must be smaller than softInputTokens");
+  });
+
+  it("rejects a preparation trigger at or above recovery", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "ayati-llm-config-"));
+    tempDirs.push(tempDir);
+    const configPath = join(tempDir, "llm-config.json");
+
+    await initializeLlmRuntimeConfig({ configPath });
+
+    await expect(setModelContextLimitsForProvider("openai", {
+      contextWindowTokens: 128_000,
+      preparationInputTokens: 60_000,
+      recoveryTargetTokens: 60_000,
+      softInputTokens: 70_000,
+      hardInputTokens: 100_000,
+    })).rejects.toThrow("preparationInputTokens must be smaller than recoveryTargetTokens");
   });
 
   it("persists embedding and image generation changes", async () => {

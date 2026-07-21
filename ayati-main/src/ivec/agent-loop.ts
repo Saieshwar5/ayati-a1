@@ -1,11 +1,20 @@
 import type { AgentLoopDeps, AgentLoopResult, LoopConfig } from "./types.js";
 import { DEFAULT_LOOP_CONFIG } from "./types.js";
 import { runAgentLoop } from "./agent-runner/runner.js";
+import { ContextPreparationManager } from "./context-preparation/manager.js";
 
 export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
   const config: LoopConfig = { ...DEFAULT_LOOP_CONFIG, ...deps.config };
   validateLoopConfig(config);
-  return runAgentLoop(deps, config);
+  const contextPreparation = deps.contextPreparation ?? new ContextPreparationManager({
+    laneId: `main:${deps.runHandle.runId}`,
+    provider: deps.provider,
+  });
+  try {
+    return await runAgentLoop({ ...deps, contextPreparation }, config);
+  } finally {
+    contextPreparation.close();
+  }
 }
 
 function validateLoopConfig(config: LoopConfig): void {

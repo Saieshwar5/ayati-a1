@@ -26,6 +26,8 @@ import type { AgentFeedbackLedger } from "../feedback-ledger.js";
 import type { RunMetrics } from "../metrics.js";
 import { recordOptimizationEvent, recordPromptMetric, recordProviderUsageMetric, recordRunMetric } from "../metrics.js";
 import type { AgentContextCheckpointCoordinator, ToolContextProjectionPolicy } from "../types.js";
+import type { ContextPreparationManager } from "../context-preparation/manager.js";
+import type { ContextEngineMachineContext } from "../../context-engine/index.js";
 import { compileDecisionContext } from "./decision-context-compiler.js";
 import { buildDecisionSystemSections } from "./decision-system-prompt.js";
 import { recordStreamCheckpointObservability } from "./stream-checkpoint-observability.js";
@@ -138,6 +140,9 @@ interface CallAgentDecisionInput {
   feedbackContext?: AgentDecisionFeedbackContext;
   toolContextProjectionPolicy?: ToolContextProjectionPolicy;
   contextCheckpoint?: AgentContextCheckpointCoordinator;
+  contextPreparation?: ContextPreparationManager;
+  applyAuthoritativeContext?: (context: ContextEngineMachineContext) => AgentStateView;
+  contextPreparationMode?: "primary" | "final_response";
   onContextCompilation?: (receipt: ContextCompilationReceipt) => void;
   onAssistantTextDelta?: (delta: string) => void;
 }
@@ -475,6 +480,18 @@ async function generateTurnWithEmptyResponseRetry(
     decisionAttempt: request.decisionAttempt,
     policy: input.toolContextProjectionPolicy ?? "shadow",
     contextCheckpoint: input.contextCheckpoint,
+    contextPreparation: input.contextPreparation,
+    applyAuthoritativeContext: input.applyAuthoritativeContext
+      ? (context) => {
+          const refreshed = input.applyAuthoritativeContext!(context);
+          input.stateView = refreshed;
+          return refreshed;
+        }
+      : undefined,
+    allowBackgroundPreparation: request.decisionAttempt === 1
+      && input.contextPreparationMode !== "final_response",
+    allowSynchronousSemanticRecovery: request.decisionAttempt === 1
+      && input.contextPreparationMode !== "final_response",
     buildPrompt: (stateView) => Object.values(buildDecisionPromptSections(
       stateView,
       input.toolDefinitions,
@@ -509,6 +526,18 @@ async function generateTurnWithEmptyResponseRetry(
     metrics: input.metrics,
     recordFeedback: (event, data) => recordDecisionFeedback(input, event, data),
   });
+  for (const event of compilation.preparationEvents ?? []) {
+    recordOptimizationEvent(input.metrics, event.event, {
+      laneId: event.laneId,
+      at: event.at,
+      ...event.data,
+    });
+    recordDecisionFeedback(input, event.event, {
+      laneId: event.laneId,
+      at: event.at,
+      ...event.data,
+    });
+  }
   if (compilation.finalBudgetMeasured) {
     recordOptimizationEvent(input.metrics, "context_budget_final", {
       stage: request.decisionAttempt === 1 ? "agent_decision" : "agent_decision_repair",

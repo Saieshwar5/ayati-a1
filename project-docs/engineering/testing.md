@@ -52,6 +52,16 @@ Changes should prove the relevant invariants:
     unfinished activity interrupted rather than resuming it after restart.
 16. Completion remains a deterministic gate. Resolver activity and legacy
     routing controls cannot satisfy task-completion evidence.
+17. Context candidates are disposable, lane-scoped, source-hashed, and valid
+    across append-only tail growth only. Restart loses no authoritative data.
+18. Background semantic work has one provider-scoped slot, never blocks
+    foreground work below the forced barrier, and records failed/rejected
+    usage exactly once.
+19. Durable checkpoint generation does not commit. Adoption revalidates and
+    rebuilds from the fresh Context Engine commit projection.
+20. A run/resolver focus summary anchors every statement, stays within 1,600
+    estimated tokens and one repair, and cannot replace current input,
+    authority, failures, WorkState, or completion evidence.
 
 ## Prompt and Harness Coverage
 
@@ -67,8 +77,19 @@ storage paths, observation authority fields, idempotency state, and reusable
 action context.
 
 Pressure tests must measure the whole candidate and prove recovery order:
-tool compaction, deterministic stream projection, durable checkpoint, final
-remeasurement.
+stable deduplication/invalid observation removal, recoverable output
+projection, deterministic bounds, durable checkpoint, temporary anchored
+focus only when necessary, and final whole-request remeasurement. They must
+also cover the 55K preparation trigger, predicted-growth trigger, 60K target,
+70K soft pressure, local/exact forced barriers, background/foreground overlap,
+candidate deduplication/staleness, shadow versus enforce, late completion, and
+safe `incomplete/context_limit` termination.
+
+Resolver pressure tests use the isolated 20K/24K/32K profile. They must keep
+main and resolver candidates, histories, WorkState, steps, evidence, and usage
+separate; preserve failures/latest two private steps; verify typed projection
+of older successes; persist summary receipts; and aggregate semantic usage
+into exactly one private resolution step.
 
 ## Reset Testing
 

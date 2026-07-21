@@ -13,7 +13,7 @@ describe("context compilation receipt", () => {
     const receipt = buildFullContextCompilationReceipt(report(), 2);
 
     expect(receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       decisionAttempt: 2,
       mode: "full",
       candidateInputTokens: 72_000,
@@ -124,6 +124,7 @@ function report(overrides: Partial<ContextBudgetReport> = {}): ContextBudgetRepo
     contextWindowTokens: 128_000,
     outputReserveTokens: 8_192,
     inputCapacityTokens: 119_808,
+    preparationInputTokens: 55_000,
     recoveryTargetTokens: 60_000,
     softInputTokens: 70_000,
     hardInputTokens: 100_000,

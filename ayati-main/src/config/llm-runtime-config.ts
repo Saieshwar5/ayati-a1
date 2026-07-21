@@ -408,6 +408,10 @@ function normalizeModelContextLimit(input: unknown, path: string): LlmModelConte
   }
   const maxInputTokens = readOptionalPositiveInteger(input["maxInputTokens"], `${path}.maxInputTokens`);
   const outputReserveTokens = readOptionalPositiveInteger(input["outputReserveTokens"], `${path}.outputReserveTokens`);
+  const preparationInputTokens = readOptionalPositiveInteger(
+    input["preparationInputTokens"],
+    `${path}.preparationInputTokens`,
+  );
   const softInputTokens = readOptionalPositiveInteger(input["softInputTokens"], `${path}.softInputTokens`);
   const recoveryTargetTokens = readOptionalPositiveInteger(input["recoveryTargetTokens"], `${path}.recoveryTargetTokens`);
   const hardInputTokens = readOptionalPositiveInteger(input["hardInputTokens"], `${path}.hardInputTokens`);
@@ -421,6 +425,7 @@ function normalizeModelContextLimit(input: unknown, path: string): LlmModelConte
     contextWindowTokens,
     ...(maxInputTokens !== undefined ? { maxInputTokens } : {}),
     ...(outputReserveTokens !== undefined ? { outputReserveTokens } : {}),
+    ...(preparationInputTokens !== undefined ? { preparationInputTokens } : {}),
     ...(softInputTokens !== undefined ? { softInputTokens } : {}),
     ...(recoveryTargetTokens !== undefined ? { recoveryTargetTokens } : {}),
     ...(hardInputTokens !== undefined ? { hardInputTokens } : {}),

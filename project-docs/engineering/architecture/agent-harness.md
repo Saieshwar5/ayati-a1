@@ -85,6 +85,16 @@ accounting. The resolver receives the current input, at most two prior
 messages, ingress resources, at most five initial candidates, and any prior
 ambiguity packet. It does not receive or reduce main WorkState.
 
+Resolver prompt preparation uses the same runtime engine through a completely
+separate `resolver:<activityId>` lane. Its quality profile starts preparation
+at 20K, targets 24K recovery, and treats 32K as soft pressure while retaining
+the main model's hard limit. Older successful private output becomes typed
+candidate, ownership, request, HEAD, description, and evidence references;
+all failures and the latest two resolver steps remain exact. A resolver-focus
+summary is anchored to private step/call/evidence refs, is recorded in the
+next private context snapshot, and can never affect main WorkState, main run
+steps, or completion evidence.
+
 Its fixed private catalog contains search, candidate read, resource-owner
 lookup, resource inspection, activate, create, and clarification operations.
 Up to four independent search/read/owner calls may run in parallel. Version 1
@@ -137,7 +147,8 @@ Prompt context uses explicit bounded lanes:
 - `personal`: independent personal-memory snapshot;
 - `tools`: current capability surface;
 - `harness`: compact repair feedback;
-- `run`: WorkState, current calls, and pressure state.
+- `run`: WorkState, current calls, pressure state, and an optional disposable
+  anchored focus summary that is navigation context only.
 
 Do not expose context-repository paths, database paths, run storage paths,
 idempotency journals, observation authority fields, or deferred mutation.
@@ -218,17 +229,51 @@ safe crash recovery            -> incomplete / interrupted
 
 ## Context Pressure
 
-Admission measures the whole provider candidate. Recovery order is:
+Admission measures the complete serialized provider request, including system
+messages and exact native tool schemas. A pre-serialization manifest records
+`system`, `session`, and `work` lane estimates. Their 15%/25%/60% shares are
+planning targets over the hard input budget, not reservations: unused capacity
+is borrowed and whole-request admission remains authoritative.
 
-1. optional tool-result compaction;
-2. deterministic bounded stream projection;
-3. pressure-only durable checkpoint over complete terminal runs;
-4. rebuild and remeasure checkpoint plus exact tail.
+For the default 128K profile, preparation starts at 55K, recovery targets 60K,
+soft pressure starts at 70K, hard input is 100K, and output reserve is 8,192.
+A 15K preparation lead also starts work when predicted growth would cross the
+soft threshold. One low-priority semantic preparation call may overlap a
+foreground call on the same provider. The candidate remains in memory and
+foreground work does not wait below the forced barrier.
+
+Recovery order is:
+
+1. remove stable duplicates and invalid/expired observations;
+2. replace recoverable older output with typed previews and refs;
+3. deterministically bound candidates, recent work, resources, and
+   observations while preserving failures and the six-call hot window;
+4. adopt a durable checkpoint candidate over complete terminal runs;
+5. if still needed, adopt a run-scoped anchored focus summary;
+6. rebuild and remeasure the whole request.
+
+The next-decision reserve is `max(8K, soft - recovery)`. The forced barrier is
+the active admission limit minus that reserve: 85K for the conservative 95K
+local admission limit or 90K after an exact provider count permits the 100K
+hard limit. At the barrier, the foreground waits once for a relevant candidate
+and then performs synchronous deterministic/semantic recovery. A request is
+never sent beyond its admission limit.
 
 Checkpoint generation uses a structured schema, exact message-sequence
-anchors, a 1,200-token default estimate, and at most one repair. Commit and
-active-pointer update are atomic. If the final candidate is still unsafe, the
+anchors, a 1,200-token default estimate, and at most one repair. Generation is
+read-only; commit and active-pointer update occur only at validated adoption.
+A temporary focus summary is limited to 1,600 estimated tokens and one repair,
+must anchor every statement, cannot replace current input, authority,
+WorkState, unresolved failures, or completion evidence, and disappears at run
+finalization/interruption/restart. If the final candidate is still unsafe, the
 run ends as `incomplete/context_limit`.
+
+The existing projection policy remains operational: `shadow` prepares,
+validates, and measures candidates without mounting or committing them;
+`enforce` adopts valid candidates and activates forced-barrier behavior.
+Decision repairs reuse the active projection without starting background
+jobs. Final-response generation may reuse it and run deterministic safety
+recovery but starts no new semantic work.
 
 ## Feedback and Recovery
 

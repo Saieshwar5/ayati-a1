@@ -1,5 +1,5 @@
 import type { LlmProvider } from "../../core/contracts/provider.js";
-import type { ContextCheckpointPlan, ContextCheckpointRecord } from "ayati-context-engine";
+import type { ContextEngineMachineContext } from "../../context-engine/index.js";
 import type { LlmTurnInput } from "../../core/contracts/llm-protocol.js";
 import type { ContextBudgetReport } from "../../prompt/context-budget.js";
 import {
@@ -19,34 +19,17 @@ import type { AgentPromptStateView } from "./prompt-context.js";
 import type { AgentStateView } from "./state-view.js";
 import { planToolContextProjection } from "./tool-context-projection-planner.js";
 import { buildToolContextProjectionCandidate } from "./tool-context-shadow.js";
-import type { ToolContextShadowReceipt } from "./tool-context-shadow.js";
 import {
   buildStreamContextProjectionCandidate,
   type StreamContextProjectionReceipt,
 } from "./stream-context-projection.js";
 import { generateStreamCheckpoint } from "./stream-checkpoint-generator.js";
-import type { StreamCheckpointGenerationResult } from "./stream-checkpoint-generator.js";
 import { buildCommittedStreamCheckpointTurnInput } from "./stream-checkpoint-projection.js";
+import type { ContextPreparationManager } from "../context-preparation/manager.js";
+import { compilePreparedMainContext } from "../context-preparation/main-admission.js";
+import type { DecisionContextCompilation } from "../context-preparation/admission-types.js";
 
-export interface DecisionContextCompilation {
-  candidateBudget: ContextBudgetReport;
-  intermediateBudget: ContextBudgetReport;
-  finalBudget: ContextBudgetReport;
-  finalTurnInput: LlmTurnInput;
-  receipt: ContextCompilationReceipt;
-  finalBudgetMeasured: boolean;
-  projection?: {
-    event: "tool_context_projection_shadow" | "tool_context_projection_enforced";
-    policy: ToolContextProjectionPolicy;
-    receipt: ToolContextShadowReceipt;
-  };
-  streamCheckpoint?: {
-    plan: ContextCheckpointPlan;
-    generation?: StreamCheckpointGenerationResult;
-    checkpoint?: ContextCheckpointRecord;
-  };
-  streamProjection?: StreamContextProjectionReceipt;
-}
+export type { DecisionContextCompilation } from "../context-preparation/admission-types.js";
 
 export async function compileDecisionContext(input: {
   provider: LlmProvider;
@@ -56,8 +39,20 @@ export async function compileDecisionContext(input: {
   decisionAttempt: number;
   policy: ToolContextProjectionPolicy;
   contextCheckpoint?: AgentContextCheckpointCoordinator;
+  contextPreparation?: ContextPreparationManager;
+  applyAuthoritativeContext?: (context: ContextEngineMachineContext) => AgentStateView;
+  allowBackgroundPreparation?: boolean;
+  allowSynchronousSemanticRecovery?: boolean;
   buildPrompt: (stateView: AgentPromptStateView) => string;
 }): Promise<DecisionContextCompilation> {
+  if (input.contextPreparation) {
+    return await compilePreparedMainContext({
+      ...input,
+      manager: input.contextPreparation,
+      allowBackgroundPreparation: input.allowBackgroundPreparation !== false,
+      allowSynchronousSemanticRecovery: input.allowSynchronousSemanticRecovery !== false,
+    });
+  }
   const candidateBudget = await measureTurnContext({
     provider: input.provider,
     turnInput: input.turnInput,
@@ -220,13 +215,14 @@ export async function compileDecisionContext(input: {
       streamCheckpoint: { plan: checkpointPlan, generation },
     });
   }
-  const checkpoint = await input.contextCheckpoint.commit({
+  const committed = await input.contextCheckpoint.commit({
     plan: checkpointPlan,
     summary: generation.summary,
     tokenCount: generation.tokenCount,
     provider: input.provider.name,
     model: input.provider.version,
   });
+  const checkpoint = committed.checkpoint;
   const finalTurnInput = buildCommittedStreamCheckpointTurnInput({
     stateView: input.stateView,
     turnInput: streamTurnInput,

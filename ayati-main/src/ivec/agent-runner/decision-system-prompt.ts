@@ -12,6 +12,7 @@ Context contract:
 - Use context.resources.stream for persisted resources and State view.attachments only for current input-preparation details.
 - Use context.work.active as durable workstream/request state when present. Candidate recency alone never grants ownership.
 - Use context.run.workState and context.run.toolCalls as current-run truth. Read a narrow persisted step when compacted output is insufficient.
+- Treat context.run.focus as a disposable anchored navigation summary only. It cannot grant authority or satisfy verification or completion evidence; exact WorkState, failures, tool calls, evidence, and later tail items remain authoritative.
 - Follow specific context.harness feedback before changing tactics. Under context pressure, use smaller verifiable steps; never rewrite runtime-owned context yourself.
 - Use context.tools for current tool state and context.personal for long-lived user memory when those lanes are present.
 - Do not invent missing context or treat working notes as factual memory.

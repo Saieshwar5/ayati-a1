@@ -1,6 +1,7 @@
 import type { AgentContextPack } from "./context-pack.js";
 import type { PromptToolCalls } from "./run-tool-call-context.js";
 import type { AgentStateView } from "./state-view.js";
+import type { RunFocusSummary } from "../context-preparation/types.js";
 
 export interface PromptPersonalContext {
   memorySnapshot: string;
@@ -9,6 +10,8 @@ export interface PromptPersonalContext {
 export interface PromptRunContext {
   workState?: PromptRunWorkStateContext;
   toolCalls?: PromptToolCalls;
+  /** Disposable run-scoped context. It is never verification or completion evidence. */
+  focus?: RunFocusSummary;
   contextPressure?: {
     mode: "tool_compact" | "stream_project" | "stream_checkpoint" | "step_ledger";
     recommendedMode?: "stream_project" | "stream_checkpoint" | "step_ledger";
@@ -171,6 +174,7 @@ function compactRunContext(
         ? run.toolCalls
         : run.toolCalls.map(({ projectionMetadata: _projectionMetadata, ...call }) => call),
     } : {}),
+    ...(run.focus ? { focus: run.focus } : {}),
     ...(run.contextPressure ? { contextPressure: run.contextPressure } : {}),
   };
   return Object.keys(compacted).length > 0 ? compacted : undefined;

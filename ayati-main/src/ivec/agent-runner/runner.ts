@@ -390,6 +390,14 @@ export async function runAgentLoop(
         workstreamBound: capabilityPolicy.workstreamBound,
         toolContextProjectionPolicy: config.toolContextProjectionPolicy,
         contextCheckpoint: deps.contextCheckpoint,
+        contextPreparation: deps.contextPreparation,
+        applyAuthoritativeContext: (context) => applyAuthoritativeContextToLoop({
+          deps,
+          state,
+          inputHandle,
+          context,
+          activeTools: selectedTools.map((tool) => tool.name),
+        }),
         systemContext: deps.systemContext,
         metrics,
         feedbackLedger: deps.feedbackLedger,
@@ -1015,6 +1023,15 @@ async function buildFinalResponseFromWorkState(input: {
       workstreamBound: isWorkstreamBound(input.state),
       toolContextProjectionPolicy: input.config.toolContextProjectionPolicy,
       contextCheckpoint: input.deps.contextCheckpoint,
+      contextPreparation: input.deps.contextPreparation,
+      contextPreparationMode: "final_response",
+      applyAuthoritativeContext: (context) => applyAuthoritativeContextToLoop({
+        deps: input.deps,
+        state: input.state,
+        inputHandle: input.inputHandle,
+        context,
+        activeTools: [],
+      }),
       systemContext: [
         input.deps.systemContext,
         "Final response-only mode: tools are unavailable. Reply naturally to the user from context.run.workState, verified facts, artifacts, and recent tool-call memory. Do not mention harness internals. Do not say control tool names such as workstream_completion, decision_load_tools, or ask_user_feedback.",
@@ -1096,6 +1113,22 @@ function applyPersistedStepContext(
     ...context,
   };
   syncHarnessContext(state, deps, inputHandle);
+}
+
+function applyAuthoritativeContextToLoop(input: {
+  deps: AgentLoopDeps;
+  state: LoopState;
+  inputHandle: SessionInputHandle;
+  context: NonNullable<AgentLoopDeps["harnessContext"]>["contextEngine"];
+  activeTools: string[];
+}): ReturnType<typeof buildAgentStateView> {
+  if (!input.context) return buildAgentStateView(input.state, { activeTools: input.activeTools });
+  input.deps.harnessContext = {
+    ...(input.deps.harnessContext ?? {}),
+    contextEngine: input.context,
+  };
+  syncHarnessContext(input.state, input.deps, input.inputHandle);
+  return buildAgentStateView(input.state, { activeTools: input.activeTools });
 }
 
 function describeActionInputValue(value: unknown): string {

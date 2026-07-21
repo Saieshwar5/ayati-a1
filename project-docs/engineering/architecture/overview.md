@@ -21,20 +21,27 @@ context SQLite and context-only Git writes. The daemon depends on its typed
 3. The projection separates slow stream continuity from fast run state. It
    includes a checkpoint plus exact message tail, recent work references,
    resources, reusable observations, routing candidates, and the current run.
-4. The decision model may reply, inspect/search/read, load tools, or bind the
+4. Before each primary decision, the runtime builds a structured prompt
+   manifest, measures the complete serialized provider request, and checks the
+   run-owned context-preparation lane. Disposable checkpoint or focus
+   candidates may be prepared beside foreground model work; they are not
+   agents or model-facing tools.
+5. The decision model may reply, inspect/search/read, load tools, or bind the
    existing run to one workstream/request.
-5. The shared action executor runs calls. Deterministic verification and the
+6. The shared action executor runs calls. Deterministic verification and the
    progress reducer update WorkState. `recordRunStep` persists each ordered
    step, its calls, verification, and resulting WorkState, then returns the
    updated authoritative projection for the next decision.
-6. If the whole decision candidate exceeds soft pressure, deterministic
-   projection runs first. Remaining pressure may create one durable,
-   source-anchored stream checkpoint; the current input and exact tail are
-   never checkpointed away.
-7. `finalizeRun` closes the run, appends the immutable assistant message,
+7. Context recovery removes duplicate/invalid projections, compacts
+   recoverable outputs, and applies deterministic bounds first. It then
+   prefers a durable source-anchored stream checkpoint and uses a temporary
+   anchored run-focus overlay only when durable recovery is insufficient.
+   Durable candidates commit only when adopted, and the commit's fresh Context
+   Engine projection replaces the loop projection before prompt rebuild.
+8. `finalizeRun` closes the run, appends the immutable assistant message,
    verifies resource effects, and optionally commits reduced workstream
    continuity.
-8. Only after durable acknowledgement does the transport receive its terminal
+9. Only after durable acknowledgement does the transport receive its terminal
    response envelope.
 
 The harness remains:
@@ -58,6 +65,7 @@ run context (fast growth, one accepted input)
   ordered steps and tool calls
   verification and audit evidence
   context-pressure state
+  disposable anchored focus overlay (runtime only)
 
 personal memory (independent)
   stable facts, preferences, evolving and time-scoped facts
@@ -87,6 +95,8 @@ Important entry points:
 - `ayati-context-engine/src/runtime.ts`
 - `ayati-main/src/ivec/agent-runner/context-pack.ts`
 - `ayati-main/src/ivec/agent-runner/decision-context-compiler.ts`
+- `ayati-main/src/ivec/context-preparation/manager.ts`
+- `ayati-main/src/ivec/context-preparation/main-admission.ts`
 - `ayati-main/src/app/resource-scoped-tool-executor.ts`
 - `ayati-context-engine/src/services/sqlite-context-engine-service.ts`
 - `ayati-context-engine/src/services/agent-context-projection-service.ts`

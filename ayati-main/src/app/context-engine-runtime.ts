@@ -274,7 +274,7 @@ class AppContextEngineRuntime implements ContextEngineRuntime {
         estimatedCheckpointTokens: input.estimatedCheckpointTokens,
         at: new Date().toISOString(),
       }),
-      commit: async (input): Promise<ContextCheckpointRecord> => {
+      commit: async (input) => {
         const response = await this.options.service.commitContextCheckpoint({
           requestId: operationRequestId(turn.run.runId, `checkpoint-commit-${input.plan.planId}`),
           plan: input.plan,
@@ -302,8 +302,9 @@ class AppContextEngineRuntime implements ContextEngineRuntime {
             });
           });
         }
-        return response.checkpoint;
+        return { checkpoint: response.checkpoint, context: projection };
       },
+      currentContext: () => turn.context,
     };
   }
 

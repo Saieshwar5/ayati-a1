@@ -7,7 +7,7 @@ import type { PromptToolCalls } from "./run-tool-call-context.js";
 import type { AgentStateView } from "./state-view.js";
 
 const LIMITS = {
-  candidates: 8,
+  candidates: 5,
   recentWork: 6,
   streamResources: 12,
   observationsPerKind: 8,

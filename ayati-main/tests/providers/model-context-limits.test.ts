@@ -25,6 +25,7 @@ describe("model context limits", () => {
       model: "custom",
       contextWindowTokens: 128_000,
       outputReserveTokens: 8_192,
+      preparationInputTokens: 55_000,
       softInputTokens: 70_000,
       recoveryTargetTokens: 60_000,
       hardInputTokens: 100_000,
@@ -40,6 +41,7 @@ describe("model context limits", () => {
     await setModelContextLimitsForProvider("openai", {
       contextWindowTokens: 256_000,
       outputReserveTokens: 16_000,
+      preparationInputTokens: 110_000,
     });
 
     expect(resolveModelContextLimits(provider("openai"))).toEqual({
@@ -47,6 +49,7 @@ describe("model context limits", () => {
       model: "large-context-model",
       contextWindowTokens: 256_000,
       outputReserveTokens: 16_000,
+      preparationInputTokens: 110_000,
       softInputTokens: 140_000,
       recoveryTargetTokens: 120_000,
       hardInputTokens: 200_000,

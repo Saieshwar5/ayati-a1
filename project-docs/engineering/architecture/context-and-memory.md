@@ -18,6 +18,9 @@ growth rates and different authority.
 - Episodic memory: semantic recall over prior experience.
 - Active-run projection: the harness keeps the latest authoritative service
   response for the current turn; it does not maintain a second context cache.
+- Context preparation: one runtime-owned, in-memory candidate lane per main
+  run or resolver activity. Candidates and focus overlays are disposable;
+  only an adopted Context Engine checkpoint becomes durable.
 
 ## Agent Stream Continuity
 
@@ -60,6 +63,10 @@ typed result is committed by Context Engine and then mounted into the main
 projection. An unfinished activity is marked interrupted on restart and is
 not resumed.
 
+Main and resolver context-preparation lanes share only the provider-scoped
+limit of one background semantic call. They do not share histories, WorkState,
+candidates, overlays, accounting, or authority.
+
 ## Agent-Facing Prompt Lanes
 
 The model receives an explicit bounded projection:
@@ -75,7 +82,9 @@ The model receives an explicit bounded projection:
 - `context.personal`: compact personal-memory snapshot;
 - `context.tools`: current capability surface;
 - `context.harness`: compact repair feedback;
-- `context.run`: WorkState, current-run calls, and pressure state.
+- `context.run`: WorkState, current-run calls, pressure state, and an optional
+  `focus` overlay. The overlay is context only and is never verification or
+  completion evidence.
 
 Internal database paths, context-repository paths, observation authority
 fields, idempotency data, and recovery journals are not model-facing.
@@ -98,6 +107,28 @@ version change invalidates the observation before projection. Current-run tool
 calls are not duplicated in this lane, and mutations never become reusable
 observations.
 
+## Parallel Context Preparation
+
+Every primary decision starts from a structured prompt manifest. Parts carry a
+stable id, `system`/`session`/`work` lane, retention class, source refs, and a
+local estimate. System/safety instructions, selected native tool schemas,
+current input identity/content, active authority, WorkState, open work,
+failures, verification/completion evidence, the latest six main calls, and the
+latest two resolver steps are always rebuilt from current authoritative state.
+
+The manager identifies a stable source prefix by canonical hashes and
+message/step watermarks. At 55K in the default profile, or when current input
+plus the 15K lead predicts crossing 70K, it may prepare one disposable hybrid
+candidate beside foreground model work. One semantic call may be active per
+provider. Identical prefix/policy/profile jobs deduplicate; errors become
+failed candidates, and late results after lane closure are measured and
+discarded.
+
+A ready candidate is valid only for its exact lane, policy/model profile,
+checkpoint base, source hashes, and required exact refs. Append-only tail
+growth is allowed. Changed sources, bases, lanes, refs, or policy versions make
+the candidate stale without changing authoritative state.
+
 ## Durable Pressure Checkpoints
 
 Checkpoints are created only under measured context pressure:
@@ -109,13 +140,30 @@ Checkpoints are created only under measured context pressure:
 4. If pressure remains, ask Context Engine for a plan over a complete prefix of
    terminal runs before the protected current input.
 5. Generate a structured summary with exact message-sequence anchors, allowing
-   at most one repair.
-6. Atomically commit the checkpoint and active pointer.
-7. Rebuild and measure the checkpoint-plus-exact-tail candidate.
+   at most one repair, but do not commit it yet.
+6. At adoption, revalidate the base/source and atomically commit the checkpoint
+   and active pointer through Context Engine.
+7. Replace the loop projection with the fresh commit response, then rebuild and
+   measure checkpoint plus exact tail.
 
 The default checkpoint estimate is 1,200 tokens. A checkpoint never grants
 authority; every statement cites an exact retained message sequence. Failed or
 unnecessary plans do not change durable state.
+
+## Temporary Focus Overlays
+
+When an eligible durable checkpoint cannot recover enough space, the runtime
+may summarize only covered older prompt material into `context.run.focus`.
+Every statement cites a valid message, step, call, evidence, or artifact ref;
+the complete summary is limited to 1,600 estimated tokens and one repair.
+Current input, WorkState, binding/resources, unresolved failures, and
+completion evidence are never source material. Covered exact prompt material
+is replaced, while new calls/steps append as an exact tail.
+
+The overlay lasts only for the current run. Finalization, interruption, or
+restart discards it. The next run starts from the canonical stream checkpoint
+and bounded exact tail; older exact content remains available through history
+search/read.
 
 ## Exact History Access
 
@@ -142,8 +190,11 @@ system grants resource access or mutation authority.
 ## Context Pressure and Recovery
 
 Pressure preserves exact current input, binding/resource ownership, WorkState,
-and recent run evidence before lower-value projections. If the final bounded
-candidate remains inadmissible, the run ends as `incomplete/context_limit`.
+and recent run evidence before lower-value projections. Below the forced
+barrier, a foreground decision may continue while preparation is pending. At
+or above it, the runtime waits once and performs synchronous recovery. If the
+final bounded candidate remains inadmissible or above the forced barrier, the
+run ends as `incomplete/context_limit`.
 
 Startup closes an abandoned safe run as `incomplete/interrupted`. Journaled
 finalizations and resource operations resume idempotently. Unresolved recovery

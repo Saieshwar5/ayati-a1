@@ -20,7 +20,11 @@ import type {
   RunRecorder,
   SessionInputHandle,
 } from "../memory/types.js";
-import type { ContextRunStepRecord } from "../context-engine/index.js";
+import type {
+  ContextEngineMachineContext,
+  ContextRunStepRecord,
+} from "../context-engine/index.js";
+import type { ContextPreparationManager } from "./context-preparation/manager.js";
 import type { DocumentStore } from "../documents/document-store.js";
 import type { PreparedAttachmentRecord, PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
@@ -439,7 +443,11 @@ export interface AgentContextCheckpointCoordinator {
     tokenCount: number;
     provider: string;
     model: string;
-  }): Promise<ContextCheckpointRecord>;
+  }): Promise<{
+    checkpoint: ContextCheckpointRecord;
+    context: ContextEngineMachineContext;
+  }>;
+  currentContext(): ContextEngineMachineContext;
 }
 
 // --- Deps ---
@@ -473,6 +481,8 @@ export interface AgentLoopDeps {
     currentContext: HarnessContextInput,
   ) => void | HarnessContextInput | Promise<void | HarnessContextInput>;
   contextCheckpoint?: AgentContextCheckpointCoordinator;
+  /** Runtime-owned disposable context preparation for this run. */
+  contextPreparation?: ContextPreparationManager;
   workstreamResolution?: WorkstreamResolutionCoordinator;
   feedbackLedger?: AgentFeedbackLedger;
   config?: Partial<LoopConfig>;

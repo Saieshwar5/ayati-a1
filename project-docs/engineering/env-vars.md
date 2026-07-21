@@ -13,6 +13,32 @@ Chat, embedding, image, and context-window model settings live in
 `ayati-main/data/runtime/llm-config.json`. OpenAI embeddings and image
 generation require `OPENAI_API_KEY`.
 
+A model context profile may contain:
+
+```json
+{
+  "contextWindowTokens": 128000,
+  "outputReserveTokens": 8192,
+  "preparationInputTokens": 55000,
+  "recoveryTargetTokens": 60000,
+  "softInputTokens": 70000,
+  "hardInputTokens": 100000
+}
+```
+
+`preparationInputTokens` is optional. Its default is `55_000 / 128_000` of
+the configured context window; the other default pressure thresholds scale in
+the same way. Profiles must satisfy:
+
+```text
+0 < preparation < recovery < soft < hard <= input capacity
+```
+
+Input capacity is the smaller of an optional model `maxInputTokens` and the
+context window minus output reserve. The default 128K profile uses the exact
+values above. The runtime also applies a conservative 95% local-estimate
+admission limit until an exact provider count is available.
+
 ## Ayati Root
 
 ```env

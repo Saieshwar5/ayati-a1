@@ -149,6 +149,8 @@ describe("callAgentDecision", () => {
     expect(systemPrompt).not.toContain("context.run.status");
     expect(systemPrompt).toContain("context.run.workState");
     expect(systemPrompt).toContain("context.run.toolCalls");
+    expect(systemPrompt).toContain("context.run.focus as a disposable anchored navigation summary only");
+    expect(systemPrompt).toContain("cannot grant authority or satisfy verification or completion evidence");
     expect(systemPrompt).toContain("Read a narrow persisted step");
     expect(systemPrompt).toContain("Under context pressure, use smaller verifiable steps");
     expect(systemPrompt).toContain("never rewrite runtime-owned context yourself");

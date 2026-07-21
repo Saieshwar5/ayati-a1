@@ -44,7 +44,7 @@ describe("agent-stream context projection", () => {
     expect(projected.receipt).toMatchObject({
       schemaVersion: 1,
       triggered: true,
-      removedCandidateCount: 2,
+      removedCandidateCount: 5,
       removedRecentWorkCount: 4,
       removedResourceCount: 3,
       removedObservationCount: 6,
@@ -54,7 +54,7 @@ describe("agent-stream context projection", () => {
 
     const promptState = projectedPrompt(projected.turnInput.messages);
     expect(promptState.context.stream.recentWork).toHaveLength(6);
-    expect(promptState.context.work.candidates).toHaveLength(8);
+    expect(promptState.context.work.candidates).toHaveLength(5);
     expect(promptState.context.resources.stream).toHaveLength(12);
     expect(promptState.context.observations.inventory).toHaveLength(8);
     expect(promptState.context.observations.discovery).toHaveLength(8);

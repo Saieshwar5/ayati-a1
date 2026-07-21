@@ -18,6 +18,7 @@ export interface ResolvedModelContextLimits {
   contextWindowTokens: number;
   maxInputTokens?: number;
   outputReserveTokens: number;
+  preparationInputTokens: number;
   softInputTokens: number;
   recoveryTargetTokens: number;
   hardInputTokens: number;
@@ -26,10 +27,10 @@ export interface ResolvedModelContextLimits {
 
 type UnresolvedModelContextLimits = Omit<
   ResolvedModelContextLimits,
-  "softInputTokens" | "recoveryTargetTokens" | "hardInputTokens"
+  "preparationInputTokens" | "softInputTokens" | "recoveryTargetTokens" | "hardInputTokens"
 > & Partial<Pick<
   ResolvedModelContextLimits,
-  "softInputTokens" | "recoveryTargetTokens" | "hardInputTokens"
+  "preparationInputTokens" | "softInputTokens" | "recoveryTargetTokens" | "hardInputTokens"
 >>;
 
 export function resolveModelContextLimits(provider: LlmProvider): ResolvedModelContextLimits {
@@ -49,6 +50,9 @@ export function resolveModelContextLimits(provider: LlmProvider): ResolvedModelC
     contextWindowTokens: configured.contextWindowTokens,
     ...(configured.maxInputTokens !== undefined ? { maxInputTokens: configured.maxInputTokens } : {}),
     outputReserveTokens: configured.outputReserveTokens ?? DEFAULT_LLM_OUTPUT_RESERVE_TOKENS,
+    ...(configured.preparationInputTokens !== undefined
+      ? { preparationInputTokens: configured.preparationInputTokens }
+      : {}),
     ...(configured.softInputTokens !== undefined ? { softInputTokens: configured.softInputTokens } : {}),
     ...(configured.recoveryTargetTokens !== undefined ? { recoveryTargetTokens: configured.recoveryTargetTokens } : {}),
     ...(configured.hardInputTokens !== undefined ? { hardInputTokens: configured.hardInputTokens } : {}),
@@ -71,6 +75,7 @@ function resolveThresholds(input: UnresolvedModelContextLimits): ResolvedModelCo
 
   return {
     ...input,
+    preparationInputTokens: thresholds.preparationInputTokens,
     recoveryTargetTokens: thresholds.recoveryTargetTokens,
     softInputTokens: thresholds.softInputTokens,
     hardInputTokens: thresholds.hardInputTokens,
