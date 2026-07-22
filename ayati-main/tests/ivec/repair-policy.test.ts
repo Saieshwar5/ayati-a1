@@ -23,7 +23,7 @@ describe("repair policy", () => {
       expect(REPAIR_CODE_CATALOG[code].allowedNextActions.length).toBeGreaterThan(0);
     }
     expect(REPAIR_CODE_CATALOG.R_LOAD_TOOLS_USED_AS_ACTION.allowedNextActions).toContain(
-      "Use the native decision_load_tools control tool.",
+      "Use decision_transition_mode with exact capability groups.",
     );
     expect(REPAIR_CODE_CATALOG.R_LOAD_TOOLS_USED_AS_ACTION.allowedNextActions).not.toContain(
       "Do not put load_tools in executable action calls.",
@@ -54,9 +54,9 @@ describe("repair policy", () => {
       },
     });
     expect(signal.allowedNextActions).toEqual([
-      "Inspect workstream and resource candidates, then activate an exact matching workstream.",
-      "Call git_context_create_workstream with title, objective, and reason for distinct durable work.",
-      "Ask a short clarification directly if the request is unclear.",
+      "Observe workstream ownership, then enter resolve with the exact capability and typed binding proposal.",
+      "After authoritative bound context is mounted, make a fresh decision instead of replaying an earlier mutation.",
+      "If the deterministic gate reports ambiguity, validate its focused clarification.",
     ]);
   });
 

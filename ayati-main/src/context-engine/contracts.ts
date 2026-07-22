@@ -6,7 +6,6 @@ import type {
   RunContextProjection,
   StreamMessage,
   WorkstreamCandidate,
-  WorkstreamResolutionProjection,
   WorkstreamResourceBinding,
 } from "ayati-context-engine";
 
@@ -87,7 +86,6 @@ export interface ContextEngineMachineContext {
   observations: ReusableObservationProjection;
   run?: RunContextProjection;
   workstreamCandidates?: WorkstreamCandidate[];
-  workstreamResolution?: WorkstreamResolutionProjection;
   ingressResources?: ResourceRef[];
   workstream?: ContextWorkstreamProjection;
   warnings: string[];

@@ -5,6 +5,7 @@ import type { PromptToolCalls } from "./run-tool-call-context.js";
 import type { ToolLoadResult } from "./tool-working-set.js";
 import { buildAgentContextPack } from "./context-pack.js";
 import { projectAgentPromptContext } from "./prompt-context.js";
+import { buildVirtualModeCard } from "./virtual-mode.js";
 import type {
   AgentPromptContext,
   PromptHarnessContext,
@@ -124,6 +125,9 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
       workingFeedback,
     }),
     run: buildRunContext({
+      mode: buildVirtualModeCard(state.virtualMode, {
+        workstreamBound: state.harnessContext.contextEngine?.current.routing?.status === "bound",
+      }),
       workState: progress,
       toolCalls,
       contextPressure: buildContextPressureView(state),
@@ -160,11 +164,13 @@ function buildToolsContext(input: {
 }
 
 function buildRunContext(input: {
+  mode: NonNullable<PromptRunContext["mode"]>;
   workState?: PromptProgressState;
   toolCalls?: PromptToolCalls;
   contextPressure?: PromptRunContext["contextPressure"];
 }): PromptRunContext {
   return {
+    mode: input.mode,
     ...(input.workState ? { workState: input.workState } : {}),
     ...(input.toolCalls ? { toolCalls: input.toolCalls } : {}),
     ...(input.contextPressure ? { contextPressure: input.contextPressure } : {}),
@@ -233,14 +239,6 @@ function buildWorkingFeedbackView(state: LoopState): PromptWorkingFeedback | und
 
 function buildPendingTurnWorkingFeedback(state: LoopState): PromptWorkingFeedbackItem | undefined {
   const routing = state.harnessContext.contextEngine?.current.routing;
-  if (routing?.status === "unbound") {
-    return {
-      severity: "warning",
-      source: "tool_validation",
-      message: "The current Context Engine pending turn is unbound. Normal workstream tools are not valid until this turn is routed to an existing workstream or a new workstream.",
-      retryHint: "Inspect workstream/resource candidates, then activate or create the correct workstream. Ask the user directly if ownership is ambiguous.",
-    };
-  }
   if (routing?.status === "clarifying") {
     return {
       severity: "warning",
@@ -253,7 +251,7 @@ function buildPendingTurnWorkingFeedback(state: LoopState): PromptWorkingFeedbac
 }
 
 function buildToolLoadWorkingFeedback(result: ToolLoadResult | undefined): PromptWorkingFeedbackItem | undefined {
-  if (!result || ["loaded", "already_active"].includes(result.status)) {
+  if (!result || ["loaded", "already_active", "not_needed"].includes(result.status)) {
     return undefined;
   }
   return {
@@ -261,10 +259,10 @@ function buildToolLoadWorkingFeedback(result: ToolLoadResult | undefined): Promp
     source: "tool_load",
     message: truncate(result.message, 360),
     retryHint: result.unavailable.some((entry) => entry.reason === "requires_workstream_binding")
-      ? "During routing, use the resource inspector for a user-provided path, then activate or create the owning workstream. Make a fresh mutation decision only after binding."
+      ? "Use decision_transition_mode to enter resolve with the exact binding-required capability and evidence-backed target."
       : result.missing.length > 0
-      ? `Requested tools were not available: ${compactList(result.missing, 5, 80).join(", ")}. Use another selected tool or request a broader group/query.`
-      : "If tools are still needed, request exact tool names, groups, or a clearer search query with decision_load_tools.",
+      ? `Requested capabilities were not available: ${compactList(result.missing, 5, 80).join(", ")}. Choose an exact group from the capability catalog.`
+      : "If the current capability surface is insufficient, use a bounded self-transition with different exact capability groups.",
   };
 }
 
@@ -277,13 +275,13 @@ function isToolValidationReason(reason: string): boolean {
 
 function buildFailureRetryHint(failureType: LoopState["failureHistory"][number]["failureType"], reason: string): string | undefined {
   if (reason.includes("No active workstream exists")) {
-    return "Inspect workstream candidates, then activate the matching workstream or create a distinct workstream before mutation. Ask a short clarification if ownership is unclear.";
+    return "Enter resolve with the exact binding-required capability and evidence-backed target. Validate needs_user_input if ownership remains ambiguous.";
   }
   if (failureType === "validation_error" || isToolValidationReason(reason)) {
     return "Retry the selected executable tool with all required schema fields. Do not use an empty input object.";
   }
   if (reason.includes("Unknown tool") || reason.includes("was not selected")) {
-    return "Request the missing tool with decision_load_tools, then call the selected executable tool directly.";
+    return "Change the current mode capability surface, then call only a selected executable tool.";
   }
   if (reason.includes("permission")) {
     return "Ask the user only if the action requires permission or an irreversible change.";

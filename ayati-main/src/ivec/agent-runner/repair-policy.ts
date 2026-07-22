@@ -21,6 +21,9 @@ export type RepairCode =
   | "R_EDIT_ESCALATE_TO_GUARDED_REWRITE"
   | "R_DUPLICATE_READ"
   | "R_MUTATION_EXPECTED_AFTER_CONTEXT"
+  | "R_MODE_TRANSITION_INVALID"
+  | "R_DIRECT_RESPONSE_REQUIRES_MODE"
+  | "R_VALIDATION_REJECTED"
   | "R_REPEATED_REPAIR_FAILURE";
 
 export type RepairSeverity = "info" | "repairable" | "warning" | "error" | "fatal";
@@ -106,6 +109,9 @@ export const REPAIR_CODES: readonly RepairCode[] = [
   "R_EDIT_ESCALATE_TO_GUARDED_REWRITE",
   "R_DUPLICATE_READ",
   "R_MUTATION_EXPECTED_AFTER_CONTEXT",
+  "R_MODE_TRANSITION_INVALID",
+  "R_DIRECT_RESPONSE_REQUIRES_MODE",
+  "R_VALIDATION_REJECTED",
   "R_REPEATED_REPAIR_FAILURE",
 ];
 
@@ -129,7 +135,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     message: "The decision referenced a tool that is not selected for this step.",
     allowedNextActions: [
       "Call only tools listed in Selected tools.",
-      "Use decision_load_tools first if a missing tool is needed.",
+      "Use decision_transition_mode to replace the active capability surface when a different tool responsibility is needed.",
     ],
     modelFacing: true,
   },
@@ -139,8 +145,8 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     source: "decision.tool_protocol",
     message: "Tool loading was used as executable work.",
     allowedNextActions: [
-      "Use the native decision_load_tools control tool.",
-      "Do not put tool-loading controls in executable action calls.",
+      "Use decision_transition_mode with exact capability groups.",
+      "Do not put navigation controls in executable action calls.",
     ],
     modelFacing: true,
   },
@@ -150,7 +156,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     source: "decision.tool_protocol",
     message: "The tool-load request did not include a usable selector.",
     allowedNextActions: [
-      "Retry decision_load_tools with at least one exact toolNames, groups, or query selector.",
+      "Call decision_transition_mode with at least one exact capability group from the catalog.",
     ],
     modelFacing: true,
   },
@@ -181,7 +187,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     source: "runner.workstream_binding",
     message: "Mutation requires the current run to be bound to a workstream.",
     allowedNextActions: [
-      "Call git_context_activate_workstream or git_context_create_workstream for the current run.",
+      "Enter resolve with the exact binding-required capability and an evidence-backed target.",
       "After binding refreshes the context, make a fresh mutation decision.",
       "Do not defer, retain, or replay the rejected mutation call.",
     ],
@@ -193,9 +199,9 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     source: "runner.guard",
     message: "No active workstream exists yet. Normal work tools cannot run before workstream binding.",
     allowedNextActions: [
-      "Inspect workstream and resource candidates, then activate an exact matching workstream.",
-      "Call git_context_create_workstream with title, objective, and reason for distinct durable work.",
-      "Ask a short clarification directly if the request is unclear.",
+      "Observe workstream ownership, then enter resolve with the exact capability and typed binding proposal.",
+      "After authoritative bound context is mounted, make a fresh decision instead of replaying an earlier mutation.",
+      "If the deterministic gate reports ambiguity, validate its focused clarification.",
     ],
     modelFacing: true,
   },
@@ -205,8 +211,8 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     source: "runner.guard",
     message: "A workstream-scoped executable action reached the runner before workstream binding existed.",
     allowedNextActions: [
-      "Route the turn to a workstream before normal tool execution.",
-      "Create or activate the correct workstream if durable work is required.",
+      "Observe ownership, then enter resolve with the executable capability and an evidence-backed binding proposal.",
+      "Make a fresh executable decision only after the runtime mounts authoritative bound context.",
     ],
     modelFacing: true,
   },
@@ -216,9 +222,9 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     source: "runner.pending_turn",
     message: "The current pending turn is not bound to a workstream.",
     allowedNextActions: [
-      "Use the git_context_* read/search tools if needed.",
-      "Then call git_context_activate_workstream or git_context_create_workstream.",
-      "Ask the user directly if workstream ownership is ambiguous.",
+      "Enter an observation mode for read-only evidence gathering.",
+      "For mutation, observe ownership and enter resolve with the exact capability and typed proposal.",
+      "Validate the deterministic gate's focused question if workstream ownership is ambiguous.",
     ],
     modelFacing: true,
   },
@@ -228,7 +234,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     source: "runner.pending_turn",
     message: "The current pending turn is waiting for workstream clarification.",
     allowedNextActions: [
-      "Ask the user directly which workstream or target they mean.",
+      "Validate a needs_user_input response asking which workstream or target the user means.",
       "Do not call executable tools until workstream ownership is resolved.",
     ],
     modelFacing: true,
@@ -239,8 +245,8 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     source: "decision.tool_protocol",
     message: "The workstream feedback tool is not available outside an active workstream-bound run.",
     allowedNextActions: [
-      "Use direct assistant text for pre-workstream questions and final replies.",
-      "Use ask_user_feedback only when it is exposed during an active workstream-bound run.",
+      "Use direct assistant text only at ENTRY for a genuinely tool-free reply.",
+      "After graph activation, use decision_validate for needs_user_input and all other terminal outcomes.",
     ],
     modelFacing: true,
   },
@@ -355,6 +361,37 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
       "Use the current observations and evidence to make the requested change.",
       "Call patch_files or write_files next when the user asked to build or update files.",
       "Ask one specific clarification if the change cannot be made from the available context.",
+    ],
+    modelFacing: true,
+  },
+  R_MODE_TRANSITION_INVALID: {
+    code: "R_MODE_TRANSITION_INVALID",
+    severity: "repairable",
+    source: "runner.virtual_mode",
+    message: "The requested virtual-mode transition did not satisfy graph, capability, or target prerequisites.",
+    allowedNextActions: [
+      "Use an allowed next mode from context.run.mode.",
+      "Choose exact capability groups and evidence-backed targets.",
+    ],
+    modelFacing: true,
+  },
+  R_DIRECT_RESPONSE_REQUIRES_MODE: {
+    code: "R_DIRECT_RESPONSE_REQUIRES_MODE",
+    severity: "repairable",
+    source: "runner.direct_response",
+    message: "The request requires unperformed observation or mutation, so a direct terminal response is not truthful.",
+    allowedNextActions: [
+      "Enter an observation mode, or use the resolve gate for mutation-capable work.",
+    ],
+    modelFacing: true,
+  },
+  R_VALIDATION_REJECTED: {
+    code: "R_VALIDATION_REJECTED",
+    severity: "repairable",
+    source: "runner.validation",
+    message: "Whole-task validation rejected the proposed terminal outcome.",
+    allowedNextActions: [
+      "Keep the current mode active, repair the stated deterministic condition, and validate again.",
     ],
     modelFacing: true,
   },

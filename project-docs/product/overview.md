@@ -20,6 +20,13 @@ context windows, or internal work lists. Every accepted message or system event
 creates one run. Conversation and observational work can finish unbound;
 durable work binds that same run to one workstream and request.
 
+Each run starts at `ENTRY` and may navigate read-only locate/investigate modes,
+a deterministic binding gate, bound execution, and whole-task validation.
+Workstream discovery is read-only observation in the same primary model loop;
+the binding gate validates one typed proposal without calling a model. This is
+a small harness-enforced capability graph inside the existing loop, not a
+second planner, agent, or session-level state machine.
+
 Continuity lives in one slow-growing agent stream across clients and runs.
 Fast-growing WorkState, steps, tool calls, and verification remain inside the
 current run. Under measured pressure Ayati creates a durable anchored

@@ -15,32 +15,20 @@ export function nativeDecisionFixture(response: unknown): LlmTurnOutput {
         type: "assistant",
         content: typeof parsed["message"] === "string" ? parsed["message"] : "",
       };
-    case "ask_user":
-      return toolTurn("ask_user_feedback", {
-        question: parsed["question"],
-        reason: parsed["reason"],
-        ...(parsed["workingNotes"] ? { workingNotes: parsed["workingNotes"] } : {}),
-      });
-    case "load_tools": {
+    case "transition_mode": {
       const request = objectRecord(parsed["request"]);
-      return toolTurn("decision_load_tools", {
+      return toolTurn("decision_transition_mode", {
         ...request,
         ...(parsed["workingNotes"] ? { workingNotes: parsed["workingNotes"] } : {}),
       });
     }
-    case "workstream_completion": {
+    case "validate": {
       const request = objectRecord(parsed["request"]);
-      return toolTurn("workstream_completion", {
+      return toolTurn("decision_validate", {
+        outcome: request["outcome"],
         summary: request["summary"],
-        resources: request["resources"] ?? request["assets"],
-        ...(parsed["workingNotes"] ? { workingNotes: parsed["workingNotes"] } : {}),
-      });
-    }
-    case "resolve_workstream": {
-      const request = objectRecord(parsed["request"]);
-      return toolTurn("workstream_resolve", {
-        purpose: request["purpose"],
-        hints: request["hints"] ?? [],
+        response: request["response"],
+        ...(request["resources"] ? { resources: request["resources"] } : {}),
         ...(parsed["workingNotes"] ? { workingNotes: parsed["workingNotes"] } : {}),
       });
     }

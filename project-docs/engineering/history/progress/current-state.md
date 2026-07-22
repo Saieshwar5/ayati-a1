@@ -1,6 +1,6 @@
 # Current State
 
-Last updated: 2026-07-20
+Last updated: 2026-07-22
 
 Ayati uses one-run execution with context-only workstreams and a shared resource
 catalog.
@@ -21,8 +21,8 @@ context pack -> decision -> action executor -> deterministic verification -> pro
 
 ## Implemented
 
-- Protocol 37 and clean SQLite schema V7 with isolated resolver journals and
-  no compatibility reader for older schema versions.
+- Protocol 37 and clean SQLite schema V7 with no compatibility reader for
+  older schema versions.
 - One atomic preparation operation for agent stream, immutable ingress message,
   run, WorkState, and idempotency receipt.
 - One default `local/default` stream across clients and system events.
@@ -42,8 +42,9 @@ context pack -> decision -> action executor -> deterministic verification -> pro
 - Immutable content-addressed uploaded resources.
 - Deterministic discovery using exact identity/resource ownership,
   continuation, text, unfinished, star, recency, and frequency signals.
-- Native create, activate, find, read, inspect, star, and resource-binding
-  controls.
+- Same-loop read-only workstream and resource-routing observation followed by
+  one deterministic activate-or-create binding gate. The gate makes no model
+  request and enters execution mechanically after binding succeeds.
 - Exact resource-scoped execution with pre/post mutation observations,
   verification, idempotency, and recovery.
 - One `AYATI_ROOT_DIR` topology with visible default outputs under

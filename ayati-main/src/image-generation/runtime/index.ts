@@ -7,6 +7,7 @@ import type {
   ImageGenerationOutput,
   ImageGenerationProvider,
 } from "../contracts.js";
+import { getActiveEvaluationRecorder } from "../../evaluation/capture-runtime.js";
 
 let activeProviderName: SupportedImageGenerationProvider | null = null;
 let activeProvider: ImageGenerationProvider | null = null;
@@ -37,9 +38,29 @@ const runtimeImageGenerationProvider: ImageGenerationProvider = {
     }
 
     const provider = await ensureActiveProvider();
-    return provider.generateImage(input);
+    const operationStarted = process.hrtime.bigint();
+    try {
+      const result = await provider.generateImage(input);
+      getActiveEvaluationRecorder()?.record({
+        stage: "image_generation",
+        event: "completed",
+        data: { provider: provider.name, model: provider.modelName, input, output: result, durationMs: elapsedMs(operationStarted) },
+      });
+      return result;
+    } catch (error) {
+      getActiveEvaluationRecorder()?.record({
+        stage: "image_generation",
+        event: "failed",
+        data: { provider: provider.name, model: provider.modelName, input, error, durationMs: elapsedMs(operationStarted) },
+      });
+      throw error;
+    }
   },
 };
+
+function elapsedMs(startedNs: bigint): number {
+  return Number(process.hrtime.bigint() - startedNs) / 1_000_000;
+}
 
 export default runtimeImageGenerationProvider;
 

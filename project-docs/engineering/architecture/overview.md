@@ -26,8 +26,14 @@ context SQLite and context-only Git writes. The daemon depends on its typed
    run-owned context-preparation lane. Disposable checkpoint or focus
    candidates may be prepared beside foreground model work; they are not
    agents or model-facing tools.
-5. The decision model may reply, inspect/search/read, load tools, or bind the
-   existing run to one workstream/request.
+5. Every run starts at `ENTRY`. The decision model may reply directly for a
+   tool-free request or enter a read-only observation mode. Workstream and
+   resource-owner discovery are read-only observations in that same loop. A
+   transition to `resolve` requires mutation intent, a binding-required
+   capability, evidence-backed targets, and one typed binding proposal. The
+   deterministic gate makes no model call, enters `execute` mechanically after
+   binding, and mounts authoritative context before a fresh decision. Mode
+   changes replace the tool surface.
 6. The shared action executor runs calls. Deterministic verification and the
    progress reducer update WorkState. `recordRunStep` persists each ordered
    step, its calls, verification, and resulting WorkState, then returns the
@@ -61,6 +67,7 @@ agent stream (slow growth, many runs)
   reusable list/search/read observations
 
 run context (fast growth, one accepted input)
+  run-scoped virtual mode and revision
   WorkState
   ordered steps and tool calls
   verification and audit evidence
@@ -95,6 +102,8 @@ Important entry points:
 - `ayati-context-engine/src/runtime.ts`
 - `ayati-main/src/ivec/agent-runner/context-pack.ts`
 - `ayati-main/src/ivec/agent-runner/decision-context-compiler.ts`
+- `ayati-main/src/ivec/agent-runner/virtual-mode.ts`
+- `ayati-main/src/ivec/agent-runner/virtual-mode-runtime.ts`
 - `ayati-main/src/ivec/context-preparation/manager.ts`
 - `ayati-main/src/ivec/context-preparation/main-admission.ts`
 - `ayati-main/src/app/resource-scoped-tool-executor.ts`

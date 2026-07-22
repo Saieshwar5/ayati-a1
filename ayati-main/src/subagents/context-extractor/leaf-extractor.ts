@@ -2,6 +2,7 @@ import type { LlmProvider } from "../../core/contracts/provider.js";
 import { estimateTextTokens } from "../../prompt/token-estimator.js";
 import { devLog, devWarn } from "../../shared/index.js";
 import type { ContextEvidenceItem, SourceChunk } from "./types.js";
+import { withEvaluationModelOperation } from "../../evaluation/capture-runtime.js";
 
 export interface LeafExtractInput {
   provider: LlmProvider;
@@ -69,9 +70,11 @@ export async function extractLeafEvidence(input: LeafExtractInput): Promise<Leaf
     sourceBlocks.join("\n\n"),
   ].join("\n");
 
-  const turn = await input.provider.generateTurn({
-    messages: [{ role: "user", content: prompt }],
-  });
+  const turn = await withEvaluationModelOperation({
+    purpose: "context_extraction",
+  }, async () => await input.provider.generateTurn({
+      messages: [{ role: "user", content: prompt }],
+    }));
 
   if (turn.type !== "assistant") {
     devWarn("[leaf-extract] provider returned non-assistant turn");

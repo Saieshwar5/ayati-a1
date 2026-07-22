@@ -4,7 +4,12 @@ import { IVecEngine } from "../ivec/index.js";
 import { UploadServer, WsServer } from "../server/index.js";
 import pluginFactories from "../config/plugins.js";
 import providerFactory from "../config/provider.js";
-import { initializeLlmRuntimeConfig } from "../config/llm-runtime-config.js";
+import {
+  getActiveProvider,
+  getLlmRuntimeConfig,
+  getModelForProvider,
+  initializeLlmRuntimeConfig,
+} from "../config/llm-runtime-config.js";
 import {
   AdapterRegistry,
   InboundQueueStore,
@@ -39,6 +44,13 @@ import {
   createHarnessContextEngineObserver,
   recordContextEngineObservabilityEvent,
 } from "./context-engine-observability.js";
+import {
+  combineFeedbackLedgers,
+  createEvaluationProvider,
+  createEvaluationToolExecutor,
+  startLiveEvaluationCapture,
+  stopLiveEvaluationCapture,
+} from "../evaluation/index.js";
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(thisDir, "..", "..");
@@ -49,14 +61,30 @@ export async function main(): Promise<void> {
   await initializeLlmRuntimeConfig({ projectRoot });
   const runtimeConfig = loadAyatiRuntimeConfig(process.env);
   await ensureWorkspaceRoot(runtimeConfig.workspace.root);
-  const provider = await loadProvider(providerFactory);
+  const loadedProvider = await loadProvider(providerFactory);
   const systemEventPolicy = loadSystemEventPolicy(projectRoot);
-  const feedbackLedger = createAgentFeedbackLedgerFromEnv({
+  const legacyFeedbackLedger = createAgentFeedbackLedgerFromEnv({
     dataDir: resolve(projectRoot, "data"),
   });
+  let evaluationRecorder: Awaited<ReturnType<typeof startLiveEvaluationCapture>>;
+  try {
+    evaluationRecorder = await startLiveEvaluationCapture({
+      projectRoot,
+      configuredRuntimeRoot: runtimeConfig.contextEngine.rootDirectory,
+      provider: loadedProvider,
+      model: getModelForProvider(getActiveProvider()),
+      runtimeConfig,
+      llmConfig: getLlmRuntimeConfig(),
+    });
+  } catch (error) {
+    devLog(`Live evaluation capture unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const feedbackLedger = combineFeedbackLedgers(legacyFeedbackLedger, evaluationRecorder);
+  const provider = createEvaluationProvider(loadedProvider);
   let engine: IVecEngine | null = null;
   let staticContext: StaticContext | null = null;
   const workspaceSessionsByTransport = new Map<string, string>();
+  const runByReplyTurn = new Map<string, string>();
 
   const memory = await createMemoryRuntime({
     projectRoot,
@@ -81,8 +109,11 @@ export async function main(): Promise<void> {
   let content: Awaited<ReturnType<typeof createContentRuntime>> | null = null;
   const wsServer = new WsServer({
     onReplyRendered: (transportClientId, acknowledgement) => {
+      const runId = runByReplyTurn.get(acknowledgement.turnId);
+      runByReplyTurn.delete(acknowledgement.turnId);
       feedbackLedger.record({
         clientId: CLIENT_ID,
+        ...(runId ? { runId } : {}),
         stage: "client",
         event: "reply_rendered",
         data: {
@@ -90,8 +121,17 @@ export async function main(): Promise<void> {
           ...acknowledgement,
         },
       });
+      if (runId) {
+        feedbackLedger.scheduleCheckpoint?.(runId);
+      }
     },
     onMessage: (transportClientId, data) => {
+      feedbackLedger.record({
+        clientId: CLIENT_ID,
+        stage: "transport",
+        event: "inbound",
+        data: { transportClientId, envelope: data },
+      });
       const workspaceEvent = parseWorkspaceEventMessage(data);
       if (workspaceEvent) {
         if (workspaceEvent.event === "workspace_session_started") {
@@ -202,6 +242,7 @@ export async function main(): Promise<void> {
     config: runtimeConfig,
     contextEngineService: contextEngineService,
   });
+  const toolExecutor = createEvaluationToolExecutor(skills.toolExecutor);
 
   staticContext = await loadStaticContext({
     skillsProvider: skills.staticSkillsProvider,
@@ -212,12 +253,14 @@ export async function main(): Promise<void> {
   const systemEventContextRuntime = contextEngineRuntime;
   const chatTurnRuntime = createChatTurnRuntime({
     onReply: (clientId, data) => {
+      const started = process.hrtime.bigint();
       wsServer.send(clientId, data);
+      recordOutboundTransport(feedbackLedger, clientId, data, runByReplyTurn, elapsedMs(started));
     },
     clientSupportsReplyStreaming: (clientId) => wsServer.clientSupportsReplyStreaming(clientId),
     provider,
     staticContext,
-    toolExecutor: skills.toolExecutor,
+    toolExecutor,
     skillActivationManager: skills.skillActivationManager,
     toolWorkingSetManager: skills.toolWorkingSetManager,
     dataDir: resolve(projectRoot, "data"),
@@ -233,11 +276,13 @@ export async function main(): Promise<void> {
   });
   const systemEventRuntime = createSystemEventRuntime({
     onReply: (clientId, data) => {
+      const started = process.hrtime.bigint();
       wsServer.send(clientId, data);
+      recordOutboundTransport(feedbackLedger, clientId, data, runByReplyTurn, elapsedMs(started));
     },
     provider,
     staticContext,
-    toolExecutor: skills.toolExecutor,
+    toolExecutor,
     skillActivationManager: skills.skillActivationManager,
     toolWorkingSetManager: skills.toolWorkingSetManager,
     systemEventContextRuntime,
@@ -318,7 +363,7 @@ export async function main(): Promise<void> {
   console.log(`Ayati i-vec ready — plugins: [${registry.list().join(", ")}]`);
 
   let shutdownPromise: Promise<void> | undefined;
-  const shutdown = (): Promise<void> => {
+  const shutdown = (status: "completed" | "interrupted" | "failed" = "completed"): Promise<void> => {
     if (shutdownPromise) return shutdownPromise;
     shutdownPromise = (async () => {
       content?.workspaceFocusWatcher.stop();
@@ -335,12 +380,58 @@ export async function main(): Promise<void> {
       await engine.stop();
       await contextEngineHost.stop();
       await feedbackLedger.close();
+      await stopLiveEvaluationCapture(evaluationRecorder, status);
     })();
     return shutdownPromise;
   };
 
-  process.on("SIGINT", () => void shutdown());
-  process.on("SIGTERM", () => void shutdown());
+  const handleSignal = (): void => {
+    const keepAlive = setInterval(() => undefined, 1_000);
+    void shutdown("interrupted").then(() => {
+      clearInterval(keepAlive);
+      process.exitCode = 0;
+    }, (error: unknown) => {
+      clearInterval(keepAlive);
+      devLog(`Shutdown failed: ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+    });
+  };
+  process.on("SIGINT", handleSignal);
+  process.on("SIGTERM", handleSignal);
+  process.on("SIGHUP", handleSignal);
+}
+
+function recordOutboundTransport(
+  ledger: ReturnType<typeof createAgentFeedbackLedgerFromEnv>,
+  clientId: string,
+  data: unknown,
+  runByReplyTurn: Map<string, string>,
+  durationMs: number,
+): void {
+  const record = data && typeof data === "object" && !Array.isArray(data)
+    ? data as Record<string, unknown>
+    : undefined;
+  const turnId = typeof record?.["turnId"] === "string" ? record["turnId"] : undefined;
+  const directRunId = typeof record?.["runId"] === "string" ? record["runId"] : undefined;
+  const runId = directRunId ?? (turnId ? runByReplyTurn.get(turnId) : undefined);
+  if (runId && turnId) runByReplyTurn.set(turnId, runId);
+  ledger.record({
+    clientId,
+    ...(runId ? { runId } : {}),
+    stage: "transport",
+    event: "outbound",
+    data: {
+      envelope: data,
+      ...(typeof record?.["type"] === "string" ? { type: record["type"] } : {}),
+      ...(turnId ? { turnId } : {}),
+      terminal: ["reply", "feedback", "notification", "error", "reply_done"].includes(String(record?.["type"] ?? "")),
+      durationMs,
+    },
+  });
+}
+
+function elapsedMs(startedNs: bigint): number {
+  return Number(process.hrtime.bigint() - startedNs) / 1_000_000;
 }
 
 function parseWorkspaceEventMessage(data: unknown): {

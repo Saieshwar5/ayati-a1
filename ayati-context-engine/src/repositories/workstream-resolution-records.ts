@@ -179,7 +179,8 @@ export function insertWorkstreamResolutionStep(
     if (activity.status !== "running") {
       validateTerminalStep(activity, record);
       const terminalAlreadyRecorded = readWorkstreamResolutionSteps(database, activityId)
-        .some((step) => step.toolCalls.some((call) => isTerminalToolCall(call)));
+        .some((step) => step.status === "completed"
+          && step.toolCalls.some((call) => isCompletedTerminalToolCall(call)));
       if (terminalAlreadyRecorded) {
         throw invalid("Resolution activity already has its terminal step.", { activityId });
       }
@@ -227,6 +228,11 @@ function validateTerminalStep(
       activityId: activity.activityId,
     });
   }
+  if (record.status !== "completed" || !isCompletedTerminalToolCall(calls[0])) {
+    throw invalid("A terminal resolution activity requires one completed terminal tool call.", {
+      activityId: activity.activityId,
+    });
+  }
   const tool = typeof calls[0] === "object" && calls[0] !== null
     ? String((calls[0] as Record<string, unknown>)["tool"] ?? "")
     : "";
@@ -250,6 +256,11 @@ function isTerminalToolCall(value: unknown): boolean {
   return tool === "resolution_activate_workstream"
     || tool === "resolution_create_workstream"
     || tool === "resolution_needs_user_input";
+}
+
+function isCompletedTerminalToolCall(value: unknown): boolean {
+  if (!isTerminalToolCall(value)) return false;
+  return (value as Record<string, unknown>)["status"] === "completed";
 }
 
 export function readWorkstreamResolutionSteps(

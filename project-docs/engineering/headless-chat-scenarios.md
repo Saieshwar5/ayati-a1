@@ -3,12 +3,11 @@
 Use this workflow to test Ayati through the same WebSocket path as a human
 client.
 
-## Start With Feedback
+## Start With Live Evaluation
 
 ```bash
-pnpm dev:main:feedback
-# or
-pnpm start:main:feedback
+pnpm eval:agent -- live --name headless-chat
+# add --watch for the development rebuild/restart path
 ```
 
 Connect to `ws://localhost:8080` and send:
@@ -17,8 +16,9 @@ Connect to `ws://localhost:8080` and send:
 { "type": "chat", "content": "Build a small coffee shop website." }
 ```
 
-Send one message, wait for a terminal response, inspect feedback/resources,
-then send the next message. Do not overlap turns.
+Send one message, wait for a terminal response and finalization
+acknowledgement, inspect the generated evidence/resources, then send the next
+message. Do not overlap turns.
 
 Terminal responses are `reply`, `feedback`, `error`, `reply_done`, or a
 `notification` with `final: true`. Progress and streaming deltas are not
@@ -43,12 +43,13 @@ Keep deliverables intentionally small to control provider cost.
 ## Inspect After Every Turn
 
 ```text
-feedback/latest-session.json
-feedback/latest-summary.json
-feedback/triage-summary.json
+ayati-main/data/evaluations/<evaluation-id>/runs/<run-id>/report.md
+ayati-main/data/evaluations/<evaluation-id>/session-report.md
 ```
 
-Run `pnpm feedback:context-engine` for a readable lifecycle table. Also inspect:
+Run `pnpm eval:agent -- inspect --evaluation <id> --latest` for the latest
+evidence-linked turn report. `pnpm feedback:context-engine` is a compatibility
+alias for the unified latest report. Also inspect:
 
 - run, step, workstream, request, resource, binding, and journal database rows;
 - `<AYATI_ROOT_DIR>/workstreams/<W-*>/workstream.md`;
@@ -62,8 +63,8 @@ real resources. A polished reply alone is insufficient.
 
 ## Report
 
-Record each message, response, duration, final type, triage result, repair
-codes, selected workstream/request, resources, context commit state, expected
-outputs, restart result, and human usefulness. Separate observed bugs from
-possible optimizations; do not modify newly discovered behavior until the live
-test report has been reviewed.
+The recorder supplies each message, response, duration, final type, deterministic
+finding, repair, selected workstream/request, resources, context commit state,
+and exact evidence links. Use `eval:agent annotate` for intended outcomes,
+observed usefulness, user feedback, coding-agent conclusions, and proposed
+experiments. Review each report before adapting the next live message.

@@ -19,6 +19,11 @@ import {
   toProviderToolName,
   type ToolNameMaps,
 } from "../shared/tool-name-mapping.js";
+import { readAnthropicUsage } from "../shared/token-usage.js";
+import {
+  captureProviderNativePayload,
+  captureProviderNativeResponse,
+} from "../../evaluation/capture-runtime.js";
 
 let client: Anthropic | null = null;
 
@@ -154,14 +159,17 @@ const provider: LlmProvider = {
     const tools = toAnthropicTools(input.tools, nameMaps);
     const toolChoice = toAnthropicToolChoice(input.toolChoice, nameMaps);
 
-    const count = await client.messages.countTokens({
+    const countRequest = {
       model,
       ...(payload.system ? { system: payload.system } : {}),
       messages: payload.messages as any,
       ...(tools ? { tools: tools as any } : {}),
       ...(toolChoice ? { tool_choice: toolChoice as any } : {}),
       ...(typeof input.parallelToolCalls === "boolean" ? { disable_parallel_tool_use: !input.parallelToolCalls } : {}),
-    } as any);
+    };
+    captureProviderNativePayload({ provider: "anthropic", operation: "countInputTokens", payload: countRequest });
+    const count = await client.messages.countTokens(countRequest as any);
+    captureProviderNativeResponse({ provider: "anthropic", operation: "countInputTokens", response: count });
 
     return {
       provider: "anthropic",
@@ -181,13 +189,17 @@ const provider: LlmProvider = {
     const payload = await toAnthropicPayload(input.messages, nameMaps);
     const tools = toAnthropicTools(input.tools, nameMaps);
 
-    const response = await client.messages.create({
+    const request = {
       model,
       max_tokens: 4096,
       ...(payload.system ? { system: payload.system } : {}),
       messages: payload.messages as any,
       ...(tools ? { tools: tools as any } : {}),
-    } as any);
+    };
+    captureProviderNativePayload({ provider: "anthropic", operation: "generateTurn", payload: request });
+    const response = await client.messages.create(request as any);
+    captureProviderNativeResponse({ provider: "anthropic", operation: "generateTurn", response });
+    const usage = readAnthropicUsage(model, response);
 
     const calls: LlmToolCall[] = [];
     const textParts: string[] = [];
@@ -213,6 +225,7 @@ const provider: LlmProvider = {
         type: "tool_calls",
         calls,
         ...(textParts.length > 0 ? { assistantContent: textParts.join("\n").trim() } : {}),
+        ...(usage ? { usage } : {}),
       };
     }
 
@@ -224,6 +237,7 @@ const provider: LlmProvider = {
     return {
       type: "assistant",
       content: reply,
+      ...(usage ? { usage } : {}),
     };
   },
 };

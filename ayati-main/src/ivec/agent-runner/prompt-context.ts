@@ -2,12 +2,14 @@ import type { AgentContextPack } from "./context-pack.js";
 import type { PromptToolCalls } from "./run-tool-call-context.js";
 import type { AgentStateView } from "./state-view.js";
 import type { RunFocusSummary } from "../context-preparation/types.js";
+import type { VirtualModeCard } from "./virtual-mode.js";
 
 export interface PromptPersonalContext {
   memorySnapshot: string;
 }
 
 export interface PromptRunContext {
+  mode?: VirtualModeCard;
   workState?: PromptRunWorkStateContext;
   toolCalls?: PromptToolCalls;
   /** Disposable run-scoped context. It is never verification or completion evidence. */
@@ -168,6 +170,7 @@ function compactRunContext(
 ): PromptRunContext | undefined {
   if (!run) return undefined;
   const compacted: PromptRunContext = {
+    ...(run.mode ? { mode: run.mode } : {}),
     ...(run.workState ? { workState: run.workState } : {}),
     ...(run.toolCalls ? {
       toolCalls: options.preserveProjectionMetadata

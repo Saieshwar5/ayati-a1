@@ -927,7 +927,7 @@ export class SqliteContextEngineService implements ContextEngineService {
   private async ensureStartupRecovery(): Promise<void> {
     if (this.startupRecovered) return;
     await this.workstreamLifecycle.recoverInitializingState();
-    this.resourceMutations.recoverInterrupted();
+    this.resourceMutations.recoverInterrupted(this.now());
     await this.runFinalization.recover(this.now());
     invalidateStaleReusableObservations(this.database, this.now());
     const interruptedResolutionActivityIds = interruptRunningWorkstreamResolutions(

@@ -12,7 +12,6 @@ export function buildContextEngineProjection(
   const run = context.run?.run;
   const input = currentInput(context);
   const activeWorkstream = context.activeWorkstream;
-  const workstreamResolution = context.workstreamResolution;
   const workstreamBound = Boolean(
     activeWorkstream
       && run?.workstreamBinding?.workstreamId === activeWorkstream.workstream.workstreamId,
@@ -48,9 +47,6 @@ export function buildContextEngineProjection(
         routing: currentRouting({
           binding: run.workstreamBinding,
           branch: workstreamBound ? activeWorkstream?.workstream.branch : undefined,
-          resolutionStatus: workstreamResolution?.runId === run.runId
-            ? workstreamResolution.status
-            : undefined,
         }),
       } : {}),
     },
@@ -66,7 +62,6 @@ export function buildContextEngineProjection(
     ...(!workstreamBound && context.workstreamCandidates && context.workstreamCandidates.length > 0
       ? { workstreamCandidates: context.workstreamCandidates.slice(0, 5) }
       : {}),
-    ...(workstreamResolution ? { workstreamResolution } : {}),
     ...(context.ingressResources && context.ingressResources.length > 0
       ? { ingressResources: context.ingressResources }
       : {}),
@@ -106,14 +101,9 @@ function currentInput(context: AgentContextProjection): StreamMessage | undefine
 function currentRouting(input: {
   binding?: { workstreamId: string; requestId: string };
   branch?: string;
-  resolutionStatus?: string;
 }): ContextCurrentRouting {
   return {
-    status: input.binding
-      ? "bound"
-      : input.resolutionStatus === "needs_user_input"
-        ? "clarifying"
-        : "unbound",
+    status: input.binding ? "bound" : "unbound",
     ...(input.binding ? {
       workstreamId: input.binding.workstreamId,
       requestId: input.binding.requestId,

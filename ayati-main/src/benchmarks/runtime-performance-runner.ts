@@ -209,6 +209,11 @@ const defaultOutputBase = resolve(packageRoot, "data", "benchmarks", "runtime-pe
 export async function runRuntimePerformanceBenchmarks(
   options: RuntimeBenchmarkOptions = { scale: "standard" },
 ): Promise<RuntimeBenchmarkSummary> {
+  if (process.env["AYATI_LIVE_EVALUATION"] === "1") {
+    throw new Error(
+      "Runtime performance diagnostics cannot run during live agent evaluation because they change daemon load.",
+    );
+  }
   const scale = options.scale ?? "standard";
   const config = SCALE_CONFIGS[scale];
   const startedAt = new Date();
@@ -854,6 +859,12 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
     ],
     runPath: "/tmp/runtime-state-view",
     failureHistory: [],
+    virtualMode: {
+      active: null,
+      revision: 0,
+      capabilities: [],
+      targets: [],
+    },
     harnessContext: {
       personalMemorySnapshot: "User prefers detailed reports about agent runtime performance.",
       contextEngine: buildGitContextFixture(exchangeCount, now),
@@ -1049,7 +1060,7 @@ function buildVectorRecords(count: number): DocumentChunkVectorRecord[] {
       documentName: `Document ${documentIndex}`,
       documentPath: `/tmp/document-${documentIndex}.txt`,
       location: `section:${index % 12}`,
-      text: `Runtime performance document chunk ${index} about memory retrieval, project artifacts, and non LLM agent benchmarks.`,
+      text: `Runtime performance document chunk ${index} about memory retrieval, project artifacts, and local developer diagnostics.`,
       tokens: 80 + (index % 40),
       embedding: vectorForSeed(index),
       embeddingModel: "bench-embedding",

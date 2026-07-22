@@ -122,8 +122,11 @@ describe("final response policy", () => {
   });
 
   it("rejects control-tool payloads as final user-facing messages", () => {
+    expect(isUsableFinalResponseMessage("decision_transition_mode")).toBe(false);
+    expect(isUsableFinalResponseMessage("decision_validate")).toBe(false);
     expect(isUsableFinalResponseMessage("workstream_completion")).toBe(false);
     expect(isUsableFinalResponseMessage(JSON.stringify({ kind: "act" }))).toBe(false);
+    expect(isUsableFinalResponseMessage(JSON.stringify({ kind: "validate" }))).toBe(false);
     expect(isUsableFinalResponseMessage("Done. I updated the file.")).toBe(true);
   });
 

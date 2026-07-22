@@ -5,6 +5,7 @@ import type {
   ContextEngineRuntime,
 } from "./context-engine-runtime.js";
 import { buildAgentRunFinalizationProjection } from "./run-finalization-projection.js";
+import { getActiveEvaluationRecorder } from "../evaluation/capture-runtime.js";
 
 export async function finalizeAgentRun(input: {
   runtime: ContextEngineRuntime;
@@ -13,13 +14,16 @@ export async function finalizeAgentRun(input: {
   at: string;
   fallbackSummary?: string;
 }): Promise<FinalizeRunResponse> {
+  const started = process.hrtime.bigint();
   const workstreamBound = isWorkstreamBoundRun(input.turn, input.result);
   const projection = buildAgentRunFinalizationProjection({
     result: input.result,
     workstreamBound,
     ...(input.fallbackSummary ? { fallbackSummary: input.fallbackSummary } : {}),
   });
-  const finalized = await input.runtime.finalizeRun({
+  let finalized: FinalizeRunResponse | null;
+  try {
+    finalized = await input.runtime.finalizeRun({
     turn: input.turn,
     outcome: input.result.outcome,
     stopReason: input.result.stopReason,
@@ -33,11 +37,32 @@ export async function finalizeAgentRun(input: {
       ? { workstreamCompletion: projection.workstreamCompletion }
       : {}),
     at: input.at,
-  });
+    });
+  } catch (error) {
+    getActiveEvaluationRecorder()?.record({
+      sessionId: input.turn.streamId,
+      runId: input.turn.run.runId,
+      stage: "finalization",
+      event: "failed",
+      data: { error, durationMs: elapsedMs(started) },
+    });
+    throw error;
+  }
   if (!finalized) {
     throw new Error("Run finalization returned no acknowledgement.");
   }
+  getActiveEvaluationRecorder()?.record({
+    sessionId: input.turn.streamId,
+    runId: input.turn.run.runId,
+    stage: "finalization",
+    event: "completed",
+    data: { durationMs: elapsedMs(started), acknowledgement: finalized },
+  });
   return finalized;
+}
+
+function elapsedMs(startedNs: bigint): number {
+  return Number(process.hrtime.bigint() - startedNs) / 1_000_000;
 }
 
 export function isWorkstreamBoundRun(

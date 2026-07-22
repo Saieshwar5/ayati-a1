@@ -23,6 +23,10 @@ import {
 } from "../../skills/tool-taxonomy.js";
 import type { ToolContractAssertion, ToolDefinition } from "../../skills/types.js";
 import type { AgentFeedbackLedger } from "../feedback-ledger.js";
+import {
+  operationPurposeForDecision,
+  withEvaluationModelOperation,
+} from "../../evaluation/capture-runtime.js";
 import type { RunMetrics } from "../metrics.js";
 import { recordOptimizationEvent, recordPromptMetric, recordProviderUsageMetric, recordRunMetric } from "../metrics.js";
 import type { AgentContextCheckpointCoordinator, ToolContextProjectionPolicy } from "../types.js";
@@ -43,7 +47,11 @@ import {
   summarizePromptStateView,
   summarizeToolDefinitions,
 } from "./feedback-summary.js";
-import type { WorkstreamResolveRequest } from "../workstream-resolution/types.js";
+import {
+  normalizeWorkstreamBindingProposal,
+  workstreamBindingProposalSchema,
+} from "../workstream-binding/proposal.js";
+import type { ModeTransitionRequest, ValidationRequest } from "./virtual-mode.js";
 
 export type AgentDecisionStatus = "completed" | "failed";
 export type AgentActionMode = "single" | "sequential" | "parallel";
@@ -77,12 +85,6 @@ export interface AgentWorkstreamCompletionRequest {
   resources: WorkstreamCompletionResourceInput[];
 }
 
-export interface AgentToolLoadRequest {
-  query?: string;
-  toolNames: string[];
-  groups: string[];
-}
-
 export type DecisionFailureKind =
   | "invalid_json"
   | "unsupported_decision_kind"
@@ -98,29 +100,18 @@ export type AgentDecision =
       workingNotes?: string[];
     }
   | {
-      kind: "ask_user";
-      question: string;
-      reason: string;
-      workingNotes?: string[];
-    }
-  | {
       kind: "act";
       action: AgentAction;
       workingNotes?: string[];
     }
   | {
-      kind: "load_tools";
-      request: AgentToolLoadRequest;
+      kind: "transition_mode";
+      request: ModeTransitionRequest;
       workingNotes?: string[];
     }
   | {
-      kind: "workstream_completion";
-      request: AgentWorkstreamCompletionRequest;
-      workingNotes?: string[];
-    }
-  | {
-      kind: "resolve_workstream";
-      request: WorkstreamResolveRequest;
+      kind: "validate";
+      request: ValidationRequest;
       workingNotes?: string[];
     };
 
@@ -129,11 +120,8 @@ interface CallAgentDecisionInput {
   stateView: AgentStateView;
   toolDefinitions: ToolDefinition[];
   toolRoutingSummary?: string;
-  toolLoadingAvailable?: boolean;
-  workstreamFeedbackToolAvailable?: boolean;
-  workstreamCompletionAvailable?: boolean;
-  workstreamResolutionAvailable?: boolean;
-  workstreamBound?: boolean;
+  modeTransitionAvailable?: boolean;
+  validationAvailable?: boolean;
   systemContext?: string;
   metrics?: RunMetrics;
   feedbackLedger?: AgentFeedbackLedger;
@@ -143,6 +131,7 @@ interface CallAgentDecisionInput {
   contextPreparation?: ContextPreparationManager;
   applyAuthoritativeContext?: (context: ContextEngineMachineContext) => AgentStateView;
   contextPreparationMode?: "primary" | "final_response";
+  evaluationIteration?: number;
   onContextCompilation?: (receipt: ContextCompilationReceipt) => void;
   onAssistantTextDelta?: (delta: string) => void;
 }
@@ -188,9 +177,8 @@ const MAX_DECISION_ATTEMPTS = 3;
 const MAX_PROVIDER_EMPTY_RESPONSE_RETRIES = 1;
 const PROVIDER_EMPTY_RESPONSE_RETRY_DELAY_MS = 400;
 const TOOL_PROTOCOL_FAILURE_REPLY = "I could not form a valid tool call for this request.";
-const WORKSTREAM_FEEDBACK_TOOL_NAME = "ask_user_feedback";
-const WORKSTREAM_COMPLETION_TOOL_NAME = "workstream_completion";
-const WORKSTREAM_RESOLUTION_TOOL_NAME = "workstream_resolve";
+const MODE_TRANSITION_TOOL_NAME = "decision_transition_mode";
+const VALIDATION_TOOL_NAME = "decision_validate";
 
 export async function callAgentDecision(input: CallAgentDecisionInput): Promise<AgentDecision> {
   const contextLimits = resolveModelContextLimits(input.provider);
@@ -228,10 +216,8 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         throw new Error(`Provider ${input.provider.name} does not support native decision tools.`);
       }
       const decisionTools = buildNativeDecisionTools(input.toolDefinitions, {
-        toolLoadingAvailable: input.toolLoadingAvailable !== false,
-        workstreamFeedbackToolAvailable: input.workstreamFeedbackToolAvailable === true,
-        workstreamCompletionAvailable: input.workstreamCompletionAvailable === true,
-        workstreamResolutionAvailable: input.workstreamResolutionAvailable === true,
+        modeTransitionAvailable: input.modeTransitionAvailable !== false,
+        validationAvailable: input.validationAvailable === true,
       });
       recordDecisionFeedback(input, "native_tool_surface", {
         attempt: attempt + 1,
@@ -343,11 +329,8 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         decision: summarizeDecisionForFeedback(decision),
       });
       const violation = validateToolProtocol(decision, input.toolDefinitions, {
-        toolLoadingAvailable: input.toolLoadingAvailable !== false,
-        workstreamFeedbackToolAvailable: input.workstreamFeedbackToolAvailable === true,
-        workstreamCompletionAvailable: input.workstreamCompletionAvailable === true,
-        workstreamResolutionAvailable: input.workstreamResolutionAvailable === true,
-        workstreamBound: input.workstreamBound === true,
+        modeTransitionAvailable: input.modeTransitionAvailable !== false,
+        validationAvailable: input.validationAvailable === true,
       });
       if (violation) {
         const repair = createToolProtocolRepairSignal(violation, attempt + 1);
@@ -472,6 +455,7 @@ async function generateTurnWithEmptyResponseRetry(
     toolChoice: "auto" as const,
     parallelToolCalls: false,
   };
+  const contextPreparationStarted = process.hrtime.bigint();
   const compilation = await compileDecisionContext({
     provider: input.provider,
     turnInput: candidateTurnInput,
@@ -497,6 +481,10 @@ async function generateTurnWithEmptyResponseRetry(
       input.toolDefinitions,
       input.toolRoutingSummary,
     )).filter((section) => section.trim().length > 0).join("\n\n"),
+  });
+  recordDecisionFeedback(input, "context_preparation_span", {
+    decisionAttempt: request.decisionAttempt,
+    durationMs: Number(process.hrtime.bigint() - contextPreparationStarted) / 1_000_000,
   });
   const contextBudget = compilation.candidateBudget;
   recordOptimizationEvent(input.metrics, "context_budget", {
@@ -565,18 +553,33 @@ async function generateTurnWithEmptyResponseRetry(
   for (;;) {
     providerAttempt++;
     try {
-      if (
-        input.onAssistantTextDelta
-        && request.decisionTools.length === 0
-        && request.decisionAttempt === 1
-        && input.provider.capabilities.streaming === true
-        && input.provider.streamTurn
-      ) {
-        return await input.provider.streamTurn(compilation.finalTurnInput, {
-          onTextDelta: input.onAssistantTextDelta,
-        });
-      }
-      return await input.provider.generateTurn(compilation.finalTurnInput);
+      const purpose = operationPurposeForDecision({
+        finalResponse: input.contextPreparationMode === "final_response",
+        decisionAttempt: request.decisionAttempt,
+        providerAttempt,
+      });
+      return await withEvaluationModelOperation({
+        purpose,
+        ...(input.feedbackContext?.runId ? { runId: input.feedbackContext.runId } : {}),
+        ...(input.feedbackContext?.sessionId ? { sessionId: input.feedbackContext.sessionId } : {}),
+        ...(input.feedbackContext?.runId ? { laneId: `main:${input.feedbackContext.runId}` } : {}),
+        ...(input.evaluationIteration !== undefined ? { iteration: input.evaluationIteration } : {}),
+        compilationReceipt: compilation.receipt,
+        promptManifest: compilation.promptManifest,
+      }, async () => {
+        if (
+          input.onAssistantTextDelta
+          && request.decisionTools.length === 0
+          && request.decisionAttempt === 1
+          && input.provider.capabilities.streaming === true
+          && input.provider.streamTurn
+        ) {
+          return await input.provider.streamTurn(compilation.finalTurnInput, {
+            onTextDelta: input.onAssistantTextDelta,
+          });
+        }
+        return await input.provider.generateTurn(compilation.finalTurnInput);
+      });
     } catch (error) {
       const responseFailure = providerResponseFailureDetails(error);
       if (!responseFailure) {
@@ -705,26 +708,13 @@ function summarizeDecisionForFeedback(decision: AgentDecision): Record<string, u
       message: decision.message,
     };
   }
-  if (decision.kind === "ask_user") {
-    return {
-      kind: decision.kind,
-      question: decision.question,
-      reason: decision.reason,
-    };
-  }
-  if (decision.kind === "load_tools") {
+  if (decision.kind === "transition_mode") {
     return {
       kind: decision.kind,
       request: decision.request,
     };
   }
-  if (decision.kind === "workstream_completion") {
-    return {
-      kind: decision.kind,
-      request: decision.request,
-    };
-  }
-  if (decision.kind === "resolve_workstream") {
+  if (decision.kind === "validate") {
     return {
       kind: decision.kind,
       request: decision.request,
@@ -792,9 +782,6 @@ function createToolProtocolRepairSignal(violation: ToolProtocolViolation, attemp
 }
 
 function toolProtocolRepairCode(violation: ToolProtocolViolation): RepairCode {
-  if (violation.invalidTools.includes(WORKSTREAM_FEEDBACK_TOOL_NAME)) {
-    return "R_WORKSTREAM_FEEDBACK_UNAVAILABLE";
-  }
   if (violation.reason.includes("no tool calls")) {
     return "R_NO_PROGRESS";
   }
@@ -803,9 +790,6 @@ function toolProtocolRepairCode(violation: ToolProtocolViolation): RepairCode {
   }
   if (violation.mutationRequiresWorkstreamBinding) {
     return "R_MUTATION_REQUIRES_WORKSTREAM_BINDING";
-  }
-  if (violation.reason.includes("decision_load_tools request must include")) {
-    return "R_EMPTY_TOOL_LOAD_SELECTOR";
   }
   if (violation.invalidTools.length > 0) {
     return "R_TOOL_NOT_SELECTED";
@@ -860,57 +844,17 @@ function validateToolProtocol(
   decision: AgentDecision,
   selectedToolDefinitions: ToolDefinition[],
   options: {
-    toolLoadingAvailable: boolean;
-    workstreamFeedbackToolAvailable: boolean;
-    workstreamCompletionAvailable: boolean;
-    workstreamResolutionAvailable: boolean;
-    workstreamBound: boolean;
+    modeTransitionAvailable: boolean;
+    validationAvailable: boolean;
   },
 ): ToolProtocolViolation | null {
   const selectedTools = selectedToolDefinitions.map((tool) => tool.name);
-  if (decision.kind === "ask_user" && !options.workstreamFeedbackToolAvailable) {
-    return {
-      kind: "tool_protocol_violation",
-      reason: "ask_user_feedback is only available during an active workstream-bound run",
-      invalidTools: [WORKSTREAM_FEEDBACK_TOOL_NAME],
-      selectedTools,
-      loadToolsUsedAsAction: false,
-      mutationRequiresWorkstreamBinding: false,
-    };
-  }
-  if (decision.kind === "load_tools") {
-    if (!options.toolLoadingAvailable) {
+  if (decision.kind === "transition_mode") {
+    if (!options.modeTransitionAvailable) {
       return {
         kind: "tool_protocol_violation",
-        reason: "decision_load_tools is not available in the current runtime mode",
-        invalidTools: ["decision_load_tools"],
-        selectedTools,
-        loadToolsUsedAsAction: false,
-        mutationRequiresWorkstreamBinding: false,
-      };
-    }
-    const hasSelector = Boolean(decision.request.query?.trim())
-      || decision.request.toolNames.length > 0
-      || decision.request.groups.length > 0;
-    if (hasSelector) {
-      return null;
-    }
-    return {
-      kind: "tool_protocol_violation",
-      reason: "decision_load_tools request must include at least one non-empty selector: groups, toolNames, or query",
-      invalidTools: [],
-      selectedTools,
-      loadToolsUsedAsAction: false,
-      mutationRequiresWorkstreamBinding: false,
-    };
-  }
-
-  if (decision.kind === "workstream_completion") {
-    if (!options.workstreamCompletionAvailable) {
-      return {
-        kind: "tool_protocol_violation",
-        reason: "workstream_completion is only available during an active workstream-bound run",
-        invalidTools: [WORKSTREAM_COMPLETION_TOOL_NAME],
+        reason: "decision_transition_mode is not available in the current runtime phase",
+        invalidTools: [MODE_TRANSITION_TOOL_NAME],
         selectedTools,
         loadToolsUsedAsAction: false,
         mutationRequiresWorkstreamBinding: false,
@@ -919,24 +863,12 @@ function validateToolProtocol(
     return null;
   }
 
-  if (decision.kind === "resolve_workstream") {
-    if (!options.workstreamResolutionAvailable || options.workstreamBound) {
+  if (decision.kind === "validate") {
+    if (!options.validationAvailable) {
       return {
         kind: "tool_protocol_violation",
-        reason: "workstream_resolve is only available for an eligible unbound run",
-        invalidTools: [WORKSTREAM_RESOLUTION_TOOL_NAME],
-        selectedTools,
-        loadToolsUsedAsAction: false,
-        mutationRequiresWorkstreamBinding: false,
-      };
-    }
-    if (!decision.request.purpose.trim()
-      || decision.request.purpose.length > 500
-      || decision.request.hints.length > 8) {
-      return {
-        kind: "tool_protocol_violation",
-        reason: "workstream_resolve input is invalid",
-        invalidTools: [WORKSTREAM_RESOLUTION_TOOL_NAME],
+        reason: "decision_validate is available only after the virtual graph is active",
+        invalidTools: [VALIDATION_TOOL_NAME],
         selectedTools,
         loadToolsUsedAsAction: false,
         mutationRequiresWorkstreamBinding: false,
@@ -952,12 +884,11 @@ function validateToolProtocol(
   const selectedToolSet = new Set(selectedTools);
   const invalidCallTools = decision.action.calls
     .map((call) => call.tool)
-    .filter((tool) => tool === "load_tools" || !selectedToolSet.has(tool));
-  const invalidAllowedTools = decision.action.allowedTools.filter((tool) => tool === "load_tools" || !selectedToolSet.has(tool));
+    .filter((tool) => isNativeControlToolName(tool) || !selectedToolSet.has(tool));
+  const invalidAllowedTools = decision.action.allowedTools.filter((tool) => isNativeControlToolName(tool) || !selectedToolSet.has(tool));
   const invalidTools = uniqueStrings([...invalidCallTools, ...invalidAllowedTools]);
-  const loadToolsUsedAsAction = decision.action.calls.some((call) => call.tool === "load_tools");
-  const mutationRequiresWorkstreamBinding = !options.workstreamBound
-    && invalidTools.some((tool) => getToolPurpose(tool) === "mutation");
+  const loadToolsUsedAsAction = decision.action.calls.some((call) => isNativeControlToolName(call.tool));
+  const mutationRequiresWorkstreamBinding = false;
 
   if (decision.action.calls.length === 0) {
     return {
@@ -1239,7 +1170,7 @@ function buildDecisionPromptSections(
   return {
     "user.tools": `Selected tools:\n${formatSelectedToolNames(toolDefinitions)}`,
     "user.toolRouting": toolRoutingSummary?.trim()
-      ? `Tool loading map (request these with decision_load_tools, not action.calls):\n${toolRoutingSummary.trim()}`
+      ? `Capability catalog (use exact groups in decision_transition_mode.capabilities):\n${toolRoutingSummary.trim()}`
       : "",
     "user.state": `State view:\n${JSON.stringify(stateView, null, 2)}`,
   };
@@ -1294,12 +1225,46 @@ function formatSelectedToolNames(toolDefinitions: ToolDefinition[]): string {
     .join("\n");
 }
 
-function normalizeToolLoadRequest(value: unknown): AgentToolLoadRequest {
+function normalizeModeTransitionRequest(value: unknown): ModeTransitionRequest {
   const record = isPlainObject(value) ? value : {};
+  const binding = normalizeWorkstreamBindingProposal(record["binding"]);
   return {
-    query: typeof record["query"] === "string" ? record["query"] : undefined,
-    toolNames: normalizeStringArray(record["toolNames"]),
-    groups: normalizeStringArray(record["groups"]),
+    to: normalizeModeTransitionTarget(record["to"]),
+    purpose: typeof record["purpose"] === "string" ? record["purpose"].trim() : "",
+    capabilities: normalizeStringArray(record["capabilities"]),
+    ...(Array.isArray(record["targets"])
+      ? { targets: normalizeStringArray(record["targets"]) }
+      : {}),
+    ...(binding ? { binding } : {}),
+  };
+}
+
+function normalizeModeTransitionTarget(value: unknown): ModeTransitionRequest["to"] {
+  if (
+    value === "observe.locate"
+    || value === "observe.investigate"
+    || value === "resolve"
+    || value === "execute"
+  ) {
+    return value;
+  }
+  return "observe.locate";
+}
+
+function normalizeValidationRequest(input: unknown): ValidationRequest {
+  const record = isPlainObject(input) ? input : {};
+  const outcome = record["outcome"] === "needs_user_input"
+    || record["outcome"] === "blocked"
+    || record["outcome"] === "failed"
+    ? record["outcome"]
+    : "completed";
+  return {
+    outcome,
+    summary: typeof record["summary"] === "string" ? record["summary"].trim() : "",
+    response: typeof record["response"] === "string" ? record["response"].trim() : "",
+    ...(Array.isArray(record["resources"])
+      ? { resources: normalizeWorkstreamCompletionRequest(record).resources }
+      : {}),
   };
 }
 
@@ -1340,115 +1305,59 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function buildNativeDecisionTools(
   selectedTools: ToolDefinition[],
   options: {
-    toolLoadingAvailable: boolean;
-    workstreamFeedbackToolAvailable: boolean;
-    workstreamCompletionAvailable: boolean;
-    workstreamResolutionAvailable: boolean;
+    modeTransitionAvailable: boolean;
+    validationAvailable: boolean;
   },
 ): LlmToolSchema[] {
   const controlTools: LlmToolSchema[] = [];
-  if (options.workstreamResolutionAvailable) {
+  if (options.modeTransitionAvailable) {
     controlTools.push({
-      name: WORKSTREAM_RESOLUTION_TOOL_NAME,
-      description: "Resolve and immutably bind this unbound run to exactly one existing or new workstream/request in an isolated control activity. Use for actionable work; the runtime mounts the selected context after this call.",
+      name: MODE_TRANSITION_TOOL_NAME,
+      description: "Enter or change one run-scoped operational mode. Choose the responsibility and exact capability groups; the harness validates targets and selects eligible concrete tools. Unbound resolve also requires one typed proposal using exact current-run routing evidenceRef values.",
       inputSchema: objectSchema({
+        to: {
+          type: "string",
+          enum: ["observe.locate", "observe.investigate", "resolve", "execute"],
+        },
         purpose: {
           type: "string",
           minLength: 1,
           maxLength: 500,
-          description: "One concise sentence describing which durable work the current input appears to continue or start.",
         },
-        hints: {
+        capabilities: {
           type: "array",
+          minItems: 1,
           maxItems: 8,
-          items: {
-            oneOf: [
-              objectSchema({
-                kind: { const: "workstream_id" },
-                workstreamId: { type: "string", pattern: "^W-[0-9]{8}-[0-9]{4}$" },
-              }, ["kind", "workstreamId"]),
-              objectSchema({
-                kind: { const: "resource_id" },
-                resourceId: { type: "string", pattern: "^RES-[0-9A-F]{24}$" },
-              }, ["kind", "resourceId"]),
-              objectSchema({
-                kind: { const: "filesystem" },
-                path: { type: "string", minLength: 1 },
-              }, ["kind", "path"]),
-              objectSchema({
-                kind: { const: "url" },
-                url: { type: "string", minLength: 1 },
-              }, ["kind", "url"]),
-            ],
-          },
+          items: { type: "string", minLength: 1 },
         },
+        targets: {
+          type: "array",
+          maxItems: 12,
+          items: { type: "string", minLength: 1 },
+        },
+        binding: workstreamBindingProposalSchema(),
         workingNotes: workingNotesSchema(),
-      }, ["purpose"]),
+      }, ["to", "purpose", "capabilities"]),
     });
   }
-  if (options.toolLoadingAvailable) {
+  if (options.validationAvailable) {
     controlTools.push({
-      name: "decision_load_tools",
-      description: "Request hidden tools by exact group, exact tool name, or search query when selected tools are insufficient.",
-      inputSchema: {
-        ...objectSchema({
-          query: {
-            type: "string",
-            minLength: 1,
-          },
-          toolNames: {
-            type: "array",
-            items: {
-              type: "string",
-              minLength: 1,
-            },
-            maxItems: 12,
-          },
-          groups: {
-            type: "array",
-            items: {
-              type: "string",
-              minLength: 1,
-            },
-            maxItems: 12,
-          },
-          workingNotes: workingNotesSchema(),
-        }, []),
-        anyOf: [
-          { required: ["query"] },
-          { required: ["toolNames"] },
-          { required: ["groups"] },
-        ],
-      },
-    });
-  }
-  if (options.workstreamFeedbackToolAvailable) {
-    controlTools.push({
-      name: WORKSTREAM_FEEDBACK_TOOL_NAME,
-      description: "Pause the active workstream-bound run to ask the user for required feedback when progress is blocked and no safe default exists. Do not use for final responses.",
+      name: VALIDATION_TOOL_NAME,
+      description: "Request deterministic whole-task validation and provide the complete terminal user response. Accepted validation finalizes without another model request; rejected validation keeps the current mode active with repair feedback.",
       inputSchema: objectSchema({
-        question: {
+        outcome: {
           type: "string",
-          minLength: 1,
+          enum: ["completed", "needs_user_input", "blocked", "failed"],
         },
-        reason: {
-          type: "string",
-          minLength: 1,
-        },
-        workingNotes: workingNotesSchema(),
-      }, ["question", "reason"]),
-    });
-  }
-  if (options.workstreamCompletionAvailable) {
-    controlTools.push({
-      name: WORKSTREAM_COMPLETION_TOOL_NAME,
-      description: "Request deterministic completion verification for the active workstream-bound run after the requested work appears complete. The runtime verifies declared resources, tool evidence, and unresolved failures before updating workstream state.",
-      inputSchema: objectSchema({
         summary: {
           type: "string",
           minLength: 1,
           maxLength: 1000,
-          description: "Compact cumulative current state of the workstream after this run. Describe the reusable result and remaining state, not only the latest tool call.",
+        },
+        response: {
+          type: "string",
+          minLength: 1,
+          description: "Complete user-facing terminal response to send after validation is accepted.",
         },
         resources: {
           type: "array",
@@ -1474,7 +1383,7 @@ function buildNativeDecisionTools(
           }, ["resourceId", "path", "kind", "description", "aliases"]),
         },
         workingNotes: workingNotesSchema(),
-      }, ["summary", "resources"]),
+      }, ["outcome", "summary", "response"]),
     });
   }
   const executableTools = selectedTools
@@ -1545,7 +1454,7 @@ function serializeNativeDecisionToolCalls(calls: LlmToolCall[], selectedTools: T
 
   const selected = selectedTools.find((tool) => tool.name === call.name);
   if (!selected) {
-    return `native_decision_error: unknown or unselected native tool '${call.name}'. Request tools with decision_load_tools before executable work.`;
+    return `native_decision_error: unknown or unselected native tool '${call.name}'. Change modes with decision_transition_mode before executable work.`;
   }
 
   return JSON.stringify(nativeExecutableToolCallToPayload(call, input));
@@ -1572,35 +1481,26 @@ function nativeDecisionFromToolCalls(calls: LlmToolCall[], selectedTools: ToolDe
 
 function nativeDecisionToolCallToPayload(toolName: string, input: Record<string, unknown>): Record<string, unknown> {
   switch (toolName) {
-    case WORKSTREAM_FEEDBACK_TOOL_NAME:
+    case MODE_TRANSITION_TOOL_NAME:
       return {
-        kind: "ask_user",
-        question: input["question"],
-        reason: input["reason"],
-        ...(input["workingNotes"] ? { workingNotes: input["workingNotes"] } : {}),
-      };
-    case "decision_load_tools":
-      return {
-        kind: "load_tools",
+        kind: "transition_mode",
         request: {
-          ...(input["query"] ? { query: input["query"] } : {}),
-          ...(input["toolNames"] ? { toolNames: input["toolNames"] } : {}),
-          ...(input["groups"] ? { groups: input["groups"] } : {}),
+          to: input["to"],
+          purpose: input["purpose"],
+          capabilities: input["capabilities"],
+          ...(input["targets"] ? { targets: input["targets"] } : {}),
+          ...(input["binding"] ? { binding: input["binding"] } : {}),
         },
         ...(input["workingNotes"] ? { workingNotes: input["workingNotes"] } : {}),
       };
-    case WORKSTREAM_COMPLETION_TOOL_NAME:
+    case VALIDATION_TOOL_NAME:
       return {
-        kind: "workstream_completion",
-        ...nativeWorkstreamCompletionPayload(input),
-        ...(input["workingNotes"] ? { workingNotes: input["workingNotes"] } : {}),
-      };
-    case WORKSTREAM_RESOLUTION_TOOL_NAME:
-      return {
-        kind: "resolve_workstream",
+        kind: "validate",
         request: {
-          purpose: input["purpose"],
-          hints: input["hints"] ?? [],
+          outcome: input["outcome"],
+          summary: input["summary"],
+          response: input["response"],
+          ...(input["resources"] ? { resources: input["resources"] } : {}),
         },
         ...(input["workingNotes"] ? { workingNotes: input["workingNotes"] } : {}),
       };
@@ -1615,29 +1515,16 @@ function nativeDecisionToolCallToPayload(toolName: string, input: Record<string,
 
 function nativeDecisionToolCallToDecision(toolName: string, input: Record<string, unknown>): AgentDecision {
   switch (toolName) {
-    case WORKSTREAM_FEEDBACK_TOOL_NAME:
+    case MODE_TRANSITION_TOOL_NAME:
       return {
-        kind: "ask_user",
-        question: String(input["question"] ?? ""),
-        reason: String(input["reason"] ?? ""),
+        kind: "transition_mode",
+        request: normalizeModeTransitionRequest(input),
         workingNotes: normalizeWorkingNotes(input["workingNotes"]),
       };
-    case "decision_load_tools":
+    case VALIDATION_TOOL_NAME:
       return {
-        kind: "load_tools",
-        request: normalizeToolLoadRequest(input),
-        workingNotes: normalizeWorkingNotes(input["workingNotes"]),
-      };
-    case WORKSTREAM_COMPLETION_TOOL_NAME:
-      return {
-        kind: "workstream_completion",
-        request: normalizeWorkstreamCompletionRequest(input),
-        workingNotes: normalizeWorkingNotes(input["workingNotes"]),
-      };
-    case WORKSTREAM_RESOLUTION_TOOL_NAME:
-      return {
-        kind: "resolve_workstream",
-        request: normalizeWorkstreamResolveRequest(input),
+        kind: "validate",
+        request: normalizeValidationRequest(input),
         workingNotes: normalizeWorkingNotes(input["workingNotes"]),
       };
     default:
@@ -1647,15 +1534,6 @@ function nativeDecisionToolCallToDecision(toolName: string, input: Record<string
         message: `Unknown native control tool: ${toolName}`,
       };
   }
-}
-
-function nativeWorkstreamCompletionPayload(input: Record<string, unknown>): Record<string, unknown> {
-  return {
-    request: {
-      summary: input["summary"],
-      resources: input["resources"],
-    },
-  };
 }
 
 function normalizeWorkstreamCompletionRequest(input: unknown): AgentWorkstreamCompletionRequest {
@@ -1686,40 +1564,6 @@ function normalizeWorkstreamCompletionRequest(input: unknown): AgentWorkstreamCo
   };
 }
 
-function normalizeWorkstreamResolveRequest(input: unknown): WorkstreamResolveRequest {
-  const record = isPlainObject(input) ? input : {};
-  const hints = Array.isArray(record["hints"])
-    ? record["hints"].flatMap((value): WorkstreamResolveRequest["hints"] => {
-        if (!isPlainObject(value)) return [];
-        switch (value["kind"]) {
-          case "workstream_id":
-            return typeof value["workstreamId"] === "string"
-              ? [{ kind: "workstream_id", workstreamId: value["workstreamId"].trim() }]
-              : [];
-          case "resource_id":
-            return typeof value["resourceId"] === "string"
-              ? [{ kind: "resource_id", resourceId: value["resourceId"].trim() }]
-              : [];
-          case "filesystem":
-            return typeof value["path"] === "string"
-              ? [{ kind: "filesystem", path: value["path"].trim() }]
-              : [];
-          case "url":
-            return typeof value["url"] === "string"
-              ? [{ kind: "url", url: value["url"].trim() }]
-              : [];
-          default:
-            return [];
-        }
-      }).slice(0, 8)
-    : [];
-  return {
-    purpose: typeof record["purpose"] === "string"
-      ? record["purpose"].trim().replace(/\s+/g, " ")
-      : "",
-    hints,
-  };
-}
 
 function nativeExecutableToolCallToPayload(call: LlmToolCall, input: Record<string, unknown>): Record<string, unknown> {
   const { purpose, toolInput } = extractNativeToolCallPurpose(input);

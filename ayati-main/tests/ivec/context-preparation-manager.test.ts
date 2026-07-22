@@ -39,7 +39,12 @@ describe("context preparation candidate lifecycle", () => {
 
   it("deduplicates manager jobs and discards a late result after lane finalization", async () => {
     const provider = fakeProvider();
-    const manager = new ContextPreparationManager({ laneId: "main:RUN-1", provider });
+    const detachedEvents: string[] = [];
+    const manager = new ContextPreparationManager({
+      laneId: "main:RUN-1",
+      provider,
+      onDetachedEvent: (event) => detachedEvents.push(`${event.event}:${String(event.data["reason"])}`),
+    });
     let release!: () => void;
     const pending = new Promise<void>((resolve) => { release = resolve; });
     const job = preparationJob(async () => {
@@ -58,6 +63,10 @@ describe("context preparation candidate lifecycle", () => {
       return event.event === "context_candidate_discarded"
         && event.data["reason"] === "late_completion_after_invalidation";
     })).toBe(true);
+    expect(detachedEvents).toEqual([
+      "context_candidate_discarded:run_finalized",
+      "context_candidate_discarded:late_completion_after_invalidation",
+    ]);
   });
 
   it("turns background errors into failed candidates without unhandled rejection", async () => {
@@ -93,7 +102,7 @@ describe("context preparation candidate lifecycle", () => {
   });
 
   it("reports failed semantic usage exactly once", async () => {
-    const manager = new ContextPreparationManager({ laneId: "resolver:RES-1", provider: fakeProvider() });
+    const manager = new ContextPreparationManager({ laneId: "main:RUN-4", provider: fakeProvider() });
     const job = preparationJob(async () => {
       throw new ContextPreparationJobError("invalid anchored summary", {
         durationMs: 25,

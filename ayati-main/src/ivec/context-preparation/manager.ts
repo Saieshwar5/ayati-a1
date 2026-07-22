@@ -14,6 +14,7 @@ import type {
   ContextPreparationLaneId,
   PromptContextManifest,
 } from "./types.js";
+import { withEvaluationContext } from "../../evaluation/capture-runtime.js";
 
 type CandidateSeed = Omit<
   ContextPreparationCandidate,
@@ -62,12 +63,14 @@ export interface ContextPreparationManagerOptions {
   provider: LlmProvider;
   scheduler?: ProviderBackgroundSummaryScheduler;
   now?: () => Date;
+  onDetachedEvent?: (event: ContextPreparationEvent) => void;
 }
 
 export class ContextPreparationManager {
   readonly laneId: ContextPreparationLaneId;
   private readonly scheduler: ProviderBackgroundSummaryScheduler;
   private readonly now: () => Date;
+  private readonly onDetachedEvent?: (event: ContextPreparationEvent) => void;
   private slot?: ContextPreparationCandidate;
   private jobPromise?: Promise<ContextPreparationCandidate | undefined>;
   private closed = false;
@@ -80,6 +83,7 @@ export class ContextPreparationManager {
     this.laneId = options.laneId;
     this.scheduler = options.scheduler ?? providerBackgroundSummaryScheduler(options.provider);
     this.now = options.now ?? (() => new Date());
+    this.onDetachedEvent = options.onDetachedEvent;
   }
 
   startBackground(job: ContextPreparationJob): ContextPreparationStartResult {
@@ -263,7 +267,8 @@ export class ContextPreparationManager {
     this.generation++;
     this.overlay = undefined;
     if (this.slot && ["preparing", "ready"].includes(this.slot.status)) {
-      this.transition("discarded", reason);
+      const event = this.transition("discarded", reason);
+      if (event) this.onDetachedEvent?.(structuredClone(event));
     }
   }
 
@@ -276,7 +281,10 @@ export class ContextPreparationManager {
     try {
       const prepared = await job.prepare({
         runSemanticBackground: async <Value>(key: string, task: () => Promise<Value>) => {
-          const scheduled = this.scheduler.schedule(key, task);
+          const scheduled = this.scheduler.schedule(key, () => withEvaluationContext({
+            laneId: this.laneId,
+            attribution: "descendant_background",
+          }, task));
           if (scheduled.status === "busy") {
             return {
               status: "failed",
@@ -294,7 +302,7 @@ export class ContextPreparationManager {
         },
       });
       if (this.closed || generation !== this.generation || this.slot?.candidateId !== candidate.candidateId) {
-        this.emit("context_candidate_discarded", {
+        const event = this.emit("context_candidate_discarded", {
           candidateId: candidate.candidateId,
           kind: candidate.kind,
           reason: "late_completion_after_invalidation",
@@ -305,6 +313,7 @@ export class ContextPreparationManager {
           cachedInputTokens: prepared.background?.usage?.cachedInputTokens,
           costUsd: prepared.background?.cost?.totalCostUsd,
         });
+        if (this.closed) this.onDetachedEvent?.(structuredClone(event));
         return undefined;
       }
       const at = this.now().toISOString();
@@ -342,12 +351,25 @@ export class ContextPreparationManager {
       }
       return structuredClone(this.slot);
     } catch (error) {
-      if (this.closed || generation !== this.generation || this.slot?.candidateId !== candidate.candidateId) {
-        return undefined;
-      }
       const background = error instanceof ContextPreparationJobError
         ? error.background
         : undefined;
+      if (this.closed || generation !== this.generation || this.slot?.candidateId !== candidate.candidateId) {
+        const event = this.emit("context_candidate_discarded", {
+          candidateId: candidate.candidateId,
+          kind: candidate.kind,
+          reason: "late_failure_after_invalidation",
+          error: error instanceof Error ? error.message : String(error),
+          durationMs: background?.durationMs,
+          attempts: background?.attempts,
+          inputTokens: background?.usage?.inputTokens,
+          outputTokens: background?.usage?.outputTokens,
+          cachedInputTokens: background?.usage?.cachedInputTokens,
+          costUsd: background?.cost?.totalCostUsd,
+        });
+        if (this.closed) this.onDetachedEvent?.(structuredClone(event));
+        return undefined;
+      }
       this.slot = {
         ...candidate,
         ...(background ? { background } : {}),
@@ -390,8 +412,8 @@ export class ContextPreparationManager {
     status: "adopted" | "stale" | "discarded",
     reason: string,
     data: Record<string, unknown> = {},
-  ): void {
-    if (!this.slot) return;
+  ): ContextPreparationEvent | undefined {
+    if (!this.slot) return undefined;
     this.slot = {
       ...this.slot,
       status,
@@ -403,7 +425,7 @@ export class ContextPreparationManager {
       : status === "stale"
         ? "context_candidate_stale"
         : "context_candidate_discarded";
-    this.emit(event, {
+    return this.emit(event, {
       candidateId: this.slot.candidateId,
       kind: this.slot.kind,
       reason,
@@ -416,8 +438,10 @@ export class ContextPreparationManager {
     return { status: "skipped", reason };
   }
 
-  private emit(event: ContextPreparationEvent["event"], data: Record<string, unknown>): void {
-    this.events.push({ event, laneId: this.laneId, at: this.now().toISOString(), data });
+  private emit(event: ContextPreparationEvent["event"], data: Record<string, unknown>): ContextPreparationEvent {
+    const record = { event, laneId: this.laneId, at: this.now().toISOString(), data };
+    this.events.push(record);
+    return record;
   }
 }
 

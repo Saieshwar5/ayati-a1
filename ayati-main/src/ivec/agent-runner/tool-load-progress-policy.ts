@@ -55,7 +55,7 @@ export function createToolLoadNoProgressFailure(
   step: number,
 ): FailureRecord {
   const reason = evaluation.message
-    ?? "Repeated tool-loading requests did not make a usable capability available.";
+    ?? "Repeated mode transitions did not make a usable capability available.";
   return {
     step,
     failureType: "no_progress",
@@ -67,9 +67,9 @@ export function createToolLoadNoProgressFailure(
       message: reason,
       blockedTargets: evaluation.repeatedTargets,
       allowedNextActions: [
-        "Use a tool that is already visible instead of requesting the same capability again.",
-        "For a user-provided path before binding, use the durable resource inspector exposed during routing and then activate or create its workstream.",
-        "After workstream binding, make a fresh decision before requesting or calling mutation tools.",
+        "Use a tool that is already visible instead of repeating the same mode transition.",
+        "For a binding-required capability, submit one evidence-backed proposal to the deterministic resolve gate before making a fresh decision.",
+        "After workstream binding, make a fresh decision before calling mutation tools.",
       ],
     },
   };
@@ -94,15 +94,15 @@ function buildNoProgressMessage(
 ): string {
   const repeated = repeatedTargets.map(displayTarget);
   if (result.unavailable.some((entry) => entry.reason === "requires_workstream_binding")) {
-    return `Repeated tool loading made no progress because ${repeated.join(", ")} requires workstream binding. For a user-provided path, use the durable resource inspector exposed during routing; otherwise activate or create the owning workstream. Make a fresh mutation decision after binding.`;
+    return `Repeated capability transitions made no progress because ${repeated.join(", ")} requires workstream binding. Submit one evidence-backed proposal to the deterministic resolve gate, then make a fresh mutation decision only after authoritative bound context is mounted.`;
   }
   if (result.unavailable.some((entry) => entry.reason === "not_available_after_workstream_binding")) {
-    return `Repeated tool loading made no progress because ${repeated.join(", ")} is not available after workstream binding. Continue with the normal bound-workstream capabilities instead of loading routing controls again.`;
+    return `Repeated capability transitions made no progress because ${repeated.join(", ")} is not available after workstream binding. Continue with the bound execute capabilities instead of requesting routing controls again.`;
   }
   if (result.alreadyActive.length > 0) {
-    return `Repeated tool loading made no progress because ${repeated.join(", ")} was already active. Call the active tool directly instead of loading it again.`;
+    return `Repeated mode transitions made no progress because ${repeated.join(", ")} was already active. Call the active tool directly instead of repeating the transition.`;
   }
-  return `Repeated tool loading made no progress for ${repeated.join(", ")}. Use an already visible tool or stop with a truthful failure instead of repeating the load request.`;
+  return `Repeated mode transitions made no progress for ${repeated.join(", ")}. Use an already visible tool or validate a truthful terminal outcome instead of repeating the request.`;
 }
 
 function displayTarget(target: string): string {

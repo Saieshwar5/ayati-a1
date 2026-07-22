@@ -21,6 +21,10 @@ import {
 } from "./step-lifecycle.js";
 import type { ToolDefinition } from "../../skills/types.js";
 import { requireRunHandle } from "./runner-state.js";
+import {
+  isWorkstreamRoutingObservationTool,
+  workstreamRoutingEvidenceReference,
+} from "./workstream-routing-evidence.js";
 
 const noopRunRecorder: RunRecorder = {
   recordToolCall(): void {
@@ -185,12 +189,13 @@ export function syncPreparedAttachmentsFromRegistry(state: LoopState, deps: Agen
 export function buildUpdatedToolContext(
   state: LoopState,
   execution: AgentActionExecutionResult,
+  stepNumber: number,
 ): LoopState["toolContext"] {
   return compactToolContext({
     recent: getLatestObservations(execution),
     toolCalls: [
       ...(state.toolContext?.toolCalls ?? []),
-      ...execution.actOutput.toolCalls.map((call) => toRunToolCallContext(state.runId, state.iteration, call)),
+      ...execution.actOutput.toolCalls.map((call) => toRunToolCallContext(state.runId, stepNumber, call)),
     ],
   });
 }
@@ -251,6 +256,10 @@ function getLatestObservations(execution: AgentActionExecutionResult): ToolObser
 
 function toRunToolCallContext(runId: string, step: number, call: ActToolCallRecord): RunToolCallContext {
   const projectionMetadata = buildToolProjectionMetadata(call.tool, call.result?.structuredContent);
+  const evidenceRef = call.observation?.evidenceRef
+    ?? (isWorkstreamRoutingObservationTool(call.tool)
+      ? workstreamRoutingEvidenceReference(runId, step, call.callId)
+      : undefined);
   return {
     step,
     ...(call.callId ? { callId: call.callId } : {}),
@@ -267,7 +276,7 @@ function toRunToolCallContext(runId: string, step: number, call: ActToolCallReco
     ...(call.artifacts && call.artifacts.length > 0 ? { artifacts: call.artifacts } : {}),
     ...(call.observation?.hasMore !== undefined ? { hasMore: call.observation.hasMore } : {}),
     ...(runId.trim().length > 0 ? { stepRef: { runId, step, ...(call.callId ? { callId: call.callId } : {}) } } : {}),
-    ...(call.observation?.evidenceRef ? { evidenceRef: call.observation.evidenceRef } : {}),
+    ...(evidenceRef ? { evidenceRef } : {}),
     ...(call.rawOutputChars !== undefined ? { rawOutputChars: call.rawOutputChars } : {}),
     ...(call.outputTruncated !== undefined ? { outputTruncated: call.outputTruncated } : {}),
   };

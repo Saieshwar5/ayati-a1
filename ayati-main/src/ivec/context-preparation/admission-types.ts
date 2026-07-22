@@ -7,6 +7,7 @@ import type { StreamContextProjectionReceipt } from "../agent-runner/stream-cont
 import type { ToolContextShadowReceipt } from "../agent-runner/tool-context-shadow.js";
 import type { ToolContextProjectionPolicy } from "../types.js";
 import type { ContextPreparationEvent } from "./types.js";
+import type { PromptContextManifest } from "./types.js";
 
 export interface DecisionContextCompilation {
   candidateBudget: ContextBudgetReport;
@@ -14,6 +15,7 @@ export interface DecisionContextCompilation {
   finalBudget: ContextBudgetReport;
   finalTurnInput: LlmTurnInput;
   receipt: ContextCompilationReceipt;
+  promptManifest?: PromptContextManifest;
   finalBudgetMeasured: boolean;
   projection?: {
     event: "tool_context_projection_shadow" | "tool_context_projection_enforced";

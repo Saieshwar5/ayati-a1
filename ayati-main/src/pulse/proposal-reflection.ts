@@ -2,6 +2,7 @@ import type { LlmProvider } from "../core/contracts/provider.js";
 import type { LlmResponseFormat } from "../core/contracts/llm-protocol.js";
 import type { ConversationTurn, PromptMemoryContext } from "../memory/types.js";
 import type { ToolDefinition } from "../skills/types.js";
+import { withEvaluationModelOperation } from "../evaluation/capture-runtime.js";
 
 const MIN_ASK_CONFIDENCE = 0.75;
 const MAX_TEXT_CHARS = 1_200;
@@ -81,13 +82,16 @@ export class PulseProposalReflectionService {
       return { action: "none", reason: "reflection guard skipped this task" };
     }
 
-    const turn = await input.provider.generateTurn({
-      messages: [
-        { role: "system", content: REFLECTION_SYSTEM_PROMPT },
-        { role: "user", content: buildReflectionUserPrompt(input) },
-      ],
-      responseFormat: REFLECTION_RESPONSE_FORMAT,
-    });
+    const turn = await withEvaluationModelOperation({
+      purpose: "proposal_reflection",
+      attribution: "foreground",
+    }, async () => await input.provider.generateTurn({
+        messages: [
+          { role: "system", content: REFLECTION_SYSTEM_PROMPT },
+          { role: "user", content: buildReflectionUserPrompt(input) },
+        ],
+        responseFormat: REFLECTION_RESPONSE_FORMAT,
+      }));
 
     if (turn.type !== "assistant") {
       return { action: "none", reason: "reflection returned tool calls" };

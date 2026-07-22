@@ -17,7 +17,7 @@ Important paths:
 - `env-vars.md`: runtime configuration flags and environment defaults.
 - `testing.md`: test strategy and commands.
 - `headless-chat-scenarios.md`: how another coding agent can test Ayati through the same multi-turn WebSocket chat path as a human user.
-- `agent-benchmarking.md`: agent harness benchmark metrics, Fireworks token/cost usage, and human eval rubric.
+- `live-agent-evaluation.md`: passive real-daemon evaluation capture, evidence reports, comparison, and safe pruning.
 - `runtime-performance-benchmarking.md`: non-LLM runtime performance benchmark design, commands, report interpretation, and subsystem improvement signals.
 - `conventions.md`: code organization and style.
 - `security.md`: safety and secret-handling rules.

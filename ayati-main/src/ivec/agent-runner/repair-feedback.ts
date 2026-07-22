@@ -21,7 +21,7 @@ import {
   summarizeStep,
 } from "./feedback-summary.js";
 
-const UNBOUND_RUN_TOOL_REPAIR_MESSAGE = "The run is not bound to a workstream. Before mutation, activate an existing workstream or create a new workstream. Ask a short clarification directly if workstream ownership is unclear.";
+const UNBOUND_RUN_TOOL_REPAIR_MESSAGE = "The run is not bound to a workstream. Observe workstream ownership, then enter resolve with the exact binding-required capability, evidence-backed target, and typed binding proposal. Validate the deterministic gate's focused clarification if ownership remains unclear.";
 const REPEATED_REPAIR_FAILURE_THRESHOLD = 3;
 
 export function recordUnboundRunToolRepair(input: {
@@ -574,11 +574,10 @@ function extractInvalidFields(error: string): string[] {
 }
 
 function unboundRunDecisionTargets(decision: AgentDecision): string[] {
-  if (decision.kind === "load_tools") {
+  if (decision.kind === "transition_mode") {
     return uniqueStrings([
-      ...decision.request.toolNames,
-      ...decision.request.groups.map((group) => `group:${group}`),
-      ...(decision.request.query ? [`query:${decision.request.query}`] : []),
+      ...decision.request.capabilities.map((group) => `capability:${group}`),
+      ...(decision.request.targets ?? []),
     ]);
   }
   if (decision.kind === "act") {

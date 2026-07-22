@@ -26,6 +26,11 @@ import {
   type ToolNameMaps,
 } from "../shared/tool-name-mapping.js";
 import { estimateFireworksCost } from "./pricing.js";
+import {
+  captureProviderNativePayload,
+  captureProviderNativeResponse,
+  isLiveEvaluationEnabled,
+} from "../../evaluation/capture-runtime.js";
 
 let client: OpenAI | null = null;
 
@@ -280,7 +285,9 @@ const provider: LlmProvider = {
       ...(usesMiniMaxReasoning(model) ? { reasoning_effort: getReasoningEffort() } : {}),
     };
 
+    captureProviderNativePayload({ provider: "fireworks", operation: "generateTurn", payload: request });
     const response = await client.chat.completions.create(request as any);
+    captureProviderNativeResponse({ provider: "fireworks", operation: "generateTurn", response });
     const usage = readFireworksUsage(model, response as unknown as Record<string, unknown>);
     const cost = usage ? estimateFireworksCost(model, usage) : undefined;
 
@@ -362,32 +369,42 @@ const provider: LlmProvider = {
       ...(usesMiniMaxReasoning(model) ? { reasoning_effort: getReasoningEffort() } : {}),
     };
 
+    captureProviderNativePayload({ provider: "fireworks", operation: "streamTurn", payload: request });
     const stream = await client.chat.completions.create(request as any);
     const textParts: string[] = [];
+    const nativeChunks: unknown[] | undefined = isLiveEvaluationEnabled() ? [] : undefined;
+    let usage: LlmTokenUsage | undefined;
     const toolCalls = new Map<number, {
       id?: string;
       name?: string;
       arguments: string;
     }>();
 
-    for await (const chunk of stream as unknown as AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>) {
-      const delta = chunk.choices[0]?.delta;
-      const content = delta?.content;
-      if (typeof content === "string" && content.length > 0) {
-        textParts.push(content);
-        callbacks.onTextDelta?.(content);
+    try {
+      for await (const chunk of stream as unknown as AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>) {
+        nativeChunks?.push(chunk);
+        usage = readFireworksUsage(model, chunk as unknown as Record<string, unknown>) ?? usage;
+        const delta = chunk.choices[0]?.delta;
+        const content = delta?.content;
+        if (typeof content === "string" && content.length > 0) {
+          textParts.push(content);
+          callbacks.onTextDelta?.(content);
+        }
+        for (const call of delta?.tool_calls ?? []) {
+          const index = typeof call.index === "number" ? call.index : toolCalls.size;
+          const existing = toolCalls.get(index) ?? { arguments: "" };
+          const fn = call.function;
+          toolCalls.set(index, {
+            id: call.id ?? existing.id,
+            name: fn?.name ?? existing.name,
+            arguments: `${existing.arguments}${fn?.arguments ?? ""}`,
+          });
+        }
       }
-      for (const call of delta?.tool_calls ?? []) {
-        const index = typeof call.index === "number" ? call.index : toolCalls.size;
-        const existing = toolCalls.get(index) ?? { arguments: "" };
-        const fn = call.function;
-        toolCalls.set(index, {
-          id: call.id ?? existing.id,
-          name: fn?.name ?? existing.name,
-          arguments: `${existing.arguments}${fn?.arguments ?? ""}`,
-        });
-      }
+    } finally {
+      if (nativeChunks) captureProviderNativeResponse({ provider: "fireworks", operation: "streamTurn", response: { chunks: nativeChunks } });
     }
+    const cost = usage ? estimateFireworksCost(model, usage) : undefined;
 
     if (toolCalls.size > 0) {
       const calls = [...toolCalls.values()].map<LlmToolCall>((call) => ({
@@ -399,6 +416,8 @@ const provider: LlmProvider = {
         type: "tool_calls",
         calls,
         ...(textParts.length > 0 ? { assistantContent: textParts.join("") } : {}),
+        ...(usage ? { usage } : {}),
+        ...(cost ? { cost } : {}),
       };
     }
 
@@ -410,6 +429,8 @@ const provider: LlmProvider = {
     return {
       type: "assistant",
       content: reply,
+      ...(usage ? { usage } : {}),
+      ...(cost ? { cost } : {}),
     };
   },
 };

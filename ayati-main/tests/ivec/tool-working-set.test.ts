@@ -8,6 +8,7 @@ import { createInitialHarnessContext } from "../../src/ivec/harness-context.js";
 import { createInitialContextPressureState } from "../../src/ivec/context-pressure-state.js";
 import type { ContextEngineMachineContext } from "../../src/context-engine/index.js";
 import { deriveWorkstreamBindingCapabilityPolicy } from "../../src/ivec/agent-runner/workstream-binding-capability-policy.js";
+import { createEntryVirtualModeState } from "../../src/ivec/agent-runner/virtual-mode.js";
 import { contextEngineFixture } from "../fixtures/agent-context.js";
 
 function tool(name: string, description = name): ToolDefinition {
@@ -51,6 +52,7 @@ function state(userMessage: string): LoopState {
     completedSteps: [],
     runPath: "",
     failureHistory: [],
+    virtualMode: createEntryVirtualModeState(),
     harnessContext: createInitialHarnessContext({
       contextEngine: contextEngineWithPendingTurn({
         status: "active",
@@ -84,7 +86,7 @@ describe("ToolWorkingSetManager", () => {
     expect(compact.length).toBeLessThan(full.length);
   });
 
-  it("preloads likely tools before the decision and enforces lifecycle-priority eviction", () => {
+  it("keeps ENTRY empty and replaces the complete capability surface between modes", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
         tool("find_files", "Find files"),
@@ -98,16 +100,19 @@ describe("ToolWorkingSetManager", () => {
     const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 3 });
     const context = { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 };
 
-    manager.prepareForDecision(state("find and edit the config file"), context);
-    expect(manager.listActive(context)).toHaveLength(3);
+    const runState = state("find and edit the config file");
+    const policy = deriveWorkstreamBindingCapabilityPolicy(runState);
+    manager.prepareForDecision(runState, context);
+    expect(manager.listActive(context)).toEqual([]);
 
-    manager.load(
-      { toolNames: ["write_files"], reason: "need write fallback" },
-      context,
-      deriveWorkstreamBindingCapabilityPolicy(state("find and edit the config file")),
-    );
-    expect(manager.listActive(context)).toEqual(["search_in_files", "read_files", "write_files"]);
-    expect(executor.list(context)).toEqual(["search_in_files", "read_files", "write_files"]);
+    const locate = manager.replaceWithTools(["find_files", "search_in_files"], context, policy);
+    expect(locate.loaded).toEqual(["find_files", "search_in_files"]);
+    expect(manager.listActive(context)).toEqual(["find_files", "search_in_files"]);
+
+    const investigate = manager.replaceWithTools(["read_files"], context, policy);
+    expect(investigate.evicted).toEqual(["find_files", "search_in_files"]);
+    expect(manager.listActive(context)).toEqual(["read_files"]);
+    expect(executor.list(context)).toEqual(["read_files"]);
   });
 
   it("loads deterministic follow-up tools after execution and deactivates success-scoped tools", () => {
@@ -173,7 +178,7 @@ describe("ToolWorkingSetManager", () => {
     ]));
   });
 
-  it("preloads file tools instead of process or UI tools for project creation", () => {
+  it("resolves and mounts only an explicitly selected file capability", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
         tool("find_files", "Find files"),
@@ -200,12 +205,18 @@ describe("ToolWorkingSetManager", () => {
     runState.runId = "r1";
 
     manager.prepareForDecision(runState, context);
+    expect(manager.listActive(context)).toEqual([]);
 
+    const capability = manager.resolveCapabilityTools(["file:create"]);
+    expect(capability.missingCapabilities).toEqual([]);
+    manager.replaceWithTools(
+      capability.toolNames,
+      context,
+      deriveWorkstreamBindingCapabilityPolicy(runState),
+    );
     const active = manager.listActive(context);
     expect(active).toEqual(expect.arrayContaining([
       "list_directory",
-      "read_files",
-      "read_files",
       "write_files",
       "create_directory",
     ]));
@@ -214,7 +225,7 @@ describe("ToolWorkingSetManager", () => {
     expect(active).not.toContain("workspace_set_layout");
   });
 
-  it("preloads process tools for explicit command execution", () => {
+  it("does not infer process capabilities from the request text", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
         tool("search_in_files", "Search in files"),
@@ -231,15 +242,18 @@ describe("ToolWorkingSetManager", () => {
     runState.runId = "r1";
 
     manager.prepareForDecision(runState, context);
+    expect(manager.listActive(context)).toEqual([]);
 
-    expect(manager.listActive(context)).toEqual(expect.arrayContaining([
-      "process_run",
-      "search_in_files",
-      "read_files",
-    ]));
+    const capability = manager.resolveCapabilityTools(["process:command"]);
+    manager.replaceWithTools(
+      capability.toolNames,
+      context,
+      deriveWorkstreamBindingCapabilityPolicy(runState),
+    );
+    expect(manager.listActive(context)).toEqual(["process_run"]);
   });
 
-  it("never mounts legacy workstream-resolution tools in the main loop", () => {
+  it("never mounts hidden workstream lifecycle controls in the main loop", () => {
     const catalog = new ToolCatalog([
       skill("git-context", [
         tool("git_context_inspect_resource"),
@@ -277,7 +291,7 @@ describe("ToolWorkingSetManager", () => {
     expect(manager.listActive({ runId: "r1" })).toEqual([]);
   });
 
-  it("leaves workstream discovery and binding to the isolated resolver", () => {
+  it("starts with no routing or mutation tools mounted at ENTRY", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
         tool("write_files"),
@@ -305,7 +319,7 @@ describe("ToolWorkingSetManager", () => {
     expect(manager.listActive({ runId: "r1" })).toEqual([]);
   });
 
-  it("does not spend a fresh stream's main-loop tool budget on resolution", () => {
+  it("mounts an explicit observation capability without mutation or routing tools", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
         tool("write_files"),
@@ -341,9 +355,25 @@ describe("ToolWorkingSetManager", () => {
     const context = { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 };
 
     manager.prepareForDecision(runState, context);
-
     expect(manager.listActive(context)).toEqual([]);
-    expect(executor.list(context)).toEqual([]);
+    const capability = manager.resolveCapabilityTools(["file:search"]);
+    manager.replaceWithTools(
+      capability.toolNames,
+      context,
+      deriveWorkstreamBindingCapabilityPolicy(runState),
+    );
+
+    const active = manager.listActive(context);
+    expect(active).toEqual(expect.arrayContaining(["find_files", "search_in_files"]));
+    expect(active).not.toEqual(expect.arrayContaining([
+      "write_files",
+      "create_directory",
+      "patch_files",
+      "process_run",
+      "git_context_activate_workstream",
+      "git_context_create_workstream",
+    ]));
+    expect(executor.list(context)).toEqual(active);
   });
 
   it("does not infer ownership from a recent workstream", () => {
@@ -410,10 +440,19 @@ describe("ToolWorkingSetManager", () => {
     const context = { clientId: "c1", runId: "decision:s1:1", sessionId: "s1", stepNumber: 1 };
 
     manager.prepareForDecision(runState, context);
+    expect(manager.listActive(context)).toEqual([]);
+    manager.replaceWithTools(
+      ["find_files", "search_in_files", "read_files", "write_files", "create_directory", "process_run"],
+      context,
+      deriveWorkstreamBindingCapabilityPolicy(runState),
+    );
     const active = manager.listActive(context);
 
-    expect(active).toEqual([]);
+    expect(active).toHaveLength(3);
+    expect(active).toEqual(expect.arrayContaining(["find_files", "search_in_files", "read_files"]));
     expect(active).not.toContain("write_files");
+    expect(active).not.toContain("create_directory");
+    expect(active).not.toContain("process_run");
     expect(executor.list(context)).toEqual(active);
   });
 

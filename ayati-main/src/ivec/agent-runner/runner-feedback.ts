@@ -30,6 +30,7 @@ import {
   summarizeWorkState,
 } from "./feedback-summary.js";
 import { auditToolPolicy } from "./tool-policy-audit.js";
+import { requiresOperationalMode } from "./turn-intent-policy.js";
 
 export function recordFeedback(
   deps: AgentLoopDeps,
@@ -139,14 +140,17 @@ export function recordReducerFeedback(
     beforeWorkStateChars: number;
     compactedWorkState: WorkState;
     stepSummary: StepSummary;
+    durationMs?: number;
   },
 ): void {
   recordFeedback(deps, inputHandle, runId, "reducer", "completed", {
     iteration,
     step: input.stepSummary.step,
+    durationMs: input.durationMs,
     beforeWorkStateChars: input.beforeWorkStateChars,
     afterWorkStateChars: measureJson(input.compactedWorkState),
     workState: summarizeWorkState(input.compactedWorkState),
+    workStateAfter: input.compactedWorkState,
     stepSummary: summarizeStep(input.stepSummary),
   });
 }
@@ -272,8 +276,7 @@ export function summarizeDecisionInputState(stateView: AgentStateView): Record<s
 export function buildFinalFeedbackWarnings(input: {
   status: AgentLoopResult["status"];
   totalToolCalls: number;
-  toolLoadDecisionCount: number;
-  actionStepCount: number;
+  modeTransitionCount: number;
   failedVerificationCount: number;
   state: LoopState;
 }): string[] {
@@ -284,15 +287,13 @@ export function buildFinalFeedbackWarnings(input: {
   if (
     input.status === "completed"
     && input.totalToolCalls === 0
-    && (input.toolLoadDecisionCount > 0 || input.actionStepCount > 0 || isWorkstreamBound(input.state))
+    && input.state.workState.status !== "needs_user_input"
+    && requiresOperationalMode(input.state.userMessage)
   ) {
     warnings.push("completed_without_tool_calls");
   }
-  if (input.toolLoadDecisionCount > 0 && input.actionStepCount === 0) {
-    warnings.push("tool_load_no_action");
-  }
-  if (input.toolLoadDecisionCount > 2) {
-    warnings.push("repeated_tool_load");
+  if (input.modeTransitionCount > 5) {
+    warnings.push("excessive_mode_transitions");
   }
   if (input.failedVerificationCount > 0) {
     warnings.push("verification_failed");
@@ -321,10 +322,6 @@ function normalWorkstreamToolNames(tools: ToolDefinition[]): string[] {
   return tools
     .map((tool) => tool.name)
     .filter((tool) => !isGitContextRoutingToolName(tool));
-}
-
-function isWorkstreamBound(state: LoopState): boolean {
-  return state.harnessContext.contextEngine?.current.routing?.status === "bound";
 }
 
 function uniqueStrings(values: string[]): string[] {

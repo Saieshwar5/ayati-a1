@@ -100,25 +100,6 @@ export function forcedSynchronousBarrier(input: {
   return Math.max(1, input.admissionLimitTokens - nextDecisionReserveTokens(input));
 }
 
-export function resolveResolverContextLimits(
-  main: ResolvedModelContextLimits,
-): ResolvedModelContextLimits {
-  const hardInputTokens = main.hardInputTokens;
-  if (hardInputTokens < 4) {
-    throw new Error("Resolver context profile requires a hard input limit of at least four tokens.");
-  }
-  const softInputTokens = Math.min(32_000, hardInputTokens - 1);
-  const recoveryTargetTokens = Math.min(24_000, softInputTokens - 1);
-  const preparationInputTokens = Math.min(20_000, recoveryTargetTokens - 1);
-  return {
-    ...main,
-    preparationInputTokens,
-    recoveryTargetTokens,
-    softInputTokens,
-    hardInputTokens,
-  };
-}
-
 export function modelProfileVersion(limits: ResolvedModelContextLimits): string {
   return [
     limits.provider,

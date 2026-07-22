@@ -24,11 +24,14 @@ Key owners:
   and their focused services
 - WebSocket/HTTP: `ayati-main/src/server/`
 
-For continuity failures, inspect the feedback trace, SQLite run/binding/resource
-rows, explicit request decision, resource locator/version, context repository
-status and HEAD, and finalization journal. Never repair by placing deliverables
-in the context repository or editing runtime-owned records by hand.
+For continuity failures, capture a live evaluation and inspect its correlated
+run report, SQLite run/binding/resource rows, explicit request decision,
+resource locator/version, context repository status and HEAD, and finalization
+journal. Never repair by placing deliverables in the context repository or
+editing runtime-owned records by hand.
 
-Use `pnpm feedback:context-engine` for the compact lifecycle report. Keep the
-daemon stopped before archive/reset, catalog rebuild, or direct database
-inspection that requires a consistent snapshot.
+Use `pnpm eval:agent -- inspect --evaluation <id> --latest` for the latest
+evidence-linked lifecycle report. `pnpm feedback:context-engine` is a
+compatibility alias for the unified latest report. Keep the daemon stopped
+before archive/reset, catalog rebuild, or direct database inspection that
+requires a consistent snapshot.

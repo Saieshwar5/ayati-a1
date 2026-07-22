@@ -392,7 +392,6 @@ function buildMainSourceSnapshot(
     messages,
     steps: eligibleCalls,
     ...(activeOverlay ? { priorFocus: activeOverlay.summary } : {}),
-    sourceKind: "main",
   } : undefined;
   const canonicalSourceHashes: Record<string, string> = {};
   for (const message of messages) canonicalSourceHashes[message.ref] = canonicalHash(message);

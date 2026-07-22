@@ -2,19 +2,41 @@ import type { AgentLoopDeps, AgentLoopResult, LoopConfig } from "./types.js";
 import { DEFAULT_LOOP_CONFIG } from "./types.js";
 import { runAgentLoop } from "./agent-runner/runner.js";
 import { ContextPreparationManager } from "./context-preparation/manager.js";
+import { withEvaluationContext } from "../evaluation/capture-runtime.js";
 
 export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
-  const config: LoopConfig = { ...DEFAULT_LOOP_CONFIG, ...deps.config };
-  validateLoopConfig(config);
-  const contextPreparation = deps.contextPreparation ?? new ContextPreparationManager({
+  return await withEvaluationContext({
+    runId: deps.runHandle.runId,
+    sessionId: deps.runHandle.streamId,
     laneId: `main:${deps.runHandle.runId}`,
-    provider: deps.provider,
+    attribution: "foreground",
+  }, async () => {
+    const config: LoopConfig = { ...DEFAULT_LOOP_CONFIG, ...deps.config };
+    validateLoopConfig(config);
+    const contextPreparation = deps.contextPreparation ?? new ContextPreparationManager({
+      laneId: `main:${deps.runHandle.runId}`,
+      provider: deps.provider,
+      onDetachedEvent: (event) => {
+        deps.feedbackLedger?.record({
+          clientId: deps.clientId,
+          sessionId: deps.runHandle.streamId,
+          runId: deps.runHandle.runId,
+          stage: "decision",
+          event: event.event,
+          data: {
+            laneId: event.laneId,
+            at: event.at,
+            ...event.data,
+          },
+        });
+      },
+    });
+    try {
+      return await runAgentLoop({ ...deps, contextPreparation }, config);
+    } finally {
+      contextPreparation.close();
+    }
   });
-  try {
-    return await runAgentLoop({ ...deps, contextPreparation }, config);
-  } finally {
-    contextPreparation.close();
-  }
 }
 
 function validateLoopConfig(config: LoopConfig): void {

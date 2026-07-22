@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -6,6 +7,9 @@ import type {
   PrepareResourceMutationRequest,
   ResourceAdmission,
 } from "../src/contracts.js";
+import { runGit } from "../src/git/git-process.js";
+import { ResourceMutationService } from "../src/services/resource-mutation-service.js";
+import { StartupRunRecoveryService } from "../src/services/startup-run-recovery-service.js";
 import {
   createBoundWorkstream,
   createWorkstreamServiceFixture,
@@ -215,15 +219,192 @@ describe("resource-scoped mutation authority", () => {
       at: "2026-07-19T10:03:00+05:30",
     })).resolves.toMatchObject({ status: "no_change", verified: true, events: [] });
   });
+
+  it("ignores unrelated Git dependency links but rejects a target that traverses one", async () => {
+    const state = await createMutationFixture("git-links", true);
+    const dependencyRoot = join(state.resourceRoot, "node_modules", "@types");
+    await mkdir(dependencyRoot, { recursive: true });
+    await symlink("../../../src", join(dependencyRoot, "node"), "dir");
+
+    await expect(state.fixture.service.prepareResourceMutation(
+      mutationInput(state, "call-link-target", "node_modules/@types/node/app.ts"),
+    )).rejects.toMatchObject({ code: "MUTATION_TARGET_INVALID" });
+
+    const prepared = await state.fixture.service.prepareResourceMutation(
+      mutationInput(state, "call-git-link", "workspace/proof.txt"),
+    );
+    await mkdir(join(state.resourceRoot, "workspace"), { recursive: true });
+    await writeFile(join(state.resourceRoot, "workspace", "proof.txt"), "verified\n");
+    await expect(state.fixture.service.verifyResourceMutation({
+      requestId: "REQ-verify-git-link",
+      operationId: prepared.operationId,
+      leaseId: prepared.leaseId,
+      lockToken: prepared.lockToken,
+      toolStatus: "completed",
+      at: "2026-07-19T10:03:00+05:30",
+    })).resolves.toMatchObject({ status: "verified", verified: true });
+  });
+
+  it("records an unrelated directory link without following it", async () => {
+    const state = await createMutationFixture("directory-link");
+    await symlink("src", join(state.resourceRoot, "source-link"), "dir");
+
+    const prepared = await state.fixture.service.prepareResourceMutation(
+      mutationInput(state, "call-directory-link", "src/app.ts"),
+    );
+    const snapshotRow = state.fixture.database.prepare(
+      "SELECT before_json FROM resource_mutation_operations WHERE operation_id = ?",
+    ).get(prepared.operationId) as { before_json: string };
+    expect(snapshotRow.before_json).toContain('"kind":"symlink"');
+    expect(snapshotRow.before_json).toContain('"path":"source-link"');
+
+    await writeFile(join(state.resourceRoot, "src", "app.ts"), "export const ready = true;\n");
+    await expect(state.fixture.service.verifyResourceMutation({
+      requestId: "REQ-verify-directory-link",
+      operationId: prepared.operationId,
+      leaseId: prepared.leaseId,
+      lockToken: prepared.lockToken,
+      toolStatus: "completed",
+      at: "2026-07-19T10:03:00+05:30",
+    })).resolves.toMatchObject({ status: "verified", verified: true });
+  });
+
+  it("releases authority when deterministic preparation fails before tool execution", async () => {
+    const state = await createMutationFixture("prepare-failure");
+    const socketPath = join(state.resourceRoot, "unsupported.sock");
+    const server = createServer();
+    await new Promise<void>((resolvePromise, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolvePromise);
+    });
+    try {
+      await expect(state.fixture.service.prepareResourceMutation(
+        mutationInput(state, "call-prepare-failure", "src/app.ts"),
+      )).rejects.toMatchObject({ code: "RESOURCE_VERIFICATION_UNAVAILABLE" });
+    } finally {
+      await new Promise<void>((resolvePromise, reject) => {
+        server.close((error) => error ? reject(error) : resolvePromise());
+      });
+    }
+
+    expect(stateOfRun(state)).toBe("running");
+    expect(state.fixture.database.prepare([
+      "SELECT o.status, o.tool_status, o.verification_json, l.status AS lease_status",
+      "FROM resource_mutation_operations o",
+      "JOIN resource_mutation_leases l ON l.lease_id = o.lease_id",
+      "WHERE o.run_id = ? AND o.call_id = 'call-prepare-failure'",
+    ].join(" ")).get(state.fixture.prepared.run.runId)).toMatchObject({
+      status: "no_change",
+      tool_status: "failed",
+      lease_status: "released",
+      verification_json: expect.stringContaining('"toolExecuted":false'),
+    });
+
+    const next = await state.fixture.service.prepareResourceMutation(
+      mutationInput(state, "call-after-prepare-failure", "src/app.ts"),
+    );
+    await expect(state.fixture.service.verifyResourceMutation({
+      requestId: "REQ-verify-after-prepare-failure",
+      operationId: next.operationId,
+      leaseId: next.leaseId,
+      lockToken: next.lockToken,
+      toolStatus: "failed",
+      at: "2026-07-19T10:04:00+05:30",
+    })).resolves.toMatchObject({ status: "no_change", verified: true });
+  });
+
+  it("recovers only an unpublished mutation preparation after restart", async () => {
+    const state = await createMutationFixture("restart-preparation");
+    const input = mutationInput(state, "call-restart-preparation", "src/app.ts");
+    const prepared = await state.fixture.service.prepareResourceMutation(input);
+    state.fixture.database.transaction(() => {
+      state.fixture.database.prepare([
+        "UPDATE idempotency_requests SET status = 'recovery_required', completed_at = NULL",
+        "WHERE request_id = ?",
+      ].join(" ")).run(input.requestId);
+      state.fixture.database.prepare([
+        "UPDATE resource_mutation_operations SET before_json = 'null', status = 'recovery_required',",
+        "tool_status = NULL, last_error = 'Resource snapshot contains a symbolic link.'",
+        "WHERE operation_id = ?",
+      ].join(" ")).run(prepared.operationId);
+      state.fixture.database.prepare([
+        "UPDATE resource_mutation_leases SET status = 'recovery_required',",
+        "last_error = 'Resource snapshot contains a symbolic link.' WHERE lease_id = ?",
+      ].join(" ")).run(prepared.leaseId);
+      state.fixture.database.prepare(
+        "UPDATE runs SET status = 'recovery_required' WHERE run_id = ?",
+      ).run(state.fixture.prepared.run.runId);
+    });
+
+    new ResourceMutationService(state.fixture.database).recoverInterrupted(
+      "2026-07-19T10:05:00+05:30",
+    );
+    expect(stateOfRun(state)).toBe("running");
+    expect(state.fixture.database.prepare([
+      "SELECT o.status, o.tool_status, l.status AS lease_status",
+      "FROM resource_mutation_operations o",
+      "JOIN resource_mutation_leases l ON l.lease_id = o.lease_id",
+      "WHERE o.operation_id = ?",
+    ].join(" ")).get(prepared.operationId)).toEqual({
+      status: "no_change",
+      tool_status: "failed",
+      lease_status: "released",
+    });
+
+    const recovered = new StartupRunRecoveryService(state.fixture.database).recover(
+      "2026-07-19T10:05:01+05:30",
+    );
+    expect(recovered).toEqual({
+      interruptedRunIds: [state.fixture.prepared.run.runId],
+      recoveryRequiredRunIds: [],
+    });
+    expect(state.fixture.database.prepare(
+      "SELECT status, stop_reason FROM runs WHERE run_id = ?",
+    ).get(state.fixture.prepared.run.runId)).toEqual({
+      status: "incomplete",
+      stop_reason: "interrupted",
+    });
+  });
+
+  it("preserves recovery when mutation authority was durably published", async () => {
+    const state = await createMutationFixture("published-authority");
+    const prepared = await state.fixture.service.prepareResourceMutation(
+      mutationInput(state, "call-published-authority", "src/app.ts"),
+    );
+
+    new ResourceMutationService(state.fixture.database).recoverInterrupted(
+      "2026-07-19T10:05:00+05:30",
+    );
+
+    expect(stateOfRun(state)).toBe("recovery_required");
+    expect(state.fixture.database.prepare([
+      "SELECT o.status, o.tool_status, l.status AS lease_status",
+      "FROM resource_mutation_operations o",
+      "JOIN resource_mutation_leases l ON l.lease_id = o.lease_id",
+      "WHERE o.operation_id = ?",
+    ].join(" ")).get(prepared.operationId)).toEqual({
+      status: "recovery_required",
+      tool_status: null,
+      lease_status: "recovery_required",
+    });
+  });
 });
 
-async function createMutationFixture(name: string): Promise<MutationFixture> {
+async function createMutationFixture(name: string, gitRepository = false): Promise<MutationFixture> {
   const resourceRoot = await createResourceRoot(name);
   await writeFile(join(resourceRoot, "src", "app.ts"), "export const ready = false;\n");
+  if (gitRepository) {
+    await writeFile(join(resourceRoot, ".gitignore"), "node_modules/\nworkspace/\n");
+    await runGit(["init"], { cwd: resourceRoot });
+    await runGit(["config", "user.name", "Ayati Test"], { cwd: resourceRoot });
+    await runGit(["config", "user.email", "ayati-test@example.invalid"], { cwd: resourceRoot });
+    await runGit(["add", "."], { cwd: resourceRoot });
+    await runGit(["commit", "-m", "initialize fixture"], { cwd: resourceRoot });
+  }
   const fixture = await createWorkstreamServiceFixture(
     "mutation-" + name,
     "Update the example source.",
-    [directoryAdmission(resourceRoot)],
+    [gitRepository ? gitRepositoryAdmission(resourceRoot) : directoryAdmission(resourceRoot)],
   );
   fixtures.push(fixture);
   const resource = fixture.prepared.context.ingressResources?.[0];
@@ -261,6 +442,13 @@ function directoryAdmission(path: string): ResourceAdmission {
     description: "Real filesystem output owned by the user.",
     aliases: ["example source"],
     role: "reference",
+  };
+}
+
+function gitRepositoryAdmission(path: string): ResourceAdmission {
+  return {
+    ...directoryAdmission(path),
+    kind: "git_repository",
   };
 }
 

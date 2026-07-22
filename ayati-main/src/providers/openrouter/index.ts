@@ -27,6 +27,11 @@ import {
   toProviderToolName,
   type ToolNameMaps,
 } from "../shared/tool-name-mapping.js";
+import { readOpenAiCompatibleUsage } from "../shared/token-usage.js";
+import {
+  captureProviderNativePayload,
+  captureProviderNativeResponse,
+} from "../../evaluation/capture-runtime.js";
 
 let client: OpenAI | null = null;
 
@@ -228,7 +233,7 @@ const provider: LlmProvider = {
       compileResponseFormatForProvider(provider.name, provider.capabilities, input.responseFormat),
     );
 
-    const response = await client.chat.completions.create({
+    const request = {
       model,
       messages,
       ...(responseFormat ? { response_format: responseFormat as any } : {}),
@@ -246,12 +251,16 @@ const provider: LlmProvider = {
             ...(typeof input.parallelToolCalls === "boolean" ? { parallel_tool_calls: input.parallelToolCalls } : {}),
           }
         : {}),
-    }).catch((error: unknown) => {
+    };
+    captureProviderNativePayload({ provider: "openrouter", operation: "generateTurn", payload: request });
+    const response = await client.chat.completions.create(request as any).catch((error: unknown) => {
       if (isMalformedProviderResponseCause(error)) {
         throw malformedOpenRouterResponseError(model, error);
       }
       throw error;
     });
+    captureProviderNativeResponse({ provider: "openrouter", operation: "generateTurn", response });
+    const usage = readOpenAiCompatibleUsage("openrouter", model, response);
 
     const choices = Array.isArray(response.choices) ? response.choices : [];
     const message = choices[0]?.message;
@@ -276,6 +285,7 @@ const provider: LlmProvider = {
         type: "tool_calls",
         calls,
         ...(typeof message.content === "string" ? { assistantContent: message.content } : {}),
+        ...(usage ? { usage } : {}),
       };
     }
 
@@ -287,6 +297,7 @@ const provider: LlmProvider = {
     return {
       type: "assistant",
       content: reply,
+      ...(usage ? { usage } : {}),
     };
   },
 };

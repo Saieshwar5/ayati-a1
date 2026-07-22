@@ -6,7 +6,6 @@ import {
   decideContextPreparationTrigger,
   forcedSynchronousBarrier,
   planFlexibleLaneAllocation,
-  resolveResolverContextLimits,
 } from "../../src/ivec/context-preparation/policy.js";
 import { buildPromptContextManifest } from "../../src/ivec/context-preparation/prompt-manifest.js";
 import { removeDuplicateAndInvalidContext } from "../../src/ivec/context-preparation/deterministic-reduction.js";
@@ -64,41 +63,6 @@ describe("parallel context preparation policy", () => {
       softInputTokens: 70_000,
       recoveryTargetTokens: 60_000,
     })).toBe(90_000);
-  });
-
-  it("clamps the isolated resolver profile while keeping thresholds strictly ordered", () => {
-    expect(resolveResolverContextLimits({
-      provider: "test",
-      model: "test",
-      contextWindowTokens: 128_000,
-      outputReserveTokens: 8_192,
-      preparationInputTokens: 55_000,
-      recoveryTargetTokens: 60_000,
-      softInputTokens: 70_000,
-      hardInputTokens: 100_000,
-      source: "configured",
-    })).toMatchObject({
-      preparationInputTokens: 20_000,
-      recoveryTargetTokens: 24_000,
-      softInputTokens: 32_000,
-      hardInputTokens: 100_000,
-    });
-    expect(resolveResolverContextLimits({
-      provider: "test",
-      model: "small-policy",
-      contextWindowTokens: 128_000,
-      outputReserveTokens: 8_192,
-      preparationInputTokens: 8_000,
-      recoveryTargetTokens: 9_000,
-      softInputTokens: 10_000,
-      hardInputTokens: 20_000,
-      source: "configured",
-    })).toMatchObject({
-      preparationInputTokens: 19_997,
-      recoveryTargetTokens: 19_998,
-      softInputTokens: 19_999,
-      hardInputTokens: 20_000,
-    });
   });
 
   it("builds a deterministic pre-serialization manifest with exact system and tool parts", () => {

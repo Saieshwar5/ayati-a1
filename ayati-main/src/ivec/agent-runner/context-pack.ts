@@ -33,7 +33,6 @@ export interface AgentContextPack {
   work: {
     candidates: NonNullable<ContextEngineMachineContext["workstreamCandidates"]>;
     active?: ContextEngineMachineContext["workstream"];
-    resolution?: ContextEngineMachineContext["workstreamResolution"];
   };
   resources: {
     stream: ContextEngineMachineContext["agentStream"]["resources"];
@@ -77,7 +76,6 @@ export function buildAgentContextPack(state: LoopState): AgentContextPack {
     work: {
       candidates: context?.workstreamCandidates ?? [],
       ...(context?.workstream ? { active: context.workstream } : {}),
-      ...(context?.workstreamResolution ? { resolution: context.workstreamResolution } : {}),
     },
     resources: {
       stream: context?.agentStream.resources ?? [],

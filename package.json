@@ -5,14 +5,15 @@
   "scripts": {
     "build": "pnpm -r build",
     "test": "pnpm -r test",
+    "eval:agent": "node scripts/eval-agent.mjs",
     "dev:main": "pnpm --filter ayati-context-engine build && pnpm --filter ayati-main dev",
-    "dev:main:feedback": "pnpm --filter ayati-context-engine build && AYATI_TEST_AGENT=1 AYATI_FEEDBACK_TRACE=1 pnpm --filter ayati-main dev",
+    "dev:main:feedback": "pnpm eval:agent -- live --name legacy-feedback --watch",
     "dev:cli": "pnpm --filter ayati-cli dev",
     "start:main": "pnpm --filter ayati-main start",
     "context:archive-reset": "node --env-file-if-exists=.env scripts/context-archive-reset.mjs",
     "context:catalog-rebuild": "pnpm --filter ayati-context-engine build && node --env-file-if-exists=.env scripts/context-catalog-rebuild.mjs",
-    "start:main:feedback": "AYATI_TEST_AGENT=1 AYATI_FEEDBACK_TRACE=1 pnpm --filter ayati-main start",
-    "feedback:context-engine": "node scripts/context-engine-feedback-report.mjs",
+    "start:main:feedback": "pnpm eval:agent -- live --name legacy-feedback",
+    "feedback:context-engine": "pnpm eval:agent -- report --latest",
     "start:cli": "pnpm --filter ayati-cli start",
     "doctor:main": "pnpm --filter ayati-main run doctor"
   },

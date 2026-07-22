@@ -31,7 +31,7 @@ export interface PromptContextManifest {
   totalLocalEstimate: number;
 }
 
-export type ContextPreparationLaneId = `main:${string}` | `resolver:${string}`;
+export type ContextPreparationLaneId = `main:${string}`;
 
 export type ContextPreparationCandidateStatus =
   | "preparing"
@@ -43,8 +43,7 @@ export type ContextPreparationCandidateStatus =
 
 export type ContextPreparationCandidateKind =
   | "durable_checkpoint"
-  | "run_focus"
-  | "resolver_focus";
+  | "run_focus";
 
 export interface AnchoredFocusStatement {
   text: string;

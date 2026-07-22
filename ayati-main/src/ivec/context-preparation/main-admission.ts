@@ -423,6 +423,7 @@ export async function compilePreparedMainContext(
     finalBudget: currentBudget,
     finalTurnInput: workingTurnInput,
     receipt,
+    promptManifest: finalManifest,
     finalBudgetMeasured,
     ...(projection ? { projection } : {}),
     ...(streamProjection ? { streamProjection } : {}),

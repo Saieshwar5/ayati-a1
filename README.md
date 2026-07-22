@@ -29,10 +29,15 @@ Every accepted user message or system event creates one atomic run. A run may
 finish unbound for conversation or observation, or bind immutably to one
 workstream/request for durable work. The run id never changes after binding.
 
-The model can reply directly, load a bounded tool working set, call one
-selected executable tool, ask for focused feedback during bound work, or submit
-`workstream_completion`. Tool results advance progress only after deterministic
-verification.
+Every run starts at `ENTRY`. The model can reply directly only for genuinely
+tool-free requests, or navigate a small run-scoped graph through read-only
+observation, deterministic workstream binding, bound execution, and whole-task
+validation. Workstream routing observation stays in the same model loop;
+`resolve` is a zero-model-call gate over one typed proposal. The model selects
+capability groups, the harness mounts eligible concrete tools, and each
+transition replaces the working set. Tool results advance progress only after
+deterministic verification, and accepted validation carries the final response
+without another model call.
 
 ## Durable Work
 
@@ -110,8 +115,8 @@ reported as a successful commit.
 - Personal memory and episodic recall.
 - Upload admission and immutable attachment resources.
 - Pulse reminders, scheduled events, plugins, and system-event handling.
-- Optional JSONL feedback traces, compact triage, and a workstream lifecycle
-  report.
+- Passive, opt-in live-daemon evaluation with exact evidence, deterministic
+  diagnostics, and per-turn/session reports.
 - WebSocket terminal chat and HTTP upload/artifact/Pulse APIs.
 
 ## Quick Start
@@ -159,12 +164,17 @@ pnpm --filter ayati-cli build
 pnpm --filter ayati-cli test
 ```
 
-Feedback-enabled daemon:
+Live daemon evaluation:
 
 ```bash
-pnpm dev:main:feedback
-pnpm feedback:context-engine
+pnpm eval:agent -- live --name <name> [--watch] [--capture full|safe]
+pnpm eval:agent -- inspect --evaluation <id> --latest
+pnpm eval:agent -- report --evaluation <id>
 ```
+
+The older `dev:main:feedback`, `start:main:feedback`, and
+`feedback:context-engine` commands are compatibility aliases for this same
+evaluation/report path.
 
 Safe context-state operations are preview-first:
 
@@ -180,7 +190,9 @@ pnpm context:catalog-rebuild -- --confirm
 Ayati tools can access local files, processes, Python, databases, and external
 systems. Keep credentials in local env files, review enabled capabilities, and
 do not expose the daemon beyond trusted environments without stronger access
-controls. Feedback/full-prompt traces may contain sensitive content.
+controls. Live-evaluation evidence may contain sensitive content even though
+recognized credentials are redacted; use `--capture safe` when exact local
+text is inappropriate.
 
 ## Architecture References
 

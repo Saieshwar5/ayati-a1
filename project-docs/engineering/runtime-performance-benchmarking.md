@@ -5,14 +5,9 @@ latency, model quality, prompt design, or provider availability. It is meant to
 catch local data-structure, algorithm, persistence, and daemon-load regressions
 before they show up as slow agent turns.
 
-It complements, but does not replace, the agent harness benchmark. The agent
-benchmark measures:
-
-```text
-context pack -> decision -> action executor -> deterministic verification -> progress reducer
-```
-
-The runtime performance benchmark measures the local subsystems underneath that
+It is a developer diagnostic, not an agent evaluation. Live agent behavior is
+measured only through `pnpm eval:agent -- live` against the ordinary daemon.
+The runtime performance benchmark measures local subsystems underneath that
 flow. These are the paths that decide how quickly the daemon can retrieve
 context, select local tools, drain integration events, and serve files before an
 LLM call is even made:
@@ -66,6 +61,11 @@ pnpm --filter ayati-main bench:runtime -- --output=data/benchmarks/runtime-debug
 ```
 
 ## When To Run
+
+Never run this suite while a live evaluation daemon is being captured. The
+benchmark intentionally adds CPU, filesystem, database, queue, and server load,
+which would invalidate live latency evidence. Produce it separately and link
+its report manually when investigating a measured hotspot.
 
 Use the smallest benchmark that answers the question:
 

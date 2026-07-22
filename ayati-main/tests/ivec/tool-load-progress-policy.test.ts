@@ -24,7 +24,7 @@ describe("tool load progress policy", () => {
       shouldStop: true,
       repeatedTargets: ["write_files"],
     });
-    expect(second.message).toContain("durable resource inspector");
+    expect(second.message).toContain("deterministic resolve gate");
   });
 
   it("tracks overlapping unavailable targets across differently shaped requests", () => {
@@ -53,7 +53,7 @@ describe("tool load progress policy", () => {
     }));
     const loaded = evaluateToolLoadProgress(unavailable.state, loadResult({
       status: "loaded",
-      loaded: ["git_context_inspect_resource"],
+      loaded: ["inspect_paths"],
     }));
     const afterProgress = evaluateToolLoadProgress(loaded.state, loadResult({
       status: "unavailable",

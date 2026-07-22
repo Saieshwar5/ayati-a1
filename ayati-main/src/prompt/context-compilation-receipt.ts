@@ -59,7 +59,7 @@ export interface ContextCompilationReceipt {
   candidate?: {
     candidateId: string;
     laneId: string;
-    kind: "durable_checkpoint" | "run_focus" | "resolver_focus";
+    kind: "durable_checkpoint" | "run_focus";
     status: "preparing" | "ready" | "adopted" | "stale" | "failed" | "discarded";
     targetReached: boolean;
   };

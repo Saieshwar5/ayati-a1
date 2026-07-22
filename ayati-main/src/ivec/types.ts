@@ -3,7 +3,7 @@ import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { SkillActivationManager } from "../skills/activation-manager.js";
 import type { ToolLoadResult, ToolWorkingSetManager } from "./agent-runner/tool-working-set.js";
 import type { RepairCode, RepairPromptCard } from "./agent-runner/repair-policy.js";
-import type { WorkstreamResolutionCoordinator } from "./workstream-resolution/types.js";
+import type { WorkstreamBindingCoordinator } from "./workstream-binding/contracts.js";
 import type {
   ArtifactRef,
   AssertionResult,
@@ -43,6 +43,7 @@ import type {
 import type { AgentFeedbackLedger } from "./feedback-ledger.js";
 import type { HarnessContext, HarnessContextInput } from "./harness-context.js";
 import type { ContextPressureState } from "./context-pressure-state.js";
+import type { VirtualModeState } from "./agent-runner/virtual-mode.js";
 import type {
   AgentRunHandle,
   ContextCheckpointPlan,
@@ -253,6 +254,7 @@ export interface LoopState {
   runLimitReached?: boolean;
   interrupted?: boolean;
   readProgress?: ReadProgressState;
+  virtualMode: VirtualModeState;
   attachedDocuments?: ManagedDocumentManifest[];
   attachmentWarnings?: string[];
   preparedAttachments?: PreparedAttachmentSummary[];
@@ -483,7 +485,7 @@ export interface AgentLoopDeps {
   contextCheckpoint?: AgentContextCheckpointCoordinator;
   /** Runtime-owned disposable context preparation for this run. */
   contextPreparation?: ContextPreparationManager;
-  workstreamResolution?: WorkstreamResolutionCoordinator;
+  workstreamBinding?: WorkstreamBindingCoordinator;
   feedbackLedger?: AgentFeedbackLedger;
   config?: Partial<LoopConfig>;
   dataDir: string;

@@ -76,8 +76,10 @@ describe("tool taxonomy", () => {
     expect(isObservationalTool("process_poll")).toBe(false);
     expect(getToolPurpose("process_stop")).toBe("control");
     expect(getToolPurpose("attachment_restore")).toBe("control");
-    expect(isNativeControlToolName("decision_load_tools")).toBe(true);
-    expect(getToolPurpose("workstream_completion")).toBe("control");
+    expect(isNativeControlToolName("decision_transition_mode")).toBe(true);
+    expect(isNativeControlToolName("decision_validate")).toBe(true);
+    expect(isNativeControlToolName("decision_load_tools")).toBe(false);
+    expect(getToolPurpose("decision_validate")).toBe("control");
   });
 
   it("summarizes selected tool classes for feedback", () => {

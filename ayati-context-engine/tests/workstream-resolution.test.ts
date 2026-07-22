@@ -116,6 +116,51 @@ describe("workstream resolution activity", () => {
     expect(context.workstreamCandidates).toBeUndefined();
   });
 
+  it("allows a valid terminal repair after a failed terminal-shaped call", async () => {
+    const fixture = await createFixture("terminal-repair");
+    const prepared = await prepare(fixture.service, "Continue the repaired resolver request.");
+    const started = await startResolution(fixture.service, prepared, "Resolve repaired terminal activation.");
+
+    await fixture.service.recordWorkstreamResolutionStep({
+      requestId: started.activity.activityId + ":step:1",
+      activityId: started.activity.activityId,
+      record: failedStepRecord(1, "resolution_create_workstream", "reason exceeded its schema limit"),
+    });
+    const committed = await fixture.service.commitWorkstreamResolution({
+      requestId: started.activity.activityId + ":commit",
+      activityId: started.activity.activityId,
+      runId: prepared.run.runId,
+      commit: {
+        kind: "create",
+        title: "Resolver terminal repair",
+        objective: "Allow a valid terminal resolver call after deterministic repair.",
+        initialRequest: {
+          title: "Repair terminal resolver call",
+          request: "Complete one valid resolver terminal call after the failed attempt.",
+          acceptance: ["The repaired terminal step is journaled once."],
+          constraints: [],
+        },
+        evidence: ["The earlier terminal-shaped call failed before committing."],
+      },
+      finalState: { status: "resolved" },
+      at: "2026-07-21T10:00:02.000Z",
+    });
+    await fixture.service.recordWorkstreamResolutionStep({
+      requestId: started.activity.activityId + ":step:2",
+      activityId: started.activity.activityId,
+      record: stepRecord(2, "resolution_create_workstream", committed.receipt),
+    });
+
+    const journal = await fixture.service.getWorkstreamResolution({
+      activityId: started.activity.activityId,
+    });
+    expect(journal.activity).toMatchObject({ status: "resolved", stepCount: 2 });
+    expect(journal.steps.map((step) => [step.step, step.status])).toEqual([
+      [1, "failed"],
+      [2, "completed"],
+    ]);
+  });
+
   it("publishes ambiguity without binding or task-state changes", async () => {
     const fixture = await createFixture("ambiguity");
     const prepared = await prepare(fixture.service, "Continue the project.");
@@ -261,6 +306,26 @@ function stepRecord(step: number, tool: string, output: unknown) {
     toolCalls: [{ id: "call-" + step, tool, input: {}, status: "completed", output }],
     verification: { passed: true },
     stateAfter: { status: tool === "resolution_needs_user_input" ? "needs_user_input" : "resolved" },
+    createdAt: `2026-07-21T10:00:0${step}.000Z`,
+  };
+}
+
+function failedStepRecord(step: number, tool: string, message: string) {
+  return {
+    version: 1 as const,
+    step,
+    status: "failed" as const,
+    context: { step },
+    decision: { calls: [{ id: "call-" + step, tool, input: {} }] },
+    toolCalls: [{
+      id: "call-" + step,
+      tool,
+      input: {},
+      status: "failed",
+      error: { code: "RESOLUTION_TOOL_INPUT_INVALID", message, retryable: true },
+    }],
+    verification: { passed: false, summary: message },
+    stateAfter: { status: "searching" },
     createdAt: `2026-07-21T10:00:0${step}.000Z`,
   };
 }

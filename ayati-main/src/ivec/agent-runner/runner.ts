@@ -17,7 +17,6 @@ import type {
 import {
   DEFAULT_LOOP_CONFIG,
 } from "../types.js";
-import type { WorkstreamResolutionOutcome } from "../workstream-resolution/types.js";
 import { updateContextPressureState } from "../context-pressure-state.js";
 import {
   createRunMetrics,
@@ -47,6 +46,7 @@ import {
   updateReadProgressAfterActOutput,
 } from "./read-progress-policy.js";
 import type { ToolLoadResult } from "./tool-working-set.js";
+import type { RepairCode } from "./repair-policy.js";
 import {
   createToolLoadNoProgressFailure,
   createToolLoadProgressState,
@@ -61,17 +61,11 @@ import {
   recordUnboundRunToolRepair,
   recordReadProgressRepair,
   recordRepeatedRepairFailure,
-  recordTerminalReplyMutationRepair,
 } from "./repair-feedback.js";
 import {
-  buildBlockedWorkStateReply,
   buildFailureReply,
-  buildVerifiedCompletionReply,
-  canFinalizeFromWorkState,
   canMarkTerminalReplyDone,
   deriveUserInputNeededFromTerminalReply,
-  isUsableFinalResponseMessage,
-  shouldRejectTerminalReplyForUnresolvedMutation,
 } from "./final-response-policy.js";
 import {
   buildRunResources,
@@ -101,10 +95,6 @@ import {
   syncPreparedAttachmentsFromRegistry,
 } from "./action-step.js";
 import {
-  evaluateWorkstreamCompletion,
-  isWorkstreamCompletionAvailable,
-} from "./workstream-completion-policy.js";
-import {
   deriveWorkstreamBindingCapabilityPolicy,
   isDecisionAllowedByWorkstreamBinding,
 } from "./workstream-binding-capability-policy.js";
@@ -112,10 +102,19 @@ import {
   summarizeAgentAction,
   summarizeDecision,
   summarizeHarnessContext,
-  summarizeToolLoadResult,
+  summarizeVirtualModeTransition,
   summarizeWorkState,
 } from "./feedback-summary.js";
 import { auditToolPolicy } from "./tool-policy-audit.js";
+import {
+  buildVirtualCapabilitySummary,
+  directResponseRepair,
+  dispatchVirtualModeTransition,
+  dispatchVirtualValidation,
+  filterToolDefinitionsForVirtualMode,
+  type VirtualModeRepair,
+} from "./virtual-mode-runtime.js";
+import { isVirtualGraphActive } from "./virtual-mode.js";
 
 export async function runAgentLoop(
   deps: AgentLoopDeps,
@@ -127,12 +126,20 @@ export async function runAgentLoop(
   const metrics = createRunMetrics();
 
   let totalToolCalls = 0;
-  let toolLoadDecisionCount = 0;
+  let modeTransitionCount = 0;
+  let acceptedModeTransitionCount = 0;
+  let rejectedModeTransitionCount = 0;
+  let validationAttemptCount = 0;
+  let validationAcceptedCount = 0;
+  let validationRejectedCount = 0;
+  let bindingAttemptCount = 0;
+  let bindingStatus: "not_started" | "started" | "resolved" | "needs_user_input" | "failed" = "not_started";
   let actionStepCount = 0;
   let failedVerificationCount = 0;
   let lastVerificationPassed: boolean | undefined;
   let toolLoadProgress = createToolLoadProgressState();
   const state = buildInitialState(deps, config, inputHandle, runHandle);
+  let bindingAttempted = false;
   recordFeedback(deps, inputHandle, runHandle.runId, "loop", "started", {
     inputKind: state.inputKind ?? "user_message",
     userMessage: state.userMessage,
@@ -175,18 +182,30 @@ export async function runAgentLoop(
     const warningFlags = buildFinalFeedbackWarnings({
       status: input.status,
       totalToolCalls,
-      toolLoadDecisionCount,
-      actionStepCount,
+      modeTransitionCount,
       failedVerificationCount,
       state,
     });
+    const navigation = {
+      currentMode: state.virtualMode.active ?? "ENTRY",
+      modeRevision: state.virtualMode.revision,
+      transitionRequests: modeTransitionCount,
+      transitionAccepted: acceptedModeTransitionCount,
+      transitionRejected: rejectedModeTransitionCount,
+      bindingAttempts: bindingAttemptCount,
+      bindingStatus,
+      validationAttempts: validationAttemptCount,
+      validationAccepted: validationAcceptedCount,
+      validationRejected: validationRejectedCount,
+    };
     recordFeedback(deps, inputHandle, runHandle.runId, "harness", "result", {
       status: input.status,
       responseKind,
       workstreamBound: isWorkstreamBound(state),
       totalIterations: state.iteration,
       totalToolCalls,
-      toolLoadDecisionCount,
+      modeTransitions: modeTransitionCount,
+      navigation,
       actionStepCount,
       failedVerificationCount,
       verificationPassed: lastVerificationPassed,
@@ -202,7 +221,7 @@ export async function runAgentLoop(
       content: finalContent,
       totalIterations: state.iteration,
       totalToolCalls,
-      toolLoadDecisionCount,
+      modeTransitions: modeTransitionCount,
       actionStepCount,
       failedVerificationCount,
       verificationPassed: lastVerificationPassed,
@@ -214,7 +233,8 @@ export async function runAgentLoop(
         responseKind,
         iterations: state.iteration,
         toolCalls: totalToolCalls,
-        toolLoadDecisions: toolLoadDecisionCount,
+        modeTransitions: modeTransitionCount,
+        navigation,
         actionSteps: actionStepCount,
         verificationPassed: lastVerificationPassed ?? false,
         basedOnVerifiedFacts: state.workState.verifiedFacts.length > 0 || lastVerificationPassed === true,
@@ -268,33 +288,7 @@ export async function runAgentLoop(
 
     syncHarnessContext(state, deps, inputHandle);
     state.iteration++;
-    const finalReplyFromWorkState = canFinalizeFromWorkState(state);
-    if (finalReplyFromWorkState) {
-      state.status = "completed";
-      state.finalOutput = await buildFinalResponseFromWorkState({
-        deps,
-        state,
-        metrics,
-        inputHandle,
-        runHandle,
-        config,
-      });
-      const responseKind = state.workState.status === "needs_user_input"
-        ? "feedback"
-        : state.preferredResponseKind ?? "reply";
-      return finalize({
-        status: "completed",
-        content: state.finalOutput,
-        responseKind,
-        completion: {
-          done: true,
-          summary: state.finalOutput,
-          status: "completed",
-          response_kind: responseKind,
-          ...(state.workState.status === "needs_user_input" ? { feedback_kind: "clarification" } : {}),
-        },
-      });
-    }
+    const finalReplyFromWorkState = false;
 
     const toolContext = {
       clientId: deps.clientId,
@@ -309,16 +303,16 @@ export async function runAgentLoop(
     } else {
       await deps.skillActivationManager?.prepareForDecision(state, toolContext);
     }
-    const visibleTools = deps.toolWorkingSetManager
+    const modeVisibleTools = deps.toolWorkingSetManager
       ? deps.toolWorkingSetManager.visibleToolDefinitions(toolContext)
       : deps.toolExecutor?.definitions({
         ...toolContext,
       }) ?? deps.toolDefinitions;
+    const visibleTools = filterToolDefinitionsForVirtualMode(state, modeVisibleTools);
     const pressureToolSurface = isContextPressureActive(state);
     const selectedToolLimit = resolveSelectedToolLimit(state, config.maxSelectedTools);
-    const toolRoutingSummary = deps.toolWorkingSetManager?.getPromptSummary({
-      compact: pressureToolSurface,
-    });
+    const toolRoutingSummary = deps.toolWorkingSetManager?.getCapabilitySummary()
+      ?? buildVirtualCapabilitySummary(deps.toolDefinitions);
     const selectedTools = selectToolsForDecision(state, visibleTools, config.maxSelectedTools);
     recordToolWorkingSetFeedback({
       deps,
@@ -335,18 +329,10 @@ export async function runAgentLoop(
     const stateView = buildAgentStateView(state, {
       activeTools: selectedTools.map((tool) => tool.name),
     });
-    const workstreamFeedbackToolAvailable = isWorkstreamFeedbackToolAvailable(state);
     const capabilityPolicy = deriveWorkstreamBindingCapabilityPolicy(state);
-    const workstreamResolutionAvailable = Boolean(
-      deps.workstreamResolution
-      && capabilityPolicy.routingAvailable
-      && state.harnessContext.contextEngine?.workstreamResolution?.runId !== runHandle.runId,
-    );
     const nativeControlTools = [
-      ...(workstreamResolutionAvailable ? ["workstream_resolve"] : []),
-      ...(capabilityPolicy.allowToolLoading ? ["decision_load_tools"] : []),
-      ...(isWorkstreamCompletionAvailable(state) ? ["workstream_completion"] : []),
-      ...(workstreamFeedbackToolAvailable ? ["ask_user_feedback"] : []),
+      "decision_transition_mode",
+      ...(isVirtualGraphActive(state.virtualMode) ? ["decision_validate"] : []),
     ];
     const decisionToolPolicyAudit = auditToolPolicy({
       policy: capabilityPolicy,
@@ -383,14 +369,12 @@ export async function runAgentLoop(
         stateView,
         toolDefinitions: selectedTools,
         toolRoutingSummary,
-        toolLoadingAvailable: capabilityPolicy.allowToolLoading,
-        workstreamFeedbackToolAvailable,
-        workstreamCompletionAvailable: isWorkstreamCompletionAvailable(state),
-        workstreamResolutionAvailable,
-        workstreamBound: capabilityPolicy.workstreamBound,
+        modeTransitionAvailable: true,
+        validationAvailable: isVirtualGraphActive(state.virtualMode),
         toolContextProjectionPolicy: config.toolContextProjectionPolicy,
         contextCheckpoint: deps.contextCheckpoint,
         contextPreparation: deps.contextPreparation,
+        evaluationIteration: state.iteration,
         applyAuthoritativeContext: (context) => applyAuthoritativeContextToLoop({
           deps,
           state,
@@ -443,51 +427,13 @@ export async function runAgentLoop(
     });
 
     if (decision.kind === "reply") {
-      const terminalReplyRejection = shouldRejectTerminalReplyForUnresolvedMutation(state, decision);
-      if (terminalReplyRejection) {
-        recordTerminalReplyMutationRepair({
-          deps,
-          inputHandle,
-          state,
-          config,
-          decision,
-          reason: terminalReplyRejection.reason,
-          failedStep: terminalReplyRejection.failedStep,
-        });
-        if (hasRepeatedRepairFailure(state.failureHistory)) {
-          recordRepeatedRepairFailure({
-            deps,
-            inputHandle,
-            state,
-            runId: runHandle.runId,
-          });
-          state.status = "failed";
-          state.finalOutput = buildFailureReply(state);
-          return finalize({ status: "failed", content: state.finalOutput });
-        }
-        if (state.consecutiveFailures >= config.maxConsecutiveFailures) {
-          state.status = "failed";
-          state.finalOutput = buildFailureReply(state);
-          return finalize({ status: "failed", content: state.finalOutput });
-        }
-        continue;
-      }
-      const directWorkstreamCompletionRejected = isWorkstreamBound(state)
-        && state.workState.status === "not_done"
-        && decision.status === "completed"
-        && !deriveUserInputNeededFromTerminalReply(decision.message);
-      if (directWorkstreamCompletionRejected) {
-        const reason = "An active workstream-bound run cannot finish through a direct reply while WorkState is not_done. Call workstream_completion after the requested work and deterministic verification are complete.";
-        state.consecutiveFailures++;
-        state.failureHistory.push({
-          step: state.iteration,
-          failureType: "validation_error",
-          reason,
-          blockedTargets: ["workstream_completion"],
-        });
-        recordFeedback(deps, inputHandle, runHandle.runId, "guard", "workstream_reply_before_completion", {
+      const rejection = directResponseRepair(state);
+      if (rejection) {
+        recordVirtualModeRepair(state, rejection, "validation_error");
+        recordFeedback(deps, inputHandle, runHandle.runId, "guard", "direct_response_rejected", {
           iteration: state.iteration,
-          reason,
+          repair: rejection,
+          mode: state.virtualMode,
         });
         if (hasRepeatedRepairFailure(state.failureHistory) || state.consecutiveFailures >= config.maxConsecutiveFailures) {
           state.status = "failed";
@@ -509,7 +455,7 @@ export async function runAgentLoop(
           nextStep: userInputNeeded,
           summary: state.workState.summary || decision.message,
         };
-      } else if (decision.status === "completed" && !isWorkstreamBound(state) && canMarkTerminalReplyDone(state)) {
+      } else if (decision.status === "completed" && canMarkTerminalReplyDone(state)) {
         state.workState = {
           ...state.workState,
           status: "done",
@@ -530,214 +476,181 @@ export async function runAgentLoop(
       });
     }
 
-    if (decision.kind === "ask_user") {
-      state.status = "completed";
-      state.workState = {
-        ...state.workState,
-        status: "needs_user_input",
-        userInputNeeded: decision.question,
-        summary: decision.reason || "User input is needed before the workstream can continue.",
-      };
-      state.finalOutput = decision.question;
-      return finalize({
-        status: "completed",
-        content: state.finalOutput,
-        responseKind: "feedback",
-        completion: {
-          done: true,
-          summary: decision.question,
-          status: "completed",
-          response_kind: "feedback",
-          feedback_kind: "clarification",
-        },
-      });
-    }
-
-    if (decision.kind === "resolve_workstream") {
-      if (!deps.workstreamResolution || !workstreamResolutionAvailable) {
-        state.consecutiveFailures++;
-        state.failureHistory.push({
-          step: state.iteration,
-          failureType: "validation_error",
-          reason: "The isolated workstream resolver is not available for this run.",
-          blockedTargets: ["workstream_resolve"],
-        });
-        continue;
-      }
-      recordFeedback(deps, inputHandle, runHandle.runId, "workstream_resolution", "started", {
-        iteration: state.iteration,
-        purpose: decision.request.purpose,
-        hintCount: decision.request.hints.length,
-      });
-      let outcome: WorkstreamResolutionOutcome;
-      try {
-        outcome = await deps.workstreamResolution.resolve(decision.request);
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        state.failureHistory.push({
-          step: state.iteration,
-          failureType: "validation_error",
-          reason: `Isolated workstream resolution failed: ${reason}`,
-          blockedTargets: ["workstream_resolve"],
-        });
-        recordFeedback(deps, inputHandle, runHandle.runId, "workstream_resolution", "failed", {
-          iteration: state.iteration,
-          reason,
-        });
-        state.status = "failed";
-        state.finalOutput = "Workstream resolution failed before a safe binding was available, so execution stopped without changing task state.";
-        return finalize({ status: "failed", content: state.finalOutput });
-      }
-      deps.harnessContext = {
-        ...(deps.harnessContext ?? {}),
-        contextEngine: outcome.context,
-      };
-      syncHarnessContext(state, deps, inputHandle);
-      recordFeedback(deps, inputHandle, runHandle.runId, "workstream_resolution", outcome.receipt.status, {
-        iteration: state.iteration,
-        receipt: outcome.receipt,
-        contextRevision: outcome.context.contextRevision,
-        routing: outcome.context.current.routing,
-      });
-      if (outcome.receipt.status === "resolved"
-        && outcome.context.current.routing?.status !== "bound") {
-        state.status = "failed";
-        state.finalOutput = "Workstream resolution completed without an authoritative run binding, so execution stopped safely.";
-        return finalize({ status: "failed", content: state.finalOutput });
-      }
-      state.consecutiveFailures = 0;
-      recordStateSnapshotMetric("after_workstream_resolution");
-      continue;
-    }
-
-    if (decision.kind === "workstream_completion") {
-      const evaluation = await evaluateWorkstreamCompletion(state, decision.request);
-      state.workState = compactWorkState(evaluation.nextWorkState);
+    if (decision.kind === "validate") {
+      validationAttemptCount++;
+      const validation = await dispatchVirtualValidation(state, decision.request);
+      if (validation.accepted) validationAcceptedCount++;
+      else validationRejectedCount++;
       recordFeedback(
         deps,
         inputHandle,
         runHandle.runId,
-        "workstream_completion",
-        evaluation.accepted ? "accepted" : "rejected",
+        "virtual_mode",
+        validation.accepted ? "validation_accepted" : "validation_rejected",
         {
           iteration: state.iteration,
           request: decision.request,
-          code: evaluation.code,
-          ...(evaluation.accepted
-            ? { verifiedResources: evaluation.resources }
-            : { failures: evaluation.failures }),
-          workState: summarizeWorkState(state.workState),
+          mode: state.virtualMode,
+          ...(validation.accepted
+            ? { outcome: validation.outcome, nextWorkState: validation.nextWorkState }
+            : { repair: validation.repair }),
         },
       );
-      if (evaluation.accepted) {
-        state.verifiedCompletionSummary = decision.request.summary;
-        state.completionResources = evaluation.resources;
-        state.consecutiveFailures = 0;
-        recordRunMetric(metrics, "verified_completion", { kind: "local" });
-        recordStateSnapshotMetric("after_workstream_completion_accepted");
-      } else {
-        state.consecutiveFailures++;
-        const reason = evaluation.failures.map((failure) => failure.message).join(" ");
-        state.failureHistory.push({
-          step: state.iteration,
-          failureType: "verify_failed",
-          reason,
-          blockedTargets: evaluation.failures.flatMap((failure) => failure.path ? [failure.path] : ["workstream_completion"]),
-        });
-        recordStateSnapshotMetric("after_workstream_completion_rejected");
+      if (!validation.accepted) {
+        recordVirtualModeRepair(state, validation.repair, "verify_failed");
+        recordStateSnapshotMetric("after_validation_rejected");
         if (hasRepeatedRepairFailure(state.failureHistory) || state.consecutiveFailures >= config.maxConsecutiveFailures) {
           state.status = "failed";
           state.finalOutput = buildFailureReply(state);
           return finalize({ status: "failed", content: state.finalOutput });
         }
+        continue;
       }
-      continue;
+
+      state.workState = compactWorkState(validation.nextWorkState);
+      state.finalOutput = validation.response;
+      state.consecutiveFailures = 0;
+      if (validation.completionSummary) {
+        state.verifiedCompletionSummary = validation.completionSummary;
+      }
+      if (validation.completionResources) {
+        state.completionResources = validation.completionResources;
+      }
+      recordRunMetric(metrics, "verified_completion", { kind: "local" });
+      recordStateSnapshotMetric("after_validation_accepted");
+      const responseKind = validation.outcome === "needs_user_input"
+        ? "feedback"
+        : state.preferredResponseKind ?? "reply";
+      const loopStatus = validation.outcome === "failed"
+        ? "failed"
+        : validation.outcome === "blocked"
+          ? "stuck"
+          : "completed";
+      state.status = loopStatus;
+      return finalize({
+        status: loopStatus,
+        content: validation.response,
+        responseKind,
+        ...(validation.outcome === "completed" || validation.outcome === "needs_user_input"
+          ? {
+              completion: {
+                done: true as const,
+                summary: validation.response,
+                status: "completed" as const,
+                response_kind: responseKind,
+                ...(validation.outcome === "needs_user_input"
+                  ? { feedback_kind: "clarification" as const }
+                  : {}),
+              },
+            }
+          : {}),
+      });
     }
 
-    if (decision.kind === "load_tools" && !capabilityPolicy.allowToolLoading) {
-      recordUnboundRunToolRepair({
-        deps,
-        inputHandle,
+    if (decision.kind === "transition_mode") {
+      modeTransitionCount++;
+      recordFeedback(deps, inputHandle, runHandle.runId, "virtual_mode", "transition_requested", {
+        iteration: state.iteration,
+        request: decision.request,
+        source: state.virtualMode.active ?? "ENTRY",
+      });
+      const transition = await dispatchVirtualModeTransition({
         state,
-        config,
-        decision,
-        reason: "unbound_run_tool_load",
-      });
-      if (hasRepeatedRepairFailure(state.failureHistory)) {
-        recordRepeatedRepairFailure({
-          deps,
-          inputHandle,
-          state,
-          runId: runHandle.runId,
-        });
-        state.status = "failed";
-        state.finalOutput = buildFailureReply(state);
-        return finalize({ status: "failed", content: state.finalOutput });
-      }
-      if (state.consecutiveFailures >= config.maxConsecutiveFailures) {
-        state.status = "failed";
-        state.finalOutput = buildFailureReply(state);
-        return finalize({ status: "failed", content: state.finalOutput });
-      }
-      continue;
-    }
-
-    if (decision.kind === "load_tools") {
-      toolLoadDecisionCount++;
-      const workToolContext = { ...toolContext, runId: runHandle.runId };
-      recordFeedback(deps, inputHandle, runHandle.runId, "tool_load", "requested", {
-        iteration: state.iteration,
         request: decision.request,
-      });
-      const loadResult = deps.toolWorkingSetManager?.load(
-        decision.request,
-        workToolContext,
-        capabilityPolicy,
-      ) ?? {
-        status: "failed" as const,
-        requested: {
-          ...(decision.request.query ? { query: decision.request.query } : {}),
-          toolNames: decision.request.toolNames ?? [],
-          groups: decision.request.groups ?? [],
+        iteration: state.iteration,
+        toolDefinitions: deps.toolDefinitions,
+        toolWorkingSetManager: deps.toolWorkingSetManager,
+        toolContext,
+        workstreamBinding: deps.workstreamBinding,
+        bindingAlreadyAttempted: bindingAttempted,
+        applyContext: (context) => {
+          deps.harnessContext = {
+            ...(deps.harnessContext ?? {}),
+            contextEngine: context,
+          };
+          syncHarnessContext(state, deps, inputHandle);
         },
-        loaded: [],
-        alreadyActive: [],
-        evicted: [],
-        missing: [],
-        unavailable: [],
-        message: "No tool working-set manager is available.",
-      };
-      state.lastToolLoad = loadResult;
-      recordFeedback(deps, inputHandle, runHandle.runId, "tool_load", "completed", {
+        onBindingEvent: (event, data) => {
+          recordFeedback(deps, inputHandle, runHandle.runId, "workstream_binding", event, {
+            iteration: state.iteration,
+            ...data,
+          });
+        },
+      });
+      if (
+        transition.kind === "resolved"
+        || transition.kind === "binding_needs_user_input"
+        || transition.kind === "binding_failed"
+      ) {
+        bindingAttempted ||= transition.binding.attempted;
+        if (transition.binding.attempted) {
+          bindingAttemptCount = 1;
+          bindingStatus = transition.binding.outcome.status;
+        }
+      }
+
+      if (transition.kind === "applied" || transition.kind === "resolved") {
+        acceptedModeTransitionCount++;
+      } else {
+        rejectedModeTransitionCount++;
+      }
+
+      recordFeedback(deps, inputHandle, runHandle.runId, "virtual_mode", `transition_${transition.kind}`, {
         iteration: state.iteration,
         request: decision.request,
-        result: summarizeToolLoadResult(loadResult),
-        status: loadResult.status,
-        loaded: loadResult.loaded,
-        alreadyActive: loadResult.alreadyActive,
-        missing: loadResult.missing,
-        unavailable: loadResult.unavailable,
-        evicted: loadResult.evicted,
-        message: loadResult.message,
+        transition: summarizeVirtualModeTransition(transition),
+        mode: state.virtualMode,
       });
-      recordRunMetric(metrics, "tool_load_decision", {
-        kind: "local",
-        status: ["loaded", "partial", "already_active"].includes(loadResult.status) ? "success" : "failed",
-      });
-      const progressEvaluation = evaluateToolLoadProgress(toolLoadProgress, loadResult);
-      toolLoadProgress = progressEvaluation.state;
-      if (progressEvaluation.shouldStop) {
-        const failure = createToolLoadNoProgressFailure(progressEvaluation, state.iteration);
-        state.consecutiveFailures++;
-        state.failureHistory.push(failure);
-        recordFeedback(deps, inputHandle, runHandle.runId, "guard", "tool_load_no_progress", {
-          iteration: state.iteration,
-          status: loadResult.status,
-          repeatedTargets: progressEvaluation.repeatedTargets,
-          message: failure.reason,
-          warningCodes: ["tool_load_no_progress", "R_NO_PROGRESS"],
-          repair: failure.repair,
+
+      if (transition.kind === "applied" || transition.kind === "resolved") {
+        toolLoadProgress = createToolLoadProgressState();
+        recordRunMetric(metrics, "mode_transition", {
+          kind: "local",
+          status: "success",
         });
+        continue;
+      }
+
+      if (transition.kind === "binding_needs_user_input") {
+        recordVirtualModeRepair(state, {
+          code: "MODE_RESOLUTION_AMBIGUOUS",
+          message: transition.question,
+          blockedTargets: transition.binding.outcome.candidateIds,
+          allowedNextActions: [
+            "Validate needs_user_input with this exact ambiguity question.",
+          ],
+        }, "validation_error");
+        continue;
+      }
+
+      if (transition.kind === "binding_failed") {
+        recordVirtualModeRepair(state, {
+          code: "MODE_RESOLUTION_UNAVAILABLE",
+          message: transition.message,
+          blockedTargets: decision.request.targets ?? [],
+          allowedNextActions: ["Validate a truthful failed or needs-input outcome without replaying mutation."],
+        }, "validation_error");
+        continue;
+      }
+
+      recordVirtualModeRepair(state, transition.repair, "validation_error");
+      if (transition.noProgressResult) {
+        const progressEvaluation = evaluateToolLoadProgress(toolLoadProgress, transition.noProgressResult);
+        toolLoadProgress = progressEvaluation.state;
+        if (progressEvaluation.shouldStop) {
+          const failure = createToolLoadNoProgressFailure(progressEvaluation, state.iteration);
+          state.failureHistory.push(failure);
+          recordFeedback(deps, inputHandle, runHandle.runId, "guard", "mode_transition_no_progress", {
+            iteration: state.iteration,
+            repeatedTargets: progressEvaluation.repeatedTargets,
+            repair: failure.repair,
+          });
+          state.status = "failed";
+          state.finalOutput = buildFailureReply(state);
+          return finalize({ status: "failed", content: state.finalOutput });
+        }
+      }
+      if (hasRepeatedRepairFailure(state.failureHistory) || state.consecutiveFailures >= config.maxConsecutiveFailures) {
         state.status = "failed";
         state.finalOutput = buildFailureReply(state);
         return finalize({ status: "failed", content: state.finalOutput });
@@ -818,10 +731,12 @@ export async function runAgentLoop(
       mode: decision.action.mode,
       action: summarizeAgentAction(decision.action),
       plannedCallCount: decision.action.calls.length,
+      workStateBefore: state.workState,
       calls: decision.action.calls.map((call) => ({
         id: call.id,
         tool: call.tool,
         input: summarizeActionInput(call.input),
+        exactInput: call.input,
         dependsOn: call.dependsOn,
         purpose: call.purpose,
       })),
@@ -849,16 +764,18 @@ export async function runAgentLoop(
     recordActionFeedback(deps, inputHandle, runHandle.runId, decision.action, stepResult);
     recordStepFeedback(deps, inputHandle, runHandle.runId, state.iteration, stepResult);
 
+    const reducerStarted = process.hrtime.bigint();
     const beforeWorkStateChars = measureJson(stepResult.execution.nextWorkState);
     const compactedWorkState = compactWorkState(stepResult.execution.nextWorkState);
     recordCompactionMetric(metrics, "workState", beforeWorkStateChars, measureJson(compactedWorkState), { step: stepNumber });
     state.workState = compactedWorkState;
-    state.toolContext = buildUpdatedToolContext(state, stepResult.execution);
+    state.toolContext = buildUpdatedToolContext(state, stepResult.execution, stepNumber);
     stepResult.stepSummary.workState = compactedWorkState;
     recordReducerFeedback(deps, inputHandle, runHandle.runId, state.iteration, {
       beforeWorkStateChars,
       compactedWorkState,
       stepSummary: stepResult.stepSummary,
+      durationMs: Number(process.hrtime.bigint() - reducerStarted) / 1_000_000,
     });
 
     const compactedStep = compactStepSummaryForState(stepResult.stepSummary);
@@ -894,15 +811,9 @@ export async function runAgentLoop(
         stepNumber,
         ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
       };
-      state.lastToolLoad = deps.toolWorkingSetManager.afterExecution(
-        stepResult.execution.actOutput.toolCalls,
-        cleanupContext,
-        deriveWorkstreamBindingCapabilityPolicy(state),
-      );
       deps.toolWorkingSetManager.cleanupAfterStep(cleanupContext);
       recordFeedback(deps, inputHandle, runHandle.runId, "tools", "after_execution", {
         iteration: state.iteration,
-        result: summarizeToolLoadResult(state.lastToolLoad),
         activeTools: deps.toolWorkingSetManager.listActive(cleanupContext),
       });
     }
@@ -985,109 +896,33 @@ function discardModelWorkingNotes(decision: AgentDecision): void {
   void decision.workingNotes;
 }
 
-async function buildFinalResponseFromWorkState(input: {
-  deps: AgentLoopDeps;
-  state: LoopState;
-  metrics: ReturnType<typeof createRunMetrics>;
-  inputHandle: SessionInputHandle;
-  runHandle: AgentLoopDeps["runHandle"];
-  config: LoopConfig;
-}): Promise<string> {
-  const stateView = buildAgentStateView(input.state, {
-    activeTools: [],
+function recordVirtualModeRepair(
+  state: LoopState,
+  repair: VirtualModeRepair,
+  failureType: LoopState["failureHistory"][number]["failureType"],
+): void {
+  const repairCode: RepairCode = repair.code === "MODE_NO_PROGRESS"
+    ? "R_NO_PROGRESS"
+    : repair.code === "DIRECT_RESPONSE_REQUIRES_MODE"
+      || repair.code === "TERMINAL_REQUIRES_VALIDATION"
+      ? "R_DIRECT_RESPONSE_REQUIRES_MODE"
+      : repair.code.startsWith("VALIDATION_")
+        ? "R_VALIDATION_REJECTED"
+        : "R_MODE_TRANSITION_INVALID";
+  state.consecutiveFailures++;
+  state.failureHistory.push({
+    step: state.iteration,
+    failureType,
+    reason: `${repair.code}: ${repair.message}`,
+    blockedTargets: repair.blockedTargets,
+    repairCode,
+    repair: {
+      code: repairCode,
+      message: repair.message,
+      ...(repair.blockedTargets.length > 0 ? { blockedTargets: repair.blockedTargets } : {}),
+      allowedNextActions: repair.allowedNextActions,
+    },
   });
-  const finalResponseKind = input.state.workState.status === "needs_user_input"
-    ? "feedback"
-    : input.state.preferredResponseKind === "notification"
-      ? "notification"
-      : "reply";
-  const streamFinalResponse = Boolean(
-    input.deps.onFinalResponseStream
-      && input.deps.provider.capabilities.streaming === true
-      && input.deps.provider.streamTurn,
-  );
-  if (streamFinalResponse) {
-    input.deps.onFinalResponseStream?.({
-      type: "start",
-      kind: finalResponseKind,
-    });
-  }
-  let decision: AgentDecision | undefined;
-  try {
-    decision = await callAgentDecision({
-      provider: input.deps.provider,
-      stateView,
-      toolDefinitions: [],
-      toolLoadingAvailable: false,
-      workstreamFeedbackToolAvailable: false,
-      workstreamBound: isWorkstreamBound(input.state),
-      toolContextProjectionPolicy: input.config.toolContextProjectionPolicy,
-      contextCheckpoint: input.deps.contextCheckpoint,
-      contextPreparation: input.deps.contextPreparation,
-      contextPreparationMode: "final_response",
-      applyAuthoritativeContext: (context) => applyAuthoritativeContextToLoop({
-        deps: input.deps,
-        state: input.state,
-        inputHandle: input.inputHandle,
-        context,
-        activeTools: [],
-      }),
-      systemContext: [
-        input.deps.systemContext,
-        "Final response-only mode: tools are unavailable. Reply naturally to the user from context.run.workState, verified facts, artifacts, and recent tool-call memory. Do not mention harness internals. Do not say control tool names such as workstream_completion, decision_load_tools, or ask_user_feedback.",
-      ].filter((section): section is string => Boolean(section?.trim())).join("\n\n"),
-      metrics: input.metrics,
-      feedbackLedger: input.deps.feedbackLedger,
-      feedbackContext: {
-        clientId: input.deps.clientId,
-        sessionId: input.inputHandle.sessionId,
-        seq: input.inputHandle.seq,
-        runId: input.runHandle.runId,
-      },
-      onContextCompilation: (receipt) => {
-        input.state.contextPressure = updateContextPressureState({
-          current: input.state.contextPressure,
-          receipt,
-          iteration: input.state.iteration,
-        });
-      },
-      ...(streamFinalResponse
-        ? {
-            onAssistantTextDelta: (delta: string) => {
-              input.deps.onFinalResponseStream?.({
-                type: "delta",
-                delta,
-              });
-            },
-          }
-        : {}),
-    });
-  } catch (error) {
-    if (!(error instanceof ContextRunCapacityError || error instanceof ContextInputLimitError)) throw error;
-    recordFeedback(input.deps, input.inputHandle, input.runHandle.runId, "guard", "final_response_context_limit", {
-      iteration: input.state.iteration,
-      finalInputTokens: error.receipt.finalInputTokens,
-      softInputTokens: error.receipt.softInputTokens,
-      mode: error.receipt.mode,
-    });
-  }
-  if (decision?.kind === "reply" && decision.status === "completed" && decision.message.trim().length > 0) {
-    if (!isUsableFinalResponseMessage(decision.message)) {
-      recordFeedback(input.deps, input.inputHandle, input.runHandle.runId, "decision", "final_response_rejected", {
-        reason: "control_or_action_payload_in_final_response",
-        messagePreview: decision.message.slice(0, 160),
-      });
-    } else {
-      return decision.message;
-    }
-  }
-  if (input.state.workState.status === "needs_user_input" && input.state.workState.userInputNeeded?.trim()) {
-    return input.state.workState.userInputNeeded.trim();
-  }
-  if (input.state.workState.status === "blocked") {
-    return buildBlockedWorkStateReply(input.state);
-  }
-  return buildVerifiedCompletionReply(input.state);
 }
 
 function summarizeActionInput(input: Record<string, unknown>): Record<string, unknown> {
@@ -1174,10 +1009,6 @@ function buildLoopResult(
   }
 
   return result;
-}
-
-function isWorkstreamFeedbackToolAvailable(state: LoopState): boolean {
-  return isWorkstreamBound(state) && state.workState.status === "not_done";
 }
 
 function isWorkstreamBound(state: LoopState): boolean {

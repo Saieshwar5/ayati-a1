@@ -8,8 +8,7 @@ growth rates and different authority.
 
 - Context Engine SQLite V7: agent streams, immutable messages, runs, steps,
   WorkState, checkpoints, reusable observations, workstreams, requests,
-  resources, discovery indexes, isolated workstream-resolution activities and
-  steps, idempotency, and recovery journals.
+  resources, discovery indexes, idempotency, and recovery journals.
 - Workstream Git: compact portable `workstream.md`, request files, and
   `resources.json` only.
 - Real resource locations: project files, documents, media, URLs, databases,
@@ -19,7 +18,7 @@ growth rates and different authority.
 - Active-run projection: the harness keeps the latest authoritative service
   response for the current turn; it does not maintain a second context cache.
 - Context preparation: one runtime-owned, in-memory candidate lane per main
-  run or resolver activity. Candidates and focus overlays are disposable;
+  run. Candidates and focus overlays are disposable;
   only an adopted Context Engine checkpoint becomes durable.
 
 ## Agent Stream Continuity
@@ -56,16 +55,12 @@ A run may remain unbound for conversation or observation, or gain one
 immutable workstream/request binding. Finalization projects only the small
 facts that need to survive into stream or workstream continuity.
 
-Workstream resolution is a separate bounded control activity keyed to the
-same run. It has private state, full private step history, limits, and usage
-accounting. It cannot update main WorkState or append `run_steps`; its terminal
-typed result is committed by Context Engine and then mounted into the main
-projection. An unfinished activity is marked interrupted on restart and is
-not resumed.
-
-Main and resolver context-preparation lanes share only the provider-scoped
-limit of one background semantic call. They do not share histories, WorkState,
-candidates, overlays, accounting, or authority.
+Workstream routing observation is part of the same primary loop. Read-only
+candidate and owner lookups enter the run step history but are tagged as
+routing evidence. `resolve` is a transient deterministic gate with no private
+history, model call, prompt lane, WorkState, token budget, or retry loop. It
+validates one typed proposal, calls one atomic Context Engine binding path,
+and publishes the refreshed projection to the next primary decision.
 
 ## Agent-Facing Prompt Lanes
 
@@ -75,16 +70,16 @@ The model receives an explicit bounded projection:
 - `context.current`: current input sequence/run identity and routing state; the
   exact input content appears once in `context.temporal.recent`;
 - `context.stream`: stream identity and recent work references;
-- `context.work`: at most five candidates, compact resolution metadata, and
-  the optional single active workstream/request;
+- `context.work`: at most five candidates and the optional single active
+  workstream/request;
 - `context.resources`: stream, ingress, and active-workstream resources;
 - `context.observations`: valid reusable inventory/discovery/evidence;
 - `context.personal`: compact personal-memory snapshot;
 - `context.tools`: current capability surface;
 - `context.harness`: compact repair feedback;
-- `context.run`: WorkState, current-run calls, pressure state, and an optional
-  `focus` overlay. The overlay is context only and is never verification or
-  completion evidence.
+- `context.run`: WorkState, current-run calls, the compact run-scoped mode card,
+  pressure state, and an optional `focus` overlay. The overlay is context only
+  and is never verification or completion evidence.
 
 Internal database paths, context-repository paths, observation authority
 fields, idempotency data, and recovery journals are not model-facing.
@@ -113,8 +108,8 @@ Every primary decision starts from a structured prompt manifest. Parts carry a
 stable id, `system`/`session`/`work` lane, retention class, source refs, and a
 local estimate. System/safety instructions, selected native tool schemas,
 current input identity/content, active authority, WorkState, open work,
-failures, verification/completion evidence, the latest six main calls, and the
-latest two resolver steps are always rebuilt from current authoritative state.
+failures, verification/completion evidence, and the latest six main calls are
+always rebuilt from current authoritative state.
 
 The manager identifies a stable source prefix by canonical hashes and
 message/step watermarks. At 55K in the default profile, or when current input
@@ -128,6 +123,15 @@ A ready candidate is valid only for its exact lane, policy/model profile,
 checkpoint base, source hashes, and required exact refs. Append-only tail
 growth is allowed. Changed sources, bases, lanes, refs, or policy versions make
 the candidate stale without changing authoritative state.
+
+Generation may span observation, binding, or execution, but a candidate never
+owns navigation state. The current mode card, current input, binding/resource
+authority, WorkState, failures, completion evidence, artifacts, and routing
+evidence references are rebuilt or retained exactly at adoption. A candidate
+prepared before binding may therefore summarize an unchanged older prefix,
+but it cannot restore an unbound mode or replace newly mounted execute
+authority. Finalization closes the lane; late results are recorded and
+discarded.
 
 ## Durable Pressure Checkpoints
 

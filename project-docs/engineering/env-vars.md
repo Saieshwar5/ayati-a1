@@ -111,3 +111,10 @@ AYATI_AGENT_TRACE_PROMPTS=
 Feedback files are written only when both test-agent and feedback-trace flags
 are truthy. Full payload tracing and prompt tracing can contain sensitive data;
 enable them only for deliberate local debugging.
+
+The supported real-daemon evaluation entry point is `pnpm eval:agent -- live`.
+It sets runtime-owned `AYATI_EVALUATION_ID`, `AYATI_EVALUATION_NAME`,
+`AYATI_EVALUATION_CAPTURE`, `AYATI_EVALUATION_ROOT`, and
+`AYATI_EVALUATION_COMMAND` values for the spawned ordinary daemon. Do not set
+these variables manually. Evaluation capture does not change `AYATI_ROOT_DIR`,
+provider/model selection, prompts, tools, schedulers, or background services.

@@ -33,9 +33,9 @@ SQLite tools.
 It stores operational indexes and lifecycle state such as agent streams,
 immutable messages, runs and steps, WorkState, pressure checkpoints, reusable
 observations, workstream/request catalog entries, resource mutation authority,
-isolated workstream-resolution activities and complete resolver steps,
-finalization records, and idempotency data. The typed service interface is the
-only supported write path.
+finalization records, and idempotency data. The current harness binds through
+atomic workstream lifecycle operations and does not create a private resolver
+journal. The typed service interface is the only supported write path.
 
 Storage responsibilities are intentionally split:
 

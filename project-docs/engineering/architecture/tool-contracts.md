@@ -25,9 +25,9 @@ safety:
 - `external_mutation`
 - `destructive`
 
-Unknown classifications fail closed. Native controls such as
-`decision_load_tools`, `ask_user_feedback`, and `workstream_completion` share
-the control taxonomy but are not ordinary executable catalog tools.
+Unknown classifications fail closed. `decision_transition_mode` and
+`decision_validate` are native harness controls, not ordinary executable
+catalog tools and not persisted task steps.
 
 ## Tool Metadata
 
@@ -53,22 +53,38 @@ Unexpected changes fail verification.
 
 ## Workstream Controls
 
-Discovery controls:
+The primary model may use these read-only observations after entering a
+matching observation mode:
 
 - `git_context_find_workstreams`
 - `git_context_read_workstream`
+- `git_context_find_resources`
+
+Their capability groups are `workstream:search`, `workstream:read`, and
+`resource:ownership`. They identify routing and cannot satisfy task
+completion by themselves.
+
+Hidden deterministic lifecycle controls:
+
 - `git_context_inspect_resource`
-- `git_context_set_workstream_star`
-
-Routing controls:
-
 - `git_context_create_workstream`
 - `git_context_activate_workstream`
+
+Explicit preference control:
+
+- `git_context_set_workstream_star`
+
+Bound resource control:
+
 - `git_context_bind_resources`
 
-Reading never binds. Creating or activating binds the same run. Activating an
-existing workstream must continue an exact active request or create a new
-request. Replay identity derives from run id and native tool-call id.
+Reading never binds. When the main run enters `resolve` with a binding-required
+capability, evidence-backed target, and typed activate-or-create proposal, the
+runtime validates current-run routing evidence and invokes one atomic Context
+Engine binding operation without a model call. It then enters `execute`
+mechanically before asking for a fresh decision. Activating an existing
+workstream must continue an exact active request or create a new request.
+Replay identity derives from the existing run id and deterministic gate id.
 
 ## Verification Path
 

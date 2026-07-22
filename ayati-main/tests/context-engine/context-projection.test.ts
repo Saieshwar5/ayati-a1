@@ -62,7 +62,7 @@ describe("context engine projection", () => {
     expect(projection.workstream).toBeUndefined();
   });
 
-  it("mounts compact resolver metadata and suppresses candidates after binding", () => {
+  it("mounts active work and suppresses candidates plus legacy resolution metadata after binding", () => {
     const source = activeWorkstreamContext();
     source.workstreamCandidates = [{
       workstreamId: "W-20260714-0002",
@@ -95,13 +95,10 @@ describe("context engine projection", () => {
     const pack = contextPack(machine);
 
     expect(machine.workstreamCandidates).toBeUndefined();
+    expect(machine).not.toHaveProperty("workstreamResolution");
     expect(pack.work.candidates).toEqual([]);
     expect(pack.work.active?.workstreamId).toBe("W-20260714-0001");
-    expect(pack.work.resolution).toMatchObject({
-      status: "resolved",
-      stepCount: 2,
-      result: { requestId: "REQ-1" },
-    });
+    expect(pack.work).not.toHaveProperty("resolution");
   });
 
   it("separates temporal, stream, work, resource, observation, and run prompt lanes", () => {
@@ -212,7 +209,6 @@ function contextPack(context: ReturnType<typeof buildContextEngineProjection>): 
     work: {
       candidates: context.workstreamCandidates ?? [],
       ...(context.workstream ? { active: context.workstream } : {}),
-      ...(context.workstreamResolution ? { resolution: context.workstreamResolution } : {}),
     },
     resources: {
       stream: context.agentStream.resources,

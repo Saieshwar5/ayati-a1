@@ -105,20 +105,19 @@ describe("callAgentDecision", () => {
 
     const messages = generateTurn.mock.calls[0]?.[0]?.messages ?? [];
     const systemPrompt = messages.find((message) => message.role === "system")?.content ?? "";
-    expect(systemPrompt).toContain("Prefer progress over discussion for actionable requests.");
-    expect(systemPrompt).toContain("Use direct assistant text only for pure conversation");
-    expect(systemPrompt).toContain("Do not use a final reply to promise future work.");
-    expect(systemPrompt).toContain("Call the selected native tool directly");
-    expect(systemPrompt).toContain("ask_user_feedback is available only in an active workstream-bound run");
-    expect(systemPrompt).toContain("Do not use feedback controls for casual conversation");
-    expect(systemPrompt).toContain("There is no agent-stream-global active workstream");
-    expect(systemPrompt).toContain("A workstream is durable context for a long-lived subject");
-    expect(systemPrompt).toContain("A later feature, lesson, analysis, or improvement normally becomes a new request");
-    expect(systemPrompt).toContain("Exact workstream identity, exact resource identity, and explicit continuation are strongest");
-    expect(systemPrompt).toContain("If the resolver publishes context.work.resolution.status=needs_user_input");
-    expect(systemPrompt).toContain("call workstream_resolve once");
-    expect(systemPrompt).toContain("Persistent mutation requires one immutable workstream/request binding");
-    expect(systemPrompt).toContain("Use decision_load_tools when a needed tool is absent");
+    expect(systemPrompt).toContain("Every run starts at ENTRY");
+    expect(systemPrompt).toContain("Use observe.locate to discover an uncertain target");
+    expect(systemPrompt).toContain("Use observe.investigate to read or inspect an exact evidence-backed target");
+    expect(systemPrompt).toContain("Use resolve only for explicit mutation-permitting intent");
+    expect(systemPrompt).toContain("The deterministic gate rechecks the proposal");
+    expect(systemPrompt).toContain("It makes no model request");
+    expect(systemPrompt).toContain("Old-mode tools do not remain available");
+    expect(systemPrompt).toContain("Call decision_validate for completed, needs_user_input, blocked, or failed outcomes");
+    expect(systemPrompt).toContain("Accepted validation finalizes that response without another model call");
+    expect(systemPrompt).not.toContain("workstream_resolve");
+    expect(systemPrompt).not.toContain("decision_load_tools");
+    expect(systemPrompt).not.toContain("workstream_completion");
+    expect(systemPrompt).not.toContain("ask_user_feedback");
     expect(systemPrompt).not.toContain("decision_act");
   });
 
@@ -136,32 +135,25 @@ describe("callAgentDecision", () => {
     const messages = generateTurn.mock.calls[0]?.[0]?.messages ?? [];
     const systemPrompt = messages.find((message) => message.role === "system")?.content ?? "";
     expect(systemPrompt).toContain("Treat State view.context as a bounded layered context pack");
-    expect(systemPrompt).toContain("context.current for current input identity and routing state");
-    expect(systemPrompt).toContain("exact current content is the context.temporal.recent item");
-    expect(systemPrompt).toContain("context.stream for slow cross-run continuity");
-    expect(systemPrompt).toContain("context.work for workstreams");
+    expect(systemPrompt).toContain("context.current for current input identity and routing");
+    expect(systemPrompt).toContain("exact later items override checkpoints and summaries");
+    expect(systemPrompt).toContain("context.stream for slow continuity");
+    expect(systemPrompt).toContain("context.work for workstream state");
     expect(systemPrompt).toContain("context.resources for exact resource identity");
-    expect(systemPrompt).toContain("context.observations for reusable list/search/read results");
-    expect(systemPrompt).toContain("context.temporal.checkpoint as compressed earlier history");
-    expect(systemPrompt).toContain("context.temporal.recent as exact later history");
-    expect(systemPrompt).toContain("exact later items override the stream checkpoint");
-    expect(systemPrompt).toContain("Do not infer details omitted from checkpoints");
+    expect(systemPrompt).toContain("context.observations for reusable list/search/read evidence");
     expect(systemPrompt).not.toContain("context.run.status");
     expect(systemPrompt).toContain("context.run.workState");
     expect(systemPrompt).toContain("context.run.toolCalls");
-    expect(systemPrompt).toContain("context.run.focus as a disposable anchored navigation summary only");
-    expect(systemPrompt).toContain("cannot grant authority or satisfy verification or completion evidence");
-    expect(systemPrompt).toContain("Read a narrow persisted step");
-    expect(systemPrompt).toContain("Under context pressure, use smaller verifiable steps");
-    expect(systemPrompt).toContain("never rewrite runtime-owned context yourself");
+    expect(systemPrompt).toContain("context.run.focus are navigation context only");
+    expect(systemPrompt).toContain("cannot grant authority or satisfy verification");
+    expect(systemPrompt).toContain("context.run.mode is the current navigation card");
     expect(systemPrompt).not.toContain("context.scratch");
     expect(systemPrompt).not.toContain("context.run.progress");
     expect(systemPrompt).not.toContain("context.run.feedback");
-    expect(systemPrompt).toContain("specific context.harness feedback");
+    expect(systemPrompt).toContain("Follow context.harness repair feedback");
     expect(systemPrompt).not.toContain("context.run.actions");
     expect(systemPrompt).not.toContain("context.run.trace");
-    expect(systemPrompt).toContain("context.tools for current tool state");
-    expect(systemPrompt).toContain("context.personal for long-lived user memory");
+    expect(systemPrompt).toContain("Apply context.personal only when relevant");
     expect(systemPrompt).not.toContain("context.gitContext");
     expect(systemPrompt).not.toContain("State view.progress");
     expect(systemPrompt).not.toContain("State view.workingFeedback");
@@ -406,7 +398,7 @@ describe("callAgentDecision", () => {
       provider,
       stateView,
       toolDefinitions: [],
-      toolLoadingAvailable: false,
+      modeTransitionAvailable: false,
       toolContextProjectionPolicy: "enforce",
       onContextCompilation,
       metrics,
@@ -518,7 +510,7 @@ describe("callAgentDecision", () => {
         },
       }),
       toolDefinitions: [],
-      toolLoadingAvailable: false,
+      modeTransitionAvailable: false,
       toolContextProjectionPolicy: "enforce",
       onAssistantTextDelta: vi.fn(),
     });
@@ -751,7 +743,7 @@ describe("callAgentDecision", () => {
     expect(promptStateView.context).not.toHaveProperty("scratch");
   });
 
-  it("repairs multiple native tool calls into one load_tools request", async () => {
+  it("repairs multiple native tool calls into one mode transition", async () => {
     const badAction = {
       kind: "act",
       action: {
@@ -774,10 +766,12 @@ describe("callAgentDecision", () => {
       },
     };
     const repaired = {
-      kind: "load_tools",
+      kind: "transition_mode",
       request: {
-        groups: ["skill:process"],
-        reason: "Need process execution to run a project command.",
+        to: "resolve",
+        purpose: "Bind the project before running its command.",
+        capabilities: ["process:command"],
+        targets: ["/tmp/project"],
       },
     };
     const { provider, generateTurn } = createProvider([
@@ -798,7 +792,7 @@ describe("callAgentDecision", () => {
       },
     });
 
-    expect(decision.kind).toBe("load_tools");
+    expect(decision.kind).toBe("transition_mode");
     expect(generateTurn).toHaveBeenCalledTimes(2);
     const repairMessages = generateTurn.mock.calls[1]?.[0]?.messages ?? [];
     const repairPrompt = repairMessages.at(-1)?.content;
@@ -979,8 +973,8 @@ describe("callAgentDecision", () => {
     });
   });
 
-  it("returns a failed reply after repeated tool protocol violations", async () => {
-    const badAction = JSON.stringify({
+  it("does not infer binding or replay state from a selected executable call", async () => {
+    const action = JSON.stringify({
       kind: "act",
       action: {
         mode: "single",
@@ -989,27 +983,27 @@ describe("callAgentDecision", () => {
           tool: "process_run",
           input: { command: "pwd" },
           dependsOn: [],
+          purpose: "Inspect the selected project directory.",
         }],
         allowedTools: ["process_run"],
       },
     });
-    const { provider, generateTurn } = createProvider([badAction, badAction, badAction]);
+    const { provider, generateTurn } = createProvider([action]);
 
     const decision = await callAgentDecision({
       provider,
       stateView: createStateView(),
-      toolDefinitions: [],
+      toolDefinitions: [createTool("process_run")],
     });
 
-    expect(generateTurn).toHaveBeenCalledTimes(3);
-    expect(decision).toEqual({
-      kind: "reply",
-      status: "failed",
-      message: "I could not form a valid tool call for this request.",
+    expect(generateTurn).toHaveBeenCalledTimes(1);
+    expect(decision).toMatchObject({
+      kind: "act",
+      action: { calls: [{ tool: "process_run", purpose: "Inspect the selected project directory." }] },
     });
   });
 
-  it("records a repair code when a decision calls an unselected tool", async () => {
+  it("repairs an unselected mutation tool into an explicit mode transition", async () => {
     const badAction = {
       kind: "act",
       action: {
@@ -1023,16 +1017,18 @@ describe("callAgentDecision", () => {
         allowedTools: ["process_run"],
       },
     };
-    const repaired = {
-      kind: "load_tools",
-      request: {
-        groups: ["skill:process"],
-      },
-    };
     const feedback = createFeedbackLedger();
     const { provider, generateTurn } = createProvider([
       JSON.stringify(badAction),
-      JSON.stringify(repaired),
+      JSON.stringify({
+        kind: "transition_mode",
+        request: {
+          to: "resolve",
+          purpose: "Bind the project before executing a command.",
+          capabilities: ["process:command"],
+          targets: ["/tmp/project"],
+        },
+      }),
     ]);
 
     const decision = await callAgentDecision({
@@ -1047,16 +1043,19 @@ describe("callAgentDecision", () => {
       },
     });
 
-    expect(decision.kind).toBe("load_tools");
-    const repairPrompt = generateTurn.mock.calls[1]?.[0]?.messages.at(-1)?.content ?? "";
-    expect(repairPrompt).toContain("Repair code: R_MUTATION_REQUIRES_WORKSTREAM_BINDING");
-    expect(repairPrompt).toContain("Blocked targets: process_run");
-    expect(feedback.events.find((event) => event.event === "protocol_violation")?.data).toMatchObject({
-      repair: {
-        code: "R_MUTATION_REQUIRES_WORKSTREAM_BINDING",
-        blockedTargets: ["process_run"],
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+    expect(decision).toEqual({
+      kind: "transition_mode",
+      request: {
+        to: "resolve",
+        purpose: "Bind the project before executing a command.",
+        capabilities: ["process:command"],
+        targets: ["/tmp/project"],
       },
+      workingNotes: undefined,
     });
+    expect(feedback.events.find((event) => event.event === "protocol_violation")?.data)
+      .toMatchObject({ invalidTools: ["process_run"] });
   });
 
   it("allows act decisions that use selected tools", async () => {
@@ -1133,10 +1132,63 @@ describe("callAgentDecision", () => {
     });
 
     expect(generateTurn.mock.calls[0]?.[0]?.tools.map((tool: { name: string }) => tool.name)).toEqual([
-      "decision_load_tools",
+      "decision_transition_mode",
     ]);
+    const transitionSchema = generateTurn.mock.calls[0]?.[0]?.tools[0]?.inputSchema;
+    expect(transitionSchema).toMatchObject({
+      required: ["to", "purpose", "capabilities"],
+      properties: {
+        to: { enum: ["observe.locate", "observe.investigate", "resolve", "execute"] },
+        capabilities: { type: "array", minItems: 1, maxItems: 8 },
+        binding: {
+          oneOf: [
+            expect.objectContaining({ properties: expect.objectContaining({ kind: { const: "activate" } }) }),
+            expect.objectContaining({ properties: expect.objectContaining({ kind: { const: "create" } }) }),
+          ],
+        },
+      },
+    });
     expect(generateTurn.mock.calls[0]?.[0]?.toolChoice).toBe("auto");
     expect(generateTurn.mock.calls[0]?.[0]?.parallelToolCalls).toBe(false);
+  });
+
+  it("parses an exact typed binding proposal from the native transition control", async () => {
+    const binding = {
+      kind: "create" as const,
+      title: "Create notes",
+      objective: "Create and verify notes.md.",
+      initialRequest: {
+        title: "Create notes",
+        request: "Create notes.md.",
+        acceptance: ["notes.md exists."],
+        constraints: [],
+      },
+      resources: [],
+      evidence: ["run:RUN-1:step:1:call:find-owner"],
+    };
+    const { provider } = createNativeToolProvider([{
+      type: "tool_calls",
+      calls: [{
+        id: "transition-1",
+        name: "decision_transition_mode",
+        input: {
+          to: "resolve",
+          purpose: "Bind notes.md before creating it.",
+          capabilities: ["file:write"],
+          targets: ["notes.md"],
+          binding,
+        },
+      }],
+    }]);
+
+    await expect(callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+    })).resolves.toMatchObject({
+      kind: "transition_mode",
+      request: { to: "resolve", binding },
+    });
   });
 
   it("keeps callable schemas native and groups selected tool names by purpose in text", async () => {
@@ -1356,26 +1408,36 @@ describe("callAgentDecision", () => {
     });
   });
 
-  it("exposes workstream feedback only when enabled", async () => {
+  it("exposes and parses validation only when the graph is active", async () => {
     const { provider, generateTurn } = createProvider([
-      JSON.stringify({ kind: "ask_user", question: "Which path?", reason: "Need a target path." }),
+      JSON.stringify({
+        kind: "validate",
+        request: {
+          outcome: "needs_user_input",
+          summary: "An exact path is required.",
+          response: "Which path should I inspect?",
+        },
+      }),
     ], { jsonSchema: true });
 
     const decision = await callAgentDecision({
       provider,
       stateView: createStateView(),
       toolDefinitions: [],
-      workstreamFeedbackToolAvailable: true,
+      validationAvailable: true,
     });
 
     expect(generateTurn.mock.calls[0]?.[0]?.tools.map((tool: { name: string }) => tool.name)).toEqual([
-      "decision_load_tools",
-      "ask_user_feedback",
+      "decision_transition_mode",
+      "decision_validate",
     ]);
     expect(decision).toMatchObject({
-      kind: "ask_user",
-      question: "Which path?",
-      reason: "Need a target path.",
+      kind: "validate",
+      request: {
+        outcome: "needs_user_input",
+        summary: "An exact path is required.",
+        response: "Which path should I inspect?",
+      },
     });
   });
 
@@ -1399,7 +1461,7 @@ describe("callAgentDecision", () => {
 
     const tools = generateTurn.mock.calls[0]?.[0]?.tools ?? [];
     expect(tools.map((tool: { name: string }) => tool.name)).toEqual([
-      "decision_load_tools",
+      "decision_transition_mode",
       "write_files",
     ]);
     expect(tools.find((tool: { name: string }) => tool.name === "write_files")?.inputSchema).toMatchObject({
@@ -1461,14 +1523,16 @@ describe("callAgentDecision", () => {
     });
   });
 
-  it("exposes and parses workstream_completion only when enabled", async () => {
+  it("exposes the exact validation schema and parses completion resources", async () => {
     const { provider, generateTurn } = createNativeToolProvider([{
       type: "tool_calls",
       calls: [{
         id: "complete_1",
-        name: "workstream_completion",
+        name: "decision_validate",
         input: {
+          outcome: "completed",
           summary: "Created the requested website files.",
+          response: "Created the requested website files.",
           resources: [{
             resourceId: `RES-${"A".repeat(24)}`,
             path: "index.html",
@@ -1484,22 +1548,30 @@ describe("callAgentDecision", () => {
       provider,
       stateView: createStateView(),
       toolDefinitions: [],
-      workstreamCompletionAvailable: true,
+      validationAvailable: true,
     });
 
-    const workstreamCompletionTool = generateTurn.mock.calls[0]?.[0]?.tools
-      ?.find((tool) => tool.name === "workstream_completion");
-    expect(workstreamCompletionTool).toBeDefined();
-    expect(JSON.stringify(workstreamCompletionTool?.inputSchema)).toContain(
+    const validationTool = generateTurn.mock.calls[0]?.[0]?.tools
+      ?.find((tool) => tool.name === "decision_validate");
+    expect(validationTool).toBeDefined();
+    expect(validationTool?.inputSchema).toMatchObject({
+      required: ["outcome", "summary", "response"],
+      properties: {
+        outcome: { enum: ["completed", "needs_user_input", "blocked", "failed"] },
+      },
+    });
+    expect(JSON.stringify(validationTool?.inputSchema)).toContain(
       "Portable path relative to that resource's filesystem root.",
     );
-    expect(JSON.stringify(workstreamCompletionTool?.inputSchema)).not.toContain(
+    expect(JSON.stringify(validationTool?.inputSchema)).not.toContain(
       "Canonical absolute path of the completed file or directory.",
     );
     expect(decision).toEqual({
-      kind: "workstream_completion",
+      kind: "validate",
       request: {
+        outcome: "completed",
         summary: "Created the requested website files.",
+        response: "Created the requested website files.",
         resources: [{
           resourceId: `RES-${"A".repeat(24)}`,
           path: "index.html",
@@ -1512,48 +1584,25 @@ describe("callAgentDecision", () => {
     });
   });
 
-  it("exposes and parses the isolated workstream resolver only when enabled", async () => {
+  it("never exposes a separate workstream resolver to the main decision model", async () => {
     const { provider, generateTurn } = createNativeToolProvider([{
-      type: "tool_calls",
-      calls: [{
-        id: "resolve_1",
-        name: "workstream_resolve",
-        input: {
-          purpose: "Continue the project that owns the exact workspace path.",
-          hints: [
-            { kind: "workstream_id", workstreamId: "W-20260721-0001" },
-            { kind: "resource_id", resourceId: `RES-${"A".repeat(24)}` },
-            { kind: "filesystem", path: "/workspace/project" },
-            { kind: "url", url: "https://example.com/project" },
-          ],
-        },
-      }],
+      type: "assistant",
+      content: "I can answer directly.",
     }]);
 
     const decision = await callAgentDecision({
       provider,
       stateView: createStateView(),
       toolDefinitions: [],
-      workstreamResolutionAvailable: true,
     });
 
     const resolverTool = generateTurn.mock.calls[0]?.[0]?.tools
       ?.find((tool) => tool.name === "workstream_resolve");
-    expect(resolverTool).toBeDefined();
-    expect(resolverTool?.inputSchema).toHaveProperty("properties.purpose");
-    expect(resolverTool?.inputSchema).toHaveProperty("properties.hints.maxItems", 8);
+    expect(resolverTool).toBeUndefined();
     expect(decision).toEqual({
-      kind: "resolve_workstream",
-      request: {
-        purpose: "Continue the project that owns the exact workspace path.",
-        hints: [
-          { kind: "workstream_id", workstreamId: "W-20260721-0001" },
-          { kind: "resource_id", resourceId: `RES-${"A".repeat(24)}` },
-          { kind: "filesystem", path: "/workspace/project" },
-          { kind: "url", url: "https://example.com/project" },
-        ],
-      },
-      workingNotes: undefined,
+      kind: "reply",
+      status: "completed",
+      message: "I can answer directly.",
     });
   });
 

@@ -45,13 +45,14 @@ Changes should prove the relevant invariants:
     continuation.
 13. Context Engine is the serialization owner. Step persistence returns the
     updated authoritative projection without a harness-side reread or cache.
-14. Workstream resolution has a separate bounded journal and WorkState-like
-    state; it never increments main run steps or changes main WorkState.
-15. Resolution binds at most one workstream/request, exposes no more than five
-    candidates to the main loop, records full private steps/usage, and marks an
-    unfinished activity interrupted rather than resuming it after restart.
-16. Completion remains a deterministic gate. Resolver activity and legacy
-    routing controls cannot satisfy task-completion evidence.
+14. Workstream and resource-owner discovery run as read-only primary-loop
+    observations. They produce exact current-run routing references but cannot
+    satisfy task-completion evidence.
+15. The deterministic resolve gate makes zero model calls, accepts one typed
+    activate-or-create proposal, rechecks authoritative candidate/resource
+    state, and binds at most one workstream/request on the existing run.
+16. Whole-task validation remains deterministic. Routing-only observations and
+    hidden lifecycle controls cannot satisfy task-completion evidence.
 17. Context candidates are disposable, lane-scoped, source-hashed, and valid
     across append-only tail growth only. Restart loses no authoritative data.
 18. Background semantic work has one provider-scoped slot, never blocks
@@ -59,17 +60,29 @@ Changes should prove the relevant invariants:
     usage exactly once.
 19. Durable checkpoint generation does not commit. Adoption revalidates and
     rebuilds from the fresh Context Engine commit projection.
-20. A run/resolver focus summary anchors every statement, stays within 1,600
+20. A run focus summary anchors every statement, stays within 1,600
     estimated tokens and one repair, and cannot replace current input,
     authority, failures, WorkState, or completion evidence.
+21. Every run begins at `ENTRY`; virtual modes never survive finalization,
+    interruption, restart, or the next accepted input.
+22. Observation modes expose only read-only effects, mode changes replace the
+    complete tool surface, and execute cannot re-enter resolution.
+23. Accepted validation supplies the terminal response without another model
+    call; rejected validation preserves the current mode and WorkState.
 
 ## Prompt and Harness Coverage
 
-Test direct zero-step replies, observational runs, isolated resolution followed
-by binding on the same run, resolver ambiguity/failure/limits/parallel ordering,
-stale mutation repair without replay, context refresh before a new decision,
-accepted and rejected completion, all terminal outcomes, and final
-acknowledgement ordering.
+Test tool-free zero-step replies, every virtual-graph edge, exact target
+provenance, read-only observation surfaces, working-set replacement, direct-
+response guarding, and identical self-transition no-progress stopping. Also
+test the absence of a second model loop, main-loop workstream observation,
+typed binding-proposal provenance, deterministic binding followed by
+mechanical execute entry on the same run, ambiguity and failure outcomes,
+single-attempt enforcement, stale HEAD and invented-target rejection, stale
+mutation rejection without replay, context refresh before a fresh decision,
+accepted and rejected validation for every terminal outcome, and final
+acknowledgement ordering. Assert that the gate does not invoke a provider and
+does not create a task step.
 
 Prompt snapshots must expose temporal/current/stream/work/resources/
 observations/personal/tools/harness/run lanes. They must exclude internal
@@ -85,11 +98,19 @@ also cover the 55K preparation trigger, predicted-growth trigger, 60K target,
 candidate deduplication/staleness, shadow versus enforce, late completion, and
 safe `incomplete/context_limit` termination.
 
-Resolver pressure tests use the isolated 20K/24K/32K profile. They must keep
-main and resolver candidates, histories, WorkState, steps, evidence, and usage
-separate; preserve failures/latest two private steps; verify typed projection
-of older successes; persist summary receipts; and aggregate semantic usage
-into exactly one private resolution step.
+Parallelism tests must prove that queued feedback/report work does not hold the
+serialized turn, shutdown and explicit checkpoints drain it, and capture
+failure cannot fail execution. They must also prove that a summary candidate
+started before binding cannot replace the fresh execute mode, binding
+authority, WorkState, routing evidence, failures, or completion evidence.
+Below the forced barrier foreground work continues; at the barrier the runtime
+may wait once for safe context admission.
+
+Binding tests must distinguish routing evidence from task evidence, verify
+that old-mode tools disappear, prove one fresh primary decision follows a
+successful binding, and assert the expected primary-model request count. No
+resolver pressure profile, private history, private semantic usage, or second
+context-preparation lane exists.
 
 ## Reset Testing
 
@@ -100,14 +121,22 @@ the manifest identifies the archived-to-V7 boundary.
 
 ## Live Acceptance
 
-Run an isolated daemon with feedback tracing. Exercise conversation across
-multiple clients, system events, resource reads, ambiguous ownership, new
-workstream creation, mutation, continuation, pressure checkpointing, exact
-history recovery, and restart behavior.
+Start the ordinary configured daemon with `pnpm eval:agent -- live`. Exercise
+conversation through the real WebSocket/client path across multiple clients,
+system events, resource reads, ambiguous ownership, new workstream creation,
+mutation, continuation, pressure checkpointing, exact history recovery, and
+restart behavior. Use the configured real provider, tools, Context Engine,
+memory, resources, schedulers, and background services.
 
-Inspect final UX, raw trace, run/step/resource rows, checkpoint anchors,
-observations, personal-memory jobs, context Git, real resources, and terminal
-acknowledgement ordering.
+After every terminal response and finalization acknowledgement, inspect the
+run evidence/report before choosing the next adaptive message. Inspect final
+UX, exact request and tool artifacts, deterministic findings,
+run/step/resource rows, checkpoint anchors, observations, personal-memory
+jobs, context Git, real resources, and terminal acknowledgement ordering.
+
+Only a recorded real-daemon session is acceptance evidence for Ayati itself.
+Instrumentation test doubles and local subsystem benchmarks remain ordinary
+developer verification and must not be presented as agent evaluation results.
 
 ## Commands
 

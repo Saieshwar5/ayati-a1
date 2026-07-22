@@ -13,6 +13,7 @@ import {
   type HarnessContextInput,
 } from "../harness-context.js";
 import { createInitialContextPressureState } from "../context-pressure-state.js";
+import { createEntryVirtualModeState } from "./virtual-mode.js";
 
 export function buildInitialState(
   deps: AgentLoopDeps,
@@ -46,6 +47,7 @@ export function buildInitialState(
     completedSteps: [],
     runPath: "",
     failureHistory: [],
+    virtualMode: createEntryVirtualModeState(),
     contextPressure: createInitialContextPressureState(),
     attachedDocuments: deps.attachedDocuments ?? [],
     attachmentWarnings: deps.attachmentWarnings ?? [],

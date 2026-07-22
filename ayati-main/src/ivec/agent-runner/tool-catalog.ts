@@ -115,6 +115,16 @@ export class ToolCatalog {
       ...skills,
     ].join("\n");
   }
+
+  capabilitySummary(limit = 60): string {
+    const groups = this.groupNames()
+      .filter(isPromptGroup)
+      .filter((group) => !group.startsWith("workflow:") && !group.startsWith("skill:"))
+      .slice(0, limit);
+    return groups.length > 0
+      ? `Available capability groups: ${groups.join(", ")}.`
+      : "No capability groups are registered.";
+  }
 }
 
 function buildEntry(skill: SkillDefinition, tool: ToolDefinition): ToolCatalogEntry {

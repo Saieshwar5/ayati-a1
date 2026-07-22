@@ -53,6 +53,20 @@ preserves `<AYATI_ROOT_DIR>/workspace/`. Catalog rebuild requires an empty V5
 catalog; after an archive reset, start and stop Ayati once before confirming
 rebuild.
 
+Live daemon evaluation:
+
+```bash
+pnpm eval:agent -- live --name <name> [--watch] [--capture full|safe]
+pnpm eval:agent -- inspect --evaluation <id> [--run <run-id>|--latest]
+pnpm eval:agent -- annotate --evaluation <id> [--run <run-id>]
+pnpm eval:agent -- report --evaluation <id>
+pnpm eval:agent -- compare --baseline <id> --candidate <id>
+pnpm eval:agent -- prune [--older-than <days>|--keep <count>] [--confirm]
+```
+
+`dev:main:feedback`, `start:main:feedback`, and `feedback:context-engine` are
+compatibility aliases into this same recorder and report surface.
+
 Backend runtime performance benchmark:
 
 ```bash

@@ -7,9 +7,8 @@ context pack -> decision -> action executor -> deterministic verification -> pro
 ```
 
 Do not introduce controller stages, graph frameworks, harness-version
-switches, or a second authoritative task-execution loop. A bounded isolated
-control activity may reuse the decision/tool/verification shape when it owns
-separate state and returns a typed result to the coordinator.
+switches, or a second model loop. Observation, binding proposals, execution,
+repair, and validation all advance through the same primary decision loop.
 
 ## One Run Per Accepted Input
 
@@ -28,8 +27,9 @@ message/event
 ```
 
 A run may remain unbound for conversation and observation or gain one
-immutable workstream/request binding. Its id never changes. The next accepted
-input creates a new run in the same agent stream.
+immutable workstream/request binding. Its id never changes. Navigation state
+is run-scoped: every run begins at `ENTRY`, and the next accepted input creates
+a new run at `ENTRY` in the same agent stream.
 
 ## Agent Stream Versus Run Context
 
@@ -47,9 +47,9 @@ Workstream binding establishes durable ownership. Resource access establishes
 what may be read or changed. Exact mutation preparation and verification
 establish authority for one operation.
 
-An unbound run may use list, read, search, and permitted control capabilities.
-A bound run receives workstream feedback/completion controls and resource-
-scoped task capabilities. Mutation without binding fails closed.
+An unbound run may enter read-only observation modes. A bound run may enter
+`execute` with resource-scoped task capabilities. Mutation without binding
+fails closed.
 
 Routing controls disappear after successful binding. A recent or active
 workstream is context, not implicit authority.
@@ -58,68 +58,102 @@ workstream is context, not implicit authority.
 
 The model can:
 
-- return normal assistant text;
-- call `workstream_resolve` once for actionable work on an eligible unbound
-  run;
-- call `decision_load_tools`;
+- return normal assistant text at `ENTRY` for a genuinely tool-free request;
+- call `decision_transition_mode` with an immediate purpose, exact capability
+  groups, and evidence-backed targets;
 - call one selected executable tool or an explicitly safe read-only batch;
-- call `ask_user_feedback` during an active bound run;
-- call `workstream_completion` after normal work is verified.
+- call `decision_validate` with a terminal outcome and the complete user-facing
+  response after the graph is active.
+
+The run-scoped virtual graph is:
+
+```text
+ENTRY -> observe.locate | observe.investigate | resolve | direct reply
+observe.locate <-> observe.investigate -> resolve | validate
+resolve -> execute | needs_user_input | failed
+execute -> execute | observe.locate | observe.investigate | validate
+validate -> terminal when accepted | source mode with repair when rejected
+```
+
+`resolve` and `validate` are transient harness gates, not stored modes. The
+stored active mode is only `observe.locate`, `observe.investigate`, `execute`,
+or none. A bound execute run may temporarily observe and return directly to
+execute; it never resolves again because the run binding is immutable.
+
+Typical traces remain inside the one harness loop:
+
+```text
+greeting:    ENTRY -> direct response
+exact read:  ENTRY -> observe.investigate -> read -> validate
+vague read:  ENTRY -> observe.locate -> find -> observe.investigate -> read -> validate
+ambiguity:   observe.locate -> validate(needs_user_input)
+mutation:    observe -> resolve -> execute -> validate
+repair:      execute -> observe.investigate -> execute -> validate
+```
+
+The model never sees a separate workstream-resolution agent or lifecycle tool.
+Before `resolve`, it uses read-only workstream search/read and resource-owner
+lookup in an observation mode. An accepted transition to `resolve` must have
+mutation-permitting intent, a binding-required capability, evidence-backed
+targets, and one typed activate-or-create proposal citing exact current-run
+routing evidence. The deterministic gate runs at most once, makes no model
+request, and requires a fresh primary decision after authoritative bound
+context is mounted.
 
 Executable tools retain native schemas. Harness-only controls are not
 persisted as fake calls. Invalid text-encoded calls and malformed schemas
 receive bounded repair feedback followed by a fresh decision.
 
-## Isolated Workstream Resolution
+## Workstream Observation and Deterministic Binding
 
-The main loop never calls workstream discovery, ownership inspection,
-activation, or creation tools directly. It calls:
+The primary loop owns read-only workstream routing observations. It requests
+focused capability groups instead of lifecycle effects:
 
 ```text
-workstream_resolve({ purpose, hints })
+decision_transition_mode({
+  to: "observe.locate",
+  purpose: "Find the durable owner of result.txt.",
+  capabilities: ["workstream:search", "resource:ownership"],
+  targets: ["result.txt"]
+})
+-> read-only routing observation step
+decision_transition_mode({
+  to: "resolve",
+  purpose: "Bind the exact output before writing it.",
+  capabilities: ["file:write"],
+  targets: ["result.txt"],
+  binding: { kind: "create" | "activate", ..., evidence: ["run:...:step:...:call:..."] }
+})
+-> deterministic binding gate (zero model calls)
+-> automatic execute entry with a replaced capability surface
+-> refreshed authoritative context
+-> fresh main decision
 ```
 
-The coordinator waits synchronously while a bounded resolver activity runs
-with its own context snapshot, state, history, tool budget, and usage
-accounting. The resolver receives the current input, at most two prior
-messages, ingress resources, at most five initial candidates, and any prior
-ambiguity packet. It does not receive or reduce main WorkState.
+The model-facing read-only groups are `workstream:search`, `workstream:read`,
+and `resource:ownership`. Their calls are persisted as ordinary observation
+steps, but their evidence is tagged as routing evidence and cannot satisfy
+whole-task completion.
 
-Resolver prompt preparation uses the same runtime engine through a completely
-separate `resolver:<activityId>` lane. Its quality profile starts preparation
-at 20K, targets 24K recovery, and treats 32K as soft pressure while retaining
-the main model's hard limit. Older successful private output becomes typed
-candidate, ownership, request, HEAD, description, and evidence references;
-all failures and the latest two resolver steps remain exact. A resolver-focus
-summary is anchored to private step/call/evidence refs, is recorded in the
-next private context snapshot, and can never affect main WorkState, main run
-steps, or completion evidence.
+The gate checks mutation intent, binding-required taxonomy, exact target
+provenance, current-run routing references, candidate identity, workstream
+HEAD, request identity, and the one-attempt limit. For creation, it searches
+again immediately before the commit and returns `needs_user_input` when a
+probable or definite owner exists. For activation, it re-reads the exact
+candidate and rejects a stale HEAD. Exact path or URL targets are inspected
+inside the gate before they are bound.
 
-Its fixed private catalog contains search, candidate read, resource-owner
-lookup, resource inspection, activate, create, and clarification operations.
-Up to four independent search/read/owner calls may run in parallel. Version 1
-allows six model turns, sixteen private calls, and two failed steps. Every
-decision, call, result, verification, state transition, and usage record is
-written to the resolver journal, not `run_steps`.
+Only after those checks does the coordinator call Context Engine's atomic
+create or activate operation. The binding is immutable. The gate records a
+control/evaluation event, not a task step, owns no history or WorkState, and
+has no prompt, provider, reducer, context-preparation lane, token budget, or
+retry loop.
 
-The resolver ends with exactly one typed result:
-
-- bind one existing workstream and continue or create one request;
-- create one workstream with one accurate initial request;
-- publish a compact ambiguity packet; or
-- fail safely.
-
-The Context Engine commits the binding and publishes a new projection before
-the coordinator returns a metadata receipt. The main loop then makes a fresh
-decision against the mounted context. It never receives the resolver's full
-history as tool output. Only the coordinator reduces authoritative run and
-WorkState; all Context Engine writes still pass through its single serialized
-in-process owner.
-
-The resolver's private tools must not be registered in the main working set.
-Legacy `git_context_find_workstreams`, `git_context_read_workstream`,
-`git_context_inspect_resource`, `git_context_activate_workstream`, and
-`git_context_create_workstream` calls fail closed in the main loop.
+`git_context_activate_workstream`, `git_context_create_workstream`, and
+`git_context_inspect_resource` remain hidden lifecycle operations. The model
+can observe with `git_context_find_workstreams`,
+`git_context_read_workstream`, and `git_context_find_resources`; it cannot
+invoke the lifecycle operations directly.
 
 ## History Controls
 
@@ -128,10 +162,11 @@ Older stream continuity is accessed with:
 - `agent_history_search`
 - `agent_history_read`
 
-Resolution uses the already prepared agent stream and run; it never allocates
-a second run. Existing workstreams require an explicit continue-or-create
-request decision. After binding, the runner refreshes context and asks for a
-new decision. A stale mutation call is rejected and never stored for replay.
+Binding uses the already prepared agent stream and run; it never allocates a
+second run. Existing workstreams require an explicit continue-or-create
+request decision in the proposal. After binding, the runner refreshes context
+and asks for a new decision. A stale mutation call is rejected and never
+stored for replay.
 
 ## Agent-Facing Context Pack
 
@@ -140,27 +175,36 @@ Prompt context uses explicit bounded lanes:
 - `temporal`: durable checkpoint plus exact recent messages;
 - `current`: exact ingress message and routing state;
 - `stream`: identity and recent completed-work references;
-- `work`: at most five candidates, the resolver result, and the single
-  selected workstream/request;
+- `work`: at most five candidates and the single selected
+  workstream/request; routing evidence stays in current-run tool calls;
 - `resources`: stream, ingress, and bound-work resources;
 - `observations`: valid reusable inventory, discovery, and evidence;
 - `personal`: independent personal-memory snapshot;
 - `tools`: current capability surface;
 - `harness`: compact repair feedback;
-- `run`: WorkState, current calls, pressure state, and an optional disposable
-  anchored focus summary that is navigation context only.
+- `run`: WorkState, current calls, the compact virtual-mode card, pressure
+  state, and an optional disposable anchored focus summary that is navigation
+  context only.
 
 Do not expose context-repository paths, database paths, run storage paths,
 idempotency journals, observation authority fields, or deferred mutation.
 
-## Tool Loading and Visibility
+## Mode-Scoped Capability Visibility
 
 Tools have one purpose (`list`, `read`, `search`, `control`, `mutation`) and
 one effect (`read_only`, `workspace_mutation`, `context_mutation`,
 `external_mutation`, `destructive`). Unknown taxonomy fails closed.
 
-The working set is small and run-scoped. Loading a tool does not authorize its
-effect. Resource-scoped validation still runs at execution time.
+At `ENTRY`, the executable working set is empty. The model sees a compact
+catalog of exact capability-group identifiers plus the transition control.
+The harness resolves a requested responsibility to eligible concrete tools.
+
+`observe.locate` and `observe.investigate` expose only read-only tools. A mode
+transition replaces the complete working set so tools from an earlier mode do
+not accumulate. Bounded self-transitions may adjust the surface; repeated
+identical transitions stop through no-progress protection. `execute` reuses
+the existing bound-resource policy. Selecting a capability never authorizes
+its effect; resource-scoped validation still runs at execution time.
 
 ## Action Execution and Verification
 
@@ -196,11 +240,16 @@ Mutations and control calls never do.
 
 ## Completion and Finalization
 
-`workstream_completion({ summary, resources })` is available only when bound.
-It is a typed intent, not a second agent loop. Deterministic completion policy
-checks remaining work/blockers, current-run task-step evidence, resource
-access, containment, existence, exact artifact evidence, and unresolved
-failures. Resolver journal entries can never satisfy completion evidence.
+After graph activation, every terminal outcome uses
+`decision_validate({ outcome, summary, response, resources? })`. The request
+carries the final user response, so accepted validation needs no extra model
+call. Observation validation checks verified read evidence. Execute validation
+reuses deterministic completion policy: remaining work/blockers, current-run
+task-step evidence, resource access, containment, existence, exact artifact
+evidence, and unresolved failures. Workstream-routing observations can guide
+binding but can never satisfy task-completion evidence. Rejected validation
+preserves the source mode and WorkState and returns bounded typed repair
+feedback.
 
 One coordinator serves chat and system events. `finalizeRun` receives outcome,
 stop reason, assistant response, summaries, validation, WorkState, and optional
@@ -217,11 +266,11 @@ Response ordering is strict:
 ## Outcome Mapping
 
 ```text
-normal direct reply            -> done / completed
-accepted completion            -> done / completed
-focused clarification          -> needs_user_input / needs_user_input
-proven blocker                 -> blocked / blocked
-unrecoverable provider/tool    -> failed / failed
+tool-free ENTRY reply          -> done / completed
+accepted completed validation  -> done / completed
+accepted needs-input validation -> needs_user_input / needs_user_input
+accepted blocked validation    -> blocked / blocked
+accepted failed validation     -> failed / failed
 iteration budget               -> incomplete / run_limit
 context admission budget       -> incomplete / context_limit
 safe crash recovery            -> incomplete / interrupted
@@ -279,11 +328,18 @@ recovery but starts no new semantic work.
 
 Feedback tracing records compact decision, action, verification, routing,
 step, observation, checkpoint, resource, finalization, and transport events.
-Zero-step unbound and read-only unbound runs are healthy.
+Navigation feedback separately counts transitions, the single deterministic
+binding attempt, validation acceptance/rejection, foreground model work, and
+background summary work. Event capture and report generation are queued off
+the execution path; repair feedback required by the next decision remains
+synchronous. Zero-step unbound and read-only unbound runs are healthy.
 
 Startup resumes journaled operations idempotently and never discards verified
 dirty resource changes. Unsafe ambiguity moves the run to
 `recovery_required` and blocks the agent stream until resolved.
+An unpublished mutation preparation with no tool or resource evidence is a
+safe no-effect interruption: startup releases its lease before normal run
+interruption recovery. Published authority still fails closed.
 
 ## Do Not Reintroduce
 

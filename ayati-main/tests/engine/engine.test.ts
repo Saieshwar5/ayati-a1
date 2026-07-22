@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   ContextDatabase,
+  ContextEngineServiceError,
   SqliteContextEngineService,
 } from "ayati-context-engine";
 import { IVecEngine } from "../../src/ivec/index.js";
@@ -24,6 +25,7 @@ import type {
 } from "../../src/app/context-engine-runtime.js";
 import { createContextEngineRuntime } from "../../src/app/context-engine-runtime.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
+import { createGitContextSkill } from "../../src/skills/builtins/git-context/index.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
 import { contextEngineFixture } from "../fixtures/agent-context.js";
@@ -73,6 +75,113 @@ function createThrowingProvider(error: Error): LlmProvider {
     stop: vi.fn(),
     generateTurn: vi.fn().mockRejectedValue(error),
   };
+}
+
+function createSingleLoopMutationProvider(outputPath: string): LlmProvider {
+  let decision = 0;
+  return {
+    name: "mock",
+    version: "1.0.0",
+    capabilities: {
+      nativeToolCalling: true,
+      structuredOutput: { jsonObject: true, jsonSchema: true },
+    },
+    start: vi.fn(),
+    stop: vi.fn(),
+    generateTurn: vi.fn(async (input): Promise<LlmTurnOutput> => {
+      decision++;
+      if (decision === 1) {
+        return nativeDecisionFixture({
+          kind: "transition_mode",
+          request: {
+            to: "observe.locate",
+            purpose: "Check durable ownership before creating the requested file.",
+            capabilities: ["workstream:search"],
+            targets: [outputPath],
+          },
+        });
+      }
+      if (decision === 2) {
+        return nativeDecisionFixture({
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "find-workstream-owner",
+              tool: "git_context_find_workstreams",
+              input: { query: "one-run.txt", paths: [outputPath] },
+              dependsOn: [],
+              purpose: "Find an existing workstream owner",
+            }],
+            allowedTools: ["git_context_find_workstreams"],
+            assertions: [],
+          },
+        });
+      }
+      if (decision === 3) {
+        const evidenceRef = extractLatestEvidenceRef(input);
+        return nativeDecisionFixture({
+          kind: "transition_mode",
+          request: {
+            to: "resolve",
+            purpose: "Bind the requested output before creating it.",
+            capabilities: ["file:write"],
+            targets: [outputPath],
+            binding: {
+              kind: "create",
+              title: "One run file",
+              objective: "Create and verify the requested one-run.txt file.",
+              initialRequest: {
+                title: "Create one-run.txt",
+                request: `Create the requested file at ${outputPath}.`,
+                acceptance: ["one-run.txt exists with the requested content."],
+                constraints: [],
+              },
+              resources: [],
+              evidence: [evidenceRef],
+            },
+          },
+        });
+      }
+      if (decision === 4) {
+        return nativeDecisionFixture({
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "write-after-binding",
+              tool: "write_files",
+              input: { files: [{ path: outputPath, content: "same durable run" }] },
+              dependsOn: [],
+              purpose: "Create the file after deterministic binding",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [],
+          },
+        });
+      }
+      if (decision === 5) {
+        return nativeDecisionFixture({
+          kind: "validate",
+          request: {
+            outcome: "completed",
+            summary: "Created and verified one-run.txt.",
+            response: "Created one-run.txt.",
+            resources: [],
+          },
+        });
+      }
+      throw new Error("No queued provider response.");
+    }),
+  };
+}
+
+function extractLatestEvidenceRef(input: LlmTurnInput): string {
+  const content = input.messages.map((message) => message.content).join("\n");
+  const matches = [...content.matchAll(/"evidenceRef"\s*:\s*"([^"]+)"/g)];
+  const evidenceRef = matches.at(-1)?.[1];
+  if (!evidenceRef) throw new Error("Routing evidenceRef missing from the main-loop decision context.");
+  return evidenceRef;
 }
 
 function createSystemEventPolicy(): SystemEventPolicyConfig {
@@ -360,18 +469,38 @@ describe("IVecEngine one-run integration", () => {
     });
   });
 
+  it("reports a prior active run as recovery state instead of a provider failure", async () => {
+    const onReply = vi.fn();
+    const runtime = createContextRuntime(createPreparedTurn({ role: "user" }));
+    vi.mocked(runtime.prepareUserTurn).mockRejectedValue(new ContextEngineServiceError({
+      code: "RUN_ALREADY_ACTIVE",
+      message: "An active run already exists for this stream.",
+      details: { runId: "RUN-blocked" },
+    }));
+    const engine = createEngine({ onReply, chatContextRuntime: runtime });
+
+    engine.handleMessage("c1", { type: "chat", content: "hello" });
+
+    await vi.waitFor(() => expect(onReply).toHaveBeenCalledOnce());
+    expect(runtime.finalizeRun).not.toHaveBeenCalled();
+    expect(onReply).toHaveBeenCalledWith("c1", {
+      type: "error",
+      content: "A previous Ayati run (RUN-blocked) is still active or requires recovery, so this message was not accepted.",
+    });
+  });
+
   it("finalizes a provider direct reply on the prepared run", async () => {
     const dataDir = makeTmpDir();
     try {
       const provider = createProvider([
-        { kind: "reply", status: "completed", message: "Upload handling is in src/upload.ts." },
+        { kind: "reply", status: "completed", message: "Hello from Ayati." },
       ]);
       const onReply = vi.fn();
       const runtime = createContextRuntime(createPreparedTurn({ role: "user", runId: "R-direct" }));
       const engine = createEngine({ onReply, provider, dataDir, chatContextRuntime: runtime });
 
       await engine.start();
-      engine.handleMessage("c1", { type: "chat", content: "Where is upload handling?" });
+      engine.handleMessage("c1", { type: "chat", content: "Hello" });
 
       await vi.waitFor(() => expect(onReply).toHaveBeenCalledOnce());
       expect(provider.generateTurn).toHaveBeenCalledOnce();
@@ -384,7 +513,7 @@ describe("IVecEngine one-run integration", () => {
       }));
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "reply",
-        content: "Upload handling is in src/upload.ts.",
+        content: "Hello from Ayati.",
         runId: "R-direct",
         commitStatus: "not_required",
       });
@@ -397,11 +526,32 @@ describe("IVecEngine one-run integration", () => {
     const dataDir = makeTmpDir();
     try {
       const provider = createProvider([
-        { kind: "reply", status: "completed", message: "Which file should I inspect? Please provide the file path." },
+        {
+          kind: "transition_mode",
+          request: {
+            to: "observe.locate",
+            purpose: "Identify which file the user means.",
+            capabilities: ["file:read"],
+          },
+        },
+        {
+          kind: "validate",
+          request: {
+            outcome: "needs_user_input",
+            summary: "The requested file is ambiguous.",
+            response: "Which file should I inspect? Please provide the file path.",
+          },
+        },
       ]);
       const onReply = vi.fn();
       const runtime = createContextRuntime(createPreparedTurn({ role: "user", runId: "R-clarify" }));
-      const engine = createEngine({ onReply, provider, dataDir, chatContextRuntime: runtime });
+      const engine = createEngine({
+        onReply,
+        provider,
+        dataDir,
+        chatContextRuntime: runtime,
+        toolExecutor: createToolExecutor([createReadTool()]),
+      });
 
       await engine.start();
       engine.handleMessage("c1", { type: "chat", content: "Inspect it" });
@@ -413,7 +563,7 @@ describe("IVecEngine one-run integration", () => {
       }));
       expect(vi.mocked(runtime.finalizeRun).mock.calls[0]?.[0]).not.toHaveProperty("workstreamCompletion");
       expect(onReply).toHaveBeenCalledWith("c1", expect.objectContaining({
-        type: "reply",
+        type: "feedback",
         content: "Which file should I inspect? Please provide the file path.",
         runId: "R-clarify",
         commitStatus: "not_required",
@@ -429,21 +579,22 @@ describe("IVecEngine one-run integration", () => {
     try {
       const provider = createProvider([
         {
-          kind: "act",
-          action: {
-            mode: "single",
-            calls: [{
-              id: "stale-write",
-              tool: "write_files",
-              input: { files: [{ path: outputPath, content: "unsafe" }] },
-              dependsOn: [],
-              purpose: "Create the requested file",
-            }],
-            allowedTools: ["write_files"],
-            assertions: [],
+          kind: "transition_mode",
+          request: {
+            to: "resolve",
+            purpose: "Bind the exact output target before creating it.",
+            capabilities: ["file:write"],
+            targets: [outputPath],
           },
         },
-        { kind: "reply", status: "completed", message: "I need to bind this run before mutation." },
+        {
+          kind: "validate",
+          request: {
+            outcome: "failed",
+            summary: "Workstream resolution was unavailable before mutation.",
+            response: "I could not safely create the file because workstream resolution is unavailable.",
+          },
+        },
       ]);
       const onReply = vi.fn();
       const runtime = createContextRuntime(createPreparedTurn({ role: "user", runId: "R-unbound-write" }));
@@ -456,7 +607,7 @@ describe("IVecEngine one-run integration", () => {
       });
 
       await engine.start();
-      engine.handleMessage("c1", { type: "chat", content: "Create a file" });
+      engine.handleMessage("c1", { type: "chat", content: `Create a file at ${outputPath}` });
 
       await vi.waitFor(() => {
         expect(onReply.mock.calls.some(([, response]) => (
@@ -472,7 +623,7 @@ describe("IVecEngine one-run integration", () => {
     }
   });
 
-  it("resolves in isolation, mutates on the same run, then acknowledges finalization", async () => {
+  it("observes routing in the main loop, binds locally, mutates, then acknowledges finalization", async () => {
     const dataDir = makeTmpDir();
     const workingDirectory = join(dataDir, "workspace");
     const outputPath = join(workingDirectory, "one-run.txt");
@@ -483,6 +634,7 @@ describe("IVecEngine one-run integration", () => {
       now: () => "2026-07-21T10:00:00.000Z",
     });
     const startWorkstreamResolution = vi.spyOn(service, "startWorkstreamResolution");
+    const createWorkstreamForRun = vi.spyOn(service, "createWorkstreamForRun");
     const runtime = createContextEngineRuntime({
       service,
       timezone: "Asia/Kolkata",
@@ -492,79 +644,8 @@ describe("IVecEngine one-run integration", () => {
     const prepareUserTurn = vi.spyOn(runtime, "prepareUserTurn");
     const recordRunStep = vi.spyOn(runtime, "recordRunStep");
     const finalizeRun = vi.spyOn(runtime, "finalizeRun");
-    const provider = createProvider([
-      {
-        kind: "resolve_workstream",
-        request: {
-          purpose: "Resolve the durable owner for one-run.txt.",
-          hints: [{ kind: "filesystem", path: workingDirectory }],
-        },
-      },
-      {
-        kind: "act",
-        action: {
-          mode: "single",
-          calls: [{
-            id: "resolver-search",
-            tool: "resolution_search_workstreams",
-            input: { query: "one-run.txt" },
-            dependsOn: [],
-            purpose: "Search authoritative workstream state",
-          }],
-          allowedTools: ["resolution_search_workstreams"],
-          assertions: [],
-        },
-      },
-      {
-        kind: "act",
-        action: {
-          mode: "single",
-          calls: [{
-            id: "resolver-create",
-            tool: "resolution_create_workstream",
-            input: {
-              title: "One run file",
-              objective: "Create and verify one-run.txt.",
-              initialRequest: {
-                title: "Create one-run.txt",
-                request: "Create the requested one-run.txt file.",
-                acceptance: ["one-run.txt exists with the requested content."],
-                constraints: [],
-              },
-              resources: [],
-              evidence: ["Authoritative catalog search found no owning workstream."],
-            },
-            dependsOn: [],
-            purpose: "Create the single owning workstream",
-          }],
-          allowedTools: ["resolution_create_workstream"],
-          assertions: [],
-        },
-      },
-      {
-        kind: "act",
-        action: {
-          mode: "single",
-          calls: [{
-            id: "write-after-binding",
-            tool: "write_files",
-            input: { files: [{ path: outputPath, content: "same durable run" }] },
-            dependsOn: [],
-            purpose: "Create the file after binding",
-          }],
-          allowedTools: ["write_files"],
-          assertions: [],
-        },
-      },
-        {
-          kind: "workstream_completion",
-          request: {
-            summary: "Created and verified one-run.txt.",
-            resources: [],
-          },
-      },
-      { kind: "reply", status: "completed", message: "Created one-run.txt." },
-    ]);
+    const provider = createSingleLoopMutationProvider(outputPath);
+    const gitContextTools = createGitContextSkill({ service }).tools;
     const onReply = vi.fn();
     const engine = createEngine({
       onReply,
@@ -572,12 +653,12 @@ describe("IVecEngine one-run integration", () => {
       dataDir,
       chatContextRuntime: runtime,
       contextEngineService: service,
-      toolExecutor: createToolExecutor([writeFilesTool]),
+      toolExecutor: createToolExecutor([writeFilesTool, ...gitContextTools]),
     });
 
     try {
       await engine.start();
-      engine.handleMessage("c1", { type: "chat", content: "Create one-run.txt" });
+      engine.handleMessage("c1", { type: "chat", content: `Create a file at ${outputPath}` });
 
       await vi.waitFor(() => {
         expect(onReply.mock.calls.some(([, response]) => (
@@ -585,13 +666,21 @@ describe("IVecEngine one-run integration", () => {
         ).type === "reply")).toBe(true);
       }, { timeout: 5_000 });
       expect(readFileSync(outputPath, "utf8")).toBe("same durable run");
-      expect(recordRunStep).toHaveBeenCalledOnce();
+      expect(recordRunStep).toHaveBeenCalledTimes(2);
       const prepared = await prepareUserTurn.mock.results[0]!.value;
-      expect(recordRunStep).toHaveBeenCalledWith(expect.objectContaining({
+      expect(recordRunStep).toHaveBeenNthCalledWith(1, expect.objectContaining({
         turn: expect.objectContaining({ run: expect.objectContaining({ runId: prepared.run.runId }) }),
         record: expect.objectContaining({
           runId: prepared.run.runId,
           step: 1,
+          toolCalls: [expect.objectContaining({ tool: "git_context_find_workstreams" })],
+        }),
+      }));
+      expect(recordRunStep).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        turn: expect.objectContaining({ run: expect.objectContaining({ runId: prepared.run.runId }) }),
+        record: expect.objectContaining({
+          runId: prepared.run.runId,
+          step: 2,
           toolCalls: [expect.objectContaining({ tool: "write_files" })],
         }),
       }));
@@ -606,17 +695,9 @@ describe("IVecEngine one-run integration", () => {
         content: "Created one-run.txt.",
         runId: prepared.run.runId,
       }));
-      const startedResolution = await startWorkstreamResolution.mock.results[0]!.value;
-      const resolution = await service.getWorkstreamResolution({
-        activityId: startedResolution.activity.activityId,
-      });
-      expect(resolution.activity).toMatchObject({
-        runId: prepared.run.runId,
-        status: "resolved",
-        stepCount: 2,
-      });
-      expect(resolution.steps).toHaveLength(2);
-      expect(resolution.steps.flatMap((step) => step.toolCalls)).toHaveLength(2);
+      expect(startWorkstreamResolution).not.toHaveBeenCalled();
+      expect(createWorkstreamForRun).toHaveBeenCalledOnce();
+      expect(provider.generateTurn).toHaveBeenCalledTimes(5);
       const terminalReplyIndex = onReply.mock.calls.findIndex(([, response]) => (
         response as { type?: string }
       ).type === "reply");
@@ -650,6 +731,7 @@ describe("IVecEngine one-run integration", () => {
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "error",
         content: "Failed to generate a response.",
+        runId: "R-finalize-fails",
       });
       expect(onReply.mock.calls.some(([, response]) => (
         response as { type?: string; commitStatus?: string }
@@ -713,6 +795,14 @@ describe("IVecEngine one-run integration", () => {
       const engine = createEngine({
         provider: createProvider([
           {
+            kind: "transition_mode",
+            request: {
+              to: "observe.locate",
+              purpose: "Locate and inspect the health notes referenced by the reminder.",
+              capabilities: ["file:read"],
+            },
+          },
+          {
             kind: "act",
             action: {
               mode: "single",
@@ -727,7 +817,14 @@ describe("IVecEngine one-run integration", () => {
               assertions: [],
             },
           },
-          { kind: "reply", status: "completed", message: "Health notes are current." },
+          {
+            kind: "validate",
+            request: {
+              outcome: "completed",
+              summary: "Verified the current health notes.",
+              response: "Health notes are current.",
+            },
+          },
         ]),
         toolExecutor: createToolExecutor([readTool]),
         dataDir,
@@ -785,6 +882,7 @@ describe("IVecEngine one-run integration", () => {
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "error",
         content: "Failed to generate a response.",
+        runId: "R-provider-fails",
       });
     } finally {
       rmSync(dataDir, { recursive: true, force: true });

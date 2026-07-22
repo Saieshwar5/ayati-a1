@@ -7,10 +7,10 @@ import {
   type ToolTaxonomyEntry,
 } from "../../skills/tool-taxonomy.js";
 import {
-  GIT_CONTEXT_UNBOUND_RUN_ROUTING_TOOL_NAMES,
   isGitContextBoundResourceToolName,
   isGitContextAllowedDuringPendingRouting,
   isGitContextRoutingSupportToolName,
+  isGitContextTurnRoutingToolName,
 } from "../../skills/builtins/git-context/tool-policy.js";
 import type { LoopState } from "../types.js";
 import type { AgentDecision } from "./decision.js";
@@ -53,8 +53,7 @@ export function deriveWorkstreamBindingCapabilityPolicy(
     && isClearlyConversationOnlyRequest(state.userMessage);
   const routingAvailable = !workstreamBound
     && pendingTurnStatus !== "clarifying"
-    && !routingSuppressed
-    && state.harnessContext.contextEngine?.workstreamResolution?.runId !== state.runId;
+    && !routingSuppressed;
   return {
     workstreamBound,
     ...(pendingTurnStatus ? { pendingTurnStatus } : {}),
@@ -69,7 +68,9 @@ export function isToolAllowedByWorkstreamBinding(
   policy: WorkstreamBindingCapabilityPolicy,
   toolName: string,
 ): boolean {
-  if (LEGACY_MAIN_LOOP_RESOLUTION_TOOLS.has(toolName)) return false;
+  if (isGitContextTurnRoutingToolName(toolName) || isGitContextRoutingSupportToolName(toolName)) {
+    return false;
+  }
   const taxonomy = getToolTaxonomy(toolName);
   if (!taxonomy) return false;
   if (policy.workstreamBound) {
@@ -125,8 +126,7 @@ export function isDecisionAllowedByWorkstreamBinding(
   decision: AgentDecision,
 ): boolean {
   if (decision.kind === "reply") return true;
-  if (decision.kind === "load_tools") return policy.allowToolLoading;
-  if (decision.kind === "resolve_workstream") return policy.routingAvailable;
+  if (decision.kind === "transition_mode" || decision.kind === "validate") return true;
   if (decision.kind !== "act" || decision.action.calls.length === 0) return false;
   return decision.action.calls.every((call) => isToolAllowedByWorkstreamBinding(policy, call.tool))
     && decision.action.allowedTools.every((tool) => isToolAllowedByWorkstreamBinding(policy, tool));
@@ -177,11 +177,3 @@ export function isToolAvailableInDerivedPhase(
 function isWorkstreamRoutingControl(taxonomy: ToolTaxonomyEntry): boolean {
   return taxonomy.purpose === "control" && taxonomy.roles.includes("workstream_routing");
 }
-
-const LEGACY_MAIN_LOOP_RESOLUTION_TOOLS = new Set<string>([
-  "git_context_find_workstreams",
-  "git_context_read_workstream",
-  "git_context_find_resources",
-  "git_context_inspect_resource",
-  ...GIT_CONTEXT_UNBOUND_RUN_ROUTING_TOOL_NAMES,
-]);

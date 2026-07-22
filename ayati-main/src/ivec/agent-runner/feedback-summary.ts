@@ -7,10 +7,65 @@ import type { StepSummary, VerifyOutput, WorkState } from "../types.js";
 import type { AgentDecision, AgentAction } from "./decision.js";
 import type { AgentPromptStateView } from "./prompt-context.js";
 import type { ToolLoadResult } from "./tool-working-set.js";
+import type { VirtualModeTransitionResult } from "./virtual-mode-runtime.js";
 
 export interface FeedbackPayloadFingerprint {
   jsonChars: number;
   sha256: string;
+}
+
+export function summarizeVirtualModeTransition(
+  transition: VirtualModeTransitionResult,
+): Record<string, unknown> {
+  if (transition.kind === "applied") {
+    return {
+      kind: transition.kind,
+      active: transition.active,
+      toolNames: transition.toolNames,
+      loadStatus: transition.loadResult.status,
+    };
+  }
+  if (transition.kind === "resolved") {
+    const binding = transition.binding;
+    return {
+      kind: transition.kind,
+      active: transition.active,
+      toolNames: transition.toolNames,
+      loadStatus: transition.loadResult.status,
+      binding: binding.kind === "not_required"
+        ? { kind: binding.kind, attempted: binding.attempted }
+        : {
+            kind: binding.kind,
+            attempted: binding.attempted,
+            status: binding.outcome.status,
+            workstreamId: binding.outcome.workstreamId,
+            requestId: binding.outcome.requestId,
+            contextRevision: binding.outcome.context.contextRevision,
+          },
+    };
+  }
+  if (transition.kind === "binding_needs_user_input") {
+    return {
+      kind: transition.kind,
+      attempted: transition.binding.attempted,
+      candidateIds: transition.binding.outcome.candidateIds,
+      question: transition.question,
+    };
+  }
+  if (transition.kind === "binding_failed") {
+    return {
+      kind: transition.kind,
+      attempted: transition.binding.attempted,
+      code: transition.binding.outcome.code,
+      retryable: transition.binding.outcome.retryable,
+      message: transition.message,
+    };
+  }
+  return {
+    kind: transition.kind,
+    repair: transition.repair,
+    noProgressStatus: transition.noProgressResult?.status,
+  };
 }
 
 export function summarizeHarnessContext(
@@ -129,31 +184,18 @@ export function summarizeDecision(decision: AgentDecision): Record<string, unkno
       messagePreview: previewString(decision.message, 240),
     };
   }
-  if (decision.kind === "ask_user") {
+  if (decision.kind === "transition_mode") {
     return {
-      kind: "ask_user",
-      questionPreview: previewString(decision.question, 240),
-      reasonPreview: previewString(decision.reason, 240),
-    };
-  }
-  if (decision.kind === "load_tools") {
-    return {
-      kind: "load_tools",
+      kind: "transition_mode",
       request: decision.request,
     };
   }
-  if (decision.kind === "workstream_completion") {
+  if (decision.kind === "validate") {
     return {
-      kind: "workstream_completion",
+      kind: "validate",
       summaryPreview: previewString(decision.request.summary, 240),
-      resourceCount: decision.request.resources.length,
-    };
-  }
-  if (decision.kind === "resolve_workstream") {
-    return {
-      kind: "resolve_workstream",
-      purposePreview: previewString(decision.request.purpose, 240),
-      hintCount: decision.request.hints.length,
+      outcome: decision.request.outcome,
+      resourceCount: decision.request.resources?.length ?? 0,
     };
   }
   return {

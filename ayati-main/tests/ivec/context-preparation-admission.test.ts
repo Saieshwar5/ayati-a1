@@ -217,6 +217,85 @@ describe("prepared main-context admission", () => {
     release();
   });
 
+  it("adopts a pre-binding focus candidate without replacing fresh execute authority or routing evidence", async () => {
+    const countInputTokens = vi.fn().mockResolvedValue({
+      provider: "test",
+      model: "test-model",
+      inputTokens: 80_000,
+      exact: true,
+    });
+    const provider = countingProvider(countInputTokens);
+    const manager = new ContextPreparationManager({ laneId: "main:RUN-1", provider });
+    const candidate = await manager.prepareSynchronously(pendingFocusJob(Promise.resolve()));
+    if (!candidate) throw new Error("Expected a ready focus candidate.");
+
+    const state = stateView("BOUND-WORK", true);
+    state.context.current.routing = {
+      status: "bound",
+      workstreamId: "W-BOUND",
+      requestId: "R-BOUND",
+    };
+    state.context.run = {
+      mode: {
+        active: "execute",
+        revision: 3,
+        purpose: "Write the verified target.",
+        capabilities: ["file:write"],
+        targets: ["result.txt"],
+        allowedNext: ["execute", "observe.locate", "observe.investigate", "validate"],
+      },
+      workState: {
+        status: "not_done",
+        summary: "Binding is complete.",
+        evidence: ["run:RUN-1:step:1:call:route-1"],
+      },
+      toolCalls: [{
+        step: 1,
+        callId: "route-1",
+        tool: "git_context_read_workstream",
+        purpose: "Read the selected workstream.",
+        input: { workstreamId: "W-BOUND" },
+        status: "success",
+        mode: "full",
+        output: "Authoritative workstream W-BOUND",
+        evidenceRef: "run:RUN-1:step:1:call:route-1",
+      }],
+    };
+
+    const compilation = await compilePreparedMainContext({
+      provider,
+      stateView: state,
+      turnInput: turnInput(),
+      contextLimits: limits(),
+      decisionAttempt: 1,
+      policy: "enforce",
+      manager,
+      buildPrompt: prompt,
+      allowBackgroundPreparation: false,
+      allowSynchronousSemanticRecovery: false,
+    });
+
+    expect(compilation.receipt).toMatchObject({
+      candidateAction: "adopted",
+      candidate: { kind: "run_focus", status: "adopted" },
+    });
+    const finalPrompt = compilation.finalTurnInput.messages.find((message) => message.role === "user")?.content;
+    if (typeof finalPrompt !== "string") throw new Error("Expected a serialized state prompt.");
+    const finalState = JSON.parse(finalPrompt.slice(finalPrompt.indexOf("{"))) as AgentStateView;
+    expect(finalState.context.current.routing).toEqual({
+      status: "bound",
+      workstreamId: "W-BOUND",
+      requestId: "R-BOUND",
+    });
+    expect(finalState.context.run?.mode).toMatchObject({ active: "execute", revision: 3 });
+    expect(finalState.context.run?.workState?.evidence).toEqual(["run:RUN-1:step:1:call:route-1"]);
+    expect(finalState.context.run?.toolCalls?.[0]).toMatchObject({
+      callId: "route-1",
+      evidenceRef: "run:RUN-1:step:1:call:route-1",
+      mode: "full",
+    });
+  });
+
   it("waits once and adopts a relevant pending candidate at the exact forced barrier", async () => {
     let release!: () => void;
     const pending = new Promise<void>((resolve) => { release = resolve; });

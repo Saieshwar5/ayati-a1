@@ -32,12 +32,13 @@ Product rules:
   durable-work source. `W-*` repositories contain `workstream.md`, request
   files, and `resources.json`; never put deliverables in them.
 - Preserve the git-native ownership boundary: the agent may discover/open
-  context, inspect resources, and select/create workstreams through typed Git
-  Context tools, but runtime owns identity allocation, request reduction,
+  context and resource owners through read-only Git Context tools, then submit
+  one typed activate-or-create proposal to the deterministic resolve gate.
+  Runtime owns lifecycle calls, identity allocation, request reduction,
   resource verification, finalization, and context commits.
-- For activation, explicitly pass `requestDecision.kind="continue"` or
-  `requestDecision.kind="create"`. A candidate or previously active workstream is
-  not mutation authority.
+- For activation proposals, explicitly pass
+  `requestDecision.kind="continue"` or `requestDecision.kind="create"`. A
+  candidate or previously active workstream is not mutation authority.
 - Use real resource locators for work. Do not edit context repositories or
   runtime-owned `.ayati/` state from general tools.
 - Tool access is high privilege because the daemon can affect the user's computer.

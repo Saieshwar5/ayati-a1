@@ -192,13 +192,13 @@ describe("selectToolsForDecision", () => {
     ], 3);
 
     const selectedNames = selected.map((entry) => entry.name);
-    expect(selectedNames).toEqual(["search_in_files"]);
+    expect(selectedNames).toEqual(["search_in_files", "git_context_find_workstreams"]);
     expect(selectedNames).not.toContain("write_files");
     expect(selectedNames).not.toContain("create_directory");
     expect(selectedNames).not.toContain("process_run");
   });
 
-  it("does not reserve main-loop capacity for legacy routing tools", () => {
+  it("keeps read-only routing discovery visible without exposing lifecycle controls", () => {
     const current = state("continue the website and add dark mode");
     current.harnessContext = {
       ...current.harnessContext,
@@ -216,7 +216,7 @@ describe("selectToolsForDecision", () => {
     ], 2);
 
     const selectedNames = selected.map((entry) => entry.name);
-    expect(selectedNames).toEqual(["read_files"]);
+    expect(selectedNames).toEqual(["read_files", "git_context_find_workstreams"]);
     expect(selectedNames).not.toContain("write_files");
     expect(selectedNames).not.toContain("patch_files");
   });

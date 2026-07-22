@@ -19,6 +19,12 @@ import {
   isHealthyConversationOutcome,
   type FeedbackExecutionTriageInput,
 } from "./execution-outcome-triage.js";
+import {
+  mergeNavigationFeedbackSummary,
+  readNavigationFeedbackSummary,
+  updateNavigationFeedbackSummary,
+  type AgentFeedbackNavigationSummary,
+} from "./feedback-navigation.js";
 
 export interface AgentFeedbackEventInput {
   clientId?: string;
@@ -45,17 +51,22 @@ export interface AgentFeedbackLatestSummary {
   responseKind?: string;
   iterations?: number;
   toolCalls?: number;
-  toolLoadDecisions?: number;
+  modeTransitions?: number;
   actionSteps?: number;
   verificationPassed?: boolean;
   basedOnVerifiedFacts?: boolean;
   execution?: FeedbackExecutionOutcome;
+  navigation?: AgentFeedbackNavigationSummary;
   contextEngine?: AgentFeedbackContextEngineSummary;
   warnings: string[];
   rawPath: string;
 }
 
-export type AgentFeedbackContextRouteSource = "auto" | "agent_tool" | "deterministic_router" | "runtime" | "unknown";
+export type AgentFeedbackContextRouteSource =
+  | "model_navigation"
+  | "deterministic_gate"
+  | "runtime"
+  | "unknown";
 export type AgentFeedbackContextFinalizationStatus = "not_started" | "started" | "not_required" | "no_change" | "committed" | "failed";
 
 export interface AgentFeedbackContextEngineSummary {
@@ -126,6 +137,8 @@ export interface AgentFeedbackTriageSummary {
 export interface AgentFeedbackLedger {
   readonly enabled: boolean;
   record(event: AgentFeedbackEventInput): void;
+  scheduleCheckpoint?(runId?: string): void;
+  checkpoint?(runId?: string): Promise<void>;
   flush(): Promise<void>;
   close(): Promise<void>;
 }
@@ -173,6 +186,7 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
   private droppedEvents = 0;
   private readonly feedbackSignals = new Map<string, Set<string>>();
   private readonly contextEngineSignals = new Map<string, AgentFeedbackContextEngineSummary>();
+  private readonly navigationSignals = new Map<string, AgentFeedbackNavigationSummary>();
   private readonly latestSummaries = new Map<string, AgentFeedbackLatestSummary>();
 
   constructor(options: AgentFeedbackLedgerOptions) {
@@ -198,6 +212,7 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
     };
     this.recordFeedbackSignals(event);
     this.recordContextEngineSignals(event);
+    this.recordNavigationSignals(event);
 
     if (this.queue.length >= this.maxQueueSize) {
       this.queue.shift();
@@ -365,10 +380,24 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
     if (event.stage === "context_engine" && event.event === "run_step_persistence_failed") {
       signals.add("run_step_persistence_failed");
     }
+    if (event.stage === "workstream_binding" && event.event === "deterministic_binding_failed") {
+      signals.add("deterministic_binding_failed");
+    }
+    if (event.event === "context_candidate_failed") {
+      signals.add("background_context_preparation_failed");
+    }
+    if (
+      event.event === "context_candidate_discarded"
+      && readStringValue(event.data?.["reason"])?.startsWith("late_")
+    ) {
+      signals.add("late_context_candidate_discarded");
+    }
     if (event.stage === "final" && event.event === "error") {
       signals.add("runtime_error");
     }
-    const repairCode = readRepairCode(event.data?.["repair"]);
+    const transition = readRecordValue(event.data?.["transition"]);
+    const repairCode = readRepairCode(event.data?.["repair"])
+      ?? readRepairCode(transition?.["repair"]);
     if (repairCode) {
       signals.add(repairCode);
     }
@@ -399,6 +428,13 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
     }
   }
 
+  private recordNavigationSignals(event: AgentFeedbackEvent): void {
+    const key = feedbackScopeKey(event);
+    if (!key) return;
+    const next = updateNavigationFeedbackSummary(this.navigationSignals.get(key), event);
+    if (next) this.navigationSignals.set(key, next);
+  }
+
   private buildLatestSummary(event: AgentFeedbackEvent): AgentFeedbackLatestSummary {
     const feedbackSummary = readFeedbackSummary(event) ?? {};
     const rawWarnings = Array.isArray(feedbackSummary["warnings"]) ? feedbackSummary["warnings"] : [];
@@ -415,6 +451,10 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
       readContextEngineFeedbackSummary(feedbackSummary["contextEngine"]),
       this.contextEngineSignals.get(feedbackScopeKey(event) ?? ""),
     );
+    const navigation = mergeNavigationFeedbackSummary(
+      readNavigationFeedbackSummary(feedbackSummary["navigation"]),
+      this.navigationSignals.get(feedbackScopeKey(event) ?? ""),
+    );
     const summary: AgentFeedbackLatestSummary = {
       updatedAt: event.ts,
       tsMs: event.tsMs,
@@ -425,9 +465,10 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
       ...(typeof feedbackSummary["responseKind"] === "string" ? { responseKind: feedbackSummary["responseKind"] } : {}),
       ...(typeof feedbackSummary["iterations"] === "number" ? { iterations: feedbackSummary["iterations"] } : {}),
       ...(typeof feedbackSummary["toolCalls"] === "number" ? { toolCalls: feedbackSummary["toolCalls"] } : {}),
-      ...(typeof feedbackSummary["toolLoadDecisions"] === "number" ? { toolLoadDecisions: feedbackSummary["toolLoadDecisions"] } : {}),
+      ...(typeof feedbackSummary["modeTransitions"] === "number" ? { modeTransitions: feedbackSummary["modeTransitions"] } : {}),
       ...(typeof feedbackSummary["actionSteps"] === "number" ? { actionSteps: feedbackSummary["actionSteps"] } : {}),
       ...(typeof feedbackSummary["basedOnVerifiedFacts"] === "boolean" ? { basedOnVerifiedFacts: feedbackSummary["basedOnVerifiedFacts"] } : {}),
+      ...(navigation ? { navigation } : {}),
       ...(contextEngine ? { contextEngine } : {}),
       warnings,
       rawPath: feedbackRelativePath(event).replace(/\\/g, "/"),
@@ -446,12 +487,17 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
       summary.contextEngine,
       this.contextEngineSignals.get(feedbackScopeKey(event) ?? ""),
     );
+    const navigation = mergeNavigationFeedbackSummary(
+      summary.navigation,
+      this.navigationSignals.get(feedbackScopeKey(event) ?? ""),
+    );
     const signalWarnings = this.feedbackSignals.get(feedbackScopeKey(event) ?? "") ?? new Set<string>();
     const next: AgentFeedbackLatestSummary = {
       ...summary,
       updatedAt: event.ts,
       tsMs: event.tsMs,
       ...(event.runId ? { runId: event.runId } : {}),
+      ...(navigation ? { navigation } : {}),
       ...(contextEngine ? { contextEngine } : {}),
       warnings: uniqueStrings([
         ...summary.warnings,
@@ -705,6 +751,15 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
   for (const finding of repairCodeTriageFindings(warningSet)) {
     findings.push(finding);
   }
+  for (const code of [...warningSet].filter(isNavigationRepairCode)) {
+    findings.push({
+      code,
+      severity: "warning",
+      title: "Virtual navigation required repair",
+      details: `The harness rejected a navigation or validation claim with ${code}.`,
+      recommendation: "Inspect the typed repair, current mode card, exact targets, and supporting evidence before changing policy.",
+    });
+  }
 
   if (warningSet.has("parse_repair_needed")) {
     findings.push({
@@ -732,27 +787,57 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
       severity: "warning",
       title: "Unbound run needed workstream routing",
       details: "The model tried to load or call workstream-scoped tools before the run had a workstream binding.",
-      recommendation: "Inspect workstream candidates, then activate the matching workstream or create a distinct workstream before mutation.",
+      recommendation: "Inspect the deterministic binding proposal, routing evidence, gate result, and refreshed authoritative context before changing model behavior.",
     });
   }
 
-  if (warningSet.has("tool_load_no_action")) {
+  if (warningSet.has("excessive_mode_transitions")) {
     findings.push({
-      code: "tool_load_no_action",
+      code: "excessive_mode_transitions",
       severity: "warning",
-      title: "Tools were loaded but no action ran",
-      details: "The model requested tools, but the run ended before executable work used them.",
-      recommendation: "Check whether selected tools were missing, the load result confused the model, or the final reply stopped early.",
+      title: "Excessive mode transitions",
+      details: `The run made ${summary.modeTransitions ?? 0} mode transitions.`,
+      recommendation: "Inspect whether the capability groups were too broad or the mode purpose changed without useful evidence.",
     });
   }
 
-  if (warningSet.has("repeated_tool_load")) {
+  if ((summary.navigation?.bindingAttempts ?? 0) > 1) {
     findings.push({
-      code: "repeated_tool_load",
+      code: "multiple_binding_attempts",
+      severity: "error",
+      title: "Resolve gate ran more than once",
+      details: `The run recorded ${summary.navigation?.bindingAttempts ?? 0} deterministic binding attempts.`,
+      recommendation: "Inspect transition and gate events; a run may enter the deterministic binding coordinator at most once.",
+    });
+  }
+
+  if (warningSet.has("deterministic_binding_failed")) {
+    findings.push({
+      code: "deterministic_binding_failed",
+      severity: "error",
+      title: "Deterministic binding failed",
+      details: "The typed binding proposal passed into the resolve gate but authoritative binding failed.",
+      recommendation: "Inspect proposal evidence, candidate HEAD, resource ownership, context revision, and the gate outcome.",
+    });
+  }
+
+  if (warningSet.has("background_context_preparation_failed")) {
+    findings.push({
+      code: "background_context_preparation_failed",
       severity: "warning",
-      title: "Repeated tool loading",
-      details: `The run made ${summary.toolLoadDecisions ?? 0} tool-load decisions.`,
-      recommendation: "Improve tool routing groups or deterministic preload hints for this request class.",
+      title: "Background context preparation failed",
+      details: "A disposable checkpoint or focus-summary candidate failed while foreground work continued.",
+      recommendation: "Inspect the background candidate event and provider evidence; do not treat the foreground task as failed unless context admission later exhausts recovery.",
+    });
+  }
+
+  if (warningSet.has("late_context_candidate_discarded")) {
+    findings.push({
+      code: "late_context_candidate_discarded",
+      severity: "info",
+      title: "Late context candidate was discarded",
+      details: "Background context work completed after its run-scoped lane was invalidated.",
+      recommendation: "No repair is required unless late discard frequency or background cost becomes excessive.",
     });
   }
 
@@ -782,7 +867,7 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
       severity: "error",
       title: "Action needed a workstream binding",
       details: "A normal executable action reached the run guard before workstream ownership was bound.",
-      recommendation: "Route the current run first, or block workstream-scoped executable tools until it is workstream-bound.",
+      recommendation: "Verify the action was intercepted before resolve and was not executed or replayed before a fresh bound decision.",
     });
   }
 
@@ -792,7 +877,7 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
       severity: "error",
       title: "Normal tool was chosen before routing",
       details: "The decision selected a non-Context-Engine tool before workstream ownership was resolved.",
-      recommendation: "Check the projected state view and selected tool list; the model should only see routing and observational tools until a workstream binding exists.",
+      recommendation: "Check the projected mode card and selected tool list; ENTRY should expose no executable tools, while binding remains runtime-owned behind resolve.",
     });
   }
 
@@ -913,21 +998,21 @@ const REPAIR_TRIAGE_FINDINGS: ReadonlyArray<[string, AgentFeedbackTriageFinding]
     severity: "warning",
     title: "Decision used an unselected tool",
     details: "The model tried to call a tool that was not in the selected native tool surface.",
-    recommendation: "Use decision_load_tools before missing capabilities, or call only selected tools.",
+    recommendation: "Use decision_transition_mode to replace the capability surface, or call only selected tools.",
   }],
   ["R_LOAD_TOOLS_USED_AS_ACTION", {
     code: "R_LOAD_TOOLS_USED_AS_ACTION",
     severity: "warning",
     title: "Tool loading was used as executable work",
     details: "The model attempted to use tool loading inside an executable action.",
-    recommendation: "Use the native decision_load_tools control tool instead of wrapping tool loading as action work.",
+    recommendation: "Use decision_transition_mode with exact capability groups instead of wrapping navigation as action work.",
   }],
   ["R_EMPTY_TOOL_LOAD_SELECTOR", {
     code: "R_EMPTY_TOOL_LOAD_SELECTOR",
     severity: "warning",
     title: "Tool-load request had no selector",
     details: "The model requested tool loading without an exact tool name, group, or query.",
-    recommendation: "Retry decision_load_tools with toolNames, groups, or a query.",
+    recommendation: "Retry decision_transition_mode with at least one exact capability group.",
   }],
   ["R_TOOL_INPUT_INVALID", {
     code: "R_TOOL_INPUT_INVALID",
@@ -948,7 +1033,7 @@ const REPAIR_TRIAGE_FINDINGS: ReadonlyArray<[string, AgentFeedbackTriageFinding]
     severity: "warning",
     title: "Workstream feedback tool was unavailable",
     details: "The model attempted to ask workstream-bound feedback when the feedback tool was not exposed.",
-    recommendation: "Use direct assistant text during an unbound run; use ask_user_feedback only during an active workstream-bound run.",
+    recommendation: "Use direct assistant text only for a tool-free ENTRY reply; after activation, validate needs_user_input.",
   }],
   ["R_MULTIPLE_NATIVE_TOOL_CALLS", {
     code: "R_MULTIPLE_NATIVE_TOOL_CALLS",
@@ -997,21 +1082,21 @@ const REPAIR_TRIAGE_FINDINGS: ReadonlyArray<[string, AgentFeedbackTriageFinding]
     severity: "warning",
     title: "Unbound run needs workstream routing",
     details: "The model tried to use workstream-scoped tools before the current run had a workstream binding.",
-    recommendation: "Search and activate an existing workstream, create a new workstream, or ask a short clarification directly.",
+    recommendation: "Inspect why the deterministic binding gate rejected the requested capability, and use its clarification when ownership is ambiguous.",
   }],
   ["R_TOOL_REQUIRES_WORKSTREAM_BINDING", {
     code: "R_TOOL_REQUIRES_WORKSTREAM_BINDING",
     severity: "error",
     title: "Workstream-scoped tool reached runner without a binding",
     details: "A workstream-scoped executable tool reached the runner while the current run was unbound.",
-    recommendation: "Route, create, or activate the correct workstream before normal tool execution.",
+    recommendation: "Verify the runtime intercepted the capability and completed its single deterministic binding attempt before any execution.",
   }],
   ["R_PENDING_TURN_UNBOUND", {
     code: "R_PENDING_TURN_UNBOUND",
     severity: "error",
     title: "Pending turn was unbound before tool work",
     details: "The model attempted normal workstream work while the current turn was not bound to a workstream.",
-    recommendation: "Use the git_context_* read/search/create/activate/clarify tools before normal workstream work.",
+    recommendation: "Enter an observation mode for safe reads; enter resolve with mutation capabilities so the runtime owns binding.",
   }],
   ["R_PENDING_TURN_CLARIFYING", {
     code: "R_PENDING_TURN_CLARIFYING",
@@ -1040,7 +1125,7 @@ function readFeedbackSummary(event: AgentFeedbackEvent): Record<string, unknown>
       responseKind: "error",
       iterations: 0,
       toolCalls: 0,
-      toolLoadDecisions: 0,
+      modeTransitions: 0,
       actionSteps: 0,
       verificationPassed: false,
       basedOnVerifiedFacts: false,
@@ -1057,7 +1142,9 @@ function contextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFeedbac
   const direct = event.stage === "context_engine"
     ? readContextEngineFeedbackSummary(event.data)
     : undefined;
-  const inferred = event.stage === "context_engine" || event.stage === "git_context_service"
+  const inferred = event.stage === "context_engine"
+    || event.stage === "git_context_service"
+    || event.stage === "workstream_binding"
     ? inferContextEngineFeedbackFromEvent(event)
     : undefined;
   return mergeContextEngineFeedbackSummary(
@@ -1067,7 +1154,11 @@ function contextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFeedbac
 }
 
 function hasCompactSummarySignal(event: AgentFeedbackEvent): boolean {
-  return contextEngineFeedbackFromEvent(event) !== undefined;
+  return contextEngineFeedbackFromEvent(event) !== undefined
+    || event.stage === "virtual_mode"
+    || event.stage === "workstream_binding"
+    || event.event.startsWith("context_candidate_")
+    || event.event === "context_background_summary_completed";
 }
 
 function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFeedbackContextEngineSummary | undefined {
@@ -1192,70 +1283,45 @@ function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFe
       routeSource: "runtime",
     });
   }
-  if (event.event === "auto_route_started") {
+  if (event.stage === "workstream_binding" && event.event === "deterministic_binding_started") {
+    const proposal = readRecordValue(data["proposal"]);
     return compactContextEngineFeedbackSummary({
-      routeSource: "auto",
+      routeStatus: "binding",
+      routeSource: "model_navigation",
+      ...(readStringValue(proposal?.["kind"]) ? { routeMode: readStringValue(proposal?.["kind"]) } : {}),
     });
   }
-  if (event.event === "route_started") {
-    return compactContextEngineFeedbackSummary({
-      routeSource: readRouteSource(data["routeSource"]) ?? "deterministic_router",
-    });
-  }
-  if (event.event === "auto_route_result") {
-    const routeStatus = readStringValue(data["status"]);
-    return compactContextEngineFeedbackSummary({
-      ...(routeStatus && routeStatus !== "skipped" ? { routeStatus } : {}),
-      ...(readStringValue(data["mode"]) ? { routeMode: readStringValue(data["mode"]) } : {}),
-      routeSource: routeStatus === "ambiguous" ? "deterministic_router" : "auto",
-      ...(readStringValue(data["workstreamId"]) ? { workstreamId: readStringValue(data["workstreamId"]) } : {}),
-      ...(readStringValue(data["branch"]) ? { branch: readStringValue(data["branch"]) } : {}),
-      ...(readStringValue(data["ref"]) ? { ref: readStringValue(data["ref"]) } : {}),
-      ...(readStringValue(data["runId"]) ? { runId: readStringValue(data["runId"]) } : {}),
-    });
-  }
-  if (event.event === "route_result") {
-    const routeStatus = readStringValue(data["status"]);
-    return compactContextEngineFeedbackSummary({
-      ...(routeStatus && routeStatus !== "skipped" ? { routeStatus } : {}),
-      ...(readStringValue(data["mode"]) ? { routeMode: readStringValue(data["mode"]) } : {}),
-      routeSource: readRouteSource(data["routeSource"]) ?? "deterministic_router",
-      ...(readStringValue(data["workstreamId"]) ? { workstreamId: readStringValue(data["workstreamId"]) } : {}),
-      ...(readStringValue(data["branch"]) ? { branch: readStringValue(data["branch"]) } : {}),
-      ...(readStringValue(data["ref"]) ? { ref: readStringValue(data["ref"]) } : {}),
-      ...(readStringValue(data["runId"]) ? { runId: readStringValue(data["runId"]) } : {}),
-    });
-  }
-  if (event.event === "routed") {
-    const routeStatus = readStringValue(data["status"]);
-    return compactContextEngineFeedbackSummary({
-      ...(routeStatus ? { routeStatus } : {}),
-      ...(readStringValue(data["mode"]) ? { routeMode: readStringValue(data["mode"]) } : {}),
-      routeSource: routeStatus === "ready" ? "auto" : "deterministic_router",
-      ...(readStringValue(data["workstreamId"]) ? { workstreamId: readStringValue(data["workstreamId"]) } : {}),
-      ...(readStringValue(data["branch"]) ? { branch: readStringValue(data["branch"]) } : {}),
-      ...(readStringValue(data["ref"]) ? { ref: readStringValue(data["ref"]) } : {}),
-      ...(readStringValue(data["runId"]) ? { runId: readStringValue(data["runId"]) } : {}),
-    });
-  }
-  if (event.event === "agent_routed") {
+  if (event.stage === "workstream_binding" && event.event === "deterministic_binding_resolved") {
     return compactContextEngineFeedbackSummary({
       routeStatus: "ready",
-      routeSource: "agent_tool",
+      routeSource: "deterministic_gate",
       pendingTurnStatus: "bound",
+      workstreamBound: true,
+      ...(readStringValue(data["kind"]) ? { routeMode: readStringValue(data["kind"]) } : {}),
       ...(readStringValue(data["workstreamId"]) ? { workstreamId: readStringValue(data["workstreamId"]) } : {}),
-      ...(readStringValue(data["branch"]) ? { branch: readStringValue(data["branch"]) } : {}),
-      ...(readStringValue(data["runId"]) ? { runId: readStringValue(data["runId"]) } : {}),
+      ...(readStringValue(data["contextRevision"]) ? { contextRevision: readStringValue(data["contextRevision"]) } : {}),
+      ...(event.runId ? { runId: event.runId } : {}),
     });
   }
-  if (event.event === "clarification_requested") {
+  if (event.stage === "workstream_binding" && event.event === "deterministic_binding_needs_user_input") {
     return compactContextEngineFeedbackSummary({
       routeStatus: "ambiguous",
-      routeSource: "agent_tool",
+      routeSource: "deterministic_gate",
       pendingTurnStatus: "clarifying",
+      workstreamBound: false,
+      ...(event.runId ? { runId: event.runId } : {}),
     });
   }
- return undefined;
+  if (event.stage === "workstream_binding" && event.event === "deterministic_binding_failed") {
+    return compactContextEngineFeedbackSummary({
+      routeStatus: "failed",
+      routeSource: "deterministic_gate",
+      pendingTurnStatus: "unbound",
+      workstreamBound: false,
+      ...(event.runId ? { runId: event.runId } : {}),
+    });
+  }
+  return undefined;
 }
 
 function readContextEngineFeedbackSummary(value: unknown): AgentFeedbackContextEngineSummary | undefined {
@@ -1466,14 +1532,23 @@ function readRepairCode(value: unknown): string | undefined {
     return undefined;
   }
   const code = (value as Record<string, unknown>)["code"];
-  return typeof code === "string" && code.startsWith("R_") ? code : undefined;
+  return typeof code === "string" && (
+    code.startsWith("R_")
+    || isNavigationRepairCode(code)
+  ) ? code : undefined;
+}
+
+function isNavigationRepairCode(value: string): boolean {
+  return value.startsWith("MODE_")
+    || value.startsWith("VALIDATION_")
+    || value === "DIRECT_RESPONSE_REQUIRES_MODE"
+    || value === "TERMINAL_REQUIRES_VALIDATION";
 }
 
 function readRouteSource(value: unknown): AgentFeedbackContextRouteSource | undefined {
   if (
-    value === "auto"
-    || value === "agent_tool"
-    || value === "deterministic_router"
+    value === "model_navigation"
+    || value === "deterministic_gate"
     || value === "runtime"
     || value === "unknown"
   ) {

@@ -118,48 +118,45 @@ relationships only.
 
 ## Discovery and Selection
 
-The main model sees one ownership control: `workstream_resolve`. It supplies a
-concise purpose and optional exact workstream, resource, filesystem, or URL
-hints. Hints improve the resolver's starting point but never grant ownership
-or mutation authority.
+The primary model observes workstream candidates and resource owners through
+read-only capabilities in `observe.locate` or `observe.investigate`. Those
+calls are normal main-run observation steps and produce routing evidence, not
+task-completion evidence. Direct mutation at `ENTRY` remains unavailable.
 
-An isolated resolver activity owns the discovery tools. It searches and reads
-workstreams, checks resource owners, inspects a new locator when needed, and
-then activates one workstream, creates one workstream, or publishes one
-clarification. Its state and complete journal are separate from main run steps
-and WorkState. The main loop waits for the activity and receives only a typed
-metadata receipt; the selected workstream/request context arrives through the
-fresh authoritative Context Engine projection.
+The model then enters the transient `resolve` gate with exact
+binding-required capability groups, evidence-backed targets, and one typed
+proposal: activate an exact observed workstream or create a new one. The
+proposal cites exact current-run routing evidence references. The gate checks
+the proposal and uses Context Engine's atomic operations without making a
+model request.
 
-The main prompt sees the result in one bounded lane:
+The main prompt keeps workstream state compact:
 
 ```text
 context.work = {
   candidates: WorkstreamCandidate[]       // zero to five; empty once bound
-  resolution?: {
-    activityId, runId, status, purpose, stepCount, result?, updatedAt
-  }
   active?: {
     workstreamId, title, objective, summary, currentRequest, resources, ...
   }                                       // exactly one when bound
 }
 ```
 
-`workstream_resolve` returns only receipt metadata such as activity, status,
-selected workstream/request ids, private step count, and context revision. The
-authoritative workstream content is read from `context.work.active`, not
-duplicated into the tool result.
+Routing calls and their exact `evidenceRef` values remain in
+`context.run.toolCalls`. Authoritative selected workstream content arrives
+through the refreshed `context.work.active` projection.
 
 Candidate ordering is deterministic and explained. Exact identity, resource
 ownership, and explicit unfinished-request continuation are strongest. Text
 relevance, unfinished state, explicit stars, recency, and frequency organize
 the remaining catalog. A star is a user preference, never mutation authority.
 
-Reading a candidate does not bind the run. The resolver's terminal create or
+Reading a candidate does not bind the run. The deterministic gate's create or
 activate operation binds the already-prepared run; it never allocates another
-run. Once bound, the workstream/request identity is immutable. At most five
-recent/relevant candidates are mounted while unbound, and only the single
-active workstream is mounted after binding.
+run. It rechecks exact candidate identity and HEAD immediately before
+activation. Creation performs a fresh search and asks the user when a probable
+or definite existing owner remains. Once bound, the workstream/request
+identity is immutable. At most five recent/relevant candidates are mounted
+while unbound, and only the single active workstream is mounted after binding.
 
 Activating an existing workstream requires an explicit choice:
 
@@ -173,16 +170,17 @@ A recent workstream never silently owns the current turn.
 
 Every accepted user message or system event creates one run atomically.
 
-- An unbound run may converse and use safe observational tools. Actionable
-  ownership resolution runs through the isolated resolver.
+- An unbound run may converse and use safe observational tools, including
+  read-only workstream and resource-owner discovery. Mutation requires an
+  evidence-backed proposal to the deterministic `resolve` gate.
 - A workstream-bound run may use resources according to their declared access.
 - Mutation without a binding is rejected with a stable repair code.
 - Binding refreshes context; the model then makes a fresh mutation decision.
   Mutation calls are never deferred or replayed.
 
-One run may observe first and bind later without changing its run id. Resolver
-steps remain in their own journal and do not become task-step or completion
-evidence.
+One run may observe first and bind later without changing its run id. Routing
+observations are main-run steps, while the gate itself is a control event and
+never a task step. Routing-only evidence cannot prove task completion.
 
 ## Exact Resource Mutation
 
@@ -196,6 +194,13 @@ The service rejects path escapes, unsafe symlinks, ambiguous resource owners,
 unbound calls, cross-resource targets, unknown mutation effects, and stale
 operations. After execution it observes the same targets again and records a
 verified mutation result or recovery state.
+
+Snapshots never follow symbolic links. Ordinary directory resources record an
+unrelated link as a link entry; a mutation target that is itself a link or
+traverses one is rejected. Git-repository snapshots cover tracked and
+non-ignored files plus every exact declared target, including an ignored
+target. This keeps generated dependency trees outside the snapshot without
+weakening evidence for the authorized target.
 
 Tool output alone is not mutation truth. Deterministic verification and the
 before/after resource observations are authoritative.
@@ -231,6 +236,14 @@ journal closes as `incomplete/interrupted`. Verified dirty resource changes
 are never deleted automatically. An unresolved mutation recovery state blocks
 another run in the same agent stream until safety is restored.
 
+Mutation authority is exposed to the executor only after the before-snapshot
+is durable. If preparation fails before that point, the operation is recorded
+as `no_change`, its lease is released, and the run remains usable because the
+tool could not have executed. On restart, the same release is automatic only
+when the preparation receipt was never completed, no tool status exists, and
+no resource event exists. Completed authority or any execution uncertainty
+remains `recovery_required` for explicit recovery.
+
 Catalog rebuild scans only validated context repositories. It reconstructs
 workstream and resource relationships from their committed context, but
 operational preferences such as stars and access counts are not reconstructible
@@ -258,10 +271,11 @@ revert the real-world resource.
 - `ayati-context-engine/src/services/workstream-lifecycle-service.ts`
 - `ayati-context-engine/src/services/workstream-discovery-service.ts`
 - `ayati-context-engine/src/services/workstream-binding-service.ts`
-- `ayati-context-engine/src/repositories/workstream-resolution-records.ts`
 - `ayati-context-engine/src/services/workstream-finalization-service.ts`
 - `ayati-main/src/app/resource-scoped-tool-executor.ts`
 - `ayati-main/src/app/context-engine-runtime.ts`
 - `ayati-main/src/ivec/agent-runner/workstream-binding-capability-policy.ts`
-- `ayati-main/src/ivec/workstream-resolution/`
+- `ayati-main/src/ivec/agent-runner/workstream-routing-evidence.ts`
+- `ayati-main/src/ivec/agent-runner/deterministic-resolve.ts`
+- `ayati-main/src/ivec/workstream-binding/`
 - `ayati-main/src/skills/builtins/git-context/`

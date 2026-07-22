@@ -161,7 +161,7 @@ describe("AsyncAgentFeedbackLedger", () => {
           responseKind: "reply",
           iterations: 3,
           toolCalls: 2,
-          toolLoadDecisions: 1,
+          modeTransitions: 1,
           actionSteps: 1,
           verificationPassed: true,
           basedOnVerifiedFacts: true,
@@ -189,7 +189,7 @@ describe("AsyncAgentFeedbackLedger", () => {
       responseKind?: string;
       iterations?: number;
       toolCalls?: number;
-      toolLoadDecisions?: number;
+      modeTransitions?: number;
       actionSteps?: number;
       verificationPassed?: boolean;
       basedOnVerifiedFacts?: boolean;
@@ -206,7 +206,7 @@ describe("AsyncAgentFeedbackLedger", () => {
     expect(summary.responseKind).toBe("reply");
     expect(summary.iterations).toBe(3);
     expect(summary.toolCalls).toBe(2);
-    expect(summary.toolLoadDecisions).toBe(1);
+    expect(summary.modeTransitions).toBe(1);
     expect(summary.actionSteps).toBe(1);
     expect(summary.verificationPassed).toBeUndefined();
     expect(summary.basedOnVerifiedFacts).toBe(true);
@@ -226,6 +226,98 @@ describe("AsyncAgentFeedbackLedger", () => {
     expect(triage.outcome).toBe("healthy");
     expect(triage.findings?.[0]).toMatchObject({ code: "healthy_conversation", severity: "info" });
     expect(triage.rawSummaryPath).toBe("feedback/latest-summary.json");
+  });
+
+  it("reduces virtual navigation and the deterministic binding gate into the final summary", async () => {
+    const ledger = new AsyncAgentFeedbackLedger({
+      dataDir: tempDir,
+      enabled: true,
+      now: () => new Date("2026-07-22T10:00:00.000Z"),
+    });
+    const base = { sessionId: "session-navigation", seq: 1, runId: "run-navigation" };
+    ledger.record({
+      ...base,
+      stage: "virtual_mode",
+      event: "transition_requested",
+      data: { source: "ENTRY" },
+    });
+    ledger.record({
+      ...base,
+      stage: "workstream_binding",
+      event: "deterministic_binding_started",
+      data: { proposal: { kind: "create" } },
+    });
+    ledger.record({
+      ...base,
+      stage: "workstream_binding",
+      event: "deterministic_binding_resolved",
+      data: {
+        status: "resolved",
+        kind: "created",
+        workstreamId: "W-NAV",
+        requestId: "R-NAV",
+        contextRevision: "context:bound",
+      },
+    });
+    ledger.record({
+      ...base,
+      stage: "virtual_mode",
+      event: "transition_resolved",
+      data: { mode: { active: "execute", revision: 1 } },
+    });
+    ledger.record({
+      ...base,
+      stage: "virtual_mode",
+      event: "validation_accepted",
+      data: { mode: { active: "execute", revision: 1 } },
+    });
+    ledger.record({
+      ...base,
+      stage: "final",
+      event: "reply",
+      data: {
+        feedbackSummary: {
+          status: "completed",
+          responseKind: "reply",
+          iterations: 3,
+          toolCalls: 1,
+          modeTransitions: 1,
+          actionSteps: 1,
+          verificationPassed: true,
+          basedOnVerifiedFacts: true,
+          warnings: [],
+        },
+      },
+    });
+    await ledger.flush();
+
+    const summary = JSON.parse(await readFile(
+      join(tempDir, "feedback", "latest-summary.json"),
+      "utf8",
+    )) as {
+      navigation?: Record<string, unknown>;
+      contextEngine?: Record<string, unknown>;
+    };
+    expect(summary.navigation).toEqual({
+      currentMode: "execute",
+      modeRevision: 1,
+      transitionRequests: 1,
+      transitionAccepted: 1,
+      transitionRejected: 0,
+      bindingAttempts: 1,
+      bindingStatus: "resolved",
+      validationAttempts: 1,
+      validationAccepted: 1,
+      validationRejected: 0,
+    });
+    expect(summary.contextEngine).toMatchObject({
+      routeStatus: "ready",
+      routeSource: "deterministic_gate",
+      pendingTurnStatus: "bound",
+      workstreamBound: true,
+      workstreamId: "W-NAV",
+      contextRevision: "context:bound",
+    });
   });
 
   it("includes compact context-engine state in the latest summary", async () => {
@@ -253,7 +345,7 @@ describe("AsyncAgentFeedbackLedger", () => {
             context: boundFeedbackContext(),
             routeStatus: "ready",
             routeMode: "activated",
-            routeSource: "auto",
+            routeSource: "deterministic_gate",
             finalizationStatus: "not_started",
             committed: false,
           }),
@@ -278,7 +370,7 @@ describe("AsyncAgentFeedbackLedger", () => {
     expect(summary.contextEngine).toMatchObject({
       pendingTurnStatus: "bound",
       routeMode: "activated",
-      routeSource: "auto",
+      routeSource: "deterministic_gate",
       workstreamId: "W-1",
       branch: "main",
       runId: "run-3",
@@ -713,11 +805,11 @@ describe("AsyncAgentFeedbackLedger", () => {
       responseKind: "reply",
       iterations: 12,
       toolCalls: 1,
-      toolLoadDecisions: 3,
+      modeTransitions: 6,
       actionSteps: 1,
       verificationPassed: false,
       basedOnVerifiedFacts: false,
-      warnings: ["runtime_error", "repeated_tool_load", "verification_failed"],
+      warnings: ["runtime_error", "excessive_mode_transitions", "verification_failed"],
       rawPath: "feedback/2026-06-23/session-session-1.jsonl",
     });
 
@@ -727,7 +819,7 @@ describe("AsyncAgentFeedbackLedger", () => {
       "runtime_error",
       "verification_failed",
       "ungrounded_final_reply",
-      "repeated_tool_load",
+      "excessive_mode_transitions",
       "many_iterations",
     ]);
     expect(triage.topRecommendation).toContain("raw feedback log");
@@ -765,7 +857,7 @@ describe("AsyncAgentFeedbackLedger", () => {
       seq: 2,
       runId: "RUN-2",
       stage: "context_engine",
-      event: "agent_routed",
+      event: "run_workstream_bound",
       data: {
         workstreamId: "W-20260718-0001",
         runId: "RUN-2",

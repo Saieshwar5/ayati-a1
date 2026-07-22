@@ -16,6 +16,7 @@ import type {
 } from "./types.js";
 import { EVOLVING_MEMORY_SECTION_ID, TIME_BASED_SECTION_ID, USER_FACTS_SECTION_ID } from "./types.js";
 import { ProfileProjector, type SnapshotProjectionResult } from "./profile-projector.js";
+import { withEvaluationModelOperation } from "../../evaluation/capture-runtime.js";
 
 interface SectionChunkInfo {
   index: number;
@@ -299,10 +300,16 @@ export class MemoryConsolidator {
     turns: MemoryConsolidationJobPayload["turns"],
     chunkInfo?: SectionChunkInfo,
   ): Promise<MemoryProposal[]> {
-    const output = await this.provider.generateTurn({
-      messages: this.buildSectionMessages(payload, policy, sectionId, turns, chunkInfo),
-      responseFormat: this.provider.capabilities.structuredOutput?.jsonObject ? { type: "json_object" } : undefined,
-    });
+    const output = await withEvaluationModelOperation({
+      purpose: "memory_consolidation",
+      sessionId: payload.sessionId,
+      runId: turns.map((turn) => turn.workRunId).find((value): value is string => Boolean(value)),
+      laneId: `memory:${payload.sessionId}`,
+      attribution: "descendant_background",
+    }, async () => await this.provider.generateTurn({
+        messages: this.buildSectionMessages(payload, policy, sectionId, turns, chunkInfo),
+        responseFormat: this.provider.capabilities.structuredOutput?.jsonObject ? { type: "json_object" } : undefined,
+      }));
     if (output.type !== "assistant" || !output.content) {
       throw new Error(`Personal memory ${sectionId} evolution returned no assistant JSON`);
     }

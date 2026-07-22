@@ -274,10 +274,8 @@ function hasResourceEvidence(state: LoopState, resourceId: string, resolvedPath:
 }
 
 function isTaskExecutionTool(tool: string): boolean {
-  return tool !== "workstream_resolve"
-    && tool !== "workstream_completion"
-    && tool !== "decision_load_tools"
-    && tool !== "ask_user_feedback"
+  return tool !== "decision_validate"
+    && tool !== "decision_transition_mode"
     && !tool.startsWith("git_context_");
 }
 

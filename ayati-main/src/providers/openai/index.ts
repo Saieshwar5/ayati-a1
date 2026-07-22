@@ -6,6 +6,7 @@ import type {
   LlmToolChoice,
   LlmToolCall,
   LlmInputTokenCount,
+  LlmTokenUsage,
   LlmTurnStreamCallbacks,
   LlmToolSchema,
   LlmTurnInput,
@@ -24,6 +25,12 @@ import {
   toProviderToolName,
   type ToolNameMaps,
 } from "../shared/tool-name-mapping.js";
+import { readOpenAiCompatibleUsage } from "../shared/token-usage.js";
+import {
+  captureProviderNativePayload,
+  captureProviderNativeResponse,
+  isLiveEvaluationEnabled,
+} from "../../evaluation/capture-runtime.js";
 
 let client: OpenAI | null = null;
 
@@ -196,11 +203,14 @@ const provider: LlmProvider = {
     const inputItems = toOpenAiCountInputItems(input.messages, nameMaps);
     const tools = toOpenAiResponseTools(input.tools, nameMaps);
 
-    const count = await client.responses.inputTokens.count({
+    const countRequest = {
       model,
       input: inputItems as any,
       ...(tools ? { tools: tools as any } : {}),
-    });
+    };
+    captureProviderNativePayload({ provider: "openai", operation: "countInputTokens", payload: countRequest });
+    const count = await client.responses.inputTokens.count(countRequest);
+    captureProviderNativeResponse({ provider: "openai", operation: "countInputTokens", response: count });
 
     return {
       provider: "openai",
@@ -224,7 +234,7 @@ const provider: LlmProvider = {
       compileResponseFormatForProvider(provider.name, provider.capabilities, input.responseFormat),
     );
 
-    const response = await client.chat.completions.create({
+    const request = {
       model,
       messages,
       ...(responseFormat ? { response_format: responseFormat as any } : {}),
@@ -242,7 +252,11 @@ const provider: LlmProvider = {
             ...(typeof input.parallelToolCalls === "boolean" ? { parallel_tool_calls: input.parallelToolCalls } : {}),
           }
         : {}),
-    });
+    } as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming;
+    captureProviderNativePayload({ provider: "openai", operation: "generateTurn", payload: request });
+    const response = await client.chat.completions.create(request);
+    captureProviderNativeResponse({ provider: "openai", operation: "generateTurn", response });
+    const usage = readOpenAiCompatibleUsage("openai", model, response);
 
     const message = response.choices[0]?.message;
     if (!message) {
@@ -266,6 +280,7 @@ const provider: LlmProvider = {
         type: "tool_calls",
         calls,
         ...(typeof message.content === "string" ? { assistantContent: message.content } : {}),
+        ...(usage ? { usage } : {}),
       };
     }
 
@@ -277,6 +292,7 @@ const provider: LlmProvider = {
     return {
       type: "assistant",
       content: reply,
+      ...(usage ? { usage } : {}),
     };
   },
 
@@ -294,7 +310,7 @@ const provider: LlmProvider = {
       compileResponseFormatForProvider(provider.name, provider.capabilities, input.responseFormat),
     );
 
-    const stream = await client.chat.completions.create({
+    const request = {
       model,
       messages,
       stream: true,
@@ -313,32 +329,42 @@ const provider: LlmProvider = {
             ...(typeof input.parallelToolCalls === "boolean" ? { parallel_tool_calls: input.parallelToolCalls } : {}),
           }
         : {}),
-    } as any);
+    };
+    captureProviderNativePayload({ provider: "openai", operation: "streamTurn", payload: request });
+    const stream = await client.chat.completions.create(request as any);
 
     const textParts: string[] = [];
+    const nativeChunks: unknown[] | undefined = isLiveEvaluationEnabled() ? [] : undefined;
+    let usage: LlmTokenUsage | undefined;
     const toolCalls = new Map<number, {
       id?: string;
       name?: string;
       arguments: string;
     }>();
 
-    for await (const chunk of stream as unknown as AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>) {
-      const delta = chunk.choices[0]?.delta;
-      const content = delta?.content;
-      if (typeof content === "string" && content.length > 0) {
-        textParts.push(content);
-        callbacks.onTextDelta?.(content);
+    try {
+      for await (const chunk of stream as unknown as AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>) {
+        nativeChunks?.push(chunk);
+        usage = readOpenAiCompatibleUsage("openai", model, chunk) ?? usage;
+        const delta = chunk.choices[0]?.delta;
+        const content = delta?.content;
+        if (typeof content === "string" && content.length > 0) {
+          textParts.push(content);
+          callbacks.onTextDelta?.(content);
+        }
+        for (const call of delta?.tool_calls ?? []) {
+          const index = typeof call.index === "number" ? call.index : toolCalls.size;
+          const existing = toolCalls.get(index) ?? { arguments: "" };
+          const fn = call.function;
+          toolCalls.set(index, {
+            id: call.id ?? existing.id,
+            name: fn?.name ?? existing.name,
+            arguments: `${existing.arguments}${fn?.arguments ?? ""}`,
+          });
+        }
       }
-      for (const call of delta?.tool_calls ?? []) {
-        const index = typeof call.index === "number" ? call.index : toolCalls.size;
-        const existing = toolCalls.get(index) ?? { arguments: "" };
-        const fn = call.function;
-        toolCalls.set(index, {
-          id: call.id ?? existing.id,
-          name: fn?.name ?? existing.name,
-          arguments: `${existing.arguments}${fn?.arguments ?? ""}`,
-        });
-      }
+    } finally {
+      if (nativeChunks) captureProviderNativeResponse({ provider: "openai", operation: "streamTurn", response: { chunks: nativeChunks } });
     }
 
     if (toolCalls.size > 0) {
@@ -351,6 +377,7 @@ const provider: LlmProvider = {
         type: "tool_calls",
         calls,
         ...(textParts.length > 0 ? { assistantContent: textParts.join("") } : {}),
+        ...(usage ? { usage } : {}),
       };
     }
 
@@ -362,6 +389,7 @@ const provider: LlmProvider = {
     return {
       type: "assistant",
       content: reply,
+      ...(usage ? { usage } : {}),
     };
   },
 };

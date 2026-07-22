@@ -5,7 +5,6 @@ import type { ToolCatalog, ToolCatalogEntry } from "./tool-catalog.js";
 import { getToolLoadPriority } from "../../skills/tool-taxonomy.js";
 import {
   deriveWorkstreamBindingCapabilityPolicy,
-  deterministicToolsForWorkstreamBinding,
   isGitContextRoutingToolName,
   isToolAllowedByWorkstreamBinding,
   type WorkstreamBindingCapabilityPolicy,
@@ -74,6 +73,10 @@ export class ToolWorkingSetManager {
     return this.catalog.promptSummary(options);
   }
 
+  getCapabilitySummary(): string {
+    return this.catalog.capabilitySummary();
+  }
+
   visibleToolDefinitions(context: ToolExecutionContext): ToolDefinition[] {
     return this.toolExecutor.definitions(context);
   }
@@ -94,9 +97,7 @@ export class ToolWorkingSetManager {
   ): ToolLoadResult {
     const runState = this.getRunState(context);
     const policy = deriveWorkstreamBindingCapabilityPolicy(state);
-    const request = buildDeterministicLoadRequest(state);
-    const result = this.load(request, context, policy);
-    let prepared = result;
+    let prepared = notNeededToolLoadResult();
     const policyRemoved: string[] = [];
     this.removeToolsDisallowedByWorkstreamBinding(runState, policy, policyRemoved);
     if (policyRemoved.length > 0) {
@@ -110,6 +111,49 @@ export class ToolWorkingSetManager {
     }
     this.syncMount(context);
     return prepared;
+  }
+
+  resolveCapabilityTools(capabilities: string[]): {
+    toolNames: string[];
+    missingCapabilities: string[];
+  } {
+    const toolNames = new Set<string>();
+    const missingCapabilities: string[] = [];
+    for (const capability of normalizeStrings(capabilities)) {
+      const entries = this.catalog.toolsForGroup(capability);
+      if (entries.length === 0) {
+        missingCapabilities.push(capability);
+        continue;
+      }
+      for (const entry of entries) {
+        toolNames.add(entry.name);
+      }
+    }
+    return {
+      toolNames: [...toolNames],
+      missingCapabilities,
+    };
+  }
+
+  replaceWithTools(
+    toolNames: string[],
+    context: ToolExecutionContext,
+    policy: WorkstreamBindingCapabilityPolicy,
+  ): ToolLoadResult {
+    const state = this.getRunState(context);
+    const evicted = [...state.ordered];
+    state.ordered = [];
+    state.loadedAtStep.clear();
+    state.usedAtStep.clear();
+    this.syncMount(context);
+    const result = this.load({ toolNames: normalizeStrings(toolNames) }, context, policy);
+    return {
+      ...result,
+      evicted: evicted.filter((tool) => !result.loaded.includes(tool)),
+      message: evicted.length > 0
+        ? `${result.message} Replaced the previous mode tool surface.`
+        : result.message,
+    };
   }
 
   load(
@@ -428,124 +472,6 @@ export class ToolWorkingSetManager {
   }
 }
 
-function buildDeterministicLoadRequest(
-  state: LoopState,
-): ToolLoadRequest {
-  const policy = deriveWorkstreamBindingCapabilityPolicy(state);
-  const modeTools = deterministicToolsForWorkstreamBinding(policy);
-  if (modeTools) {
-    return {
-      toolNames: modeTools,
-    };
-  }
-  const pendingTurnStatus = state.harnessContext.contextEngine?.current.routing?.status;
-  if (pendingTurnStatus === "unbound") {
-    return {
-      toolNames: ["agent_history_search", "agent_history_read"],
-    };
-  }
-  if (pendingTurnStatus === "clarifying") {
-    return {};
-  }
-
-  const text = [
-    state.userMessage,
-    state.workState.summary,
-    state.workState.nextStep,
-    ...(state.workState.openWork ?? []),
-    ...(state.workState.blockers ?? []),
-    ...(state.failureHistory.slice(-2).flatMap((failure) => [failure.reason, ...failure.blockedTargets])),
-  ].join(" ").toLowerCase();
-
-  const toolNames = new Set<string>();
-  const groups = new Set<string>();
-
-  if (/\b(find|search|where|locate)\b/.test(text)) {
-    toolNames.add("inspect_paths");
-    toolNames.add("find_files");
-    toolNames.add("search_in_files");
-  }
-  if (/\b(read|open|show|inspect|view)\b/.test(text)) {
-    toolNames.add("inspect_paths");
-    toolNames.add("find_files");
-    toolNames.add("read_files");
-  }
-  if (/\b(edit|fix|update|modify|refactor|change)\b/.test(text)) {
-    toolNames.add("inspect_paths");
-    toolNames.add("find_files");
-    toolNames.add("search_in_files");
-    toolNames.add("read_files");
-    toolNames.add("patch_files");
-  }
-  if (hasFileCreationIntent(text)) {
-    groups.add("file:create");
-    groups.add("file:write");
-    groups.add("file:read");
-  } else if (/\b(create|write|generate|save)\b/.test(text)) {
-    groups.add("file:write");
-  }
-  if (hasProcessCommandIntent(text)) {
-    groups.add("process:command");
-    groups.add("file:verify");
-  }
-  if (/\b(pdf|docx|document|summari[sz]e|section|citation)\b/.test(text) || hasPreparedDocument(state)) {
-    toolNames.add("attachment_restore");
-    toolNames.add("document_query");
-    toolNames.add("document_read_section");
-  }
-  if (/\b(csv|xlsx|dataset|table|rows|columns|dataframe|statistics|plot|chart)\b/.test(text) || hasPreparedDataset(state)) {
-    toolNames.add("attachment_restore");
-    toolNames.add("dataset_profile");
-    toolNames.add("dataset_query");
-  }
-  if (/\b(sql|sqlite|database|db)\b/.test(text)) {
-    groups.add("skill:database");
-  }
-  if (/\b(memory|remember|recall|forget|preference)\b/.test(text)) {
-    groups.add("domain:memory");
-    groups.add("domain:recall");
-  }
-  if (hasUiWorkspaceIntent(text)) {
-    groups.add("workflow:ui_workspace");
-  }
-  if (hasAttachmentWork(state)) {
-    toolNames.add("attachment_restore");
-    toolNames.add("attachment_list");
-    toolNames.add("attachment_read");
-  }
-
-  return {
-    toolNames: [...toolNames],
-    groups: [...groups],
-    ...(text.trim() ? { query: text } : {}),
-  };
-}
-
-function hasFileCreationIntent(text: string): boolean {
-  const hasCreationVerb = /\b(build|create|make|generate|write|save|scaffold|set up|setup)\b/.test(text);
-  if (!hasCreationVerb) {
-    return false;
-  }
-  return /\b(website|web site|site|app|application|project|page|dashboard|component|script|file|files|folder|directory|html|css|js|javascript|typescript|react|vue|svelte|vanilla)\b/.test(text);
-}
-
-function hasProcessCommandIntent(text: string): boolean {
-  if (/\b(run|execute|test|install|start|serve|launch|compile|terminal|command|server)\b/.test(text)) {
-    return true;
-  }
-  if (/\b(run|execute)\s+(the\s+)?build\b|\bbuild\s+(command|script|step|pipeline)\b/.test(text)) {
-    return true;
-  }
-  return /\b(npm|pnpm|yarn|bun|node|deno|python|pytest|vitest|jest|cargo|go test|make|docker|git)\b/.test(text);
-}
-
-function hasUiWorkspaceIntent(text: string): boolean {
-  if (/\b(window|workspace|preview|focus|layout)\b/.test(text)) {
-    return true;
-  }
-  return /\b(open|show|launch|view)\s+(it\s+)?(in\s+)?(the\s+)?browser\b|\bbrowser\s+(preview|window)\b/.test(text);
-}
-
 function normalizeRequest(request: ToolLoadRequest): Required<Pick<ToolLoadRequest, "toolNames" | "groups">> & Pick<ToolLoadRequest, "query"> {
   const query = request.query?.trim();
   return {
@@ -605,7 +531,7 @@ function summarizeLoadMessage(
         ? `No new tools matched the request. Missing selectors: ${missing.join(", ")}.`
         : "No tools matched the request.";
     case "invalid_request":
-      return "decision_load_tools requires at least one non-empty selector: groups, toolNames, or query.";
+      return "A capability request requires at least one exact capability group.";
     case "failed":
       return "Tool loading failed.";
     case "not_needed":
@@ -632,21 +558,17 @@ function formatUnavailableTools(unavailable: ToolLoadUnavailable[]): string {
     .join(", ");
 }
 
-function hasAttachmentWork(state: LoopState): boolean {
-  return (state.attachedDocuments?.length ?? 0) > 0
-    || (state.preparedAttachments?.length ?? 0) > 0
-    || (state.preparedAttachmentRecords?.length ?? 0) > 0
-    || (state.managedFiles?.length ?? 0) > 0
-    || (state.managedDirectories?.length ?? 0) > 0
-    || (state.harnessContext.contextEngine?.workstream?.resources.length ?? 0) > 0;
-}
-
-function hasPreparedDocument(state: LoopState): boolean {
-  return (state.preparedAttachments ?? []).some((attachment) => Boolean(attachment.unstructured));
-}
-
-function hasPreparedDataset(state: LoopState): boolean {
-  return (state.preparedAttachments ?? []).some((attachment) => Boolean(attachment.structured));
+function notNeededToolLoadResult(): ToolLoadResult {
+  return {
+    status: "not_needed",
+    requested: { toolNames: [], groups: [] },
+    loaded: [],
+    alreadyActive: [],
+    evicted: [],
+    missing: [],
+    unavailable: [],
+    message: "No mode transition changed the tool surface.",
+  };
 }
 
 function readRunId(context: ToolExecutionContext): string {

@@ -1,12 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { lstat, readdir } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type {
   PrepareResourceMutationRequest,
   PrepareResourceMutationResponse,
   ResourceEvent,
-  ResourceMutationTarget,
   ResourceRef,
   ResourceVersion,
   VerifyResourceMutationRequest,
@@ -19,34 +15,17 @@ import {
   recordResourceObservation,
 } from "../repositories/resource-records.js";
 import { readRunEvidence } from "../repositories/run-records.js";
+import {
+  compareMutationSnapshots,
+  mutationPathIsWithin,
+  mutationPathsOverlap,
+  parseMutationSnapshot,
+  resolveMutationTargets,
+  snapshotMutationOperation,
+  type ResolvedMutationTarget,
+} from "./resource-mutation-snapshot.js";
 
 const LEASE_DURATION_MS = 15 * 60 * 1_000;
-const MAX_SNAPSHOT_ENTRIES = 20_000;
-const MAX_SNAPSHOT_BYTES = 512 * 1024 * 1024;
-
-interface ResolvedTarget extends ResourceMutationTarget {
-  resolvedPath: string;
-  rootPath: string;
-}
-
-interface SnapshotEntry {
-  path: string;
-  kind: "file" | "directory";
-  size: number;
-  sha256?: string;
-}
-
-interface ResourceSnapshot {
-  resourceId: string;
-  rootPath: string;
-  entries: SnapshotEntry[];
-  version: ResourceVersion;
-}
-
-interface OperationSnapshot {
-  targets: ResolvedTarget[];
-  resources: ResourceSnapshot[];
-}
 
 interface OperationRow {
   operation_id: string;
@@ -66,9 +45,7 @@ interface OperationRow {
 }
 
 export class ResourceMutationService {
-  constructor(
-    private readonly database: ContextDatabase,
-  ) {}
+  constructor(private readonly database: ContextDatabase) {}
 
   async prepare(
     input: PrepareResourceMutationRequest,
@@ -76,7 +53,7 @@ export class ResourceMutationService {
   ): Promise<PrepareResourceMutationResponse> {
     const resources = this.requireMutationResources(input);
     const streamId = readRunEvidence(this.database, input.runId)!.streamId;
-    const targets = await resolveTargets(resources, input.targets);
+    const targets = await resolveMutationTargets(resources, input.targets);
     const leaseId = stableId("RL", input.runId + "\u0000" + input.callId);
     const operationId = stableId("RM", input.runId + "\u0000" + input.callId);
     const lockToken = randomBytes(32).toString("base64url");
@@ -137,8 +114,7 @@ export class ResourceMutationService {
     };
 
     try {
-      onAuthorityPrepared?.(response);
-      const snapshot = await snapshotOperation(targets, input.at);
+      const snapshot = await snapshotMutationOperation(targets, input.at);
       this.database.transaction(() => {
         const result = this.database.prepare([
           "UPDATE resource_mutation_operations SET before_json = ?",
@@ -146,8 +122,9 @@ export class ResourceMutationService {
         ].join(" ")).run(JSON.stringify(snapshot), operationId);
         if (Number(result.changes) !== 1) throw new Error("Mutation operation disappeared while preparing.");
       });
+      onAuthorityPrepared?.(response);
     } catch (error) {
-      this.markRecoveryRequired(operationId, leaseId, error);
+      this.releaseFailedPreparation(operationId, leaseId, input.at, error);
       throw error;
     }
 
@@ -206,7 +183,7 @@ export class ResourceMutationService {
         message: "Resource mutation capability token is invalid.",
       });
     }
-    const before = parseSnapshot(operation.before_json);
+    const before = parseMutationSnapshot(operation.before_json);
     if (!before) {
       this.markRecoveryRequired(operation.operation_id, operation.lease_id, "Missing before snapshot.");
       return {
@@ -218,9 +195,9 @@ export class ResourceMutationService {
       };
     }
 
-    let after: OperationSnapshot;
+    let after: Awaited<ReturnType<typeof snapshotMutationOperation>>;
     try {
-      after = await snapshotOperation(before.targets, input.at);
+      after = await snapshotMutationOperation(before.targets, input.at);
     } catch (error) {
       this.markRecoveryRequired(operation.operation_id, operation.lease_id, error);
       return {
@@ -231,7 +208,7 @@ export class ResourceMutationService {
         events: [],
       };
     }
-    const comparison = compareSnapshots(before, after);
+    const comparison = compareMutationSnapshots(before, after);
     const failedWithChanges = input.toolStatus === "failed" && comparison.changedPaths.length > 0;
     if (comparison.unexpectedPaths.length > 0 || failedWithChanges) {
       const verification = {
@@ -291,7 +268,7 @@ export class ResourceMutationService {
               operationId: operation.operation_id,
               callId: operation.call_id,
               changedPaths: comparison.changedPaths.filter(
-                (path) => isWithin(afterResource.rootPath, path),
+                (path) => mutationPathIsWithin(afterResource.rootPath, path),
               ),
             },
             summary: mutationSummary(type, afterResource.resourceId),
@@ -342,7 +319,8 @@ export class ResourceMutationService {
     };
   }
 
-  recoverInterrupted(): string[] {
+  recoverInterrupted(at: string): string[] {
+    this.recoverSafePreExecutionFailures(at);
     const rows = this.database.prepare([
       "SELECT lease_id, run_id FROM resource_mutation_leases WHERE status = 'active'",
     ].join(" ")).all() as unknown as Array<{ lease_id: string; run_id: string }>;
@@ -411,7 +389,7 @@ export class ResourceMutationService {
     return resources;
   }
 
-  private assertScopesAvailable(targets: ResolvedTarget[]): void {
+  private assertScopesAvailable(targets: ResolvedMutationTarget[]): void {
     const active = this.database.prepare([
       "SELECT l.resource_id, l.canonical_scope, a.run_id FROM resource_mutation_locks l",
       "JOIN resource_mutation_leases a ON a.lease_id = l.lease_id",
@@ -423,7 +401,7 @@ export class ResourceMutationService {
     }>;
     const conflict = active.find((lock) => targets.some((target) =>
       lock.resource_id === target.resourceId
-      && pathsOverlap(lock.canonical_scope, target.resolvedPath)));
+      && mutationPathsOverlap(lock.canonical_scope, target.resolvedPath)));
     if (conflict) {
       throw new ContextEngineServiceError({
         code: "MUTATION_AUTHORITY_CONFLICT",
@@ -492,188 +470,103 @@ export class ResourceMutationService {
       ].join(" ")).run(leaseId);
     });
   }
-}
 
-async function resolveTargets(
-  resources: ReadonlyMap<string, ResourceRef>,
-  targets: ResourceMutationTarget[],
-): Promise<ResolvedTarget[]> {
-  const resolved: ResolvedTarget[] = [];
-  const scopes = new Set<string>();
-  for (const target of targets) {
-    const resource = resources.get(target.resourceId);
-    if (!resource || resource.locator.kind !== "filesystem") throw new Error("Missing resource target.");
-    const rootPath = resolve(resource.locator.path);
-    let resolvedPath = rootPath;
-    if (target.relativePath) {
-      if (resource.kind !== "directory" && resource.kind !== "git_repository") {
-        throw invalidTarget(target, "Relative mutation targets require a directory resource.");
-      }
-      const portable = target.relativePath.replaceAll("\\", "/");
-      if (isAbsolute(portable) || portable.split("/").some((part) => part === ".." || part === ".")) {
-        throw invalidTarget(target, "Relative mutation target is not a safe portable path.");
-      }
-      resolvedPath = resolve(rootPath, portable);
-      if (!isWithin(rootPath, resolvedPath)) {
-        throw invalidTarget(target, "Relative mutation target escapes its resource root.");
-      }
-    }
-    await assertNoSymlinkTraversal(rootPath, resolvedPath);
-    const state = await lstat(resolvedPath).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return undefined;
-      throw error;
-    });
-    if (state?.isSymbolicLink()) throw invalidTarget(target, "Mutation target may not be a symbolic link.");
-    if (state && ((target.kind === "file" && !state.isFile())
-      || (target.kind === "directory" && !state.isDirectory()))) {
-      throw invalidTarget(target, "Mutation target kind does not match the filesystem.");
-    }
-    const identity = target.resourceId + "\u0000" + resolvedPath;
-    if (scopes.has(identity)) continue;
-    scopes.add(identity);
-    resolved.push({ ...target, resolvedPath, rootPath });
-  }
-  return resolved.sort((left, right) => left.resourceId.localeCompare(right.resourceId)
-    || left.resolvedPath.localeCompare(right.resolvedPath));
-}
-
-async function assertNoSymlinkTraversal(root: string, target: string): Promise<void> {
-  const suffix = relative(root, target);
-  let current = root;
-  for (const part of suffix.split(sep).filter(Boolean)) {
-    current = join(current, part);
-    const state = await lstat(current).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return undefined;
-      throw error;
-    });
-    if (!state) break;
-    if (state.isSymbolicLink()) {
-      throw new ContextEngineServiceError({
-        code: "MUTATION_TARGET_INVALID",
-        message: "Mutation target traverses a symbolic link.",
-        details: { path: current },
-      });
-    }
-  }
-}
-
-async function snapshotOperation(targets: ResolvedTarget[], at: string): Promise<OperationSnapshot> {
-  const resources: ResourceSnapshot[] = [];
-  for (const target of targets) {
-    if (resources.some((resource) => resource.resourceId === target.resourceId)) continue;
-    resources.push(await snapshotResource(target.resourceId, target.rootPath, at));
-  }
-  return { targets, resources };
-}
-
-async function snapshotResource(
-  resourceId: string,
-  rootPath: string,
-  at: string,
-): Promise<ResourceSnapshot> {
-  const entries: SnapshotEntry[] = [];
-  let totalBytes = 0;
-  const rootState = await lstat(rootPath).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return undefined;
-    throw error;
-  });
-  if (rootState?.isSymbolicLink()) {
-    throw new ContextEngineServiceError({
-      code: "RESOURCE_VERIFICATION_UNAVAILABLE",
-      message: "Resource root became a symbolic link.",
-      details: { resourceId, rootPath },
+  private releaseFailedPreparation(
+    operationId: string,
+    leaseId: string,
+    at: string,
+    error: unknown,
+  ): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const verification = {
+      verified: true,
+      toolStatus: "failed",
+      changedPaths: [],
+      unexpectedPaths: [],
+      preparationFailed: true,
+      toolExecuted: false,
+    };
+    this.database.transaction(() => {
+      this.database.prepare([
+        "UPDATE resource_mutation_operations SET after_json = COALESCE(after_json, 'null'),",
+        "verification_json = ?, event_plan_json = '[]', tool_status = 'failed',",
+        "status = 'no_change', verified_at = ?, last_error = ?",
+        "WHERE operation_id = ? AND status IN ('prepared', 'recovery_required')",
+      ].join(" ")).run(JSON.stringify(verification), at, message, operationId);
+      this.database.prepare([
+        "UPDATE resource_mutation_leases SET status = 'released', released_at = ?, last_error = ?",
+        "WHERE lease_id = ? AND status IN ('active', 'recovery_required')",
+      ].join(" ")).run(at, message, leaseId);
     });
   }
-  async function visit(path: string): Promise<void> {
-    if (entries.length >= MAX_SNAPSHOT_ENTRIES) verificationLimit(resourceId, "entry count");
-    const state = await lstat(path);
-    const itemPath = relative(rootPath, path).replaceAll("\\", "/") || ".";
-    if (state.isSymbolicLink()) {
-      throw new ContextEngineServiceError({
-        code: "RESOURCE_VERIFICATION_UNAVAILABLE",
-        message: "Resource snapshot contains a symbolic link.",
-        details: { resourceId, path },
-      });
-    }
-    if (state.isFile()) {
-      totalBytes += state.size;
-      if (totalBytes > MAX_SNAPSHOT_BYTES) verificationLimit(resourceId, "byte count");
-      entries.push({ path: itemPath, kind: "file", size: state.size, sha256: await hashFile(path) });
-      return;
-    }
-    if (!state.isDirectory()) {
-      throw new ContextEngineServiceError({
-        code: "RESOURCE_VERIFICATION_UNAVAILABLE",
-        message: "Resource snapshot contains a non-file entry.",
-        details: { resourceId, path },
-      });
-    }
-    entries.push({ path: itemPath, kind: "directory", size: 0 });
-    const children = await readdir(path, { withFileTypes: true });
-    children.sort((left, right) => left.name.localeCompare(right.name));
-    for (const child of children) {
-      if (itemPath === "." && child.name === ".git") continue;
-      await visit(join(path, child.name));
-    }
-  }
-  if (rootState) await visit(rootPath);
-  const fingerprint = createHash("sha256").update(JSON.stringify(entries)).digest("hex");
-  const version: ResourceVersion = rootState
-    ? rootState.isFile()
-      ? {
-          key: "file:sha256:" + (entries[0]?.sha256 ?? fingerprint),
-          observedAt: at,
-          exists: true,
-          kind: "file",
-          sha256: entries[0]?.sha256 ?? fingerprint,
-          sizeBytes: rootState.size,
-          modifiedAt: rootState.mtime.toISOString(),
-        }
-      : {
-          key: "directory:" + fingerprint,
-          observedAt: at,
-          exists: true,
-          kind: "directory",
-          fingerprint,
-          entryCount: entries.length,
-          sizeBytes: totalBytes,
-        }
-    : {
-        key: "missing:" + createHash("sha256").update(rootPath).digest("hex"),
-        observedAt: at,
-        exists: false,
-        kind: "unversioned",
-      };
-  return { resourceId, rootPath, entries, version };
-}
 
-function compareSnapshots(before: OperationSnapshot, after: OperationSnapshot): {
-  changedPaths: string[];
-  unexpectedPaths: string[];
-} {
-  const changedPaths = new Set<string>();
-  for (const beforeResource of before.resources) {
-    const afterResource = after.resources.find((item) => item.resourceId === beforeResource.resourceId);
-    if (!afterResource) continue;
-    const beforeEntries = new Map(beforeResource.entries.map((entry) => [entry.path, JSON.stringify(entry)]));
-    const afterEntries = new Map(afterResource.entries.map((entry) => [entry.path, JSON.stringify(entry)]));
-    for (const path of new Set([...beforeEntries.keys(), ...afterEntries.keys()])) {
-      if (beforeEntries.get(path) !== afterEntries.get(path)) {
-        changedPaths.add(resolve(beforeResource.rootPath, path === "." ? "" : path));
+  private recoverSafePreExecutionFailures(at: string): void {
+    const candidates = this.database.prepare([
+      "SELECT o.operation_id, o.lease_id, o.run_id, o.last_error",
+      "FROM resource_mutation_operations o",
+      "JOIN resource_mutation_leases l ON l.lease_id = o.lease_id",
+      "WHERE o.status IN ('prepared', 'recovery_required')",
+      "AND l.status IN ('active', 'recovery_required')",
+      "AND o.tool_status IS NULL",
+      "AND NOT EXISTS (SELECT 1 FROM resource_events e",
+      "  WHERE e.run_id = o.run_id AND e.call_id = o.call_id)",
+    ].join(" ")).all() as unknown as Array<{
+      operation_id: string;
+      lease_id: string;
+      run_id: string;
+      last_error: string | null;
+    }>;
+    for (const candidate of candidates) {
+      if (this.preparationCompleted(candidate.operation_id)) continue;
+      this.releaseFailedPreparation(
+        candidate.operation_id,
+        candidate.lease_id,
+        at,
+        candidate.last_error ?? "Recovered an unpublished mutation preparation after interruption.",
+      );
+      if (!this.runHasRecoveryBlocker(candidate.run_id)) {
+        this.database.prepare([
+          "UPDATE runs SET status = 'running'",
+          "WHERE run_id = ? AND status = 'recovery_required'",
+        ].join(" ")).run(candidate.run_id);
       }
     }
   }
-  const ordered = [...changedPaths].sort();
-  const unexpectedPaths = ordered.filter((path) => !before.targets.some((target) => {
-    if (target.kind === "directory") return isWithin(target.resolvedPath, path);
-    return resolve(target.resolvedPath) === resolve(path);
-  }));
-  return { changedPaths: ordered, unexpectedPaths };
-}
 
-function parseSnapshot(value: string): OperationSnapshot | undefined {
-  if (value === "null") return undefined;
-  return JSON.parse(value) as OperationSnapshot;
+  private preparationCompleted(operationId: string): boolean {
+    const rows = this.database.prepare([
+      "SELECT response_json FROM idempotency_requests",
+      "WHERE operation = 'prepare_resource_mutation' AND status = 'completed'",
+    ].join(" ")).all() as unknown as Array<{ response_json: string }>;
+    return rows.some((row) => {
+      try {
+        const response = JSON.parse(row.response_json) as { operationId?: unknown };
+        return response.operationId === operationId;
+      } catch {
+        return true;
+      }
+    });
+  }
+
+  private runHasRecoveryBlocker(runId: string): boolean {
+    const mutation = this.database.prepare([
+      "SELECT 1 FROM resource_mutation_leases",
+      "WHERE run_id = ? AND status IN ('active', 'recovery_required') LIMIT 1",
+    ].join(" ")).get(runId);
+    const workstreamFinalization = this.database.prepare([
+      "SELECT 1 FROM workstream_finalizations",
+      "WHERE run_id = ? AND phase = 'recovery_required' LIMIT 1",
+    ].join(" ")).get(runId);
+    const unboundFinalization = this.database.prepare([
+      "SELECT 1 FROM unbound_run_finalizations",
+      "WHERE run_id = ? AND phase = 'recovery_required' LIMIT 1",
+    ].join(" ")).get(runId);
+    const route = this.database.prepare([
+      "SELECT 1 FROM workstream_request_route_plans",
+      "WHERE run_id = ? AND phase = 'recovery_required' LIMIT 1",
+    ].join(" ")).get(runId);
+    return Boolean(mutation || workstreamFinalization || unboundFinalization || route);
+  }
 }
 
 function eventType(before: ResourceVersion, after: ResourceVersion): ResourceEvent["type"] {
@@ -703,40 +596,4 @@ function constantTimeEqual(left: string, right: string): boolean {
     difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
   }
   return difference === 0;
-}
-
-function isWithin(parent: string, candidate: string): boolean {
-  const path = relative(resolve(parent), resolve(candidate));
-  return path === "" || (path !== ".." && !path.startsWith(".." + sep) && !isAbsolute(path));
-}
-
-function pathsOverlap(left: string, right: string): boolean {
-  return isWithin(left, right) || isWithin(right, left);
-}
-
-function invalidTarget(target: ResourceMutationTarget, message: string): ContextEngineServiceError {
-  return new ContextEngineServiceError({
-    code: "MUTATION_TARGET_INVALID",
-    message,
-    details: { resourceId: target.resourceId, relativePath: target.relativePath ?? null },
-  });
-}
-
-function verificationLimit(resourceId: string, limit: string): never {
-  throw new ContextEngineServiceError({
-    code: "RESOURCE_VERIFICATION_UNAVAILABLE",
-    message: "Resource is too large for deterministic mutation verification.",
-    details: { resourceId, limit },
-  });
-}
-
-async function hashFile(path: string): Promise<string> {
-  const hash = createHash("sha256");
-  await new Promise<void>((resolvePromise, reject) => {
-    const stream = createReadStream(path);
-    stream.on("data", (chunk) => hash.update(chunk));
-    stream.on("error", reject);
-    stream.on("end", resolvePromise);
-  });
-  return hash.digest("hex");
 }

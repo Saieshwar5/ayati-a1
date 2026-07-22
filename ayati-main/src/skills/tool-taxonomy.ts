@@ -82,10 +82,8 @@ const WORKSTREAM_BOUND_ONLY: ToolPhase[] = ["workstream_bound"];
 const ROUTING_ONLY: ToolPhase[] = ["routing"];
 
 export const NATIVE_CONTROL_TOOL_NAMES = [
-  "decision_load_tools",
-  "workstream_resolve",
-  "ask_user_feedback",
-  "workstream_completion",
+  "decision_transition_mode",
+  "decision_validate",
 ] as const;
 
 const NATIVE_CONTROL_TOOLS = new Set<string>(NATIVE_CONTROL_TOOL_NAMES);
@@ -235,10 +233,10 @@ export const TOOL_TAXONOMY: Readonly<Record<string, ToolTaxonomyEntry>> = buildT
 
   git_context_activate_workstream: control(["workstream_routing"], "single_use", ROUTING_ONLY, { loadGroups: ["workstream:routing"] }),
   git_context_create_workstream: control(["workstream_routing"], "single_use", ROUTING_ONLY, { loadGroups: ["workstream:routing"] }),
-  git_context_find_workstreams: search(["enquiry_read", "workstream_discovery"], "run", READ_ONLY_PHASES, { loadGroups: ["workstream:discovery"] }),
-  git_context_read_workstream: readOnly(["enquiry_read", "workstream_discovery", "evidence_access"], "run", READ_ONLY_PHASES, { loadGroups: ["workstream:discovery"] }),
-  git_context_find_resources: search(["enquiry_read", "workstream_discovery", "evidence_access"], "run", READ_ONLY_PHASES, { loadGroups: ["resource:discovery"] }),
-  git_context_inspect_resource: control(["workstream_routing"], "one_step", ["routing"], { loadGroups: ["resource:discovery"] }),
+  git_context_find_workstreams: search(["enquiry_read", "workstream_discovery"], "run", READ_ONLY_PHASES, { loadGroups: ["workstream:search"] }),
+  git_context_read_workstream: readOnly(["enquiry_read", "workstream_discovery", "evidence_access"], "run", READ_ONLY_PHASES, { loadGroups: ["workstream:read"] }),
+  git_context_find_resources: search(["enquiry_read", "workstream_discovery", "evidence_access"], "run", READ_ONLY_PHASES, { loadGroups: ["resource:ownership"] }),
+  git_context_inspect_resource: control(["workstream_routing"], "one_step", ["routing"], { loadGroups: ["resource:registration"] }),
   git_context_bind_resources: control(["workstream_mutation"], "one_step", ["workstream_bound"], { loadGroups: ["resource:binding"] }),
   git_context_set_workstream_star: control(["workstream_preference"], "one_step", ["routing", "workstream_bound"], { loadGroups: ["workstream:preferences"] }),
   agent_history_search: search(["conversation_read", "enquiry_read", "evidence_access"], "run", READ_ONLY_PHASES, { loadGroups: ["agent-history"] }),

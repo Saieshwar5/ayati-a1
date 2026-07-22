@@ -14,16 +14,36 @@ Ayati uses one managed root:
 ```
 
 The daemon also keeps non-Git runtime data in its configured data directory,
-including personal/episodic memory, feedback traces, provider settings,
-document indexes, Python scratch data, plugin state, and event queues. Do not
-commit generated runtime state.
+including personal/episodic memory, compact debug feedback, provider settings,
+document indexes, Python scratch data, plugin state, and event queues. Live
+evaluation evidence is isolated beneath `data/evaluations/`. Do not commit
+generated runtime state.
 
 SQLite is authoritative for operational lifecycle and resource metadata.
 `workstreams/` is the portable context history. `workspace/` and user-selected
 external paths hold real resources. Do not edit SQLite or context repositories
 while Context Engine is running.
 
-## Feedback Traces
+## Live Evaluation Evidence
+
+The supported passive evidence source is created by:
+
+```bash
+pnpm eval:agent -- live --name <name>
+```
+
+Schema-versioned sessions, append-only events, content-addressed sanitized
+artifacts, model operations, provider requests, run evidence/findings, and
+atomic Markdown/JSON reports live under
+`ayati-main/data/evaluations/<evaluation-id>/`. Run
+`pnpm eval:agent -- inspect --evaluation <id> --latest` after each terminal
+turn or `pnpm eval:agent -- report --evaluation <id>` for the unified session
+view, including Context Engine lifecycle evidence.
+
+The legacy feedback ledger remains a compact debugging source for ordinary
+development, not an agent evaluation.
+
+## Compact Debug Feedback
 
 Feedback is opt-in. With `AYATI_TEST_AGENT=1` and `AYATI_FEEDBACK_TRACE=1`,
 ordered JSONL is written beneath the daemon feedback directory. Start with:
@@ -35,9 +55,12 @@ feedback/latest-session.json
 ```
 
 The compact summary includes outcome, stop reason, tool/step counts,
-verification, binding, request decision, context-repository identity,
-resource count, observation/checkpoint facts, resource effects, before/after context HEAD,
-and context-commit status. `contextEngine.workstreamLifecycle` groups:
+verification, virtual-mode transitions, deterministic binding attempts,
+validation attempts, request decision, context-repository identity, resource
+count, observation/checkpoint facts, resource effects, before/after context
+HEAD, and context-commit status. `navigation` distinguishes transition,
+binding-gate, and validation outcomes; `contextEngine.workstreamLifecycle`
+groups:
 
 - repository identity, selection mode, health, and HEADs;
 - request decision, identity, status, and creation result;
@@ -49,13 +72,14 @@ The raw trace records events including `run_started`,
 verification, finalization start/completion/failure, and workstream context
 commits.
 
-Run:
+Event recording performs only bounded in-memory normalization and enqueueing
+during a run; filesystem writes and report generation remain queued. Terminal
+report checkpoints are scheduled after dispatch and do not hold the serialized
+chat or system-event turn. Explicit `checkpoint`, `flush`, and daemon shutdown
+still provide a deterministic drain boundary for tests and evaluation capture.
 
-```bash
-pnpm feedback:context-engine
-```
-
-to render a workstream-aware markdown lifecycle report from the latest trace.
+`pnpm feedback:context-engine` now aliases the unified latest live-evaluation
+report instead of maintaining a second Context Engine report surface.
 
 ## Archive and Rebuild
 

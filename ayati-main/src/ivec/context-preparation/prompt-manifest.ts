@@ -28,9 +28,6 @@ export function buildPromptContextManifest(input: {
   if (context.work.active) {
     addPart(parts, "work.active", "work", "exact", context.work.active, activeWorkRefs(context.work.active));
   }
-  if (context.work.resolution) {
-    addPart(parts, "work.resolution", "work", "exact", context.work.resolution, []);
-  }
   addPart(parts, "work.resources", "work", "exact", context.resources, resourceRefs(context.resources));
   addPart(parts, "work.observations", "work", "referenceable", context.observations, observationRefs(context.observations));
   if (context.tools) addPart(parts, "work.tool_state", "work", "exact", context.tools, []);

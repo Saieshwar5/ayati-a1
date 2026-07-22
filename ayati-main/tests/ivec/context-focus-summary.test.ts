@@ -34,7 +34,6 @@ describe("anchored run-focus preparation", () => {
           { refs: ["step:1"], step: 1, content: "First result" },
           { refs: ["step:2"], step: 2, content: "Second result" },
         ],
-        sourceKind: "main",
       },
     });
 
@@ -66,7 +65,6 @@ describe("anchored run-focus preparation", () => {
         { refs: ["step:1"], step: 1, content: "First result" },
         { refs: ["step:2"], step: 2, content: "Second result" },
       ],
-      sourceKind: "main",
     }, 100)).toEqual(expect.arrayContaining([
       expect.stringMatching(/above budget 100/),
     ]));
@@ -86,7 +84,6 @@ describe("anchored run-focus preparation", () => {
           content: "x".repeat(20_000),
         }],
         steps: [],
-        sourceKind: "main",
       },
       maxInputTokens: 100,
     });

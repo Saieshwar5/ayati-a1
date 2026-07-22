@@ -8,6 +8,7 @@ import type { LlmCostEstimate, LlmTokenUsage } from "../../core/contracts/llm-pr
 import { correctLocalInputTokenEstimate } from "../../prompt/context-token-counter.js";
 import { estimateTextTokens, estimateTurnInputTokens } from "../../prompt/token-estimator.js";
 import { AGENT_STREAM_CHECKPOINT_SUMMARY_SCHEMA } from "./agent-context-events.js";
+import { withEvaluationModelOperation } from "../../evaluation/capture-runtime.js";
 
 export interface StreamCheckpointGenerationAttempt {
   attempt: number;
@@ -81,7 +82,9 @@ export async function generateStreamCheckpoint(input: {
         });
         break;
       }
-      const response = await input.provider.generateTurn(turnInput);
+      const response = await withEvaluationModelOperation({
+        purpose: "durable_checkpoint_summary",
+      }, async () => await input.provider.generateTurn(turnInput));
       if (response.type !== "assistant") {
         previousErrors = ["checkpoint provider returned tool calls instead of assistant JSON"];
         attempts.push({

@@ -88,23 +88,6 @@ describe("workstream binding capability policy", () => {
     )).toBe(true);
   });
 
-  it("does not offer a second resolver activity for the same run", () => {
-    const current = state("unbound");
-    current.harnessContext.contextEngine!.workstreamResolution = {
-      activityId: "WSR-1",
-      runId: "R-1",
-      status: "failed",
-      purpose: "Resolve current ownership.",
-      stepCount: 2,
-      updatedAt: "2026-07-21T10:00:00.000Z",
-    };
-
-    const policy = deriveWorkstreamBindingCapabilityPolicy(current);
-    expect(policy).toMatchObject({
-      routingFailureLimitReached: false,
-      routingAvailable: false,
-    });
-  });
 });
 
 function state(

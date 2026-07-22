@@ -16,12 +16,13 @@ import type {
   RunRecorder,
   SessionInputHandle,
 } from "../memory/types.js";
-import type {
-  AgentRunHandle,
-  ContextEngineService,
-  FinalizeRunResponse,
-  ResourceAdmission,
-  ResourceKind,
+import {
+  ContextEngineServiceError,
+  type AgentRunHandle,
+  type ContextEngineService,
+  type FinalizeRunResponse,
+  type ResourceAdmission,
+  type ResourceKind,
 } from "ayati-context-engine";
 import {
   appendPulseProposalQuestion,
@@ -53,7 +54,8 @@ import type {
   FinalResponseStreamKind,
   LoopConfig,
 } from "../ivec/types.js";
-import { createWorkstreamResolutionCoordinator } from "../ivec/workstream-resolution/runner.js";
+import { createWorkstreamBindingCoordinator } from "../ivec/workstream-binding/coordinator.js";
+import { withEvaluationContext } from "../evaluation/capture-runtime.js";
 import { buildStaticSystemContext } from "./static-prompt.js";
 import type {
   ContextEnginePreparedTurn,
@@ -223,6 +225,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         clientId: input.clientId,
         sessionId: inputHandle.sessionId,
         seq: inputHandle.seq,
+        runId: runHandle.runId,
         stage: "message",
         event: "received",
         data: {
@@ -260,13 +263,11 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           contextCheckpoint: this.chatContextRuntime.contextCheckpointCoordinator(chatContextTurn),
           ...(this.contextEngineService
             ? {
-                workstreamResolution: createWorkstreamResolutionCoordinator({
-                  provider: this.provider,
+                workstreamBinding: createWorkstreamBindingCoordinator({
                   service: this.contextEngineService,
                   runId: runHandle.runId,
                   streamId: inputHandle.sessionId,
                   currentInput: input.content,
-                  inputContextRevision: chatContextTurn.context.contextRevision,
                   now: this.nowProvider,
                 }),
               }
@@ -304,12 +305,17 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
               }
             : {}),
         });
-        result = await this.applyPulseProposalReflection(
-          input.clientId,
-          input.content,
-          result,
-          toolDefinitions,
-        );
+        result = await withEvaluationContext({
+          runId: runHandle.runId,
+          sessionId: inputHandle.sessionId,
+          laneId: `main:${runHandle.runId}`,
+          attribution: "foreground",
+        }, async () => await this.applyPulseProposalReflection(
+            input.clientId,
+            input.content,
+            result,
+            toolDefinitions,
+          ));
         finalizationAttempted = true;
         const commitStatus = await this.finalizeChatContextRun(
           input.clientId,
@@ -327,11 +333,13 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           data: {
             type: result.type,
             status: result.status,
+            stopReason: result.stopReason,
             content: result.content,
             artifacts: result.artifacts,
             runPath: result.runPath,
           },
         });
+        this.feedbackLedger?.scheduleCheckpoint?.(runHandle.runId);
       } else {
         const echoContent = `Received: "${input.content}"`;
         const result = directReplyResult(runHandle.runId, echoContent);
@@ -345,6 +353,16 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           type: "reply",
           content: echoContent,
         }, commitStatus);
+        this.feedbackLedger?.record({
+          clientId: input.clientId,
+          sessionId: inputHandle.sessionId,
+          seq: inputHandle.seq,
+          runId: runHandle.runId,
+          stage: "final",
+          event: "dispatched",
+          data: { type: "reply", status: result.status, stopReason: result.stopReason, content: echoContent },
+        });
+        this.feedbackLedger?.scheduleCheckpoint?.(runHandle.runId);
       }
     } catch (err) {
       devError("Provider error:", err);
@@ -355,6 +373,10 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         stage: "final",
         event: "error",
         data: {
+          type: "error",
+          status: "failed",
+          stopReason: "runtime_error",
+          content: formatChatRuntimeError(err),
           message: err instanceof Error ? err.message : String(err),
         },
       });
@@ -389,7 +411,9 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       this.onReply?.(input.clientId, {
         type: "error",
         content: formatChatRuntimeError(err),
+        ...(runHandle ? { runId: runHandle.runId } : {}),
       });
+      if (runHandle) this.feedbackLedger?.scheduleCheckpoint?.(runHandle.runId);
     }
   }
 
@@ -1122,6 +1146,15 @@ function isUserAssistantContextEngineMessage(
 }
 
 function formatChatRuntimeError(error: unknown): string {
+  if (error instanceof ContextEngineServiceError && error.code === "RUN_ALREADY_ACTIVE") {
+    const runId = typeof error.details?.["runId"] === "string"
+      ? ` (${error.details["runId"]})`
+      : "";
+    return `A previous Ayati run${runId} is still active or requires recovery, so this message was not accepted.`;
+  }
+  if (error instanceof ContextEngineServiceError && error.code === "RECOVERY_REQUIRED") {
+    return "Ayati has unfinished recovery work from a previous run, so this message was not accepted.";
+  }
   if (isProviderEmptyResponseError(error)) {
     return "I could not get a valid response from the model provider. Please retry.";
   }

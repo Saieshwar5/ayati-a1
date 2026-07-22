@@ -4,8 +4,9 @@ Current product features:
 
 - Persistent daemon runtime with OpenRouter, OpenAI, Anthropic, and Fireworks
   providers.
-- Decision/action/reducer harness with direct replies, native tool loading,
-  workstream feedback, deterministic verification, and stable repair codes.
+- Decision/action/reducer harness with tool-free `ENTRY` replies, run-scoped
+  virtual-mode navigation, native whole-task validation, deterministic
+  verification, and stable repair codes.
 - One atomic run for every accepted user message or system event, including
   valid zero-step direct replies.
 - Autonomous durable-work discovery through compact candidates and
@@ -35,8 +36,8 @@ Current product features:
 - Personal memory, episodic recall, managed uploads, and session attachments.
 - WebSocket terminal chat, HTTP upload/artifact/Pulse APIs, and system-event
   processing.
-- Opt-in JSONL feedback traces, compact latest summaries, deterministic triage,
-  and a workstream-aware live-test markdown report.
+- Passive, opt-in real-daemon evaluation with schema-versioned evidence,
+  deterministic diagnostics, and per-turn/session Markdown and JSON reports.
 - Preview-first archive/reset and context-catalog rebuild commands.
 
 Intended future capabilities include more clients, stronger service

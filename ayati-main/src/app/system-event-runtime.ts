@@ -33,7 +33,7 @@ import type {
   LoopConfig,
   SystemEventApprovalState,
 } from "../ivec/types.js";
-import { createWorkstreamResolutionCoordinator } from "../ivec/workstream-resolution/runner.js";
+import { createWorkstreamBindingCoordinator } from "../ivec/workstream-binding/coordinator.js";
 import { buildStaticSystemContext } from "./static-prompt.js";
 import type {
   ContextEnginePreparedTurn,
@@ -154,6 +154,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         clientId,
         sessionId: inputHandle.sessionId,
         seq: inputHandle.seq,
+        runId: runHandle.runId,
         stage: "message",
         event: "received",
         data: {
@@ -167,12 +168,23 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       });
 
       if (systemEventPlan.policy.mode === "log_only") {
+        const result = systemEventResult(runHandle.runId, "none", "");
         finalizationAttempted = true;
         await this.completeSystemEventContextRun(
           clientId,
           preparedContextTurn,
-          systemEventResult(runHandle.runId, "none", ""),
+          result,
         );
+        this.feedbackLedger?.record({
+          clientId,
+          sessionId: inputHandle.sessionId,
+          seq: inputHandle.seq,
+          runId: runHandle.runId,
+          stage: "final",
+          event: "dispatched",
+          data: { type: "none", status: result.status, stopReason: result.stopReason, content: "" },
+        });
+        this.feedbackLedger?.scheduleCheckpoint?.(runHandle.runId);
         return;
       }
 
@@ -189,6 +201,16 @@ class AppSystemEventRuntime implements SystemEventRuntime {
           event: event.eventName,
           eventId: event.eventId,
         }, finalized);
+        this.feedbackLedger?.record({
+          clientId,
+          sessionId: inputHandle.sessionId,
+          seq: inputHandle.seq,
+          runId: runHandle.runId,
+          stage: "final",
+          event: "dispatched",
+          data: { type: preferredResponseKind, status: result.status, stopReason: result.stopReason, content: event.summary },
+        });
+        this.feedbackLedger?.scheduleCheckpoint?.(runHandle.runId);
         return;
       }
 
@@ -215,13 +237,11 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         contextCheckpoint: this.systemEventContextRuntime.contextCheckpointCoordinator(preparedContextTurn),
         ...(this.contextEngineService
           ? {
-              workstreamResolution: createWorkstreamResolutionCoordinator({
-                provider: this.provider,
+              workstreamBinding: createWorkstreamBindingCoordinator({
                 service: this.contextEngineService,
                 runId: runHandle.runId,
                 streamId: inputHandle.sessionId,
                 currentInput: incomingMessage,
-                inputContextRevision: preparedContextTurn.context.contextRevision,
                 now: this.nowProvider,
               }),
             }
@@ -268,6 +288,23 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         event: event.eventName,
         eventId: event.eventId,
       }, finalized);
+      this.feedbackLedger?.record({
+        clientId,
+        sessionId: inputHandle.sessionId,
+        seq: inputHandle.seq,
+        runId: runHandle.runId,
+        stage: "final",
+        event: "dispatched",
+        data: {
+          type: result.type,
+          status: result.status,
+          stopReason: result.stopReason,
+          content: result.content,
+          artifacts: result.artifacts,
+          runPath: result.runPath,
+        },
+      });
+      this.feedbackLedger?.scheduleCheckpoint?.(runHandle.runId);
     } catch (err) {
       devError("System event processing error:", err);
       if (runHandle) {
@@ -291,7 +328,25 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       this.onReply?.(clientId, {
         type: "error",
         content: "Failed to process system event.",
+        ...(runHandle ? { runId: runHandle.runId } : {}),
       });
+      if (runHandle) {
+        this.feedbackLedger?.record({
+          clientId,
+          sessionId: runHandle.streamId,
+          runId: runHandle.runId,
+          stage: "final",
+          event: "error",
+          data: {
+            type: "error",
+            status: "failed",
+            stopReason: "runtime_error",
+            content: "Failed to process system event.",
+            message: err instanceof Error ? err.message : String(err),
+          },
+        });
+        this.feedbackLedger?.scheduleCheckpoint?.(runHandle.runId);
+      }
       throw err;
     }
   }

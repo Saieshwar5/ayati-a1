@@ -7,6 +7,7 @@ import {
   type AnchoredFocusStatement,
   type RunFocusSummary,
 } from "./types.js";
+import { withEvaluationModelOperation } from "../../evaluation/capture-runtime.js";
 
 export interface FocusSummarySource {
   goal: string;
@@ -23,7 +24,6 @@ export interface FocusSummarySource {
     content: unknown;
   }>;
   priorFocus?: RunFocusSummary;
-  sourceKind: "main" | "resolver";
 }
 
 export interface FocusSummaryGenerationAttempt {
@@ -102,7 +102,7 @@ export async function generateFocusSummary(input: {
         messages: focusMessages(input.source, maxTokens, previousErrors),
         responseFormat: {
           type: "json_schema",
-          name: input.source.sourceKind === "resolver" ? "resolver_focus_summary" : "run_focus_summary",
+          name: "run_focus_summary",
           schema: RUN_FOCUS_SUMMARY_SCHEMA,
           strict: true,
         },
@@ -122,7 +122,9 @@ export async function generateFocusSummary(input: {
         });
         break;
       }
-      const response = await input.provider.generateTurn(turnInput);
+      const response = await withEvaluationModelOperation({
+        purpose: "run_focus_summary",
+      }, async () => await input.provider.generateTurn(turnInput));
       if (response.type !== "assistant") {
         previousErrors = ["focus-summary provider returned tool calls instead of assistant JSON"];
         attempts.push({
@@ -229,7 +231,7 @@ function focusMessages(
     {
       role: "system",
       content: [
-        `Create an anchored ${source.sourceKind === "resolver" ? "resolver" : "run"} focus summary.`,
+        "Create an anchored run focus summary.",
         "Use only the supplied source. Never invent facts, outcomes, ids, paths, evidence, or authority.",
         "Every statement must cite one or more exact refs from validRefs.",
         "Do not treat this summary as verification, completion evidence, resource authority, or permission.",
