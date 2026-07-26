@@ -107,6 +107,53 @@ describe("recordRunStep", () => {
     );
   });
 
+  it("persists compact structured denial metadata on a failed tool call", async () => {
+    const fixture = await createFixture();
+    const prepared = await prepare(fixture.service, "permission-denial");
+    const deniedCall: RunStepToolCall = {
+      callId: "call-denied",
+      tool: "read_files",
+      purpose: "Read the requested protected file.",
+      toolPurpose: "read",
+      toolEffect: "read_only",
+      status: "failed",
+      input: {
+        files: [{
+          path: "/protected/report.txt",
+          mode: "full",
+        }],
+      },
+      error: "The operating-system account cannot read the file.",
+      code: "EACCES",
+      errorCategory: "permission",
+      errorTarget: "/protected/report.txt",
+      operationStatus: "failed",
+      verificationPassed: false,
+    };
+    const record = {
+      ...step(1, deniedCall),
+      status: "failed" as const,
+      summary: "External mutation was denied.",
+      verification: { passed: false },
+    };
+
+    const result = await fixture.service.recordRunStep({
+      requestId: "REQ-permission-denial",
+      runId: prepared.run.runId,
+      record,
+    });
+
+    expect(result.run.steps[0]?.toolCalls[0]).toMatchObject({
+      callId: "call-denied",
+      status: "failed",
+      code: "EACCES",
+      errorCategory: "permission",
+      errorTarget: "/protected/report.txt",
+      operationStatus: "failed",
+      verificationPassed: false,
+    });
+  });
+
   it("requires contiguous unique step numbers", async () => {
     const fixture = await createFixture();
     const prepared = await prepare(fixture.service, "contiguous");

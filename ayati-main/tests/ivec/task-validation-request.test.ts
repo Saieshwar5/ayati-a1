@@ -16,6 +16,27 @@ describe("task validation request policy", () => {
     ])).toBeUndefined();
   });
 
+  it("requires an exact stable code for denial validation", () => {
+    expect(validateTaskValidationRequest([{
+      kind: "tool.call_denied",
+      subject: "call-denied",
+      denialCode: "PATH_OUTSIDE_MUTATION_WORKSPACE",
+    }])).toBeUndefined();
+    expect(validateTaskValidationRequest([{
+      kind: "tool.call_denied",
+      subject: "call-denied",
+    }])).toMatchObject({
+      message: expect.stringContaining("exact stable denialCode"),
+    });
+    expect(validateTaskValidationRequest([{
+      kind: "tool.call_succeeded",
+      subject: "call-ok",
+      denialCode: "PATH_OUTSIDE_MUTATION_WORKSPACE",
+    }])).toMatchObject({
+      message: expect.stringContaining("valid only for tool.call_denied"),
+    });
+  });
+
   it("accepts exact slice, search, and profile read scopes", () => {
     expect(validateTaskValidationRequest([
       {

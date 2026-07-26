@@ -464,6 +464,10 @@ function toRunStepRecord(record: ContextRunStepRecord): RunStepRecord {
         input: call.input,
         ...(call.output !== undefined ? { output: call.output } : {}),
         ...(call.error !== undefined ? { error: call.error } : {}),
+        ...(call.code ? { code: call.code } : {}),
+        ...(call.errorCategory ? { errorCategory: call.errorCategory } : {}),
+        ...(call.errorTarget ? { errorTarget: call.errorTarget } : {}),
+        ...(call.operationStatus ? { operationStatus: call.operationStatus } : {}),
         ...(call.verification ? { verification: call.verification } : {}),
         ...(typeof call["verificationPassed"] === "boolean"
           ? { verificationPassed: call["verificationPassed"] }

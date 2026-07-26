@@ -123,6 +123,10 @@ function completionReceiptValue(check: ValidationCheckResult): string {
       return bounded(`Verified the available artifact ${subject}.`);
     case "tool.call_succeeded":
       return bounded(`Verified successful completion of tool call ${subject}.`);
+    case "tool.call_denied":
+      return bounded(
+        `Verified that tool call ${subject} was denied${check.denialCode ? ` with ${normalized(check.denialCode)}` : ""}.`,
+      );
   }
 }
 

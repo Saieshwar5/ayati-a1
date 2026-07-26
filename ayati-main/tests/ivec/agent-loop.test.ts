@@ -2140,6 +2140,137 @@ describe("agentLoop one-run lifecycle", () => {
     }
   });
 
+  it("can validate and truthfully report one exact denied mutation without retrying it", async () => {
+    const dataDir = makeTmpDir();
+    const runId = "R-report-external-denial";
+    const externalPath = join(dirname(dataDir), "outside", "report.txt");
+    const deniedWriteTool: ToolDefinition = {
+      ...writeFilesTool,
+      async execute() {
+        const message = `Mutation path is outside the configured Ayati workspace: ${externalPath}`;
+        return {
+          ok: false,
+          error: message,
+          v2: {
+            transportOk: true,
+            operationStatus: "failed",
+            code: "PATH_OUTSIDE_MUTATION_WORKSPACE",
+            message,
+            error: {
+              category: "permission",
+              code: "PATH_OUTSIDE_MUTATION_WORKSPACE",
+              message,
+              retryable: false,
+              recoverable: true,
+              target: externalPath,
+              suggestedNextActions: [
+                "Choose an exact target inside the configured Ayati workspace.",
+              ],
+            },
+          },
+        };
+      },
+    };
+    const provider = createProvider([
+      {
+        kind: "transition_mode",
+        request: {
+          to: "execute",
+          purpose: "Attempt the exact requested write under the active binding.",
+          capabilities: ["file:write"],
+          targets: [externalPath],
+        },
+      },
+      {
+        kind: "act",
+        action: {
+          mode: "single",
+          calls: [{
+            id: "write-denied-outside-workspace",
+            tool: "write_files",
+            input: {
+              files: [{ path: externalPath, content: "must not be written" }],
+            },
+            dependsOn: [],
+            purpose: "Attempt the exact external write once.",
+          }],
+          allowedTools: ["write_files"],
+          assertions: [],
+        },
+      },
+      {
+        kind: "transition_mode",
+        request: {
+          to: "validation",
+          purpose: "Confirm the exact workspace-policy denial before reporting it.",
+          capabilities: ["task:validation"],
+          validationChecks: [{
+            kind: "tool.call_denied",
+            subject: "write-denied-outside-workspace",
+            denialCode: "PATH_OUTSIDE_MUTATION_WORKSPACE",
+          }],
+        },
+      },
+      {
+        kind: "reply",
+        status: "completed",
+        message: `I could not write ${externalPath} because filesystem mutations are restricted to Ayati's workspace.`,
+      },
+    ]);
+    const records: ContextRunStepRecord[] = [];
+
+    try {
+      const result = await agentLoop({
+        provider,
+        toolExecutor: createToolExecutor([deniedWriteTool]),
+        toolDefinitions: [deniedWriteTool],
+        workstreamBinding: { bind: vi.fn() },
+        runRecorder: noopRunRecorder,
+        runHandle: runHandle(runId),
+        recordRunStep(record) {
+          records.push(record);
+        },
+        clientId: "c1",
+        initialUserMessage: `Write a report to ${externalPath}. If that is not allowed, explain the restriction.`,
+        dataDir,
+        systemContext: "test system context",
+        harnessContext: boundContext(
+          runId,
+          `Write a report to ${externalPath}. If that is not allowed, explain the restriction.`,
+          dataDir,
+        ),
+      });
+
+      expect(result).toMatchObject({
+        runId,
+        outcome: "done",
+        stopReason: "completed",
+        totalIterations: 4,
+        totalToolCalls: 1,
+        workState: {
+          status: "done",
+        },
+      });
+      expect(result.content).toContain("filesystem mutations are restricted");
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+        status: "failed",
+        toolCalls: [{
+          callId: "write-denied-outside-workspace",
+          status: "failed",
+          code: "PATH_OUTSIDE_MUTATION_WORKSPACE",
+          errorCategory: "permission",
+          errorTarget: externalPath,
+          operationStatus: "failed",
+        }],
+      });
+      expect(existsSync(externalPath)).toBe(false);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(4);
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
   it("persists main-loop routing evidence but never records a failed gate as a task step", async () => {
     const dataDir = makeTmpDir();
     try {

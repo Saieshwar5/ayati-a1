@@ -111,6 +111,7 @@ export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<
     base: baseToolExecutor,
     contextEngine: options.contextEngineService,
     workspaceRoot: options.config.workspace.root,
+    filesystemAccess: options.config.filesystemAccess,
   });
   const toolRegistry = ToolRegistry.fromSkills(allRuntimeSkills);
   const capabilitySurfaceManager = new CapabilitySurfaceManager({

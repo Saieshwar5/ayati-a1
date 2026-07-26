@@ -307,6 +307,18 @@ export interface RunStepToolCall {
   output?: unknown;
   outputHash?: string;
   error?: unknown;
+  code?: string;
+  errorCategory?:
+    | "validation"
+    | "missing_path"
+    | "permission"
+    | "conflict"
+    | "semantic"
+    | "transient"
+    | "timeout"
+    | "unknown";
+  errorTarget?: string;
+  operationStatus?: "succeeded" | "failed" | "partial" | "pending";
   verification?: RunStepToolCallVerification;
   /** Compatibility projection for records created before per-call verification. */
   verificationPassed?: boolean;
@@ -1803,6 +1815,10 @@ function isRunStepToolCall(value: unknown): value is RunStepToolCall {
     || !("input" in value)
     || !optionalNonEmptyString(value["callId"])
     || !optionalNonEmptyString(value["outputHash"])
+    || !optionalNonEmptyString(value["code"])
+    || !optionalToolErrorCategory(value["errorCategory"])
+    || !optionalNonEmptyString(value["errorTarget"])
+    || !optionalToolOperationStatus(value["operationStatus"])
     || (value["verification"] !== undefined
       && !isRunStepToolCallVerification(value["verification"]))
     || (value["verificationPassed"] !== undefined && typeof value["verificationPassed"] !== "boolean")
@@ -1893,6 +1909,26 @@ function isToolEffect(value: unknown): value is ToolEffect {
     || value === "context_mutation"
     || value === "external_mutation"
     || value === "destructive";
+}
+
+function optionalToolErrorCategory(value: unknown): boolean {
+  return value === undefined
+    || value === "validation"
+    || value === "missing_path"
+    || value === "permission"
+    || value === "conflict"
+    || value === "semantic"
+    || value === "transient"
+    || value === "timeout"
+    || value === "unknown";
+}
+
+function optionalToolOperationStatus(value: unknown): boolean {
+  return value === undefined
+    || value === "succeeded"
+    || value === "failed"
+    || value === "partial"
+    || value === "pending";
 }
 
 function isRunWorkStateInput(value: unknown): value is RunWorkStateInput {

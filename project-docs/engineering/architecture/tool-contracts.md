@@ -66,11 +66,39 @@ those values into host absolute paths would discard resource identity, reduce
 portability, and make containment harder to audit. A generic field named
 `path` must not silently switch between these two contracts.
 
-For unbound observation, reads are limited to the default workspace and
-admitted ingress resources. After binding, each call must resolve to a
-workstream resource. Directory resources allow descendants; file resources
-allow only the exact file. Mutation additionally requires `access: "mutate"`
-and a verified resource-mutation operation.
+The temporary operator-owned filesystem policy separates observation from
+mutation:
+
+```text
+readScope=machine
+mutationScope=workspace
+```
+
+The core filesystem observation tools—`read_files`, `inspect_paths`,
+`list_directory`, `find_files`, and `search_in_files`—accept canonical absolute
+paths anywhere the daemon's operating-system account can read. This works on
+bound and unbound runs. The scope policy permits symbolic-link targets outside
+the workspace; content reads follow the target while metadata tools retain
+their own link semantics. It does not bypass host permissions, elevate
+privileges, or treat devices and other non-regular paths as ordinary files.
+Existing file-size, traversal, depth, entry-count, and
+model-facing output bounds still apply. Searches with omitted roots default to
+`<AYATI_ROOT_DIR>/workspace/`; broader discovery requires explicit roots.
+
+Machine-read authority grants no workstream ownership or mutation authority.
+With `mutationScope=workspace`, every declared filesystem effect is
+canonicalized against `<AYATI_ROOT_DIR>/workspace/` before resource lookup,
+mutation preparation, temporary-file creation, or tool execution. External
+paths fail with `PATH_OUTSIDE_MUTATION_WORKSPACE`. Both move endpoints must be
+inside, and symbolic-link escapes are rejected. `allowExternalPath` is removed
+before execution and cannot override the operator policy.
+
+Inside-workspace location is necessary, not sufficient. Mutation still
+requires immutable workstream binding, a resource bound with
+`access: "mutate"`, exact targets, mutation-journal preparation, and
+post-operation verification. The optional operator value
+`mutationScope=bound_resource` restores the older bound-resource boundary
+without changing the executor.
 
 Mode transitions keep search subjects, read-only references, and mutation
 scopes in separate typed fields. A reference path cannot become mutation
@@ -78,9 +106,17 @@ authority merely because it is absolute. Mutation directory containment is
 checked on canonical paths, including missing future children through their
 nearest existing ancestor, and rejects symbolic-link escapes.
 
-Process tools declare their relevant working directory and exact mutation
-targets. Long-running processes cannot receive open-ended filesystem access.
-Unexpected changes fail verification.
+Process and Python mutation-capable calls declare an inside-workspace working
+directory and exact inside-workspace effect targets. Mutable database calls
+declare an inside-workspace database destination, and dataset promotion
+declares an inside-workspace target database. Calls without enough declared
+target information fail closed. Long-running processes cannot receive
+open-ended filesystem access. Unexpected changes fail verification.
+
+These declarations are Ayati's authorization contract, not an operating-system
+sandbox around arbitrary native or Python code. A deployment requiring
+host-enforced containment must separately sandbox or disable those
+general-purpose execution tools.
 
 ## Workstream Controls
 
@@ -201,13 +237,16 @@ contain `verificationPassed` remain readable during migration, but new calls
 derive that Boolean from the per-call record.
 
 The validation request uses
-`{ kind, subject, expectedKind?, searchScope?, readScope? }`. The runtime
+`{ kind, subject, expectedKind?, searchScope?, readScope?, denialCode? }`. The runtime
 matches it against the latest current-run eligible outcome and writes the
 satisfying run/step/call reference into the check result. A later filesystem
 mutation invalidates stale path/read proof and affected no-match searches. A
 deterministic runtime-check call
 may expose `tool.call_succeeded` by exact `callId` only when no stronger typed
-outcome exists. Routing and historical calls cannot satisfy task validation.
+outcome exists. A deterministically rejected permission call may expose
+`tool.call_denied` by exact `callId` and stable `denialCode` only when the call
+did not perform the requested operation. That proves the denial, never a read
+or mutation success. Routing and historical calls cannot satisfy task validation.
 The decision model obtains these selectable fields from the compact
 `context.run.verifiedOutcomes` projection rather than reconstructing proof
 from success-sounding tool output.
@@ -225,6 +264,12 @@ Stable codes should name recoverable conditions such as invalid input, missing
 path, stale version, denied resource access, timeout, verification failure, or
 missing workstream binding. Repairs are fed back into the next model decision;
 failed mutations are never deferred or replayed.
+
+When truthfully reporting an exact denial fulfills the user's responsibility,
+passed `tool.call_denied` validation resolves only the action failure owning
+that exact call and records `denial_reported`. Other failures remain active,
+and the failed step remains failed in the journal. If the requested operation
+itself had to occur, the run remains blocked or failed.
 
 When adding a tool, add its taxonomy and contracts in the same change. Broad
 multi-operation tools and unclassified behavior are rejected by policy audit.

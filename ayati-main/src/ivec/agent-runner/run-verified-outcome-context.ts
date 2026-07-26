@@ -22,6 +22,8 @@ export interface PromptVerifiedOutcome {
   searchScope?: FileSearchValidationScope;
   readScope?: FileReadValidationScope;
   artifactKind?: string;
+  denialCode?: string;
+  target?: string;
   source: PromptVerifiedOutcomeSource;
 }
 
@@ -89,6 +91,16 @@ function projectVerifiedOutcome(
       kind: "file.search_no_match",
       subject: outcome.subject,
       searchScope: outcome.searchScope,
+      source,
+    };
+  }
+
+  if (outcome.family === "tool_denial") {
+    return {
+      kind: "tool.call_denied",
+      subject: outcome.subject,
+      denialCode: outcome.denialCode,
+      ...(outcome.target ? { target: outcome.target } : {}),
       source,
     };
   }

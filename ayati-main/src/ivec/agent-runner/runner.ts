@@ -67,6 +67,7 @@ import {
   appendActiveFailure,
   latestActiveFailure,
   resolveActiveFailures,
+  resolveReportedDenialFailures,
 } from "./failure-lifecycle.js";
 import {
   buildRunResources,
@@ -767,6 +768,17 @@ export async function runAgentLoop(
             kind: resolutionKind,
           }),
         );
+        if (validationAccepted) {
+          recordFailureResolutionFeedback(
+            deps,
+            inputHandle,
+            runHandle.runId,
+            resolveReportedDenialFailures(state, {
+              callIds: validatedDenialCallIds(state),
+              iteration: state.iteration,
+            }),
+          );
+        }
         state.consecutiveFailures = 0;
         capabilitySurfaceProgress = createCapabilitySurfaceProgressState();
         recordRunMetric(metrics, "mode_transition", {
@@ -1080,6 +1092,16 @@ export async function runAgentLoop(
   });
   state.finalOutput = `I reached the ${config.maxIterations}-step limit before finishing the workstream.`;
   return finalize({ status: "stuck", content: state.finalOutput });
+}
+
+function validatedDenialCallIds(state: LoopState): string[] {
+  return (state.virtualMode.validation?.checks ?? [])
+    .filter((check) => (
+      check.status === "passed"
+      && check.kind === "tool.call_denied"
+      && Boolean(check.satisfiedBy?.callId)
+    ))
+    .map((check) => check.satisfiedBy!.callId!);
 }
 
 function requiresContextPressureCheckpoint(state: LoopState): boolean {

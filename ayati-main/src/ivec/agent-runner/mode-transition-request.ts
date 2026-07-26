@@ -69,12 +69,16 @@ function normalizeValidationChecks(value: unknown): ModeTransitionValidationChec
           : undefined;
     const readScope = normalizeReadScope(item["readScope"]);
     const searchScope = normalizeSearchScope(item["searchScope"]);
+    const denialCode = typeof item["denialCode"] === "string"
+      ? normalizeText(item["denialCode"])
+      : undefined;
     return [normalizeTaskValidationCheck({
       kind: item["kind"],
       subject: item["subject"],
       ...(expectedKind ? { expectedKind } : {}),
       ...(searchScope ? { searchScope } : {}),
       ...(readScope ? { readScope } : {}),
+      ...(denialCode ? { denialCode } : {}),
     })];
   });
   return uniqueObjects(checks).slice(0, 12);

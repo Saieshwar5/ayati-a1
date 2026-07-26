@@ -207,6 +207,9 @@ export function createFailureRecordFromStepSummary(
     failureType,
     reason,
     blockedTargets: repairBlockedTargets,
+    ...(step.failedCallIds && step.failedCallIds.length > 0
+      ? { failedCallIds: [...step.failedCallIds] }
+      : {}),
     ...(repair ? { repairCode: repair.code } : {}),
     ...(promptCard ? { repair: promptCard } : {}),
     repairScope: "action",

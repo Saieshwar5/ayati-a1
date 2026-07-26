@@ -168,6 +168,100 @@ describe("current-run verification index", () => {
     });
   });
 
+  it("indexes an exact pre-execution permission denial without creating success proof", () => {
+    const denied: RunToolCallContext = {
+      step: 2,
+      callId: "call-denied-write",
+      tool: "write_files",
+      input: {
+        files: [{
+          path: "/external/report.txt",
+          content: "must not be written",
+        }],
+      },
+      status: "failed",
+      output: "",
+      error: "Mutation target is outside the configured workspace.",
+      code: "PATH_OUTSIDE_MUTATION_WORKSPACE",
+      errorCategory: "permission",
+      errorTarget: "/external/report.txt",
+      operationStatus: "failed",
+      verificationPassed: false,
+    };
+
+    const index = buildCurrentRunVerificationIndex({
+      runId: RUN_ID,
+      calls: [denied],
+    });
+
+    expect(index.calls).toEqual([
+      expect.objectContaining({
+        status: "failed",
+        code: "PATH_OUTSIDE_MUTATION_WORKSPACE",
+        errorCategory: "permission",
+        errorTarget: "/external/report.txt",
+      }),
+    ]);
+    expect(index.outcomes).toEqual([
+      expect.objectContaining({
+        family: "tool_denial",
+        kind: "tool.call_denied",
+        subject: "call-denied-write",
+        denialCode: "PATH_OUTSIDE_MUTATION_WORKSPACE",
+        tool: "write_files",
+        target: "/external/report.txt",
+        source: expect.objectContaining({
+          step: 2,
+          callId: "call-denied-write",
+        }),
+      }),
+    ]);
+    expect(findLatestVerifiedOutcomeForCheck(index, {
+      kind: "tool.call_denied",
+      subject: "call-denied-write",
+      denialCode: "PATH_OUTSIDE_MUTATION_WORKSPACE",
+    })).toMatchObject({
+      family: "tool_denial",
+    });
+    expect(findLatestVerifiedOutcomeForCheck(index, {
+      kind: "file.written",
+      subject: "/external/report.txt",
+    })).toBeUndefined();
+    expect(findLatestVerifiedOutcomeForCheck(index, {
+      kind: "tool.call_succeeded",
+      subject: "call-denied-write",
+    })).toBeUndefined();
+  });
+
+  it("does not create denial proof when failed execution is uncertain or the code is not a known pre-execution gate", () => {
+    const uncertain: RunToolCallContext = {
+      step: 1,
+      callId: "call-uncertain",
+      tool: "write_files",
+      input: {},
+      status: "failed",
+      output: "",
+      error: "Permission failure after execution began.",
+      code: "UNKNOWN_PERMISSION_FAILURE",
+      errorCategory: "permission",
+      errorTarget: "/external/report.txt",
+      verificationPassed: false,
+    };
+    const unknownGate: RunToolCallContext = {
+      ...uncertain,
+      step: 2,
+      callId: "call-unknown-gate",
+      operationStatus: "failed",
+    };
+
+    const index = buildCurrentRunVerificationIndex({
+      runId: RUN_ID,
+      calls: [uncertain, unknownGate],
+    });
+
+    expect(index.outcomes).toEqual([]);
+  });
+
   it("keeps successful outcomes from a partially failed multi-call step", () => {
     const passed = verifiedCall(1, "inspect_paths", [
       pathEvidence("/tmp/available.txt", true, "file", 1),

@@ -69,6 +69,7 @@ export function recordFailureResolutionFeedback(
       repairCode: failure.repairCode,
       repairScope: failure.repairScope,
       blockedTargets: failure.blockedTargets,
+      failedCallIds: failure.failedCallIds,
     })),
   });
 }

@@ -2,6 +2,7 @@ import type {
   FilesystemReadCoverage,
   FilesystemReadMode,
 } from "./filesystem-completion-evidence-contracts.js";
+import type { ToolErrorCategory } from "../../skills/types.js";
 import type {
   ToolCallVerificationMethod,
   ToolCallVerificationStatus,
@@ -31,6 +32,8 @@ export interface RunVerificationCallReceipt {
   method?: ToolCallVerificationMethod | "legacy";
   summary: string;
   code?: string;
+  errorCategory?: ToolErrorCategory;
+  errorTarget?: string;
 }
 
 interface RunVerifiedOutcomeBase {
@@ -118,12 +121,22 @@ export interface RunVerifiedTaskOutcome extends RunVerifiedOutcomeBase {
   data?: Record<string, unknown>;
 }
 
+export interface RunVerifiedToolDenialOutcome extends RunVerifiedOutcomeBase {
+  family: "tool_denial";
+  kind: "tool.call_denied";
+  subject: string;
+  denialCode: string;
+  tool: string;
+  target?: string;
+}
+
 export type RunVerifiedOutcome =
   | RunVerifiedPathOutcome
   | RunVerifiedFileReadOutcome
   | RunVerifiedFileSearchOutcome
   | RunVerifiedFactOutcome
-  | RunVerifiedTaskOutcome;
+  | RunVerifiedTaskOutcome
+  | RunVerifiedToolDenialOutcome;
 
 export type RunVerifiedOutcomeInvalidationReason =
   | "later_mutation"

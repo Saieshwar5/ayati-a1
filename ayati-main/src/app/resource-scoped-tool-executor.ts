@@ -20,16 +20,28 @@ import {
   getWorkspaceRoot,
   requireAbsolutePath,
 } from "../skills/workspace-paths.js";
+import {
+  collectToolPaths,
+  DEFAULT_FILESYSTEM_ACCESS_POLICY,
+  isMachineFilesystemReadTool,
+  scopeToolInput,
+  validateMachineReadPaths,
+  validateWorkspaceMutationPaths,
+  type FilesystemAccessPolicy,
+} from "./filesystem-access-policy.js";
+import { resourceScopeFailure as scopeFailure } from "./resource-scope-failure.js";
 
 export function createResourceScopedToolExecutor(input: {
   base: ToolExecutor;
   contextEngine: ContextEngineService;
   workspaceRoot?: string;
+  filesystemAccess?: FilesystemAccessPolicy;
 }): ToolExecutor {
   return new ResourceScopedToolExecutor(
     input.base,
     input.contextEngine,
     resolve(input.workspaceRoot ?? getWorkspaceRoot()),
+    input.filesystemAccess ?? DEFAULT_FILESYSTEM_ACCESS_POLICY,
   );
 }
 
@@ -38,6 +50,7 @@ class ResourceScopedToolExecutor implements ToolExecutor {
     private readonly base: ToolExecutor,
     private readonly contextEngine: ContextEngineService,
     private readonly workspaceRoot: string,
+    private readonly filesystemAccess: FilesystemAccessPolicy,
   ) {}
 
   list(context?: ToolRegistryContext): string[] {
@@ -76,12 +89,63 @@ class ResourceScopedToolExecutor implements ToolExecutor {
     const taxonomy = getToolTaxonomy(toolName);
     const definition = this.base.definitions(context).find((tool) => tool.name === toolName);
     if (
-      !context?.sessionId
-      || !context.runId
-      || !taxonomy
+      !taxonomy
       || taxonomy.effect === "context_mutation"
       || definition?.annotations?.domain === "context"
     ) {
+      return await this.base.execute(toolName, originalInput, context);
+    }
+
+    if (isMachineFilesystemReadTool(toolName, definition, this.filesystemAccess)) {
+      const pathFailure = validateMachineReadPaths(toolName, originalInput);
+      if (pathFailure) {
+        return scopeFailure(
+          pathFailure.code,
+          pathFailure.message,
+          pathFailure.target,
+        );
+      }
+      const scopedInput = scopeToolInput(
+        toolName,
+        originalInput,
+        this.workspaceRoot,
+      );
+      return await this.base.execute(toolName, scopedInput, {
+        ...context,
+        resourceScope: {
+          kind: "machine_read",
+          rootPath: this.workspaceRoot,
+          authorityPath: "/",
+          authorityKind: "directory",
+        },
+      });
+    }
+
+    if (
+      taxonomy.effect !== "read_only"
+      && this.filesystemAccess.mutationScope === "workspace"
+    ) {
+      const pathFailure = await validateWorkspaceMutationPaths({
+        toolName,
+        value: originalInput,
+        workspaceRoot: this.workspaceRoot,
+      });
+      if (pathFailure) {
+        return scopeFailure(
+          pathFailure.code,
+          pathFailure.message,
+          pathFailure.target,
+        );
+      }
+    }
+
+    if (!context?.sessionId || !context.runId) {
+      if (taxonomy.effect !== "read_only") {
+        return scopeFailure(
+          "R_MUTATION_REQUIRES_WORKSTREAM_BINDING",
+          "Mutation requires a run, session, and authoritative workstream binding.",
+        );
+      }
       return await this.base.execute(toolName, originalInput, context);
     }
 
@@ -107,7 +171,7 @@ class ResourceScopedToolExecutor implements ToolExecutor {
       }
       const selectedRoot = await selectUnboundReadRoot(
         active.ingressResources ?? [],
-        collectPaths(originalInput),
+        collectToolPaths(originalInput),
         this.workspaceRoot,
       );
       if (!selectedRoot) {
@@ -154,7 +218,7 @@ class ResourceScopedToolExecutor implements ToolExecutor {
         "The selected workstream has no accessible filesystem resource.",
       );
     }
-    const requestedPaths = collectPaths(originalInput);
+    const requestedPaths = collectToolPaths(originalInput);
     const rootBinding = await selectCallRoot(filesystemBindings, requestedPaths);
     if (!rootBinding) {
       return scopeFailure(
@@ -252,41 +316,6 @@ function hasFilesystemLocator(
   return binding.resource.locator.kind === "filesystem";
 }
 
-function scopeToolInput(
-  toolName: string,
-  value: unknown,
-  executionRootPath: string,
-): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const input = structuredClone(value as Record<string, unknown>);
-  delete input["allowExternalPath"];
-  const scope = (path: unknown): unknown => {
-    if (typeof path !== "string" || !path.trim() || !isAbsolute(path)) return path;
-    return resolve(path);
-  };
-  for (const key of PATH_KEYS) {
-    if (key in input) input[key] = scope(input[key]);
-  }
-  for (const key of ["paths", "roots", "inputFiles", "sqliteDbPaths"]) {
-    if (Array.isArray(input[key])) input[key] = (input[key] as unknown[]).map(scope);
-  }
-  for (const key of ["files", "edits", "targets"]) {
-    if (!Array.isArray(input[key])) continue;
-    input[key] = (input[key] as unknown[]).map((entry) => {
-      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
-      const record = { ...(entry as Record<string, unknown>) };
-      for (const pathKey of ["path", "from", "to"]) {
-        if (pathKey in record) record[pathKey] = scope(record[pathKey]);
-      }
-      return record;
-    });
-  }
-  if ((toolName === "process_run" || toolName === "process_start") && !("cwd" in input)) {
-    input["cwd"] = executionRootPath;
-  }
-  return input;
-}
-
 function mutationRequestId(context: ToolExecutionContext, operation: string): string {
   return context.runId + ":" + requireCallId(context) + ":resource-mutation:" + operation;
 }
@@ -333,7 +362,7 @@ function collectMutationTargetInputs(
 ): Array<{ path: string; kind?: ResourceMutationTarget["kind"] }> {
   if (toolName !== "process_run" && toolName !== "process_start"
     && toolName !== "process_send_input" && toolName !== "python_execute") {
-    return collectPaths(value).map((path) => ({ path }));
+    return collectToolPaths(value).map((path) => ({ path }));
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) return [];
   const targets = (value as Record<string, unknown>)["targets"];
@@ -359,31 +388,6 @@ async function mutationTargetKind(
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   return toolName === "create_directory" ? "directory" : "file";
-}
-
-const PATH_KEYS = [
-  "path", "from", "to", "source", "destination", "target", "cwd", "workdir",
-  "scriptPath", "dbPath", "targetDbPath",
-] as const;
-
-function collectPaths(value: unknown): string[] {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
-  const input = value as Record<string, unknown>;
-  const direct = PATH_KEYS.map((key) => input[key])
-    .filter((item): item is string => typeof item === "string" && item.trim().length > 0);
-  const arrays = ["paths", "roots", "files", "edits", "targets", "inputFiles", "sqliteDbPaths"]
-    .flatMap((key) => {
-      const entries = input[key];
-      if (!Array.isArray(entries)) return [];
-      return entries.flatMap((entry) => {
-        if (typeof entry === "string") return [entry];
-        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
-        const record = entry as Record<string, unknown>;
-        return [record["path"], record["from"], record["to"]]
-          .filter((item): item is string => typeof item === "string" && item.trim().length > 0);
-      });
-    });
-  return [...direct, ...arrays];
 }
 
 async function selectCallRoot(
@@ -490,7 +494,7 @@ async function validateSingleAuthority(
   message: string;
 } | undefined> {
   const root = await canonicalizeAbsolutePath(authorityPath);
-  for (const path of collectPaths(value)) {
+  for (const path of collectToolPaths(value)) {
     const required = requireAbsolutePath(path);
     if (!required.ok) {
       return { code: "ABSOLUTE_PATH_REQUIRED", message: `${required.message} Active root: ${root}.` };
@@ -556,40 +560,6 @@ function authorityOwnsPath(
 function isWithin(parent: string, candidate: string): boolean {
   const path = relative(resolve(parent), resolve(candidate));
   return path === "" || (path !== ".." && !path.startsWith(".." + sep) && !isAbsolute(path));
-}
-
-function scopeFailure(
-  code:
-    | "WORKSTREAM_RESOURCE_SCOPE_VIOLATION"
-    | "WORKSTREAM_RESOURCE_MUTATION_DENIED"
-    | "ABSOLUTE_PATH_REQUIRED"
-    | "PATH_OUTSIDE_RESOURCE_SCOPE"
-    | "PATH_OUTSIDE_WORKSPACE_ROOT"
-    | "R_MUTATION_REQUIRES_WORKSTREAM_BINDING",
-  message: string,
-): ToolResult {
-  return {
-    ok: false,
-    error: message,
-    v2: {
-      transportOk: true,
-      operationStatus: "failed",
-      code,
-      message,
-      error: {
-        category: code === "ABSOLUTE_PATH_REQUIRED" ? "validation" : "permission",
-        code,
-        message,
-        retryable: true,
-        recoverable: true,
-        suggestedNextActions: [
-          code === "R_MUTATION_REQUIRES_WORKSTREAM_BINDING"
-            ? "Create or activate the correct workstream, then make a fresh mutation decision."
-            : "Use an absolute path inside one resource bound to the active workstream.",
-        ],
-      },
-    },
-  };
 }
 
 function mutationFailure(result: ToolResult, message: string): ToolResult {

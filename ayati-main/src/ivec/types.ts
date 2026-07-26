@@ -8,6 +8,7 @@ import type {
   ArtifactRef,
   AssertionResult,
   ToolDefinition,
+  ToolErrorCategory,
   ToolOperationStatus,
   ToolResultV2,
   VerifiedFact,
@@ -198,6 +199,8 @@ export interface RunToolCallContext {
   output: string;
   error?: string;
   code?: string;
+  errorCategory?: ToolErrorCategory;
+  errorTarget?: string;
   operationStatus?: ToolOperationStatus;
   artifacts?: ArtifactRef[];
   hasMore?: boolean;
@@ -226,7 +229,8 @@ export type FailureResolutionKind =
   | "accepted_mode_transition"
   | "authoritative_binding"
   | "verified_action"
-  | "validation_accepted";
+  | "validation_accepted"
+  | "denial_reported";
 
 export interface FailureResolution {
   iteration: number;
@@ -239,6 +243,7 @@ export interface FailureRecord {
   failureType: "tool_error" | "permission" | "missing_path" | "verify_failed" | "no_progress" | "validation_error";
   reason: string;
   blockedTargets: string[];
+  failedCallIds?: string[];
   repairCode?: RepairCode;
   repair?: RepairPromptCard;
   repairScope?: FailureRepairScope;
@@ -333,6 +338,7 @@ export interface StepSummary {
   stoppedEarlyReason?: "assistant_returned" | "max_act_turns_reached" | "max_total_tool_calls_reached" | "repeated_identical_failure" | "no_valid_tool_calls" | "planned_call_failed";
   failureType?: FailureRecord["failureType"];
   blockedTargets?: string[];
+  failedCallIds?: string[];
 }
 
 export interface CompletionDirective {

@@ -28,6 +28,15 @@ export function buildStepSummary(input: {
     ...input.execution.verifyOutput.artifacts,
   ].filter((artifact) => artifact.trim().length > 0);
   const failure = classifyFailure(input.execution);
+  const failedCallIds = input.execution.actOutput.toolCalls
+    .filter((call) => (
+      call.error
+      || call.operationStatus === "failed"
+      || call.result?.operationStatus === "failed"
+      || call.verification?.status === "failed"
+    ))
+    .map((call) => call.callId)
+    .filter((callId): callId is string => Boolean(callId?.trim()));
   const evidenceMetadata = buildStepEvidenceMetadata(input.execution.actOutput.toolCalls);
 
   return {
@@ -59,6 +68,7 @@ export function buildStepSummary(input: {
     stoppedEarlyReason: input.execution.actOutput.stoppedEarlyReason,
     failureType: failure.failureType,
     blockedTargets: failure.blockedTargets,
+    ...(failedCallIds.length > 0 ? { failedCallIds } : {}),
   };
 }
 
@@ -158,6 +168,16 @@ function buildContextRunStepRecord(input: {
       return {
         ...call,
         status: call.error ? "failed" : "success",
+        ...(call.code ? { code: call.code } : {}),
+        ...(call.result?.error?.category
+          ? { errorCategory: call.result.error.category }
+          : {}),
+        ...(call.result?.error?.target
+          ? { errorTarget: call.result.error.target }
+          : {}),
+        ...(call.operationStatus
+          ? { operationStatus: call.operationStatus }
+          : {}),
         ...(call.verification ? { verification: call.verification } : {}),
         verificationPassed,
         completionEvidence: deriveFilesystemCompletionEvidence(

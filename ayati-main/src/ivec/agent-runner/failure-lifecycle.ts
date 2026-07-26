@@ -68,3 +68,42 @@ export function resolveActiveFailures(
     resolved,
   };
 }
+
+export function resolveReportedDenialFailures(
+  state: LoopState,
+  input: {
+    callIds: string[];
+    iteration: number;
+  },
+): FailureResolutionReceipt | undefined {
+  const callIds = new Set(
+    input.callIds.map((callId) => callId.trim()).filter(Boolean),
+  );
+  if (callIds.size === 0) return undefined;
+
+  const resolved: FailureRecord[] = [];
+  for (const failure of state.failureHistory) {
+    const failedCallIds = failure.failedCallIds ?? [];
+    if (
+      failure.resolution !== undefined
+      || failure.repairScope !== "action"
+      || failure.failureType !== "permission"
+      || failedCallIds.length === 0
+      || !failedCallIds.every((callId) => callIds.has(callId))
+    ) {
+      continue;
+    }
+    failure.resolution = {
+      iteration: input.iteration,
+      kind: "denial_reported",
+    };
+    resolved.push(failure);
+  }
+  if (resolved.length === 0) return undefined;
+  return {
+    iteration: input.iteration,
+    kind: "denial_reported",
+    scopes: ["action"],
+    resolved,
+  };
+}

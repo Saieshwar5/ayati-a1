@@ -127,6 +127,72 @@ describe("Context Engine runtime", () => {
     ]));
   });
 
+  it("preserves compact permission-denial metadata in the persisted tool call", async () => {
+    const fixture = serviceFixture();
+    const runtime = createContextEngineRuntime({
+      service: fixture.service,
+      timezone: "UTC",
+      agentId: "local",
+    });
+    const turn = await runtime.prepareUserTurn({
+      clientId: "local",
+      userMessage: "Write an external file.",
+      at: AT,
+    });
+
+    await runtime.recordRunStep({
+      turn,
+      record: {
+        v: 1,
+        runId: "RUN-1",
+        step: 1,
+        status: "failed",
+        completedAt: "2026-07-19T10:00:02.000Z",
+        summary: "External mutation was denied.",
+        toolCalls: [{
+          callId: "call-denied",
+          tool: "write_files",
+          purpose: "Write the requested external file.",
+          status: "failed",
+          input: {
+            files: [{
+              path: "/external/report.txt",
+              content: "must not be written",
+            }],
+          },
+          error: "Mutation path is outside the configured workspace.",
+          code: "PATH_OUTSIDE_MUTATION_WORKSPACE",
+          errorCategory: "permission",
+          errorTarget: "/external/report.txt",
+          operationStatus: "failed",
+        }],
+        verification: {
+          passed: false,
+          summary: "The requested mutation did not execute.",
+          evidenceItems: [],
+          newFacts: [],
+          artifacts: [],
+        },
+        facts: [],
+        artifacts: [],
+      },
+    });
+
+    expect(fixture.recordRunStep).toHaveBeenCalledWith(expect.objectContaining({
+      record: expect.objectContaining({
+        status: "failed",
+        toolCalls: [expect.objectContaining({
+          callId: "call-denied",
+          status: "failed",
+          code: "PATH_OUTSIDE_MUTATION_WORKSPACE",
+          errorCategory: "permission",
+          errorTarget: "/external/report.txt",
+          operationStatus: "failed",
+        })],
+      }),
+    }));
+  });
+
   it("persists a WorkState checkpoint through its dedicated service operation", async () => {
     const fixture = serviceFixture();
     const runtime = createContextEngineRuntime({

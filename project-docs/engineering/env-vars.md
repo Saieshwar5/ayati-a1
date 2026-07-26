@@ -54,6 +54,30 @@ This is the single filesystem root for managed work:
 When unset, the backend uses `ayati-main/ayati`. Model-facing tool calls still
 use canonical absolute resource paths.
 
+## Filesystem Access Policy
+
+```env
+AYATI_FILESYSTEM_READ_SCOPE=machine
+AYATI_FILESYSTEM_MUTATION_SCOPE=workspace
+```
+
+These are strict operator-owned enums:
+
+- read scope: `machine` or `workspace`;
+- mutation scope: `workspace` or `bound_resource`.
+
+The current defaults are `machine` and `workspace`. `machine` permits the core
+filesystem observation tools to use explicit absolute paths readable by the
+daemon's operating-system account; omitted search roots still use
+`<AYATI_ROOT_DIR>/workspace/`. `workspace` requires every declared filesystem
+effect to remain canonically inside `<AYATI_ROOT_DIR>/workspace/` before
+normal workstream/resource mutation gates run. Tool inputs cannot override
+these values. Invalid values stop configuration loading.
+
+`bound_resource` is retained as an operator switch for the prior external
+bound-resource mutation boundary. It should not be enabled without a separate
+trust and deployment review.
+
 ## Context Engine
 
 ```env
@@ -110,7 +134,9 @@ AYATI_AGENT_TRACE_PROMPTS=
 
 Feedback files are written only when both test-agent and feedback-trace flags
 are truthy. Full payload tracing and prompt tracing can contain sensitive data;
-enable them only for deliberate local debugging.
+enable them only for deliberate local debugging. With machine read scope,
+readable host-file content may also be sent to the configured model provider
+and retained in the run journal even when tracing is disabled.
 
 The supported real-daemon evaluation entry point is `pnpm eval:agent -- live`.
 It sets runtime-owned `AYATI_EVALUATION_ID`, `AYATI_EVALUATION_NAME`,

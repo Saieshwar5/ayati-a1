@@ -101,6 +101,58 @@ describe("final response policy", () => {
     expect(rejection).toBeNull();
   });
 
+  it("allows a truthful completed reply when exact permission denial validation accounts for the failed mutation", () => {
+    const deniedStep: StepSummary = {
+      ...step("write_files", "failed", 1),
+      failureType: "permission",
+      failedCallIds: ["call-denied"],
+    };
+    const current = state({
+      completedSteps: [deniedStep],
+      virtualMode: {
+        active: "validation",
+        revision: 2,
+        operational: true,
+        purpose: "Validate the exact denied mutation.",
+        capabilities: ["task:validation"],
+        targets: ["call-denied"],
+        validation: {
+          returnMode: "execute",
+          status: "passed",
+          checks: [{
+            kind: "tool.call_denied",
+            subject: "call-denied",
+            denialCode: "PATH_OUTSIDE_MUTATION_WORKSPACE",
+            status: "passed",
+            tool: "write_files",
+            message: "Confirmed exact denial.",
+            satisfiedBy: {
+              step: 1,
+              callId: "call-denied",
+              tool: "write_files",
+              ref: "run:R-1:step:1:call:call-denied",
+            },
+          }],
+        },
+      },
+    });
+
+    expect(shouldRejectTerminalReplyForUnresolvedMutation(current, {
+      kind: "reply",
+      status: "completed",
+      message: "I could not write the external file because mutations are workspace-only.",
+    })).toBeNull();
+
+    current.virtualMode.validation!.checks[0]!.satisfiedBy!.callId = "call-other";
+    expect(shouldRejectTerminalReplyForUnresolvedMutation(current, {
+      kind: "reply",
+      status: "completed",
+      message: "I could not write the external file because mutations are workspace-only.",
+    })).toMatchObject({
+      failedStep: { step: 1 },
+    });
+  });
+
   it("detects when terminal replies can mark work done", () => {
     expect(canMarkTerminalReplyDone(state())).toBe(true);
     expect(canMarkTerminalReplyDone(state({

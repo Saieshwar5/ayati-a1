@@ -22,6 +22,7 @@ export const TASK_VALIDATION_OUTCOME_KINDS = [
   "system.health_observed",
   "artifact.available",
   "tool.call_succeeded",
+  "tool.call_denied",
 ] as const;
 
 export type TaskValidationOutcomeKind =
@@ -62,6 +63,7 @@ export interface ModeTransitionValidationCheck {
   expectedKind?: ValidationExpectedPathKind;
   searchScope?: FileSearchValidationScope;
   readScope?: FileReadValidationScope;
+  denialCode?: string;
 }
 
 export interface ValidationCheckResult extends ModeTransitionValidationCheck {

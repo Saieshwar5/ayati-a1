@@ -39,6 +39,9 @@ export function shouldRejectTerminalReplyForUnresolvedMutation(
   if (!failedStep) {
     return null;
   }
+  if (failedStepIsAccountedForByReportedDenial(state, failedStep)) {
+    return null;
+  }
   const latestSuccess = latestFileMutationStep(state.completedSteps, "success");
   if (latestSuccess && latestSuccess.step > failedStep.step) {
     return null;
@@ -47,6 +50,33 @@ export function shouldRejectTerminalReplyForUnresolvedMutation(
     reason: "The user asked for file changes, but the latest file mutation failed and no later file mutation succeeded. Continue with patch_files, write_files, or another mutation tool instead of sending a final reply.",
     failedStep,
   };
+}
+
+function failedStepIsAccountedForByReportedDenial(
+  state: LoopState,
+  step: StepSummary,
+): boolean {
+  const failedCallIds = step.failedCallIds ?? [];
+  if (step.failureType !== "permission" || failedCallIds.length === 0) {
+    return false;
+  }
+  const validation = state.virtualMode.validation;
+  if (
+    state.virtualMode.active !== "validation"
+    || validation?.status !== "passed"
+  ) {
+    return false;
+  }
+  const deniedCallIds = new Set(
+    validation.checks
+      .filter((check) => (
+        check.status === "passed"
+        && check.kind === "tool.call_denied"
+        && Boolean(check.satisfiedBy?.callId)
+      ))
+      .map((check) => check.satisfiedBy!.callId!),
+  );
+  return failedCallIds.every((callId) => deniedCallIds.has(callId));
 }
 
 function isWorkstreamBound(state: LoopState): boolean {

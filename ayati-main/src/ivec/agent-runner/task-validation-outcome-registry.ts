@@ -87,6 +87,7 @@ export function normalizeTaskValidationCheck(
     ...(check.readScope
       ? { readScope: normalizeFileReadValidationScope(check.readScope) }
       : {}),
+    ...(check.denialCode ? { denialCode: check.denialCode.trim() } : {}),
   };
 }
 
@@ -153,6 +154,19 @@ export function validateTaskValidationCheck(
   } else if (check.readScope !== undefined) {
     return {
       message: `readScope is valid only for file.read_scope_satisfied, not ${check.kind}.`,
+      subject,
+    };
+  }
+  if (check.kind === "tool.call_denied") {
+    if (!check.denialCode?.trim()) {
+      return {
+        message: "tool.call_denied requires the exact stable denialCode.",
+        subject,
+      };
+    }
+  } else if (check.denialCode !== undefined) {
+    return {
+      message: `denialCode is valid only for tool.call_denied, not ${check.kind}.`,
       subject,
     };
   }

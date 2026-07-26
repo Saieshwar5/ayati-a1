@@ -2,6 +2,10 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { LoopConfig } from "../ivec/types.js";
+import {
+  loadFilesystemAccessPolicy,
+  type FilesystemAccessPolicy,
+} from "../app/filesystem-access-policy.js";
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(thisDir, "..", "..");
@@ -56,6 +60,7 @@ export interface AyatiRuntimeConfig {
   documents: DocumentRuntimeConfig;
   python: PythonRuntimeConfig;
   agent: AgentRuntimeConfig;
+  filesystemAccess: FilesystemAccessPolicy;
   workspace: WorkspaceRuntimeConfig;
   contextEngine: ContextEngineRuntimeConfig;
 }
@@ -70,6 +75,7 @@ export function loadAyatiRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Ay
     documents: loadDocumentRuntimeConfig(env),
     python: loadPythonRuntimeConfig(env),
     agent: loadAgentRuntimeConfig(env),
+    filesystemAccess: loadFilesystemAccessPolicy(env),
     workspace,
     contextEngine: loadContextEngineRuntimeConfig(env, rootDirectory),
   };

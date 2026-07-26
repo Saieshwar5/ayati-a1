@@ -30,7 +30,9 @@ message.
 Exercise at least:
 
 1. casual conversation (zero-step unbound run);
-2. list/search/read in the default workspace or an admitted resource;
+2. list/search/read an explicit canonical machine path allowed to the daemon's
+   operating-system account, with omitted search roots defaulting to the
+   workspace;
 3. ambiguous durable ownership and focused clarification;
 4. a new workstream with output under `<AYATI_ROOT_DIR>/workspace/`;
 5. a second and third materially different workstream;

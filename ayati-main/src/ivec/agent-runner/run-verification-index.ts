@@ -1,6 +1,9 @@
 import { isAbsolute, relative, resolve } from "node:path";
 import { requireAbsoluteFilesystemPath } from "../../shared/filesystem-paths.js";
-import { isRoutingTool } from "../../skills/tool-taxonomy.js";
+import {
+  isObservationalTool,
+  isRoutingTool,
+} from "../../skills/tool-taxonomy.js";
 import type {
   FilesystemCompletionEvidence,
   RunToolCallContext,
@@ -25,6 +28,7 @@ import type {
   RunVerifiedPathOutcome,
   RunVerifiedPathOutcomeKind,
   RunVerifiedTaskOutcome,
+  RunVerifiedToolDenialOutcome,
 } from "./run-verification-index-contracts.js";
 
 export type {
@@ -37,6 +41,7 @@ export type {
   RunVerifiedOutcome,
   RunVerifiedPathOutcome,
   RunVerifiedTaskOutcome,
+  RunVerifiedToolDenialOutcome,
 } from "./run-verification-index-contracts.js";
 export {
   findLatestInvalidatedCompleteRead,
@@ -51,6 +56,15 @@ interface OrderedCall {
   call: RunToolCallContext;
   inputOrder: number;
 }
+
+const PRE_EXECUTION_PERMISSION_DENIAL_CODES = new Set([
+  "PATH_OUTSIDE_MUTATION_WORKSPACE",
+  "PATH_OUTSIDE_RESOURCE_SCOPE",
+  "PATH_OUTSIDE_WORKSPACE_ROOT",
+  "WORKSTREAM_RESOURCE_MUTATION_DENIED",
+  "WORKSTREAM_RESOURCE_SCOPE_VIOLATION",
+  "R_MUTATION_REQUIRES_WORKSTREAM_BINDING",
+]);
 
 export function buildCurrentRunVerificationIndex(input: {
   runId: string;
@@ -80,6 +94,11 @@ export function buildCurrentRunVerificationIndex(input: {
     const receipt = buildCallReceipt(call, source, scope);
     calls.push(receipt);
     if (receipt.status !== "passed") {
+      const denial = toolDenialOutcome(call, source, scope, ordinal);
+      if (denial) {
+        outcomes.push(denial);
+        ordinal++;
+      }
       continue;
     }
 
@@ -228,6 +247,8 @@ function buildCallReceipt(
         : {}),
     summary,
     ...(code ? { code } : {}),
+    ...(call.errorCategory ? { errorCategory: call.errorCategory } : {}),
+    ...(call.errorTarget ? { errorTarget: call.errorTarget } : {}),
   };
 }
 
@@ -416,6 +437,43 @@ function callSucceededOutcome(
     subject,
     summary: `${source.tool} passed deterministic verification.`,
     source,
+  };
+}
+
+function toolDenialOutcome(
+  call: RunToolCallContext,
+  source: RunVerificationSource,
+  scope: RunVerificationCallReceipt["scope"],
+  ordinal: number,
+): RunVerifiedToolDenialOutcome | undefined {
+  const denialCode = call.code?.trim()
+    || call.verification?.failure?.code.trim();
+  if (
+    scope !== "task"
+    || call.status !== "failed"
+    || call.operationStatus !== "failed"
+    || call.errorCategory !== "permission"
+    || !call.callId?.trim()
+    || !denialCode
+    || (
+      !isObservationalTool(call.tool)
+      && !PRE_EXECUTION_PERMISSION_DENIAL_CODES.has(denialCode)
+    )
+  ) {
+    return undefined;
+  }
+  return {
+    id: `${source.ref}:denial:${ordinal}`,
+    ordinal,
+    family: "tool_denial",
+    kind: "tool.call_denied",
+    role: "completion",
+    subject: call.callId,
+    summary: `${call.tool} was deterministically denied with ${denialCode}.`,
+    source,
+    denialCode,
+    tool: call.tool,
+    ...(call.errorTarget ? { target: call.errorTarget } : {}),
   };
 }
 

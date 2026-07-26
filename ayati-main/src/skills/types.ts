@@ -13,7 +13,7 @@ export interface ToolExecutionContext {
 }
 
 export interface ToolResourceScope {
-  kind: "workspace" | "resource";
+  kind: "workspace" | "resource" | "machine_read";
   /** Directory used by filesystem and process tools for relative-path resolution. */
   rootPath: string;
   /** Exact filesystem authority retained by the resource-scoping wrapper. */

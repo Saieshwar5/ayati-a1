@@ -3,6 +3,7 @@ import {
   appendActiveFailure,
   getActiveFailures,
   resolveActiveFailures,
+  resolveReportedDenialFailures,
 } from "../../src/ivec/agent-runner/failure-lifecycle.js";
 import { hasRepeatedRepairFailure } from "../../src/ivec/agent-runner/repair-feedback.js";
 import type { FailureRecord, LoopState } from "../../src/ivec/types.js";
@@ -101,6 +102,82 @@ describe("failure repair lifecycle", () => {
         reason: "The filesystem action failed.",
       }),
     ]);
+  });
+
+  it("accounts for only the exact permission-denied call selected by validation", () => {
+    const current = state();
+    appendActiveFailure(current, {
+      step: 1,
+      failureType: "permission",
+      reason: "External write was denied.",
+      blockedTargets: ["/external/report.txt"],
+      failedCallIds: ["call-denied"],
+      repairScope: "action",
+    });
+    appendActiveFailure(current, {
+      step: 2,
+      failureType: "permission",
+      reason: "A different write was denied.",
+      blockedTargets: ["/external/other.txt"],
+      failedCallIds: ["call-other"],
+      repairScope: "action",
+    });
+    appendActiveFailure(current, {
+      step: 3,
+      failureType: "tool_error",
+      reason: "An unrelated tool failed.",
+      blockedTargets: ["db_query"],
+      failedCallIds: ["call-tool-error"],
+      repairScope: "action",
+    });
+
+    const receipt = resolveReportedDenialFailures(current, {
+      callIds: ["call-denied"],
+      iteration: 4,
+    });
+
+    expect(receipt).toMatchObject({
+      kind: "denial_reported",
+      scopes: ["action"],
+      resolved: [{
+        step: 1,
+        failedCallIds: ["call-denied"],
+      }],
+    });
+    expect(current.failureHistory[0]?.resolution).toEqual({
+      iteration: 4,
+      kind: "denial_reported",
+    });
+    expect(getActiveFailures(current.failureHistory)).toEqual([
+      expect.objectContaining({ step: 2, failedCallIds: ["call-other"] }),
+      expect.objectContaining({ step: 3, failureType: "tool_error" }),
+    ]);
+  });
+
+  it("does not partially account for a failed step containing multiple denied calls", () => {
+    const current = state();
+    appendActiveFailure(current, {
+      step: 1,
+      failureType: "permission",
+      reason: "Two external writes were denied.",
+      blockedTargets: ["/external/one.txt", "/external/two.txt"],
+      failedCallIds: ["call-one", "call-two"],
+      repairScope: "action",
+    });
+
+    expect(resolveReportedDenialFailures(current, {
+      callIds: ["call-one"],
+      iteration: 2,
+    })).toBeUndefined();
+    expect(getActiveFailures(current.failureHistory)).toHaveLength(1);
+
+    expect(resolveReportedDenialFailures(current, {
+      callIds: ["call-one", "call-two"],
+      iteration: 3,
+    })).toMatchObject({
+      kind: "denial_reported",
+      resolved: [{ step: 1 }],
+    });
   });
 
   it("detects repeated semantic gate failures even when attempted targets vary", () => {

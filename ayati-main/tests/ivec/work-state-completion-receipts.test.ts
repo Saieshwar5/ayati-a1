@@ -135,6 +135,20 @@ describe("WorkState validation completion receipts", () => {
     }]);
   });
 
+  it("keeps a compact denial receipt without calling it a successful mutation", () => {
+    const check = passedCheck("tool.call_denied", "call-denied", 8);
+    check.denialCode = "PATH_OUTSIDE_MUTATION_WORKSPACE";
+
+    expect(buildValidationCompletionReceipts({
+      runId: RUN_ID,
+      checks: [check],
+    })).toEqual([{
+      kind: "finding",
+      value: "Verified that tool call call-denied was denied with PATH_OUTSIDE_MUTATION_WORKSPACE.",
+      ref: `run:${RUN_ID}:step:8:call:call-8`,
+    }]);
+  });
+
   it("never stores a truncated proof reference", () => {
     const check = passedCheck("path.exists", "/workspace/result.txt", 7);
     check.satisfiedBy = {

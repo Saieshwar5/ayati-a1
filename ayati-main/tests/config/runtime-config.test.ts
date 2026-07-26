@@ -35,6 +35,10 @@ describe("ayati runtime config", () => {
       },
       python: {},
       agent: { loopConfig: { maxCapabilitySurfaceTools: DEFAULT_AGENT_MAX_CAPABILITY_SURFACE_TOOLS } },
+      filesystemAccess: {
+        readScope: "machine",
+        mutationScope: "workspace",
+      },
       workspace: { root: DEFAULT_WORKSPACE_DIR },
       contextEngine: {
         rootDirectory: DEFAULT_AYATI_ROOT_DIR,
@@ -58,6 +62,8 @@ describe("ayati runtime config", () => {
       AYATI_DOCUMENT_VECTOR_MIN_CHUNKS: "12",
       AYATI_PYTHON_INTERPRETER: " /usr/bin/python3 ",
       AYATI_AGENT_MAX_CAPABILITY_SURFACE_TOOLS: "5",
+      AYATI_FILESYSTEM_READ_SCOPE: "workspace",
+      AYATI_FILESYSTEM_MUTATION_SCOPE: "bound_resource",
       AYATI_CONTEXT_ENGINE_DATABASE: " /tmp/ayati-db/context.db ",
       AYATI_CONTEXT_ENGINE_TIMEZONE: " UTC ",
       AYATI_CONTEXT_ENGINE_AGENT_ID: " local-agent ",
@@ -84,6 +90,10 @@ describe("ayati runtime config", () => {
     });
     expect(config.python.interpreterPath).toBe("/usr/bin/python3");
     expect(config.agent.loopConfig.maxCapabilitySurfaceTools).toBe(5);
+    expect(config.filesystemAccess).toEqual({
+      readScope: "workspace",
+      mutationScope: "bound_resource",
+    });
   });
 
   it("accepts legacy Git Context storage settings during the internal rename", () => {
@@ -138,5 +148,14 @@ describe("ayati runtime config", () => {
 
     expect(config.http.apiToken).toBeUndefined();
     expect(config.python.interpreterPath).toBeUndefined();
+  });
+
+  it("rejects invalid filesystem policy values instead of weakening access policy", () => {
+    expect(() => loadAyatiRuntimeConfig({
+      AYATI_FILESYSTEM_READ_SCOPE: "everything",
+    })).toThrow(/AYATI_FILESYSTEM_READ_SCOPE/);
+    expect(() => loadAyatiRuntimeConfig({
+      AYATI_FILESYSTEM_MUTATION_SCOPE: "machine",
+    })).toThrow(/AYATI_FILESYSTEM_MUTATION_SCOPE/);
   });
 });

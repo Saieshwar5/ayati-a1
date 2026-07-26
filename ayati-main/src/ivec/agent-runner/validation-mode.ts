@@ -103,6 +103,9 @@ function completionMessage(
   if (kind === "tool.call_succeeded") {
     return "Confirmed the exact current-run tool call passed deterministic verification.";
   }
+  if (kind === "tool.call_denied") {
+    return "Confirmed the exact current-run tool call was deterministically denied without retrying it.";
+  }
   return `Confirmed the already-verified current-run ${kind} outcome.`;
 }
 

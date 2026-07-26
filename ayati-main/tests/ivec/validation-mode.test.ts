@@ -441,6 +441,73 @@ describe("validation mode", () => {
     });
   });
 
+  it("passes only the exact deterministic denial and cannot reuse it as success proof", () => {
+    const deniedCall: RunToolCallContext = {
+      step: 4,
+      callId: "call-denied",
+      tool: "write_files",
+      input: {
+        files: [{
+          path: "/external/report.txt",
+          content: "must not be written",
+        }],
+      },
+      status: "failed",
+      output: "",
+      error: "Mutation path is outside the configured workspace.",
+      code: "PATH_OUTSIDE_MUTATION_WORKSPACE",
+      errorCategory: "permission",
+      errorTarget: "/external/report.txt",
+      operationStatus: "failed",
+      verificationPassed: false,
+    };
+    const denial = validationMode([{
+      kind: "tool.call_denied",
+      subject: "call-denied",
+      denialCode: "PATH_OUTSIDE_MUTATION_WORKSPACE",
+    }]);
+    applyEvidence(denial, [deniedCall]);
+
+    expect(denial.validation).toMatchObject({
+      status: "passed",
+      checks: [{
+        kind: "tool.call_denied",
+        subject: "call-denied",
+        denialCode: "PATH_OUTSIDE_MUTATION_WORKSPACE",
+        status: "passed",
+        message: "Confirmed the exact current-run tool call was deterministically denied without retrying it.",
+        satisfiedBy: {
+          step: 4,
+          callId: "call-denied",
+          tool: "write_files",
+        },
+      }],
+    });
+
+    const wrongCode = validationMode([{
+      kind: "tool.call_denied",
+      subject: "call-denied",
+      denialCode: "WORKSTREAM_RESOURCE_MUTATION_DENIED",
+    }]);
+    applyEvidence(wrongCode, [deniedCall]);
+    expect(wrongCode.validation?.status).toBe("failed");
+
+    const mutationSuccess = validationMode([{
+      kind: "file.written",
+      subject: "/external/report.txt",
+      expectedKind: "file",
+    }]);
+    applyEvidence(mutationSuccess, [deniedCall]);
+    expect(mutationSuccess.validation?.status).toBe("failed");
+
+    const callSuccess = validationMode([{
+      kind: "tool.call_succeeded",
+      subject: "call-denied",
+    }]);
+    applyEvidence(callSuccess, [deniedCall]);
+    expect(callSuccess.validation?.status).toBe("failed");
+  });
+
   it("rejects routing-only and historical outcomes", () => {
     const routingMode = validationMode([{
       kind: "path.exists",

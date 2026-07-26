@@ -80,6 +80,12 @@ describe("stable decision system prompt", () => {
     expect(prompt).toContain("file.search_no_match requires its searchScope");
     expect(prompt).toContain("Validation is proof-only, exposes no action tools");
     expect(prompt).toContain("tool.call_succeeded with an exact callId");
+    expect(prompt).toContain("tool.call_denied requires the exact callId and denialCode");
+    expect(prompt).toContain("never proves a read or mutation succeeded");
+    expect(prompt).toContain("may read any OS-readable machine path");
+    expect(prompt).toContain("omitted search roots default to Ayati's workspace");
+    expect(prompt).toContain("Read access grants no mutation authority");
+    expect(prompt).toContain("must stay inside Ayati's workspace");
     expect(prompt).toContain("without repeating work");
     expect(prompt).toContain("completed result, not a blocker");
     expect(prompt).not.toContain('"path": "/absolute/resource/path/index.html"');

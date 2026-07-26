@@ -106,6 +106,16 @@ a typed binding proposal. Host filesystem values are canonical absolute paths.
 Portable children inside a named resource use `relativePath` and are never
 resolved from process cwd.
 
+Filesystem observation and mutation intentionally have different runtime
+boundaries. The five core filesystem observation tools may use any explicit
+canonical absolute path readable by the daemon's operating-system account;
+omitted search roots still default to `<AYATI_ROOT_DIR>/workspace/`. This
+machine-read path runs before workstream-resource enforcement and grants no
+binding or write authority. Mutation effects are first canonicalized against
+the configured workspace and rejected before resource lookup or preparation
+when they escape it. Existing binding, mutable-resource, exact-target, and
+post-operation verification gates then run normally.
+
 Typical traces remain inside the one harness loop:
 
 ```text
@@ -259,9 +269,10 @@ responsibility to eligible concrete tools.
 `observe.locate` and `observe.investigate` expose only read-only tools. A mode
 transition replaces the complete capability surface so tools from an earlier mode do
 not accumulate. Bounded self-transitions may adjust the surface; repeated
-identical transitions stop through no-progress protection. `execute` reuses
-the existing bound-resource policy. Selecting a capability never authorizes
-its effect; resource-scoped validation still runs at execution time.
+identical transitions stop through no-progress protection. `execute` enforces
+the workspace-effect policy plus the existing bound-resource policy. Selecting
+a capability never authorizes its effect; resource-scoped validation still
+runs at execution time.
 
 `context.retrieve` exposes only `context_load` through `context:load`. Its
 receipt is audited, but full content is mounted directly in
@@ -330,6 +341,11 @@ Supporting facts, routing outcomes, invalidated proof, hashes, verification
 contracts, checks, and methods stay internal. The adjacent tool-call
 projection keeps its exact normal input and output; moving proof detail out of
 that projection is not tool-input or tool-output compaction.
+
+A failed permission call can also contribute one narrowly typed
+`tool.call_denied` outcome when the runtime has exact call identity, a stable
+denial code, and evidence that the requested operation did not occur. It is
+not a successful call receipt and cannot satisfy read or mutation outcomes.
 
 ## WorkState and Step Persistence
 
@@ -433,6 +449,23 @@ memory, and managed-artifact outcomes. `tool.call_succeeded` is an exact-call
 fallback keyed by `callId`; it is emitted only by the existing deterministic
 runtime verifier when no stronger completion outcome exists. Routing calls
 never produce task-completion proof.
+
+For a reportable permission denial, validation may instead select:
+
+```text
+{
+  kind: "tool.call_denied",
+  subject: "call-17",
+  denialCode: "PATH_OUTSIDE_MUTATION_WORKSPACE"
+}
+```
+
+The exact check accounts only for the matching permission failure and records
+the resolution as `denial_reported`. The call and step remain failed/denied in
+the journal, unrelated failures stay active, and the outcome cannot masquerade
+as operation success. The model still decides whether reporting the denial
+fulfills the user's request; otherwise it uses a truthful blocked or failed
+outcome.
 
 Entering validation queries only the relevant outcomes in the derived
 current-run index and records the satisfying exact call reference on each

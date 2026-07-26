@@ -104,6 +104,10 @@ export function findLatestVerifiedOutcomeForCheck(
       return outcome.family === "filesystem_path"
         && outcome.kind === check.kind;
     }
+    if (check.kind === "tool.call_denied") {
+      return outcome.family === "tool_denial"
+        && outcome.denialCode === check.denialCode;
+    }
     return outcome.family === "task" && outcome.kind === check.kind;
   });
 }

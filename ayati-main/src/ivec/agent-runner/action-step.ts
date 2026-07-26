@@ -310,6 +310,12 @@ function toRunToolCallContext(
     output: call.output,
     ...(call.error ? { error: call.error } : {}),
     ...(call.code ? { code: call.code } : {}),
+    ...(call.result?.error?.category
+      ? { errorCategory: call.result.error.category }
+      : {}),
+    ...(call.result?.error?.target
+      ? { errorTarget: call.result.error.target }
+      : {}),
     ...(call.operationStatus ? { operationStatus: call.operationStatus } : {}),
     ...(call.artifacts && call.artifacts.length > 0 ? { artifacts: call.artifacts } : {}),
     ...(call.observation?.hasMore !== undefined ? { hasMore: call.observation.hasMore } : {}),

@@ -343,6 +343,12 @@ function validationCheckArraySchema(): Record<string, unknown> {
       },
       searchScope: searchScopeSchema(),
       readScope: readScopeSchema(),
+      denialCode: {
+        type: "string",
+        minLength: 1,
+        maxLength: 200,
+        description: "Required only for tool.call_denied. Copy the exact stable denial code from current-run verification.",
+      },
     }, ["kind", "subject"]),
   };
 }

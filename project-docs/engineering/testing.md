@@ -91,13 +91,20 @@ Changes should prove the relevant invariants:
     `file.search_no_match`, not classified as blocked. Its proof must be
     uncapped, error-free, depth-complete, and tied to the exact search scope.
     Passed validation resolves an earlier validation-scoped terminal repair
-    without clearing real action, binding, or permission failures.
+    without clearing real action, binding, or permission failures unless an
+    exact passed `tool.call_denied` check accounts for its own permission call.
 24. Host filesystem fields reject relative paths and file URIs. Resource child
     fields stay explicitly relative, pair with a resource id, and reject
-    containment escapes.
+    containment escapes. The five core filesystem observation tools accept
+    explicit machine paths in bound and unbound runs when read scope is
+    `machine`; omitted search roots remain workspace-local, host permission
+    failures return no content, and non-regular devices are not normal files.
 25. Directory mutation authority includes canonical descendants but not
-    siblings or symbolic-link escapes. Read-only references never become
-    mutation candidates.
+    siblings or symbolic-link escapes. With mutation scope `workspace`, every
+    direct file mutation, move endpoint, process/Python declared effect, and
+    mutable database destination is rejected outside the configured workspace
+    before resource lookup, preparation, or execution. Read-only references
+    and `allowExternalPath` never become mutation authority.
 26. Explicit create-new ownership survives a focused clarification; ambiguity
     without a binding does not consume the single binding attempt.
 27. File-content validation rejects a silently substituted source.
@@ -132,6 +139,16 @@ Changes should prove the relevant invariants:
     signature of a currently exposed native control is never accepted as a
     direct reply or executed automatically. The harness requests one native
     tool-call repair, while unrelated JSON assistant replies remain valid.
+34. A failed permission call produces `tool.call_denied` only with exact call
+    identity, stable denial code, and deterministic evidence that the requested
+    operation did not occur. Exact denial validation resolves only the matching
+    action failure as `denial_reported`; unrelated failures remain active, the
+    step remains failed, and denial cannot satisfy any success outcome.
+35. Filesystem policy defaults and environment overrides are strict and
+    model-independent: machine reads do not grant binding or mutation
+    authority, workspace mutation still requires all existing workstream and
+    verification gates, and `bound_resource` can be restored only by operator
+    configuration.
 
 ## Prompt and Harness Coverage
 
@@ -148,6 +165,8 @@ pending, passed, and failed validation checks, every terminal stop outcome,
 exact current-run filesystem and semantic outcome checks, routing-proof
 exclusion, observation WorkState completeness,
 mutation-validation bypass prevention, filesystem path/type/format checks,
+machine-read/workspace-mutation scope separation, external symlink reads,
+cross-boundary mutation denial, exact denial evidence and failure accounting,
 evidence-backed clarification, and final acknowledgement ordering. Assert
 that the resolve gate does not invoke a provider and does not create a task
 step.

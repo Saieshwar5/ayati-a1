@@ -28,6 +28,8 @@ export interface PromptRunToolCallContext {
   summary?: string;
   error?: string;
   code?: string;
+  errorCategory?: RunToolCallContext["errorCategory"];
+  errorTarget?: string;
   operationStatus?: RunToolCallContext["operationStatus"];
   artifacts?: RunToolCallContext["artifacts"];
   stepRef?: PromptToolCallStepRef;
@@ -77,6 +79,8 @@ function projectPromptToolCall(call: RunToolCallContext): PromptRunToolCallConte
     output: call.output,
     ...(call.error ? { error: call.error } : {}),
     ...(call.code ? { code: call.code } : {}),
+    ...(call.errorCategory ? { errorCategory: call.errorCategory } : {}),
+    ...(call.errorTarget ? { errorTarget: call.errorTarget } : {}),
     ...(call.operationStatus ? { operationStatus: call.operationStatus } : {}),
     ...(call.artifacts && call.artifacts.length > 0 ? { artifacts: call.artifacts } : {}),
     ...(call.stepRef ? { stepRef: projectStepRef(call.stepRef) } : {}),
@@ -152,6 +156,8 @@ export function compactPromptToolCall(
     ...(outputPreview.length > 0 ? { outputPreview } : {}),
     ...(call.error ? { error: truncatePreserveLines(call.error, PROMPT_TOOL_CALL_POLICY.maxErrorChars) } : {}),
     ...(call.code ? { code: call.code } : {}),
+    ...(call.errorCategory ? { errorCategory: call.errorCategory } : {}),
+    ...(call.errorTarget ? { errorTarget: call.errorTarget } : {}),
     ...(call.operationStatus ? { operationStatus: call.operationStatus } : {}),
     ...(call.artifacts && call.artifacts.length > 0 ? { artifacts: call.artifacts } : {}),
     ...(call.stepRef ? { stepRef: call.stepRef } : {}),
