@@ -137,7 +137,6 @@ function createReadyChatContextRuntime(): ContextEngineRuntime {
         contentHash: "sha256:assistant",
         at: input.at,
       },
-      observationRevision: prepared.context.observationRevision,
       resourceEffects: { status: "none", events: [] },
       workstreamContextCommit: { status: "not_required" },
     })),

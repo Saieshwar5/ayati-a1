@@ -12,7 +12,7 @@ afterEach(async () => {
   await Promise.all(fixtures.splice(0).map(async (fixture) => await fixture.dispose()));
 });
 
-describe("V7 run finalization", () => {
+describe("current-schema run finalization", () => {
   it("closes a zero-step direct reply and appends one immutable assistant message", async () => {
     const fixture = await createFixture("direct-reply");
     const input = finalization(fixture, "done", "completed", "The answer is complete.");
@@ -22,7 +22,12 @@ describe("V7 run finalization", () => {
     expect(replayed).toEqual(result);
     expect(result).toMatchObject({
       run: { runId: fixture.prepared.run.runId, status: "done", stopReason: "completed", stepCount: 0 },
-      assistantMessage: { role: "assistant", sequence: 2, content: "The answer is complete." },
+      assistantMessage: {
+        role: "assistant",
+        sequence: 2,
+        content: "The answer is complete.",
+        responseKind: "reply",
+      },
       resourceEffects: { status: "none", events: [] },
       workstreamContextCommit: { status: "not_required" },
     });
@@ -32,6 +37,9 @@ describe("V7 run finalization", () => {
     expect(() => fixture.database.prepare(
       "UPDATE messages SET content = 'changed' WHERE message_id = ?",
     ).run(result.assistantMessage!.messageId)).toThrow("messages are immutable");
+    expect(() => fixture.database.prepare(
+      "UPDATE message_response_metadata SET response_kind = 'notification' WHERE message_id = ?",
+    ).run(result.assistantMessage!.messageId)).toThrow("message response metadata is immutable");
   });
 
   it("keeps structured step evidence in run history without transcript materialization", async () => {
@@ -57,11 +65,6 @@ describe("V7 run finalization", () => {
           output: { files: [{ path: "README.md", content: "evidence" }] },
         }],
         verification: { passed: true },
-        workStateAfter: workState({
-          summary: "Read exact evidence.",
-          facts: ["README was read."],
-          evidence: ["README.md"],
-        }),
         createdAt: "2026-07-19T10:01:00+05:30",
       },
     });
@@ -105,6 +108,14 @@ describe("V7 run finalization", () => {
       ));
       expect(result.run).toMatchObject({ status: outcome, stopReason });
       expect(result.assistantMessage?.content).toBe(`Final ${outcome} response.`);
+      if (outcome === "needs_user_input") {
+        expect(result.assistantMessage).toMatchObject({
+          responseKind: "feedback",
+          feedbackKind: "clarification",
+        });
+      } else {
+        expect(result.assistantMessage?.responseKind).toBe("reply");
+      }
     });
   }
 });
@@ -137,7 +148,7 @@ function finalization(
           ? "blocked"
           : outcome === "needs_user_input"
             ? "needs_user_input"
-            : "not_done",
+            : "in_progress",
       summary: "The run reached its terminal state.",
     }),
     at: "2026-07-19T10:02:00+05:30",

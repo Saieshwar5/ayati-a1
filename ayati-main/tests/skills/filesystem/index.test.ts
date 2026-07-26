@@ -7,11 +7,6 @@ describe("filesystemSkill", () => {
     expect(filesystemSkill.version).toBe("1.0.0");
   });
 
-  it("has a non-empty prompt block", () => {
-    expect(filesystemSkill.promptBlock.length).toBeGreaterThan(0);
-    expect(filesystemSkill.promptBlock).toContain("Filesystem tools are built in.");
-  });
-
   it("exports the reliable filesystem tools", () => {
     expect(filesystemSkill.tools).toHaveLength(10);
 

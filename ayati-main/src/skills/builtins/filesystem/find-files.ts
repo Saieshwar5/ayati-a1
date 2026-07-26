@@ -2,7 +2,12 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { ToolDefinition, ToolResult } from "../../types.js";
 import { resolveWorkspaceRoots } from "../../workspace-paths.js";
-import { commonAnnotations, okResult, successV2 } from "../contract-helpers.js";
+import {
+  commonAnnotations,
+  okResult,
+  succeededContract,
+  successV2,
+} from "../contract-helpers.js";
 import { validateFindFilesInput } from "./validators.js";
 
 interface SearchState {
@@ -36,17 +41,66 @@ export const findFilesTool: ToolDefinition = {
       includeHidden: { type: "boolean", description: "Whether to include hidden files/directories." },
     },
   },
+  outputSchema: {
+    type: "object",
+    required: [
+      "query",
+      "roots",
+      "matches",
+      "matchCount",
+      "maxDepth",
+      "maxResults",
+      "includeHidden",
+      "capped",
+      "errors",
+      "errorCount",
+      "depthLimitedDirectoryCount",
+      "traversalComplete",
+    ],
+    properties: {
+      query: { type: "string" },
+      roots: { type: "array", items: { type: "string" } },
+      matches: { type: "array", items: { type: "object" } },
+      matchCount: { type: "integer" },
+      maxDepth: { type: "integer" },
+      maxResults: { type: "integer" },
+      includeHidden: { type: "boolean" },
+      capped: { type: "boolean" },
+      errors: { type: "array", items: { type: "object" } },
+      errorCount: { type: "integer" },
+      depthLimitedDirectoryCount: { type: "integer" },
+      traversalComplete: { type: "boolean" },
+    },
+  },
   annotations: commonAnnotations({
     domain: "filesystem",
     readOnly: true,
   }),
-  selectionHints: {
-    tags: ["filesystem", "search", "find", "filename", "path"],
-    aliases: ["locate_file", "find_path", "find_filename"],
-    examples: ["find learn1.go in system", "search for package.json file"],
-    domain: "filesystem-search",
-    priority: 40,
+  observationPolicy: {
+    outputImportance: "decision_context",
+    rawStorage: "always",
+    maxObservationChars: 8_000,
   },
+  resultContract: succeededContract({
+    assertions: [
+      {
+        id: "matches_present",
+        kind: "json_path_exists",
+        path: "$.result.structuredContent.matches",
+      },
+      {
+        id: "match_count_matches",
+        kind: "json_path_number_equals_count",
+        path: "$.result.structuredContent.matchCount",
+        equalsPath: "$.result.structuredContent.matches",
+      },
+      {
+        id: "search_completeness_present",
+        kind: "json_path_exists",
+        path: "$.result.structuredContent.traversalComplete",
+      },
+    ],
+  }),
   async execute(input, context): Promise<ToolResult> {
     const parsed = validateFindFilesInput(input);
     if ("ok" in parsed) return parsed;
@@ -69,6 +123,7 @@ export const findFilesTool: ToolDefinition = {
     const matches: string[] = [];
     const searchedRoots: string[] = [];
     const errors: Array<{ path: string; error: string }> = [];
+    let depthLimitedDirectoryCount = 0;
 
     try {
       for (const root of roots) {
@@ -98,30 +153,48 @@ export const findFilesTool: ToolDefinition = {
               if (matches.length >= maxResults) break;
             }
 
-            if (dirent.isDirectory() && current.depth < maxDepth) {
-              queue.push({ path: fullPath, depth: current.depth + 1 });
+            if (dirent.isDirectory()) {
+              if (current.depth < maxDepth) {
+                queue.push({ path: fullPath, depth: current.depth + 1 });
+              } else {
+                depthLimitedDirectoryCount++;
+              }
             }
           }
         }
       }
 
+      const capped = matches.length >= maxResults;
+      const traversalComplete = !capped
+        && errors.length === 0
+        && depthLimitedDirectoryCount === 0;
       const structuredContent = {
         query: parsed.query,
         roots: searchedRoots,
         matches: matches.map((absolutePath) => ({ absolutePath, kind: "file" as const })),
-        capped: matches.length >= maxResults,
+        matchCount: matches.length,
+        maxDepth,
+        maxResults,
+        includeHidden,
+        capped,
         errors: errors.slice(0, 20),
+        errorCount: errors.length,
+        depthLimitedDirectoryCount,
+        traversalComplete,
       };
       const meta = {
-          durationMs: Date.now() - start,
-          query: parsed.query,
-          roots: searchedRoots,
-          matchCount: matches.length,
-          maxDepth,
-          maxResults,
-          capped: matches.length >= maxResults,
-          errorCount: errors.length,
-          errors: errors.slice(0, 20),
+        durationMs: Date.now() - start,
+        query: parsed.query,
+        roots: searchedRoots,
+        matchCount: matches.length,
+        maxDepth,
+        maxResults,
+        includeHidden,
+        capped,
+        errorCount: errors.length,
+        errors: errors.slice(0, 20),
+        depthLimitedDirectoryCount,
+        traversalComplete,
       };
       return okResult({
         output: matches.length > 0 ? matches.join("\n") : "(no matches)",

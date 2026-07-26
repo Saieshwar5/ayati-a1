@@ -899,20 +899,6 @@ export const pulseTool: ToolDefinition = {
       message: "Pulse action completed.",
     }],
   }),
-  selectionHints: {
-    tags: ["reminder", "calendar", "schedule", "time", "date", "alarm", "task", "recurring-task"],
-    aliases: ["set_reminder", "calendar", "remind_me", "schedule_reminder", "schedule_task", "set_recurring_task"],
-    examples: [
-      "remind me every one hour to check system health",
-      "every morning browse AI news and summarize it",
-      "create a passive event for tomorrow at 2pm",
-      "show my active pulse items",
-      "preview this monthly schedule",
-      "check pulse clock health",
-    ],
-    domain: "time-management",
-    priority: 98,
-  },
   async execute(input, context): Promise<ToolResult> {
     const parsed = parseInput(input);
     if (isToolResult(parsed)) return parsed;
@@ -1203,23 +1189,10 @@ function resolveScheduleSeed(
   };
 }
 
-const PULSE_PROMPT_BLOCK = [
-  "The `pulse` tool is built in.",
-  "Use it directly for reminders, schedules, recurring checks, periodic browsing, periodic monitoring, dates, or times.",
-  "Pulse V2 stores all schedule state in SQLite and supports events, reminders, notifications, and executable scheduled tasks.",
-  "Use action=create, update, list, get, pause, resume, cancel, delete, snooze, dismiss, preview, now, and health as needed.",
-  "Use kind=event for passive calendar records, kind=reminder or kind=notification for internal notifications, and kind=task for scheduled agent work.",
-  "Prefer structured schedule objects when possible. Supported recurrence kinds are once, interval, daily, weekly, monthly, and yearly.",
-  "After create or update, inspect the preview output to confirm schedule math before relying on it for important work.",
-  "For scheduled tasks, include task.objective and task.requestedAction when known so future system_event handling has enough execution context.",
-  "When the user accepts an assistant-suggested recurring Pulse routine, create kind=task with requestedAction=run_responsibility and metadata.source=pulse_proposal.",
-].join("\n");
-
 const pulseSkill: SkillDefinition = {
   id: "pulse",
   version: "1.0.0",
   description: "Persistent SQLite-backed calendar, reminder, notification, and scheduled-task orchestration for time-based agent work.",
-  promptBlock: PULSE_PROMPT_BLOCK,
   tools: [pulseTool],
 };
 

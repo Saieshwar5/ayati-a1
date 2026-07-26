@@ -32,6 +32,50 @@ describe("deterministic resolve gate", () => {
     expect(coordinator.bind).not.toHaveBeenCalled();
   });
 
+  it("enforces a scoped mutation boundary without treating it as a global mutation ban", async () => {
+    const message = "Build the site in /tmp/site. Do not modify anything outside /tmp/site.";
+    const coordinator = {
+      bind: vi.fn(async () => ({
+        status: "failed" as const,
+        code: "FIXTURE_STOP",
+        message: "Reached the coordinator.",
+        retryable: false,
+      })),
+    };
+    const inside = await dispatchDeterministicResolveGate({
+      state: state(message, true),
+      request: {
+        ...resolveRequest(),
+        mutationScopes: [{ kind: "filesystem", path: "/tmp/site/index.html" }],
+      },
+      toolNames: ["write_files"],
+      coordinator,
+      alreadyAttempted: false,
+    });
+    expect(inside).toMatchObject({ kind: "failed", attempted: true });
+    expect(coordinator.bind).toHaveBeenCalledOnce();
+
+    coordinator.bind.mockClear();
+    const outside = await dispatchDeterministicResolveGate({
+      state: state(message, true),
+      request: {
+        ...resolveRequest(),
+        mutationScopes: [{ kind: "filesystem", path: "/tmp/other/index.html" }],
+      },
+      toolNames: ["write_files"],
+      coordinator,
+      alreadyAttempted: false,
+    });
+    expect(outside).toMatchObject({
+      kind: "rejected",
+      repair: {
+        code: "MODE_MUTATION_INTENT_REQUIRED",
+        blockedTargets: ["/tmp/other/index.html"],
+      },
+    });
+    expect(coordinator.bind).not.toHaveBeenCalled();
+  });
+
   it("requires current-run routing evidence and rejects invented evidence references", async () => {
     const coordinator = { bind: vi.fn() };
     const missing = await dispatchDeterministicResolveGate({
@@ -114,10 +158,37 @@ describe("deterministic resolve gate", () => {
     expect(coordinator.bind).toHaveBeenCalledOnce();
     expect(coordinator.bind).toHaveBeenCalledWith(expect.objectContaining({
       purpose: "Bind the requested output.",
-      targets: ["notes.md"],
+      referenceTargets: [],
+      mutationScopes: ["notes.md"],
       proposal: createProposal(),
       expectedContextRevision: current.harnessContext.contextEngine?.contextRevision,
     }));
+  });
+
+  it("does not consume the binding attempt when ownership remains ambiguous", async () => {
+    const coordinator = {
+      bind: vi.fn(async () => ({
+        status: "needs_user_input" as const,
+        question: "Use the existing workstream or create a new independent one?",
+        candidateIds: ["W-20260722-0001"],
+      })),
+    };
+
+    const result = await dispatchDeterministicResolveGate({
+      state: state("Create notes.md.", true),
+      request: resolveRequest(),
+      toolNames: ["write_files"],
+      coordinator,
+      alreadyAttempted: false,
+    });
+
+    expect(result).toMatchObject({
+      kind: "needs_user_input",
+      attempted: false,
+      outcome: {
+        candidateIds: ["W-20260722-0001"],
+      },
+    });
   });
 
   it("accepts activation only when the selected workstream and HEAD were observed", async () => {
@@ -220,10 +291,15 @@ function state(message: string, observed = false): LoopState {
     inputKind: "user_message",
     userMessage: message,
     workState: {
-      status: "not_done",
-      summary: "",
-      verifiedFacts: [],
-      evidence: [],
+      status: "in_progress",
+      summary: "Run started.",
+      plan: [],
+      importantContext: [],
+    },
+    workStateRuntime: {
+      revision: 0,
+      afterStep: 0,
+      updateReason: "initial",
     },
     status: "running",
     finalOutput: "",
@@ -253,7 +329,6 @@ function state(message: string, observed = false): LoopState {
         }
       : {}),
     harnessContext: {
-      personalMemorySnapshot: "",
       contextEngine: {
         ...contextEngine,
         current: {

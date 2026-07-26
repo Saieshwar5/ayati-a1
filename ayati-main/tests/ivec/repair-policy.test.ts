@@ -22,11 +22,11 @@ describe("repair policy", () => {
       });
       expect(REPAIR_CODE_CATALOG[code].allowedNextActions.length).toBeGreaterThan(0);
     }
-    expect(REPAIR_CODE_CATALOG.R_LOAD_TOOLS_USED_AS_ACTION.allowedNextActions).toContain(
-      "Use decision_transition_mode with exact capability groups.",
+    expect(REPAIR_CODE_CATALOG.R_CONTROL_TOOL_USED_AS_ACTION.allowedNextActions).toContain(
+      "Call the matching available mode control directly with exact capability ids.",
     );
-    expect(REPAIR_CODE_CATALOG.R_LOAD_TOOLS_USED_AS_ACTION.allowedNextActions).not.toContain(
-      "Do not put load_tools in executable action calls.",
+    expect(REPAIR_CODE_CATALOG.R_CONTROL_TOOL_USED_AS_ACTION.allowedNextActions).toContain(
+      "Do not put navigation controls in executable action calls.",
     );
   });
 

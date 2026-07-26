@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { executeSql } from "../database/sqlite-runtime.js";
+import {
+  canonicalizeAbsoluteFilesystemPath,
+  requireAbsoluteFilesystemPath,
+} from "../shared/filesystem-paths.js";
 import { detectFileKind, capabilitiesForKind, normalizeMimeType, sanitizeFileName } from "./file-detector.js";
 import { FileMetadataStore } from "./file-metadata-store.js";
 import { FileStorageLayout } from "./storage-layout.js";
@@ -49,10 +53,9 @@ export class FileLibrary {
   }
 
   async registerPath(input: RegisterPathInput): Promise<ManagedFileRecord> {
-    const filePath = input.path.trim();
-    if (filePath.length === 0) {
-      throw new Error("path must be a non-empty string.");
-    }
+    const required = requireAbsoluteFilesystemPath(input.path);
+    if (!required.ok) throw new Error(required.message);
+    const filePath = await canonicalizeAbsoluteFilesystemPath(required.absolutePath);
     const info = await stat(filePath);
     if (!info.isFile()) {
       throw new Error(`Not a file: ${filePath}`);

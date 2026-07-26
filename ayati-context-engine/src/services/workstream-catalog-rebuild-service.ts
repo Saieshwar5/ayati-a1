@@ -103,7 +103,9 @@ export async function rebuildWorkstreamCatalog(input: {
   if (!input.confirm) {
     return { scannedDirectories: candidates.length, repositories, failures, applied: false };
   }
-  if (!input.database) throw new Error("Catalog rebuild confirmation requires the V7 database.");
+  if (!input.database) {
+    throw new Error("Catalog rebuild confirmation requires the initialized current-schema database.");
+  }
   if (failures.length > 0) throw new Error("Catalog rebuild refused because validation failed.");
   applyCatalog(input.database, repositories, input.now);
   return { scannedDirectories: candidates.length, repositories, failures, applied: true };

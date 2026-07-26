@@ -28,11 +28,12 @@ Current product features:
 - One finalization path that closes the conversation/run, persists verified
   resource effects, reduces workstream context, and creates at most one context
   commit.
-- Reusable read context organized as inventory, discovery, evidence, and
-  actions, reset only after a newly created workstream-context commit.
+- Exact run-step evidence with bounded on-demand history search/read; read
+  results are not copied into a second cross-run context lane.
 - Filesystem metadata, batch reads and writes, focused processes, Python,
   SQLite, document extraction, dataset analysis, generated artifacts, memory,
-  recall, UI workspace control, and Pulse tools.
+  recall, UI workspace control, Pulse tools, timezone-aware current time, and
+  bounded local machine health.
 - Personal memory, episodic recall, managed uploads, and session attachments.
 - WebSocket terminal chat, HTTP upload/artifact/Pulse APIs, and system-event
   processing.

@@ -213,12 +213,4 @@ describe("python skill", () => {
     expect(output["timedOut"]).toBe(true);
   });
 
-  it("documents the managed interpreter policy in the prompt block", () => {
-    const dataDir = createTempDir("ayati-python-data-");
-    tempDirs.push(dataDir);
-    const skill = createPythonSkill({ dataDir, interpreterPath: "/tmp/fake-python" });
-    expect(skill.promptBlock).toContain("python_inspect_dataset");
-    expect(skill.promptBlock).toContain("python_execute");
-    expect(skill.promptBlock).toContain("Do not use bare python");
-  });
 });

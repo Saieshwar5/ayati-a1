@@ -1,0 +1,203 @@
+import { describe, expect, it } from "vitest";
+import { buildPromptVerifiedOutcomes } from "../../src/ivec/agent-runner/run-verified-outcome-context.js";
+import type {
+  FilesystemCompletionEvidence,
+  RunToolCallContext,
+} from "../../src/ivec/types.js";
+
+const RUN_ID = "RUN-PROMPT-OUTCOMES";
+
+describe("run verified-outcome prompt context", () => {
+  it("projects an exact no-match search scope for validation", () => {
+    const outcomes = buildPromptVerifiedOutcomes({
+      runId: RUN_ID,
+      calls: [verifiedCall(1, "find_files", [{
+        kind: "file_search",
+        query: "missing-report.txt",
+        roots: ["/workspace"],
+        matchCount: 0,
+        maxDepth: 10,
+        includeHidden: false,
+        capped: false,
+        errorCount: 0,
+        depthLimitedDirectoryCount: 0,
+        complete: true,
+        change: "observed",
+        tool: "find_files",
+        step: 1,
+        callId: "call-1",
+      }])],
+    });
+
+    expect(outcomes).toEqual([{
+      kind: "file.search_no_match",
+      subject: "missing-report.txt",
+      searchScope: {
+        roots: ["/workspace"],
+        maxDepth: 10,
+        includeHidden: false,
+      },
+      source: {
+        step: 1,
+        callId: "call-1",
+        tool: "find_files",
+      },
+    }]);
+  });
+
+  it("projects validation-ready write and scoped-read proofs", () => {
+    const outcomes = buildPromptVerifiedOutcomes({
+      runId: RUN_ID,
+      calls: [
+        verifiedCall(1, "write_files", [pathEvidence(
+          "/workspace/src/config.ts",
+          true,
+          "file",
+          1,
+          "write",
+          "mutated",
+        )]),
+        verifiedCall(2, "read_files", [{
+          kind: "file_read",
+          path: "/workspace/src/parser.ts",
+          requestedPath: "/workspace/src/parser.ts",
+          coverage: "partial",
+          contentAvailable: true,
+          change: "observed",
+          tool: "read_files",
+          step: 2,
+          callId: "call-2",
+          mode: "slice",
+          truncated: false,
+          startLine: 10,
+          endLine: 20,
+        }]),
+      ],
+    });
+
+    expect(outcomes).toEqual([
+      {
+        kind: "file.written",
+        subject: "/workspace/src/config.ts",
+        actualKind: "file",
+        source: {
+          step: 1,
+          callId: "call-1",
+          tool: "write_files",
+        },
+      },
+      {
+        kind: "file.read_scope_satisfied",
+        subject: "/workspace/src/parser.ts",
+        actualKind: "file",
+        readScope: {
+          mode: "slice",
+          startLine: 10,
+          endLine: 20,
+        },
+        source: {
+          step: 2,
+          callId: "call-2",
+          tool: "read_files",
+        },
+      },
+    ]);
+  });
+
+  it("omits failed, routing, supporting, and stale outcomes", () => {
+    const read = verifiedCall(1, "read_files", [{
+      kind: "file_read",
+      path: "/workspace/report.txt",
+      requestedPath: "/workspace/report.txt",
+      coverage: "complete",
+      contentAvailable: true,
+      change: "observed",
+      tool: "read_files",
+      step: 1,
+      callId: "call-1",
+      mode: "full",
+      truncated: false,
+    }]);
+    const write = verifiedCall(2, "write_files", [pathEvidence(
+      "/workspace/report.txt",
+      true,
+      "file",
+      2,
+      "write",
+      "mutated",
+    )]);
+    const failed = verifiedCall(3, "write_files", [pathEvidence(
+      "/workspace/failed.txt",
+      true,
+      "file",
+      3,
+      "write",
+      "mutated",
+    )]);
+    failed.status = "failed";
+    failed.verificationPassed = false;
+    const routing = verifiedCall(4, "git_context_find_workstreams", [pathEvidence(
+      "/workspace/routing.txt",
+      true,
+      "file",
+      4,
+    )]);
+
+    const outcomes = buildPromptVerifiedOutcomes({
+      runId: RUN_ID,
+      calls: [read, write, failed, routing],
+    });
+
+    expect(outcomes).toEqual([
+      expect.objectContaining({
+        kind: "file.written",
+        subject: "/workspace/report.txt",
+        source: expect.objectContaining({ step: 2 }),
+      }),
+    ]);
+  });
+});
+
+function verifiedCall(
+  step: number,
+  tool: string,
+  completionEvidence: FilesystemCompletionEvidence[],
+): RunToolCallContext {
+  const callId = `call-${step}`;
+  return {
+    step,
+    callId,
+    tool,
+    input: {},
+    status: "success",
+    output: "verified",
+    stepRef: {
+      runId: RUN_ID,
+      step,
+      callId,
+    },
+    verificationPassed: true,
+    completionEvidence,
+  };
+}
+
+function pathEvidence(
+  path: string,
+  exists: boolean,
+  actualKind: "file" | "directory",
+  step: number,
+  operation: Extract<FilesystemCompletionEvidence, { kind: "path_state" }>["operation"] = "inspect",
+  change: "observed" | "mutated" = "observed",
+): FilesystemCompletionEvidence {
+  return {
+    kind: "path_state",
+    path,
+    exists,
+    actualKind,
+    change,
+    operation,
+    tool: operation === "write" ? "write_files" : "inspect_paths",
+    step,
+    callId: `call-${step}`,
+  };
+}

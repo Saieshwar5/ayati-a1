@@ -13,7 +13,6 @@ describe("Context Engine feedback observability bridge", () => {
 
     recordContextEngineObservabilityEvent(ledger, contextEngineEvent({
       contextRevision: "context:4",
-      observationRevision: "observations:4",
     }));
 
     expect(recorded).toEqual([expect.objectContaining({
@@ -24,7 +23,6 @@ describe("Context Engine feedback observability bridge", () => {
       data: expect.objectContaining({
         streamId: "AST-1",
         contextRevision: "context:4",
-        observationRevision: "observations:4",
       }),
     })]);
   });

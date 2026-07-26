@@ -2,6 +2,8 @@ import type { AgentContextProjection, ResourceRef } from "ayati-context-engine";
 import { describe, expect, it } from "vitest";
 import { buildContextEngineProjection } from "../../src/context-engine/index.js";
 import type { AgentContextPack } from "../../src/ivec/agent-runner/context-pack.js";
+import { buildCoreCapsule } from "../../src/ivec/agent-runner/core-capsule.js";
+import { emptyHotContextProjection } from "../../src/ivec/hot-context/index.js";
 import {
   projectAgentPromptContext,
   projectAgentStateViewForPrompt,
@@ -62,7 +64,7 @@ describe("context engine projection", () => {
     expect(projection.workstream).toBeUndefined();
   });
 
-  it("mounts active work and suppresses candidates plus legacy resolution metadata after binding", () => {
+  it("keeps active work authoritative while excluding it from the always-present prompt pack", () => {
     const source = activeWorkstreamContext();
     source.workstreamCandidates = [{
       workstreamId: "W-20260714-0002",
@@ -96,35 +98,14 @@ describe("context engine projection", () => {
 
     expect(machine.workstreamCandidates).toBeUndefined();
     expect(machine).not.toHaveProperty("workstreamResolution");
-    expect(pack.work.candidates).toEqual([]);
-    expect(pack.work.active?.workstreamId).toBe("W-20260714-0001");
-    expect(pack.work).not.toHaveProperty("resolution");
+    expect(machine.workstream?.workstreamId).toBe("W-20260714-0001");
+    expect(pack).not.toHaveProperty("work");
+    expect(pack).not.toHaveProperty("resources");
+    expect(pack).not.toHaveProperty("observations");
   });
 
-  it("separates temporal, stream, work, resource, observation, and run prompt lanes", () => {
+  it("keeps authoritative work and resources out of the always-present prompt", () => {
     const source = activeWorkstreamContext();
-    source.observations = {
-      revision: "observations:read-1",
-      inventory: [],
-      discovery: [],
-      evidence: [{
-        observationId: "OBS-1",
-        streamId: "S-20260714-local",
-        sourceRunId: "RUN-1",
-        sourceStep: 1,
-        sourceCallId: "read-brief",
-        kind: "evidence",
-        queryKey: "read_files:brief",
-        purpose: "Read the brief.",
-        preview: "brief",
-        retention: "evidence_only",
-        resources: [{
-          resourceId: "RES-0123456789ABCDEF01234567",
-          versionKey: "version-1",
-        }],
-        createdAt: "2026-07-14T10:00:02.000Z",
-      }],
-    };
     const machine = buildContextEngineProjection(source);
     const toolCalls = buildPromptToolCallsForRun([{
       step: 1,
@@ -143,22 +124,19 @@ describe("context engine projection", () => {
       }),
     });
 
-    expect(Object.keys(prompt.context)).toEqual(expect.arrayContaining([
-      "temporal",
-      "current",
-      "stream",
-      "work",
-      "resources",
-      "observations",
+    expect(Object.keys(prompt.context).sort()).toEqual([
+      "core",
+      "hot",
       "run",
-    ]));
-    expect(prompt.context.resources.activeWorkstream[0]?.resource.locator).toEqual({
+    ]);
+    expect(prompt.context).not.toHaveProperty("work");
+    expect(prompt.context).not.toHaveProperty("resources");
+    expect(prompt.context).not.toHaveProperty("observations");
+    expect(machine.workstream?.resources[0]?.resource.locator).toEqual({
       kind: "filesystem",
       path: "/workspace/aurora-coffee-site",
     });
-    expect(prompt.context.observations.evidence[0]).not.toHaveProperty("streamId");
-    expect(prompt.context.observations.evidence[0]).not.toHaveProperty("sourceRunId");
-    expect(prompt.context.run?.toolCalls?.[0]?.stepRef).toEqual({ step: 1, callId: "read-brief" });
+    expect(prompt.context.run?.toolCalls?.[0]).not.toHaveProperty("stepRef");
   });
 
   it("never exposes context repository paths or an action-history lane to the model", () => {
@@ -167,7 +145,7 @@ describe("context engine projection", () => {
     const encoded = JSON.stringify(prompt);
 
     expect(prompt).not.toHaveProperty("actions");
-    expect(prompt.stream).not.toHaveProperty("repositoryPath");
+    expect(prompt.core).not.toHaveProperty("repositoryPath");
     expect(encoded).not.toContain("/internal/workstreams/");
     expect(encoded).not.toContain("conversationId");
     expect(encoded).not.toContain("sessionId");
@@ -185,37 +163,14 @@ function contextPack(context: ReturnType<typeof buildContextEngineProjection>): 
       : {}),
   }));
   return {
-    temporal: { recent },
-    current: {
-      inputSeq: context.current.inputSeq ?? 1,
+    core: buildCoreCapsule({
+      revision: context.contextRevision,
       runId: context.current.runId ?? "RUN-1",
-      ...(context.current.routing ? {
-        routing: {
-          status: context.current.routing.status,
-          ...(context.current.routing.workstreamId
-            ? { workstreamId: context.current.routing.workstreamId }
-            : {}),
-          ...(context.current.routing.requestId
-            ? { requestId: context.current.routing.requestId }
-            : {}),
-        },
-      } : {}),
-    },
-    stream: {
-      agentId: context.agentStream.meta.agentId,
-      scopeKey: context.agentStream.meta.scopeKey,
-      recentWork: context.agentStream.recentWork,
-    },
-    work: {
-      candidates: context.workstreamCandidates ?? [],
-      ...(context.workstream ? { active: context.workstream } : {}),
-    },
-    resources: {
-      stream: context.agentStream.resources,
-      ingress: context.ingressResources ?? [],
-      activeWorkstream: context.workstream?.resources ?? [],
-    },
-    observations: context.observations,
+      timeline: recent,
+      ...(context.agentStream.checkpoint ? { checkpoint: context.agentStream.checkpoint } : {}),
+      ...(context.current.routing ? { routing: context.current.routing } : {}),
+    }),
+    hot: emptyHotContextProjection(),
   };
 }
 

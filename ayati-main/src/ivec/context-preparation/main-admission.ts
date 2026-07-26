@@ -13,7 +13,6 @@ import { measureTurnContext } from "../../prompt/context-token-counter.js";
 import type { ResolvedModelContextLimits } from "../../providers/shared/model-context-limits.js";
 import type { AgentStateView } from "../agent-runner/state-view.js";
 import { projectAgentStateViewForPrompt, type AgentPromptStateView } from "../agent-runner/prompt-context.js";
-import type { StreamContextProjectionReceipt } from "../agent-runner/stream-context-projection.js";
 import type {
   AgentContextCheckpointCoordinator,
   ToolContextProjectionPolicy,
@@ -78,7 +77,6 @@ export async function compilePreparedMainContext(
   let forcedRecovery = atForcedBarrier(candidateBudget);
   let candidateOutcome: CandidateOutcome = { action: "none" };
   let projection: DecisionContextCompilation["projection"];
-  let streamProjection: StreamContextProjectionReceipt | undefined;
   let adoptedCheckpoint: ContextCheckpointRecord | undefined;
   let adoptedCheckpointCandidate: ContextPreparationCandidate | undefined;
   let transformations: ContextCompilationReceipt["transformations"] = [];
@@ -212,6 +210,38 @@ export async function compilePreparedMainContext(
   const ready = manager.readyCandidate();
   if (ready) await considerCandidate(ready);
 
+  if (
+    input.policy === "enforce"
+    && workingState.context.core.continuity.maintenanceRequired
+    && input.allowSynchronousSemanticRecovery
+    && input.contextCheckpoint
+  ) {
+    const job = createMainPreparationJob({
+      provider: input.provider,
+      laneId: manager.laneId,
+      stateView: workingState,
+      currentInputTokens: currentBudget.measuredInputTokens,
+      predictedInputTokens: currentBudget.measuredInputTokens + 1,
+      recoveryTargetTokens: currentBudget.measuredInputTokens,
+      contextLimits: input.contextLimits,
+      modelProfileVersion: profileVersion,
+      contextCheckpoint: input.contextCheckpoint,
+      activeOverlay,
+      synchronous: true,
+      intent: "core_capsule",
+    });
+    if (job) {
+      const capsuleCandidate = await manager.prepareSynchronously(job);
+      if (capsuleCandidate) {
+        await considerCandidate(capsuleCandidate, true);
+      }
+    } else {
+      manager.recordSkip("core_capsule_has_no_eligible_checkpoint_prefix", {
+        unloadedRanges: workingState.context.core.continuity.unloadedRanges,
+      });
+    }
+  }
+
   if (atForcedBarrier(currentBudget)) {
     forcedRecovery = true;
     const preparing = manager.currentCandidate();
@@ -236,7 +266,6 @@ export async function compilePreparedMainContext(
     currentBudget = recovered.finalBudget;
     transformations.push(...recovered.transformations);
     projection = recovered.projection;
-    streamProjection = recovered.streamProjection;
     finalBudgetMeasured ||= recovered.measured;
     if (recovered.mode !== "full" && mode === "full") mode = recovered.mode;
   }
@@ -281,7 +310,6 @@ export async function compilePreparedMainContext(
       currentBudget = recovered.finalBudget;
       transformations.push(...recovered.transformations);
       projection = recovered.projection ?? projection;
-      streamProjection = recovered.streamProjection ?? streamProjection;
       finalBudgetMeasured ||= recovered.measured;
       if (mode === "full") mode = recovered.mode;
     }
@@ -366,16 +394,6 @@ export async function compilePreparedMainContext(
         generationAttempts: adoptedCheckpointCandidate.checkpointGeneration.attempts.length,
       },
     } : {}),
-    ...(streamProjection ? {
-      streamProjection: {
-        removedCandidateCount: streamProjection.removedCandidateCount,
-        removedRecentWorkCount: streamProjection.removedRecentWorkCount,
-        removedResourceCount: streamProjection.removedResourceCount,
-        removedObservationCount: streamProjection.removedObservationCount,
-        tokensBefore: intermediateBudget.measuredInputTokens,
-        tokensAfter: currentBudget.measuredInputTokens,
-      },
-    } : {}),
     transformations,
   }, {
     preparationLeadTokens: leadTokens,
@@ -426,7 +444,6 @@ export async function compilePreparedMainContext(
     promptManifest: finalManifest,
     finalBudgetMeasured,
     ...(projection ? { projection } : {}),
-    ...(streamProjection ? { streamProjection } : {}),
     ...(adoptedCheckpointCandidate?.checkpointPlan ? {
       streamCheckpoint: {
         plan: adoptedCheckpointCandidate.checkpointPlan,

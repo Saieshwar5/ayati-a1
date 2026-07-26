@@ -15,8 +15,24 @@
 ## Context Projection and Decision
 
 The service returns slow stream continuity and fast run context separately.
-The daemon maps them into temporal, current, stream, work, resources,
-observations, personal, tools, harness, and run prompt lanes.
+The daemon maps them into core, hot, tools, harness, and run prompt lanes.
+Authoritative workstream details and resource cards are not model-facing lanes
+or Hot Context sources. Hot Context initially contains catalog metadata only.
+A transient `context.retrieve` decision may mount one or more advertised
+entries for the rest of that run. `workstreams.recent` is
+prepared from creation/open/binding metadata and remains absent from the prompt
+until loaded. It is navigation context only; current workstream state still
+requires an authoritative read. One recent-document registry is rebuilt from
+at most 32 verified complete historical reads. Its five newest lightweight
+pointers are always visible in `core.current.activeDocuments`; only the older
+27 records are mountable through `files.recent`. Both carry navigation
+metadata so a same-file follow-up can skip rediscovery; current contents still
+require one read. `workstates.recent` is
+rebuilt from the existing terminal run and WorkState rows. It advertises at
+most five material historical handoffs and mounts their summaries, plans,
+important context, next actions, sequence references, and optional workstream
+identity only when the model explicitly loads the key. It creates no duplicate
+persistence and grants no current authority or completion evidence.
 
 One runtime-owned context-preparation manager is created for the run. Before a
 primary decision it builds a typed lane manifest, validates any ready
@@ -33,18 +49,22 @@ workstream routing control binds the existing run and returns refreshed
 context; the model then makes a fresh decision.
 
 Each executor step persists one ordered record containing decision, action,
-tool calls, verification, and resulting WorkState. Successful list/search/read
-calls may also create resource-versioned reusable observations.
+tool calls, and verification. It does not revise WorkState. Older tool
+evidence stays in that exact run journal and is searched on demand rather than
+copied into a second cross-run context record. Sparse WorkState checkpoints
+are separate named events for planning, context pressure, terminal handoff,
+and exact-request continuation. After final validation passes, terminal
+handoff deterministically promotes at most four selected passed outcomes into
+compact important-context receipts with exact run/step/call references.
 
 ## Pressure and History
 
-The compiler measures the whole provider candidate. Stable deduplication,
-invalid-observation removal, recoverable tool-result projection, and
-deterministic bounds run before semantic recovery. A durable checkpoint is
-generated without mutation and commits only after adoption validation; its
-fresh Context Engine projection replaces the loop projection. If durable
-recovery is insufficient, a 1,600-token anchored focus overlay may replace
-only covered older prompt material for the rest of that run.
+The compiler measures the whole provider candidate. Recoverable tool-result
+projection runs before semantic recovery. A durable checkpoint is generated
+without mutation and commits only after adoption validation; its fresh Context
+Engine projection replaces the loop projection. If durable recovery is
+insufficient, a 1,600-token anchored focus overlay may replace only covered
+older prompt material for the rest of that run.
 
 Older content is recovered explicitly with `agent_history_search` and
 `agent_history_read`; it is not copied into every prompt.
@@ -60,8 +80,9 @@ never the context repository.
 
 The daemon calls `finalizeRun` and waits for acknowledgement. Context Engine
 appends the immutable assistant message, closes the run, records verified
-resource effects, reduces workstream context when needed, and creates at most
-one context commit. Deliverables are not staged in workstream Git.
+resource effects, persists the terminal WorkState and its bounded validation
+receipts, reduces workstream context when needed, and creates at most one
+context commit. Deliverables are not staged in workstream Git.
 
 Only then does the daemon send the terminal response envelope.
 
@@ -69,7 +90,9 @@ Only then does the daemon send the terminal response envelope.
 
 Committed checkpoint ranges feed personal-memory extraction asynchronously.
 Personal memory remains independent from stream continuity; episodic memory
-remains an explicit semantic-recall system.
+remains an explicit semantic-recall system. Its compact snapshot is a
+rebuildable `personal.memory` Hot Context source, not an always-included prompt
+lane.
 
 ## System Events
 

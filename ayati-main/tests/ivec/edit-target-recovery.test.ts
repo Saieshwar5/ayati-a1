@@ -91,6 +91,27 @@ describe("edit target recovery policy", () => {
     expect(second.repair?.allowedNextActions.join("\n")).toContain("baseSha256");
     expect(second.repair?.allowedNextActions.join("\n")).toContain("Do not use process execution for file mutation.");
   });
+
+  it("does not escalate from an edit repair that was already recovered", () => {
+    const first = createFailureRecordFromStepSummary({
+      ...baseFailedStep(),
+      step: 4,
+      evidenceSource: patchFailureEvidence("/tmp/styles.css", 142),
+    });
+    first.resolution = {
+      iteration: 5,
+      kind: "verified_action",
+    };
+
+    const later = createFailureRecordFromStepSummary({
+      ...baseFailedStep(),
+      step: 6,
+      evidenceSource: patchFailureEvidence("/tmp/styles.css", 142),
+    }, [first]);
+
+    expect(later.repairCode).toBe("R_EDIT_TARGET_RECOVERY");
+    expect(later.repairCode).not.toBe("R_EDIT_ESCALATE_TO_GUARDED_REWRITE");
+  });
 });
 
 function actionFor(tool: string): AgentAction {
@@ -158,10 +179,10 @@ function failedPatchExecution(): AgentActionExecutionResult {
       usedRawArtifacts: [],
     },
     nextWorkState: {
-      status: "not_done",
-      summary: "",
-      verifiedFacts: [],
-      evidence: [],
+      status: "in_progress",
+      summary: "Run started.",
+      plan: [],
+      importantContext: [],
     },
   };
 }

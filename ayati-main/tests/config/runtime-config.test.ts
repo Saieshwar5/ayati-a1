@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { join } from "node:path";
 import {
-  DEFAULT_AGENT_MAX_SELECTED_TOOLS,
+  DEFAULT_AGENT_MAX_CAPABILITY_SURFACE_TOOLS,
   DEFAULT_AYATI_ROOT_DIR,
   DEFAULT_DOCUMENT_EMBED_BATCH_SIZE,
   DEFAULT_DOCUMENT_VECTOR_MIN_CHUNKS,
@@ -34,7 +34,7 @@ describe("ayati runtime config", () => {
         vectorMinChunks: DEFAULT_DOCUMENT_VECTOR_MIN_CHUNKS,
       },
       python: {},
-      agent: { loopConfig: { maxSelectedTools: DEFAULT_AGENT_MAX_SELECTED_TOOLS } },
+      agent: { loopConfig: { maxCapabilitySurfaceTools: DEFAULT_AGENT_MAX_CAPABILITY_SURFACE_TOOLS } },
       workspace: { root: DEFAULT_WORKSPACE_DIR },
       contextEngine: {
         rootDirectory: DEFAULT_AYATI_ROOT_DIR,
@@ -57,7 +57,7 @@ describe("ayati runtime config", () => {
       AYATI_DOCUMENT_EMBED_BATCH_SIZE: "64",
       AYATI_DOCUMENT_VECTOR_MIN_CHUNKS: "12",
       AYATI_PYTHON_INTERPRETER: " /usr/bin/python3 ",
-      AYATI_AGENT_MAX_SELECTED_TOOLS: "5",
+      AYATI_AGENT_MAX_CAPABILITY_SURFACE_TOOLS: "5",
       AYATI_CONTEXT_ENGINE_DATABASE: " /tmp/ayati-db/context.db ",
       AYATI_CONTEXT_ENGINE_TIMEZONE: " UTC ",
       AYATI_CONTEXT_ENGINE_AGENT_ID: " local-agent ",
@@ -83,7 +83,7 @@ describe("ayati runtime config", () => {
       vectorMinChunks: 12,
     });
     expect(config.python.interpreterPath).toBe("/usr/bin/python3");
-    expect(config.agent.loopConfig.maxSelectedTools).toBe(5);
+    expect(config.agent.loopConfig.maxCapabilitySurfaceTools).toBe(5);
   });
 
   it("accepts legacy Git Context storage settings during the internal rename", () => {
@@ -116,7 +116,9 @@ describe("ayati runtime config", () => {
     expect(config.http.maxUploadBytes).toBe(DEFAULT_UPLOAD_MAX_BYTES);
     expect(config.documents.embedBatchSize).toBe(DEFAULT_DOCUMENT_EMBED_BATCH_SIZE);
     expect(config.documents.vectorMinChunks).toBe(DEFAULT_DOCUMENT_VECTOR_MIN_CHUNKS);
-    expect(config.agent.loopConfig.maxSelectedTools).toBe(DEFAULT_AGENT_MAX_SELECTED_TOOLS);
+    expect(config.agent.loopConfig.maxCapabilitySurfaceTools).toBe(
+      DEFAULT_AGENT_MAX_CAPABILITY_SURFACE_TOOLS,
+    );
     expect(parsePositiveInt("42", 1)).toBe(42);
     expect(parsePositiveInt("0", 1)).toBe(1);
   });

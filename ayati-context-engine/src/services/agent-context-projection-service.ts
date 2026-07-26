@@ -3,9 +3,7 @@ import type {
   AgentContextProjection,
   AgentStreamRef,
   GetAgentContextRequest,
-  RecentWorkReference,
   RunContextProjection,
-  RunOutcome,
   WorkstreamCandidate,
   WorkstreamContextProjection,
 } from "../contracts.js";
@@ -26,12 +24,13 @@ import {
   readRunEvidence,
   readRunStepEvidence,
 } from "../repositories/run-records.js";
-import { readReusableObservationProjection } from "../repositories/reusable-observation-records.js";
+import { readRecentFiles } from "../repositories/recent-file-records.js";
+import { readRecentWorkStateHandoffs } from "../repositories/recent-work-state-records.js";
+import { readRecentWorkstreams } from "../repositories/recent-workstream-records.js";
 import { readRunWorkState } from "../repositories/run-work-state-records.js";
 import { readWorkstreamResolutionProjection } from "../repositories/workstream-resolution-records.js";
 
 const MAX_EXACT_STREAM_MESSAGES = 10_000;
-const RECENT_WORK_LIMIT = 12;
 
 export interface AgentContextProjectionServiceOptions {
   database: ContextDatabase;
@@ -66,9 +65,14 @@ export class AgentContextProjectionService {
       afterSeq: checkpoint?.coveredToSeq ?? 0,
       limit: MAX_EXACT_STREAM_MESSAGES,
     });
-    const recentWork = readRecentWork(this.database, stream.streamId);
+    const recentWorkstreams = readRecentWorkstreams(this.database);
+    const recentFiles = readRecentFiles(this.database, {
+      streamId: stream.streamId,
+    });
+    const recentWorkStates = readRecentWorkStateHandoffs(this.database, {
+      streamId: stream.streamId,
+    });
     const resources = readAgentStreamResourcesProjection(this.database, stream.streamId);
-    const observations = readReusableObservationProjection(this.database, stream.streamId);
     const run = readActiveRunProjection(this.database, stream.streamId);
     const activeWorkstream = run && this.loadActiveWorkstream
       ? await this.loadActiveWorkstream(run)
@@ -88,7 +92,9 @@ export class AgentContextProjectionService {
       stream,
       ...(checkpoint ? { checkpoint } : {}),
       recentMessages,
-      recentWork,
+      recentWorkstreams,
+      recentFiles,
+      recentWorkStates,
       ...(resources.count > 0 ? { resources } : {}),
     };
     const streamRevision = revision("stream", {
@@ -98,8 +104,13 @@ export class AgentContextProjectionService {
         message.messageId,
         message.sequence,
         message.contentHash,
+        message.responseKind,
+        message.feedbackKind,
+        message.attachmentRefs?.map((resource) => resource.resourceId),
       ]),
-      work: recentWork,
+      workstreams: recentWorkstreams,
+      files: recentFiles,
+      workStates: recentWorkStates,
       resources: resources.recent.map((resource) => [
         resource.resourceId,
         resource.version.key,
@@ -114,7 +125,6 @@ export class AgentContextProjectionService {
     const contextRevision = revision("context", {
       streamRevision,
       runRevision,
-      observationRevision: observations.revision,
       workstreamHead: activeWorkstream?.workstream.head,
       candidateHeads: workstreamCandidates?.map((candidate) => [candidate.workstreamId, candidate.head]),
       resolution: workstreamResolution,
@@ -123,14 +133,12 @@ export class AgentContextProjectionService {
       contextRevision,
       streamRevision,
       ...(runRevision ? { runRevision } : {}),
-      observationRevision: observations.revision,
       stream: streamProjection,
       ...(activeWorkstream ? { activeWorkstream } : {}),
       ...(workstreamCandidates && workstreamCandidates.length > 0 ? { workstreamCandidates } : {}),
       ...(workstreamResolution ? { workstreamResolution } : {}),
       ...(ingressResources && ingressResources.length > 0 ? { ingressResources } : {}),
       ...(run ? { run } : {}),
-      observations,
       warnings,
     };
   }
@@ -160,53 +168,12 @@ function readActiveRunProjection(
   };
 }
 
-function readRecentWork(
-  database: ContextDatabase,
-  streamId: string,
-): RecentWorkReference[] {
-  const rows = database.prepare([
-    "SELECT f.run_id, f.workstream_id, f.bound_request_id, f.outcome,",
-    "COALESCE(r.completed_at, f.updated_at) AS completed_at",
-    "FROM workstream_finalizations f JOIN runs r ON r.run_id = f.run_id",
-    "WHERE f.stream_id = ? AND f.phase = 'completed'",
-    "ORDER BY completed_at DESC, f.run_id DESC LIMIT ?",
-  ].join(" ")).all(streamId, RECENT_WORK_LIMIT) as unknown as Array<{
-    run_id: string;
-    workstream_id: string;
-    bound_request_id: string;
-    outcome: RunOutcome;
-    completed_at: string;
-  }>;
-  return rows.map((row) => ({
-    workstreamId: row.workstream_id,
-    requestId: row.bound_request_id,
-    outcome: row.outcome,
-    resourceIds: readRunResourceIds(database, row.run_id),
-    completedAt: row.completed_at,
-  }));
-}
-
-function readRunResourceIds(database: ContextDatabase, runId: string): string[] {
-  const rows = database.prepare([
-    "SELECT DISTINCT resource_id FROM resource_events WHERE run_id = ? ORDER BY resource_id",
-  ].join(" ")).all(runId) as unknown as Array<{ resource_id: string }>;
-  return rows.map((row) => row.resource_id);
-}
-
 function emptyContext(): AgentContextProjection {
-  const observationRevision = revision("observations", []);
   const streamRevision = revision("stream", null);
   return {
-    contextRevision: revision("context", { streamRevision, observationRevision }),
+    contextRevision: revision("context", { streamRevision }),
     streamRevision,
-    observationRevision,
     stream: null,
-    observations: {
-      revision: observationRevision,
-      inventory: [],
-      discovery: [],
-      evidence: [],
-    },
     warnings: [],
   };
 }

@@ -5,14 +5,6 @@ export interface AttachmentSkillDeps {
   sessionAttachmentService: SessionAttachmentService;
 }
 
-const ATTACHMENT_PROMPT_BLOCK = [
-  "Unified attachment restoration is built in.",
-  "Use attachment_restore when the user refers to a file, document, dataset, or directory listed in the current workstream resources.",
-  "For follow-up work, use the resource display name, alias, path, or resource id from context.resources.activeWorkstream.",
-  "If the current run already has attached files, do not restore an older attachment unless the user explicitly asks for the earlier one.",
-  "Inputs accept resourceId or a reference such as display name, alias, or filesystem path.",
-].join("\n");
-
 function buildSuccessResult(output: Record<string, unknown>, meta?: Record<string, unknown>): ToolResult {
   return {
     ok: true,
@@ -46,11 +38,6 @@ function createRestoreAttachmentContextTool(deps: AttachmentSkillDeps, name = "a
       },
       additionalProperties: false,
     },
-    selectionHints: {
-      tags: ["attachments", "restore", "followup"],
-      domain: "attachments",
-      priority: name === "attachment_restore" ? 100 : 85,
-    },
     async execute(input, context): Promise<ToolResult> {
       const runId = readRunId(context);
       const resourceId = readOptionalString(input, "resourceId");
@@ -76,7 +63,6 @@ export function createAttachmentSkill(deps: AttachmentSkillDeps): SkillDefinitio
     id: "attachments",
     version: "1.0.0",
     description: "Restore a bound workstream resource into the current run's attachment tools.",
-    promptBlock: ATTACHMENT_PROMPT_BLOCK,
     tools: [
       createRestoreAttachmentContextTool(deps),
     ],

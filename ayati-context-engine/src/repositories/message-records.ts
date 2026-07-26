@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import type { MessageRole, StreamMessage } from "../contracts.js";
+import type {
+  AssistantFeedbackKind,
+  AssistantResponseKind,
+  MessageAttachmentRef,
+  MessageRole,
+  StreamMessage,
+} from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
 import { allocateStreamMessageSequence } from "./agent-stream-records.js";
 
@@ -12,15 +18,46 @@ interface MessageRow {
   content: string;
   content_hash: string;
   created_at: string;
+  response_kind: AssistantResponseKind | null;
+  feedback_kind: AssistantFeedbackKind | null;
 }
 
-export function appendStreamMessage(database: ContextDatabase, input: {
+interface MessageAttachmentRow {
+  message_id: string;
+  resource_id: string;
+  kind: MessageAttachmentRef["kind"];
+  display_name: string;
+}
+
+interface AppendStreamMessageBase {
   streamId: string;
   runId: string;
-  role: MessageRole;
   content: string;
   at: string;
-}): StreamMessage {
+}
+
+type AppendStreamMessageInput = AppendStreamMessageBase & (
+  | {
+      role: "assistant";
+      responseKind: AssistantResponseKind;
+      feedbackKind?: AssistantFeedbackKind;
+    }
+  | {
+      role: Exclude<MessageRole, "assistant">;
+      responseKind?: never;
+      feedbackKind?: never;
+    }
+);
+
+export function appendStreamMessage(
+  database: ContextDatabase,
+  input: AppendStreamMessageInput,
+): StreamMessage {
+  if (input.role === "assistant"
+    && input.feedbackKind
+    && input.responseKind !== "feedback") {
+    throw new Error("Assistant feedback kind requires a feedback response.");
+  }
   const sequence = allocateStreamMessageSequence(database, input.streamId, input.at);
   const messageId = messageIdentity(input.streamId, sequence);
   const contentHash = createHash("sha256").update(input.content).digest("hex");
@@ -40,6 +77,16 @@ export function appendStreamMessage(database: ContextDatabase, input: {
   database.prepare([
     "INSERT INTO message_search(message_id, stream_id, content) VALUES (?, ?, ?)",
   ].join(" ")).run(messageId, input.streamId, input.content);
+  if (input.role === "assistant") {
+    database.prepare([
+      "INSERT INTO message_response_metadata(message_id, response_kind, feedback_kind)",
+      "VALUES (?, ?, ?)",
+    ].join(" ")).run(
+      messageId,
+      input.responseKind,
+      input.feedbackKind ?? null,
+    );
+  }
   return {
     messageId,
     streamId: input.streamId,
@@ -49,6 +96,10 @@ export function appendStreamMessage(database: ContextDatabase, input: {
     content: input.content,
     contentHash,
     at: input.at,
+    ...(input.role === "assistant" ? {
+      responseKind: input.responseKind,
+      ...(input.feedbackKind ? { feedbackKind: input.feedbackKind } : {}),
+    } : {}),
   };
 }
 
@@ -56,15 +107,15 @@ export function readStreamMessage(
   database: ContextDatabase,
   messageId: string,
 ): StreamMessage | undefined {
-  const row = database.prepare(messageSelect() + " WHERE message_id = ?")
+  const row = database.prepare(messageSelect() + " WHERE m.message_id = ?")
     .get(messageId) as MessageRow | undefined;
-  return row ? streamMessage(row) : undefined;
+  return row ? streamMessages(database, [row])[0] : undefined;
 }
 
 export function readRunMessages(database: ContextDatabase, runId: string): StreamMessage[] {
-  const rows = database.prepare(messageSelect() + " WHERE run_id = ? ORDER BY sequence")
+  const rows = database.prepare(messageSelect() + " WHERE m.run_id = ? ORDER BY m.sequence")
     .all(runId) as unknown as MessageRow[];
-  return rows.map(streamMessage);
+  return streamMessages(database, rows);
 }
 
 export function readStreamMessages(database: ContextDatabase, input: {
@@ -74,18 +125,18 @@ export function readStreamMessages(database: ContextDatabase, input: {
   toSeq?: number;
   limit?: number;
 }): StreamMessage[] {
-  const clauses = ["stream_id = ?"];
+  const clauses = ["m.stream_id = ?"];
   const params: Array<string | number> = [input.streamId];
   if (input.afterSeq !== undefined) {
-    clauses.push("sequence > ?");
+    clauses.push("m.sequence > ?");
     params.push(input.afterSeq);
   }
   if (input.fromSeq !== undefined) {
-    clauses.push("sequence >= ?");
+    clauses.push("m.sequence >= ?");
     params.push(input.fromSeq);
   }
   if (input.toSeq !== undefined) {
-    clauses.push("sequence <= ?");
+    clauses.push("m.sequence <= ?");
     params.push(input.toSeq);
   }
   const limit = Math.max(1, Math.min(input.limit ?? 500, 10_000));
@@ -93,9 +144,9 @@ export function readStreamMessages(database: ContextDatabase, input: {
   const rows = database.prepare([
     messageSelect(),
     "WHERE " + clauses.join(" AND "),
-    "ORDER BY sequence LIMIT ?",
+    "ORDER BY m.sequence LIMIT ?",
   ].join(" ")).all(...params) as unknown as MessageRow[];
-  return rows.map(streamMessage);
+  return streamMessages(database, rows);
 }
 
 export function readRecentStreamMessages(database: ContextDatabase, input: {
@@ -103,10 +154,10 @@ export function readRecentStreamMessages(database: ContextDatabase, input: {
   afterSeq?: number;
   limit: number;
 }): StreamMessage[] {
-  const clauses = ["stream_id = ?"];
+  const clauses = ["m.stream_id = ?"];
   const params: Array<string | number> = [input.streamId];
   if (input.afterSeq !== undefined) {
-    clauses.push("sequence > ?");
+    clauses.push("m.sequence > ?");
     params.push(input.afterSeq);
   }
   const limit = Math.max(1, Math.min(input.limit, 10_000));
@@ -114,9 +165,9 @@ export function readRecentStreamMessages(database: ContextDatabase, input: {
   const rows = database.prepare([
     messageSelect(),
     "WHERE " + clauses.join(" AND "),
-    "ORDER BY sequence DESC LIMIT ?",
+    "ORDER BY m.sequence DESC LIMIT ?",
   ].join(" ")).all(...params) as unknown as MessageRow[];
-  return rows.reverse().map(streamMessage);
+  return streamMessages(database, rows.reverse());
 }
 
 export function searchStreamMessages(database: ContextDatabase, input: {
@@ -128,12 +179,31 @@ export function searchStreamMessages(database: ContextDatabase, input: {
   if (!query) return [];
   const rows = database.prepare([
     "SELECT m.message_id, m.stream_id, m.run_id, m.sequence, m.role, m.content,",
-    "m.content_hash, m.created_at FROM message_search s",
+    "m.content_hash, m.created_at, metadata.response_kind, metadata.feedback_kind",
+    "FROM message_search s",
     "JOIN messages m ON m.message_id = s.message_id",
+    "LEFT JOIN message_response_metadata metadata ON metadata.message_id = m.message_id",
     "WHERE s.stream_id = ? AND message_search MATCH ?",
     "ORDER BY bm25(message_search), m.sequence DESC LIMIT ?",
   ].join(" ")).all(input.streamId, query, input.limit) as unknown as MessageRow[];
-  return rows.map(streamMessage);
+  return streamMessages(database, rows);
+}
+
+function streamMessages(
+  database: ContextDatabase,
+  rows: MessageRow[],
+): StreamMessage[] {
+  const attachments = readMessageAttachments(
+    database,
+    rows.map((row) => row.message_id),
+  );
+  return rows.map((row) => {
+    const attachmentRefs = attachments.get(row.message_id);
+    return {
+      ...streamMessage(row),
+      ...(attachmentRefs && attachmentRefs.length > 0 ? { attachmentRefs } : {}),
+    };
+  });
 }
 
 function streamMessage(row: MessageRow): StreamMessage {
@@ -146,7 +216,37 @@ function streamMessage(row: MessageRow): StreamMessage {
     content: row.content,
     contentHash: row.content_hash,
     at: row.created_at,
+    ...(row.response_kind ? { responseKind: row.response_kind } : {}),
+    ...(row.feedback_kind ? { feedbackKind: row.feedback_kind } : {}),
   };
+}
+
+function readMessageAttachments(
+  database: ContextDatabase,
+  messageIds: string[],
+): Map<string, MessageAttachmentRef[]> {
+  const result = new Map<string, MessageAttachmentRef[]>();
+  for (let start = 0; start < messageIds.length; start += 250) {
+    const chunk = messageIds.slice(start, start + 250);
+    if (chunk.length === 0) continue;
+    const rows = database.prepare([
+      "SELECT mr.message_id, r.resource_id, r.kind, r.display_name",
+      "FROM message_resources mr",
+      "JOIN resources r ON r.resource_id = mr.resource_id",
+      `WHERE mr.role = 'attachment' AND mr.message_id IN (${chunk.map(() => "?").join(", ")})`,
+      "ORDER BY mr.message_id, mr.ordinal, r.resource_id",
+    ].join(" ")).all(...chunk) as unknown as MessageAttachmentRow[];
+    for (const row of rows) {
+      const refs = result.get(row.message_id) ?? [];
+      refs.push({
+        resourceId: row.resource_id,
+        kind: row.kind,
+        displayName: row.display_name,
+      });
+      result.set(row.message_id, refs);
+    }
+  }
+  return result;
 }
 
 function messageIdentity(streamId: string, sequence: number): string {
@@ -156,8 +256,10 @@ function messageIdentity(streamId: string, sequence: number): string {
 
 function messageSelect(): string {
   return [
-    "SELECT message_id, stream_id, run_id, sequence, role, content, content_hash, created_at",
-    "FROM messages",
+    "SELECT m.message_id, m.stream_id, m.run_id, m.sequence, m.role, m.content,",
+    "m.content_hash, m.created_at, metadata.response_kind, metadata.feedback_kind",
+    "FROM messages m",
+    "LEFT JOIN message_response_metadata metadata ON metadata.message_id = m.message_id",
   ].join(" ");
 }
 

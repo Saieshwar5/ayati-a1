@@ -17,9 +17,6 @@ import {
   searchStreamMessages,
 } from "../repositories/message-records.js";
 import {
-  searchReusableObservations,
-} from "../repositories/reusable-observation-records.js";
-import {
   readRunEvidence,
   readRunStepEvidence,
 } from "../repositories/run-records.js";
@@ -57,22 +54,7 @@ export class AgentHistoryService {
       }
     }
     if (kinds.has("run")) hits.push(...this.searchRuns(input.streamId, input.query, limit));
-    if (kinds.has("evidence")) {
-      for (const observation of searchReusableObservations(this.database, {
-        streamId: input.streamId,
-        query: input.query,
-        limit,
-      })) {
-        hits.push({
-          ref: observation.evidenceRef ?? "observation:" + observation.observationId,
-          kind: "evidence",
-          at: observation.createdAt,
-          preview: observation.preview,
-          ...(observation.workstreamId ? { workstreamId: observation.workstreamId } : {}),
-          resourceIds: observation.resources.map((resource) => resource.resourceId),
-        });
-      }
-    }
+    if (kinds.has("evidence")) hits.push(...this.searchEvidence(input.streamId, input.query, limit));
     return {
       hits: deduplicateHits(hits)
         .sort((left, right) => right.at.localeCompare(left.at) || left.ref.localeCompare(right.ref))
@@ -187,8 +169,8 @@ export class AgentHistoryService {
     const rows = this.database.prepare([
       "SELECT r.run_id, r.completed_at, r.started_at, r.status, r.workstream_id,",
       "ws.summary FROM runs r JOIN run_work_state ws ON ws.run_id = r.run_id",
-      "WHERE r.stream_id = ? AND lower(ws.summary || ' ' || ws.facts_json || ' ' ||",
-      "ws.evidence_json || ' ' || ws.artifacts_json) LIKE ?",
+      "WHERE r.stream_id = ? AND lower(ws.summary || ' ' || ws.plan_json || ' ' ||",
+      "ws.important_context_json || ' ' || COALESCE(ws.next_action, '')) LIKE ?",
       "ORDER BY COALESCE(r.completed_at, r.started_at) DESC, r.run_sequence DESC LIMIT ?",
     ].join(" ")).all(streamId, pattern, limit) as unknown as Array<{
       run_id: string;
@@ -206,6 +188,58 @@ export class AgentHistoryService {
       ...(row.workstream_id ? { workstreamId: row.workstream_id } : {}),
       resourceIds: this.runResourceIds(row.run_id),
     }));
+  }
+
+  private searchEvidence(streamId: string, query: string, limit: number): AgentHistoryHit[] {
+    const terms = normalizedTerms(query);
+    if (terms.length === 0) return [];
+    const rows = this.database.prepare([
+      "SELECT steps.run_id, steps.step, steps.tool_calls_json, steps.verification_json,",
+      "steps.created_at, runs.workstream_id",
+      "FROM run_steps steps JOIN runs ON runs.run_id = steps.run_id",
+      "WHERE runs.stream_id = ? AND steps.status = 'completed'",
+      ...terms.map(() => "AND lower(steps.tool_calls_json) LIKE ?"),
+      "ORDER BY steps.created_at DESC, steps.run_id DESC, steps.step DESC LIMIT ?",
+    ].join(" ")).all(
+      streamId,
+      ...terms.map((term) => `%${term}%`),
+      Math.max(limit * 8, 50),
+    ) as unknown as Array<{
+      run_id: string;
+      step: number;
+      tool_calls_json: string;
+      verification_json: string;
+      created_at: string;
+      workstream_id: string | null;
+    }>;
+    const hits: AgentHistoryHit[] = [];
+    for (const row of rows) {
+      const legacyStepPassed = stepVerificationPassed(row.verification_json);
+      const calls = readToolCalls(row.tool_calls_json);
+      calls.forEach((call, index) => {
+        if (
+          call.status !== "success"
+          || !callVerificationPassed(call, legacyStepPassed)
+          || call.toolEffect !== "read_only"
+          || !["list", "search", "read"].includes(call.toolPurpose)
+          || !matchesTerms(call, terms)
+        ) {
+          return;
+        }
+        const callId = call.callId ?? "call-" + String(index + 1).padStart(3, "0");
+        const material = call.output === undefined ? call.purpose : renderSearchMaterial(call.output);
+        hits.push({
+          ref: `run:${row.run_id}:step:${row.step}:call:${callId}`,
+          kind: "evidence",
+          at: row.created_at,
+          preview: preview(material),
+          ...(row.workstream_id ? { workstreamId: row.workstream_id } : {}),
+          resourceIds: collectResourceIds(call),
+        });
+      });
+      if (hits.length >= limit) break;
+    }
+    return hits.slice(0, limit);
   }
 
   private messageResourceIds(messageId: string): string[] {
@@ -303,6 +337,59 @@ function deduplicateHits(hits: AgentHistoryHit[]): AgentHistoryHit[] {
 
 function normalizedTerms(value: string): string[] {
   return (value.toLowerCase().match(/[\p{L}\p{N}_-]+/gu) ?? []).slice(0, 12);
+}
+
+function readToolCalls(value: string): RunStepToolCall[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed as RunStepToolCall[] : [];
+  } catch {
+    return [];
+  }
+}
+
+function callVerificationPassed(
+  call: RunStepToolCall,
+  legacyStepPassed: boolean,
+): boolean {
+  if (call.verification) {
+    return call.verification.status === "passed";
+  }
+  return legacyStepPassed && call.verificationPassed !== false;
+}
+
+function stepVerificationPassed(value: string): boolean {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Boolean(
+      parsed
+        && typeof parsed === "object"
+        && !Array.isArray(parsed)
+        && (parsed as Record<string, unknown>)["passed"] === true,
+    );
+  } catch {
+    return false;
+  }
+}
+
+function matchesTerms(call: RunStepToolCall, terms: string[]): boolean {
+  const material = [
+    call.tool,
+    call.purpose,
+    renderSearchMaterial(call.input),
+    renderSearchMaterial(call.output),
+  ].join(" ").toLowerCase();
+  return terms.every((term) => material.includes(term));
+}
+
+function renderSearchMaterial(value: unknown): string {
+  if (value === undefined) return "";
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function collectResourceIds(value: unknown): string[] {
+  const serialized = renderSearchMaterial(value);
+  return [...new Set(serialized.match(/RES-[0-9A-F]{24}/g) ?? [])].sort();
 }
 
 function preview(value: string): string {

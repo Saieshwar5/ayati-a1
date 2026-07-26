@@ -224,7 +224,10 @@ describe("AsyncAgentFeedbackLedger", () => {
       rawSummaryPath?: string;
     };
     expect(triage.outcome).toBe("healthy");
-    expect(triage.findings?.[0]).toMatchObject({ code: "healthy_conversation", severity: "info" });
+    expect(triage.findings?.[0]).toMatchObject({
+      code: "healthy_verified_observation",
+      severity: "info",
+    });
     expect(triage.rawSummaryPath).toBe("feedback/latest-summary.json");
   });
 
@@ -268,8 +271,20 @@ describe("AsyncAgentFeedbackLedger", () => {
     ledger.record({
       ...base,
       stage: "virtual_mode",
-      event: "validation_accepted",
-      data: { mode: { active: "execute", revision: 1 } },
+      event: "transition_requested",
+      data: { source: "execute" },
+    });
+    ledger.record({
+      ...base,
+      stage: "virtual_mode",
+      event: "transition_applied",
+      data: {
+        mode: {
+          active: "validation",
+          revision: 2,
+          validation: { status: "passed", checks: [{ status: "passed" }] },
+        },
+      },
     });
     ledger.record({
       ...base,
@@ -281,7 +296,19 @@ describe("AsyncAgentFeedbackLedger", () => {
           responseKind: "reply",
           iterations: 3,
           toolCalls: 1,
-          modeTransitions: 1,
+          modeTransitions: 2,
+          navigation: {
+            currentMode: "validation",
+            modeRevision: 2,
+            transitionRequests: 2,
+            transitionAccepted: 2,
+            transitionRejected: 0,
+            bindingAttempts: 1,
+            bindingStatus: "resolved",
+            validationAttempts: 1,
+            validationAccepted: 1,
+            validationRejected: 0,
+          },
           actionSteps: 1,
           verificationPassed: true,
           basedOnVerifiedFacts: true,
@@ -299,10 +326,10 @@ describe("AsyncAgentFeedbackLedger", () => {
       contextEngine?: Record<string, unknown>;
     };
     expect(summary.navigation).toEqual({
-      currentMode: "execute",
-      modeRevision: 1,
-      transitionRequests: 1,
-      transitionAccepted: 1,
+      currentMode: "validation",
+      modeRevision: 2,
+      transitionRequests: 2,
+      transitionAccepted: 2,
       transitionRejected: 0,
       bindingAttempts: 1,
       bindingStatus: "resolved",
@@ -535,7 +562,7 @@ describe("AsyncAgentFeedbackLedger", () => {
     ]);
   });
 
-  it("projects V6 context and observation telemetry and triages persistence failures", async () => {
+  it("projects context persistence telemetry and triages persistence failures", async () => {
     const ledger = new AsyncAgentFeedbackLedger({
       dataDir: tempDir,
       enabled: true,
@@ -559,13 +586,6 @@ describe("AsyncAgentFeedbackLedger", () => {
         step: 1,
         workStateRevision: 1,
         contextRevision: "revision-5",
-        observationRevision: "observations-5",
-        observationCounts: {
-          inventory: 1,
-          discovery: 2,
-          evidence: 3,
-          total: 6,
-        },
       },
     });
     ledger.record({
@@ -583,14 +603,9 @@ describe("AsyncAgentFeedbackLedger", () => {
       contextRevision: "revision-5",
       workStateRevision: 1,
       lastPersistedStep: 1,
-      observationRevision: "observations-5",
-      observationCounts: {
-        inventory: 1,
-        discovery: 2,
-        evidence: 3,
-        total: 6,
-      },
     });
+    expect(summary.contextEngine).not.toHaveProperty("observationRevision");
+    expect(summary.contextEngine).not.toHaveProperty("observationCounts");
     expect(summary.warnings).toContain("run_step_persistence_failed");
 
     const triage = JSON.parse(await readFile(join(tempDir, "feedback", "triage-summary.json"), "utf-8"));
@@ -617,7 +632,7 @@ describe("AsyncAgentFeedbackLedger", () => {
       sessionId: "session-1",
       seq: 5,
       stage: "tools",
-      event: "working_set_prepared",
+      event: "capability_surface_prepared",
       data: {
         warningCodes: [
           "workstream_tools_selected_without_binding",

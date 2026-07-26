@@ -10,17 +10,28 @@ const OBSERVATION_ONLY = [
   /\bmake\s+no\s+changes\b/,
   /\bno\s+(?:file|filesystem|workspace)\s+changes\b/,
 ];
+const SCOPED_MUTATION_DENIAL = /\b(?:do not|don't|never)\s+(?:modify|change|edit|write|create|save)(?:\s+(?:anything|files?))?\s+outside\b/;
+const SCOPED_MUTATION_PATH = /\boutside(?:\s+of)?\s+(\/[^\s"'`,;]+)/gi;
+const ABSOLUTE_PATH = /(?:^|[\s"'`])(\/[A-Za-z0-9_@+.,:=~-][^\s"'`,;]*)/g;
+
+export interface TurnMutationScopePolicy {
+  allowedScopes: string[];
+  denyOutsideAllowedScopes: boolean;
+}
 
 export interface TurnMutationConstraints {
   mutationForbidden: boolean;
   observationalOnly: boolean;
   mutationRequested: boolean;
   observationRequested: boolean;
+  scopePolicy: TurnMutationScopePolicy;
 }
 
 export function deriveTurnMutationConstraints(message: string): TurnMutationConstraints {
   const normalized = message.trim().toLowerCase();
-  const observationalOnly = OBSERVATION_ONLY.some((pattern) => pattern.test(normalized));
+  const scopedMutationDenial = SCOPED_MUTATION_DENIAL.test(normalized);
+  const observationalOnly = !scopedMutationDenial
+    && OBSERVATION_ONLY.some((pattern) => pattern.test(normalized));
   const mutationRequested = !observationalOnly
     && (
       DURABLE_INTENT.test(normalized)
@@ -31,12 +42,29 @@ export function deriveTurnMutationConstraints(message: string): TurnMutationCons
     observationalOnly,
     mutationRequested,
     observationRequested: hasConcreteObservationRequest(normalized),
+    scopePolicy: {
+      allowedScopes: scopedMutationDenial ? extractScopedMutationPaths(message) : [],
+      denyOutsideAllowedScopes: scopedMutationDenial,
+    },
   };
 }
 
-export function requiresOperationalMode(message: string): boolean {
-  const constraints = deriveTurnMutationConstraints(message);
-  return constraints.mutationRequested || constraints.observationRequested;
+function extractScopedMutationPaths(message: string): string[] {
+  const explicit = [...message.matchAll(SCOPED_MUTATION_PATH)]
+    .map((match) => cleanPath(match[1]))
+    .filter((path): path is string => Boolean(path));
+  return explicit.length > 0 ? [...new Set(explicit)] : extractAbsolutePaths(message);
+}
+
+function extractAbsolutePaths(message: string): string[] {
+  const paths = [...message.matchAll(ABSOLUTE_PATH)]
+    .map((match) => cleanPath(match[1]))
+    .filter((path): path is string => Boolean(path));
+  return [...new Set(paths)];
+}
+
+function cleanPath(value: string | undefined): string | undefined {
+  return value?.replace(/[).!?]+$/, "");
 }
 
 /**

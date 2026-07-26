@@ -20,6 +20,12 @@ import {
   summarizeHarnessContext,
   summarizeStep,
 } from "./feedback-summary.js";
+import {
+  appendActiveFailure,
+  getActiveFailures,
+  latestActiveFailure,
+} from "./failure-lifecycle.js";
+import { modeTransitionTargetValues } from "./virtual-mode.js";
 
 const UNBOUND_RUN_TOOL_REPAIR_MESSAGE = "The run is not bound to a workstream. Observe workstream ownership, then enter resolve with the exact binding-required capability, evidence-backed target, and typed binding proposal. Validate the deterministic gate's focused clarification if ownership remains unclear.";
 const REPEATED_REPAIR_FAILURE_THRESHOLD = 3;
@@ -30,7 +36,7 @@ export function recordUnboundRunToolRepair(input: {
   state: LoopState;
   config: LoopConfig;
   decision: AgentDecision;
-  reason: "unbound_run_tool_load" | "unbound_run_wrong_tool";
+  reason: "unbound_run_wrong_tool";
 }): void {
   input.state.consecutiveFailures++;
   const blockedTargets = unboundRunDecisionTargets(input.decision);
@@ -47,13 +53,14 @@ export function recordUnboundRunToolRepair(input: {
       harnessContext: summarizeHarnessContext(input.state.harnessContext),
     },
   });
-  input.state.failureHistory.push({
+  appendActiveFailure(input.state, {
     step: input.state.iteration,
     failureType: "validation_error",
     reason: UNBOUND_RUN_TOOL_REPAIR_MESSAGE,
     blockedTargets,
     repairCode: repair.code,
     repair: repairSignalToPromptCard(repair),
+    repairScope: "binding",
   });
   recordFeedback(input.deps, input.inputHandle, undefined, "guard", "unbound_run_tool_repair_requested", {
     reason: input.reason,
@@ -95,13 +102,14 @@ export function recordReadProgressRepair(input: {
     },
   });
   const promptCard = repairSignalToPromptCard(repair);
-  input.state.failureHistory.push({
+  appendActiveFailure(input.state, {
     step: input.state.iteration,
     failureType: "no_progress",
     reason: repair.message,
     blockedTargets: repair.blockedTargets,
     repairCode: repair.code,
     ...(promptCard ? { repair: promptCard } : {}),
+    repairScope: "action",
   });
   recordFeedback(input.deps, input.inputHandle, input.runId, "guard", "read_progress_repair_requested", {
     message: repair.message,
@@ -142,13 +150,14 @@ export function recordTerminalReplyMutationRepair(input: {
     },
   });
   const promptCard = repairSignalToPromptCard(repair);
-  input.state.failureHistory.push({
+  appendActiveFailure(input.state, {
     step: input.state.iteration,
     failureType: "no_progress",
     reason: repair.message,
     blockedTargets: repair.blockedTargets,
     repairCode: repair.code,
     ...(promptCard ? { repair: promptCard } : {}),
+    repairScope: "action",
   });
   recordFeedback(input.deps, input.inputHandle, input.state.runId, "guard", "terminal_reply_repair_requested", {
     message: repair.message,
@@ -200,6 +209,7 @@ export function createFailureRecordFromStepSummary(
     blockedTargets: repairBlockedTargets,
     ...(repair ? { repairCode: repair.code } : {}),
     ...(promptCard ? { repair: promptCard } : {}),
+    repairScope: "action",
   };
 }
 
@@ -214,7 +224,8 @@ function maybeEscalateEditRecovery(
   if (!current) {
     return repair;
   }
-  const repeated = history
+  const activeHistory = getActiveFailures(history);
+  const repeated = activeHistory
     .slice()
     .reverse()
     .some((failure) => (
@@ -240,7 +251,7 @@ function maybeEscalateEditRecovery(
     operatorDetails: {
       previousRepairCode: repair.code,
       repeatedSignature: current.signature,
-      priorFailureCount: history.filter((failure) => (
+      priorFailureCount: activeHistory.filter((failure) => (
         failure.repairCode === "R_EDIT_TARGET_RECOVERY"
         && editRecoverySignature(failure.blockedTargets)?.signature === current.signature
       )).length,
@@ -273,13 +284,14 @@ export function createRepairSignalFromStepSummary(step: StepSummary): RepairSign
 }
 
 export function hasRepeatedRepairFailure(history: LoopState["failureHistory"]): boolean {
-  const signature = latestRepairSignature(history);
+  const activeHistory = getActiveFailures(history);
+  const signature = latestRepairSignature(activeHistory);
   if (!signature) {
     return false;
   }
   let count = 0;
-  for (let index = history.length - 1; index >= 0; index--) {
-    const current = repairFailureSignature(history[index]);
+  for (let index = activeHistory.length - 1; index >= 0; index--) {
+    const current = repairFailureSignature(activeHistory[index]);
     if (current !== signature) {
       break;
     }
@@ -289,11 +301,12 @@ export function hasRepeatedRepairFailure(history: LoopState["failureHistory"]): 
 }
 
 export function hasRepeatedToolInputValidationFailure(history: LoopState["failureHistory"]): boolean {
-  if (history.length < 2) {
+  const activeHistory = getActiveFailures(history);
+  if (activeHistory.length < 2) {
     return false;
   }
-  const latest = history[history.length - 1];
-  const previous = history[history.length - 2];
+  const latest = activeHistory[activeHistory.length - 1];
+  const previous = activeHistory[activeHistory.length - 2];
   if (!latest || !previous || latest.reason !== previous.reason) {
     return false;
   }
@@ -307,22 +320,24 @@ export function recordRepeatedRepairFailure(input: {
   state: LoopState;
   runId: string | undefined;
 }): void {
-  const previous = input.state.failureHistory[input.state.failureHistory.length - 1];
+  const activeHistory = getActiveFailures(input.state.failureHistory);
+  const previous = latestActiveFailure(activeHistory);
   const repair = createRepairSignal("R_REPEATED_REPAIR_FAILURE", {
     blockedTargets: previous?.blockedTargets ?? [],
     operatorDetails: {
-      repeatedSignature: latestRepairSignature(input.state.failureHistory),
+      repeatedSignature: latestRepairSignature(activeHistory),
       repeatedThreshold: REPEATED_REPAIR_FAILURE_THRESHOLD,
       previousRepairCode: previous?.repairCode,
       previousReason: previous?.reason,
     },
   });
-  input.state.failureHistory.push({
+  appendActiveFailure(input.state, {
     step: input.state.iteration,
     failureType: "validation_error",
     reason: repair.message,
     blockedTargets: previous?.blockedTargets ?? [],
     repairCode: repair.code,
+    repairScope: previous?.repairScope ?? "action",
   });
   recordFeedback(input.deps, input.inputHandle, input.runId, "guard", "repeated_repair_failure", {
     message: repair.message,
@@ -548,13 +563,27 @@ function repairFailureSignature(failure: LoopState["failureHistory"][number] | u
   if (!failure?.repairCode || failure.repairCode === "R_REPEATED_REPAIR_FAILURE") {
     return undefined;
   }
+  const semanticFamily = semanticRepairFamily(failure);
   const repair = failure.repair;
   return [
     failure.repairCode,
-    compactSignaturePart(failure.blockedTargets),
+    semanticFamily ?? "",
+    semanticFamily ? "" : compactSignaturePart(failure.blockedTargets),
     compactSignaturePart(repair?.missingFields ?? []),
     compactSignaturePart(repair?.invalidFields ?? []),
   ].join("|");
+}
+
+function semanticRepairFamily(
+  failure: LoopState["failureHistory"][number],
+): string | undefined {
+  if (
+    failure.repairCode !== "R_MODE_TRANSITION_INVALID"
+    && failure.repairCode !== "R_VALIDATION_REJECTED"
+  ) {
+    return undefined;
+  }
+  return failure.reason.match(/^([A-Z][A-Z0-9_]+):/)?.[1];
 }
 
 function compactSignaturePart(values: string[]): string {
@@ -577,7 +606,7 @@ function unboundRunDecisionTargets(decision: AgentDecision): string[] {
   if (decision.kind === "transition_mode") {
     return uniqueStrings([
       ...decision.request.capabilities.map((group) => `capability:${group}`),
-      ...(decision.request.targets ?? []),
+      ...modeTransitionTargetValues(decision.request),
     ]);
   }
   if (decision.kind === "act") {

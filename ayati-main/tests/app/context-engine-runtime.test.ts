@@ -1,5 +1,6 @@
 import type {
   AgentContextProjection,
+  CheckpointRunWorkStateResponse,
   ContextCheckpointPlan,
   ContextCheckpointRecord,
   FinalizeRunResponse,
@@ -58,7 +59,7 @@ describe("Context Engine runtime", () => {
     }));
   });
 
-  it("refreshes reusable observations after each persisted run step", async () => {
+  it("returns the updated authoritative context after each persisted run step", async () => {
     const fixture = serviceFixture();
     const events: ContextEngineObservabilityEvent[] = [];
     const runtime = createContextEngineRuntime({
@@ -72,7 +73,7 @@ describe("Context Engine runtime", () => {
       userMessage: "Read the implementation.",
       at: AT,
     });
-    fixture.setContext(contextWithEvidence());
+    fixture.setContext(contextAfterStep());
 
     const projection = await runtime.recordRunStep({
       turn,
@@ -98,13 +99,16 @@ describe("Context Engine runtime", () => {
           newFacts: [],
           artifacts: [],
         },
-        workStateAfter: inProgressWorkState(),
         facts: [],
         artifacts: [],
       },
     });
 
-    expect(projection?.observations.evidence).toHaveLength(1);
+    expect(projection).toMatchObject({
+      contextRevision: "revision-step-1",
+      run: { run: { runId: "RUN-1" } },
+    });
+    expect(projection && "observations" in projection).toBe(false);
     expect(fixture.recordRunStep).toHaveBeenCalledWith(expect.objectContaining({
       requestId: "RUN-1:step-1",
       runId: "RUN-1",
@@ -121,6 +125,73 @@ describe("Context Engine runtime", () => {
       "run_step_persistence_queued",
       "run_step_persisted",
     ]));
+  });
+
+  it("persists a WorkState checkpoint through its dedicated service operation", async () => {
+    const fixture = serviceFixture();
+    const runtime = createContextEngineRuntime({
+      service: fixture.service,
+      timezone: "UTC",
+      agentId: "local",
+    });
+    const turn = await runtime.prepareUserTurn({
+      clientId: "local",
+      userMessage: "Continue the complex implementation.",
+      at: AT,
+    });
+    fixture.setContext(contextAfterWorkStateCheckpoint());
+
+    const result = await runtime.checkpointRunWorkState({
+      turn,
+      reason: "plan",
+      workState: {
+        status: "in_progress",
+        summary: "The contract is complete and runtime wiring remains.",
+        plan: [{
+          id: "runtime",
+          task: "Wire the runtime.",
+          status: "active",
+        }],
+        importantContext: [],
+        nextAction: "Wire the runtime.",
+      },
+      runtime: {
+        revision: 0,
+        afterStep: 0,
+        updateReason: "initial",
+      },
+      afterStep: 0,
+      at: "2026-07-19T10:00:02.000Z",
+    });
+
+    expect(fixture.checkpointRunWorkState).toHaveBeenCalledWith({
+      requestId: "RUN-1:work-state-plan-1",
+      runId: "RUN-1",
+      expectedRevision: 0,
+      afterStep: 0,
+      reason: "plan",
+      workState: {
+        status: "in_progress",
+        summary: "The contract is complete and runtime wiring remains.",
+        plan: [{
+          id: "runtime",
+          task: "Wire the runtime.",
+          status: "active",
+        }],
+        importantContext: [],
+        nextAction: "Wire the runtime.",
+      },
+      at: "2026-07-19T10:00:02.000Z",
+    });
+    expect(result).toMatchObject({
+      context: { contextRevision: "revision-work-state-1" },
+      runtime: {
+        revision: 1,
+        afterStep: 0,
+        updateReason: "plan",
+      },
+    });
+    expect(turn.context.contextRevision).toBe("revision-work-state-1");
   });
 
   it("does not poison later persistence after one service failure", async () => {
@@ -140,9 +211,9 @@ describe("Context Engine runtime", () => {
     await expect(runtime.recordRunStep({ turn, record: runtimeStepRecord() }))
       .rejects.toThrow("temporary persistence failure");
 
-    fixture.setContext(contextWithEvidence());
+    fixture.setContext(contextAfterStep());
     await expect(runtime.recordRunStep({ turn, record: runtimeStepRecord() }))
-      .resolves.toMatchObject({ observations: { evidence: [expect.any(Object)] } });
+      .resolves.toMatchObject({ contextRevision: "revision-step-1" });
     expect(fixture.recordRunStep).toHaveBeenCalledTimes(2);
     expect(fixture.getAgentContext).not.toHaveBeenCalled();
   });
@@ -208,6 +279,10 @@ function serviceFixture() {
     run: context.run!,
     context,
   }));
+  const checkpointRunWorkState = vi.fn(async (): Promise<CheckpointRunWorkStateResponse> => ({
+    run: context.run!,
+    context,
+  }));
   const finalizeRun = vi.fn(async (): Promise<FinalizeRunResponse> => ({
     run: {
       ...context.run!.run,
@@ -225,7 +300,6 @@ function serviceFixture() {
       contentHash: "sha256:assistant",
       at: "2026-07-19T10:00:01.000Z",
     },
-    observationRevision: context.observationRevision,
     resourceEffects: { status: "none", events: [] },
     workstreamContextCommit: { status: "not_required" },
   }));
@@ -242,6 +316,7 @@ function serviceFixture() {
     prepareAgentRun,
     getAgentContext,
     recordRunStep,
+    checkpointRunWorkState,
     finalizeRun,
     planContextCheckpoint,
     commitContextCheckpoint,
@@ -251,6 +326,7 @@ function serviceFixture() {
     prepareAgentRun,
     getAgentContext,
     recordRunStep,
+    checkpointRunWorkState,
     finalizeRun,
     planContextCheckpoint,
     commitContextCheckpoint,
@@ -260,29 +336,33 @@ function serviceFixture() {
   };
 }
 
-function contextWithEvidence(): AgentContextProjection {
+function contextAfterStep(): AgentContextProjection {
   return agentContextFixture({
     contextRevision: "revision-step-1",
-    observations: {
-      revision: "observations:read-1",
-      inventory: [],
-      discovery: [],
-      evidence: [{
-        observationId: "OBS-1",
-        streamId: "S-1",
-        sourceRunId: "RUN-1",
-        sourceStep: 1,
-        sourceCallId: "read-source",
-        kind: "evidence",
-        queryKey: "read_files:source",
-        purpose: "Inspect source",
-        preview: "source",
-        retention: "evidence_only",
-        resources: [],
-        createdAt: "2026-07-19T10:00:02.000Z",
-      }],
-    },
   });
+}
+
+function contextAfterWorkStateCheckpoint(): AgentContextProjection {
+  const context = agentContextFixture({
+    contextRevision: "revision-work-state-1",
+  });
+  context.run!.workState = {
+    runId: "RUN-1",
+    revision: 1,
+    afterStep: 0,
+    status: "in_progress",
+    summary: "The contract is complete and runtime wiring remains.",
+    plan: [{
+      id: "runtime",
+      task: "Wire the runtime.",
+      status: "active",
+    }],
+    importantContext: [],
+    nextAction: "Wire the runtime.",
+    updateReason: "plan",
+    updatedAt: "2026-07-19T10:00:02.000Z",
+  };
+  return context;
 }
 
 function runtimeStepRecord() {
@@ -308,7 +388,6 @@ function runtimeStepRecord() {
       newFacts: [],
       artifacts: [],
     },
-    workStateAfter: inProgressWorkState(),
     facts: [],
     artifacts: [],
   };
@@ -362,12 +441,10 @@ function checkpointSummary() {
 
 function inProgressWorkState() {
   return {
-    status: "not_done" as const,
+    status: "in_progress" as const,
     summary: "Source was read.",
-    openWork: [],
-    blockers: [],
-    verifiedFacts: [],
-    evidence: [],
+    plan: [],
+    importantContext: [],
   };
 }
 

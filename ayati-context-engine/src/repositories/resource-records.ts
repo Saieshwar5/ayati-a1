@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { basename, isAbsolute, resolve } from "node:path";
+import { basename } from "node:path";
 import type {
   ResourceAdmission,
   ResourceAvailability,
@@ -20,6 +20,7 @@ import {
   canonicalizeWorkstreamResourceBindings,
   type WorkstreamResourceBindingInput,
 } from "../resources/workstream-resource-binding-policy.js";
+import { requireAbsoluteFilesystemPath } from "../resources/filesystem-paths.js";
 
 interface ResourceRow {
   resource_id: string;
@@ -647,7 +648,9 @@ export function mutationEligible(resource: ResourceRef): boolean {
 }
 
 export function resourceLocatorKey(locator: ResourcePublicLocator): string {
-  if (locator.kind === "filesystem") return "filesystem:" + resolve(locator.path);
+  if (locator.kind === "filesystem") {
+    return "filesystem:" + requireAbsoluteFilesystemPath(locator.path);
+  }
   if (locator.kind === "managed_blob") return "managed_blob:" + locator.resourceId;
   if (locator.kind === "url") return "url:" + normalizeUrl(locator.url);
   return "external:" + locator.provider.trim().toLowerCase() + ":" + locator.externalId.trim();
@@ -659,14 +662,7 @@ export function resourceIdForLocator(locatorKey: string): string {
 
 function normalizeLocator(locator: ResourcePublicLocator): ResourcePublicLocator {
   if (locator.kind === "filesystem") {
-    if (!isAbsolute(locator.path)) {
-      throw new ContextEngineServiceError({
-        code: "RESOURCE_LOCATOR_INVALID",
-        message: "Filesystem resource locators must be absolute paths.",
-        details: { path: locator.path },
-      });
-    }
-    return { kind: "filesystem", path: resolve(locator.path) };
+    return { kind: "filesystem", path: requireAbsoluteFilesystemPath(locator.path) };
   }
   if (locator.kind === "url") return { kind: "url", url: normalizeUrl(locator.url) };
   if (locator.kind === "managed_blob") return locator;

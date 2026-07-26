@@ -35,7 +35,6 @@ import {
   type ObservedResourceAdmission,
 } from "../repositories/resource-records.js";
 import { readRunEvidence } from "../repositories/run-records.js";
-import { invalidateStaleReusableObservations } from "../repositories/reusable-observation-records.js";
 import { ManagedResourceStore } from "../resources/managed-resource-store.js";
 import { observeResource } from "../resources/resource-observation.js";
 import { canonicalizeWorkstreamResourceBindings } from "../resources/workstream-resource-binding-policy.js";
@@ -158,7 +157,6 @@ export class ResourceCatalogService {
           at: input.at,
         });
         recordResourceAccess(this.database, resource.resourceId, input.runId, "opened", input.at);
-        invalidateStaleReusableObservations(this.database, input.at);
         return {
           resource,
           existing: Boolean(existingBefore),

@@ -10,25 +10,51 @@ describe("stable decision system prompt", () => {
     expect(prompt).toContain("Decision and execution:");
     expect(prompt).toContain("Validation and terminal responses:");
     expect(prompt).not.toContain("workstream_resolve");
-    expect(prompt).toContain("decision_transition_mode");
-    expect(prompt).toContain("decision_validate");
+    expect(prompt).toContain("destination-specific mode control");
+    expect(prompt).toContain("decision_resolve_create");
+    expect(prompt).not.toContain("decision_transition_mode");
+    expect(prompt).toContain("decision_stop");
     expect(prompt).toContain("Every run starts at ENTRY");
-    expect(prompt).toContain("genuinely tool-free request");
+    expect(prompt).toContain("focused clarification before graph entry");
+    expect(prompt).toContain("does not classify or reject an ENTRY reply");
+    expect(prompt).toContain("Never use an ENTRY reply to claim an unperformed observation or mutation");
     expect(prompt).toContain("observe.locate");
     expect(prompt).toContain("observe.investigate");
     expect(prompt).toContain("enters execute mechanically");
     expect(prompt).toContain("Old-mode tools do not remain available");
-    expect(prompt).toContain("Accepted validation finalizes that response without another model call");
-    expect(prompt).toContain("Apply context.personal only when relevant");
-    expect(prompt).toContain("context.temporal.recent");
-    expect(prompt).toContain("context.current");
-    expect(prompt).toContain("context.stream");
-    expect(prompt).toContain("context.work");
-    expect(prompt).toContain("context.resources");
-    expect(prompt).toContain("context.observations");
+    expect(prompt).toContain("A passed validation mode unlocks the direct final response");
+    expect(prompt).toContain("context.hot.available is metadata");
+    expect(prompt).toContain("Loaded Hot Context grants no authority");
+    expect(prompt).toContain("context.retrieve");
+    expect(prompt).toContain("context_load");
+    expect(prompt).toContain("context.core.current.input");
+    expect(prompt).toContain("context.core.continuity.recentExact");
+    expect(prompt).toContain("seq as authoritative chronological identity");
+    expect(prompt).toContain("adjacency alone never creates a reply binding");
+    expect(prompt).toContain("nearest earlier semantically compatible assistant event");
+    expect(prompt).toContain("attachmentRefs belong only to the exact user event");
+    expect(prompt).toContain("context.core.continuity.unloadedRanges");
+    expect(prompt).toContain("personal.memory");
+    expect(prompt).toContain("workstreams.recent");
+    expect(prompt).toContain("workstates.recent");
+    expect(prompt).toContain("files.recent");
+    expect(prompt).toContain("context.core.current.activeDocuments");
+    expect(prompt).toContain("up to five exact navigation pointers");
+    expect(prompt).toContain("freshness=unchecked");
+    expect(prompt).toContain("older recent-document metadata");
+    expect(prompt).toContain("historical run handoffs only");
+    expect(prompt).toContain("Prefer a matching path over retrieval or search");
+    expect(prompt).not.toContain("work.current");
+    expect(prompt).not.toContain("resources.current");
+    expect(prompt).not.toContain("observations.inventory");
+    expect(prompt).not.toContain("historical_reference_only");
+    expect(prompt).not.toContain("context.work");
+    expect(prompt).not.toContain("context.resources");
+    expect(prompt).not.toContain("context.observations");
     expect(prompt).toContain("context.run");
+    expect(prompt).toContain("context.run.verifiedOutcomes");
     expect(prompt).toContain("context.harness");
-    expect(prompt).toContain("context.personal");
+    expect(prompt).not.toContain("context.personal");
 
     expect(prompt).not.toContain("decision_load_tools");
     expect(prompt).not.toContain("workstream_completion");
@@ -45,11 +71,17 @@ describe("stable decision system prompt", () => {
     expect(prompt).not.toContain("load_tools");
   });
 
-  it("separates absolute execution paths from portable completion resource paths", () => {
+  it("uses canonical paths and typed current-run outcomes for final validation", () => {
     const prompt = STABLE_DECISION_SYSTEM_CONTEXT;
 
     expect(prompt).toContain("Filesystem and command paths are canonical absolute host paths");
-    expect(prompt).toContain("a portable path relative to that resource");
+    expect(prompt).toContain("enter task:validation with only deciding outcomes");
+    expect(prompt).toContain("deciding outcomes copied exactly from context.run.verifiedOutcomes");
+    expect(prompt).toContain("file.search_no_match requires its searchScope");
+    expect(prompt).toContain("Validation is proof-only, exposes no action tools");
+    expect(prompt).toContain("tool.call_succeeded with an exact callId");
+    expect(prompt).toContain("without repeating work");
+    expect(prompt).toContain("completed result, not a blocker");
     expect(prompt).not.toContain('"path": "/absolute/resource/path/index.html"');
   });
 

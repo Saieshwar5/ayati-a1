@@ -1,7 +1,10 @@
 import type {
+  RunImportantContextItem,
+  RunWorkPlanItem,
   RunWorkState,
   RunWorkStateInput,
-} from "../contracts.js";
+  RunWorkStateUpdateReason,
+} from "../run-work-state-contracts.js";
 import type { ContextDatabase } from "../database/database.js";
 
 interface RunWorkStateRow {
@@ -10,13 +13,10 @@ interface RunWorkStateRow {
   after_step: number;
   status: RunWorkState["status"];
   summary: string;
-  open_work_json: string;
-  blockers_json: string;
-  facts_json: string;
-  evidence_json: string;
-  artifacts_json: string;
-  next_step: string | null;
-  user_input_needed_json: string;
+  plan_json: string;
+  important_context_json: string;
+  next_action: string | null;
+  update_reason: RunWorkStateUpdateReason;
   updated_at: string;
 }
 
@@ -28,10 +28,18 @@ export function insertInitialRunWorkState(
 ): RunWorkState {
   database.prepare([
     "INSERT INTO run_work_state(",
-    "run_id, revision, after_step, status, summary, open_work_json, blockers_json,",
-    "facts_json, evidence_json, artifacts_json, next_step, user_input_needed_json, updated_at",
-    ") VALUES (?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-  ].join(" ")).run(...workStateValues(runId, state, at));
+    "run_id, revision, after_step, status, summary, plan_json, important_context_json,",
+    "next_action, update_reason, updated_at",
+    ") VALUES (?, 0, 0, ?, ?, ?, ?, ?, 'initial', ?)",
+  ].join(" ")).run(
+    runId,
+    state.status,
+    state.summary,
+    JSON.stringify(state.plan),
+    JSON.stringify(state.importantContext),
+    state.nextAction,
+    at,
+  );
   return requireRunWorkState(database, runId);
 }
 
@@ -41,30 +49,39 @@ export function replaceRunWorkState(
     runId: string;
     afterStep: number;
     state: RunWorkStateInput;
+    reason: RunWorkStateUpdateReason;
     at: string;
+    expectedRevision?: number;
   },
 ): RunWorkState {
-  const result = database.prepare([
-    "UPDATE run_work_state SET revision = revision + 1, after_step = ?, status = ?,",
-    "summary = ?, open_work_json = ?, blockers_json = ?, facts_json = ?, evidence_json = ?,",
-    "artifacts_json = ?, next_step = ?, user_input_needed_json = ?, updated_at = ?",
-    "WHERE run_id = ?",
-  ].join(" ")).run(
+  const revisionClause = input.expectedRevision === undefined
+    ? ""
+    : " AND revision = ?";
+  const values: Array<string | number | null> = [
     input.afterStep,
     input.state.status,
     input.state.summary,
-    JSON.stringify(input.state.openWork),
-    JSON.stringify(input.state.blockers),
-    JSON.stringify(input.state.facts),
-    JSON.stringify(input.state.evidence),
-    JSON.stringify(input.state.artifacts),
-    input.state.nextStep,
-    JSON.stringify(input.state.userInputNeeded),
+    JSON.stringify(input.state.plan),
+    JSON.stringify(input.state.importantContext),
+    input.state.nextAction,
+    input.reason,
     input.at,
     input.runId,
-  );
+  ];
+  if (input.expectedRevision !== undefined) {
+    values.push(input.expectedRevision);
+  }
+  const result = database.prepare([
+    "UPDATE run_work_state SET revision = revision + 1, after_step = ?, status = ?,",
+    "summary = ?, plan_json = ?, important_context_json = ?, next_action = ?,",
+    "update_reason = ?, updated_at = ? WHERE run_id = ?" + revisionClause,
+  ].join(" ")).run(...values);
   if (Number(result.changes) !== 1) {
-    throw new Error("Run WorkState could not be updated: " + input.runId);
+    throw new Error(
+      input.expectedRevision === undefined
+        ? "Run WorkState could not be updated: " + input.runId
+        : `Run WorkState revision conflict: ${input.runId} expected ${input.expectedRevision}`,
+    );
   }
   return requireRunWorkState(database, input.runId);
 }
@@ -74,10 +91,35 @@ export function readRunWorkState(
   runId: string,
 ): RunWorkState | undefined {
   const row = database.prepare([
-    "SELECT run_id, revision, after_step, status, summary, open_work_json, blockers_json,",
-    "facts_json, evidence_json, artifacts_json, next_step, user_input_needed_json, updated_at",
+    "SELECT run_id, revision, after_step, status, summary, plan_json,",
+    "important_context_json, next_action, update_reason, updated_at",
     "FROM run_work_state WHERE run_id = ?",
   ].join(" ")).get(runId) as RunWorkStateRow | undefined;
+  return row ? runWorkState(row) : undefined;
+}
+
+export function readLatestContinuationWorkState(
+  database: ContextDatabase,
+  input: {
+    excludeRunId: string;
+    workstreamId: string;
+    boundRequestId: string;
+  },
+): RunWorkState | undefined {
+  const row = database.prepare([
+    "SELECT ws.run_id, ws.revision, ws.after_step, ws.status, ws.summary,",
+    "ws.plan_json, ws.important_context_json, ws.next_action,",
+    "ws.update_reason, ws.updated_at",
+    "FROM run_work_state ws",
+    "JOIN runs r ON r.run_id = ws.run_id",
+    "WHERE r.run_id <> ? AND r.workstream_id = ? AND r.bound_request_id = ?",
+    "AND r.status NOT IN ('running', 'recovery_required')",
+    "ORDER BY r.completed_at DESC, r.run_sequence DESC LIMIT 1",
+  ].join(" ")).get(
+    input.excludeRunId,
+    input.workstreamId,
+    input.boundRequestId,
+  ) as RunWorkStateRow | undefined;
   return row ? runWorkState(row) : undefined;
 }
 
@@ -89,26 +131,6 @@ function requireRunWorkState(database: ContextDatabase, runId: string): RunWorkS
   return state;
 }
 
-function workStateValues(
-  runId: string,
-  state: RunWorkStateInput,
-  at: string,
-): [string, string, string, string, string, string, string, string, string | null, string, string] {
-  return [
-    runId,
-    state.status,
-    state.summary,
-    JSON.stringify(state.openWork),
-    JSON.stringify(state.blockers),
-    JSON.stringify(state.facts),
-    JSON.stringify(state.evidence),
-    JSON.stringify(state.artifacts),
-    state.nextStep,
-    JSON.stringify(state.userInputNeeded),
-    at,
-  ];
-}
-
 function runWorkState(row: RunWorkStateRow): RunWorkState {
   return {
     runId: row.run_id,
@@ -116,17 +138,14 @@ function runWorkState(row: RunWorkStateRow): RunWorkState {
     afterStep: Number(row.after_step),
     status: row.status,
     summary: row.summary,
-    openWork: parseStringArray(row.open_work_json),
-    blockers: parseStringArray(row.blockers_json),
-    facts: parseStringArray(row.facts_json),
-    evidence: parseStringArray(row.evidence_json),
-    artifacts: parseStringArray(row.artifacts_json),
-    nextStep: row.next_step,
-    userInputNeeded: parseStringArray(row.user_input_needed_json),
+    plan: parseJsonArray<RunWorkPlanItem>(row.plan_json),
+    importantContext: parseJsonArray<RunImportantContextItem>(row.important_context_json),
+    nextAction: row.next_action,
+    updateReason: row.update_reason,
     updatedAt: row.updated_at,
   };
 }
 
-function parseStringArray(value: string): string[] {
-  return JSON.parse(value) as string[];
+function parseJsonArray<T>(value: string): T[] {
+  return JSON.parse(value) as T[];
 }

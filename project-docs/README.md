@@ -31,8 +31,9 @@ Read these first before major code changes:
 3. `engineering/architecture/overview.md`
 4. `engineering/architecture/workstreams-and-resources.md`
 5. `engineering/architecture/agent-harness.md`
-6. `engineering/architecture/context-and-memory.md`
-7. `engineering/testing.md`
+6. `engineering/architecture/capability-surfaces.md`
+7. `engineering/architecture/context-and-memory.md`
+8. `engineering/testing.md`
 
 For user ideas, plans, decisions, and next-action notes that should guide what
 an agent works on next, use `../agent-notes/` instead of `project-docs/`.

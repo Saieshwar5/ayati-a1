@@ -981,6 +981,11 @@ const processCommandContract = succeededContract({
       value: false,
     },
   ],
+  progressFacts: [{
+    kind: "process_exit_success",
+    path: "$.result.structuredContent.command",
+    message: "Foreground process completed successfully.",
+  }],
 });
 
 const processSessionAnnotations = commonAnnotations({
@@ -1028,13 +1033,6 @@ export const processRunTool: ToolDefinition = {
   outputSchema: processCommandOutputSchema,
   annotations: processCommandAnnotations,
   resultContract: processCommandContract,
-  selectionHints: {
-    tags: ["process", "command", "build", "test", "lint", "package-script"],
-    aliases: ["run_project_command", "run_executable"],
-    examples: ["run pnpm test", "run pnpm build", "run an existing project executable"],
-    domain: "execution",
-    priority: 15,
-  },
   async execute(input, context): Promise<ToolResult> {
     const parsed = validateProcessRunInput(input);
     if ("ok" in parsed) return parsed;
@@ -1084,13 +1082,6 @@ export const processStartTool: ToolDefinition = {
       },
     ],
   }),
-  selectionHints: {
-    tags: ["process", "long-running", "server", "session"],
-    aliases: ["start_process", "start_server"],
-    examples: ["start the development server", "start an existing long-running project executable"],
-    domain: "execution",
-    priority: 28,
-  },
   async execute(input, context): Promise<ToolResult> {
     const parsed = validateProcessStartInput(input);
     if ("ok" in parsed) return parsed;
@@ -1217,13 +1208,6 @@ export const processSendInputTool: ToolDefinition = {
       path: "$.result.structuredContent.sessionId",
     }],
   }),
-  selectionHints: {
-    tags: ["process", "stdin", "input", "session"],
-    aliases: ["send_process_input"],
-    examples: ["send input to a running project process"],
-    domain: "execution",
-    priority: 27,
-  },
   async execute(input): Promise<ToolResult> {
     const parsed = validateProcessSendInput(input);
     if ("ok" in parsed) return parsed;
@@ -1295,13 +1279,6 @@ export const processPollTool: ToolDefinition = {
       path: "$.result.structuredContent.sessionId",
     }],
   }),
-  selectionHints: {
-    tags: ["process", "poll", "output", "session"],
-    aliases: ["poll_process"],
-    examples: ["check development server output"],
-    domain: "execution",
-    priority: 27,
-  },
   async execute(input): Promise<ToolResult> {
     const parsed = validateProcessPollInput(input);
     if ("ok" in parsed) return parsed;
@@ -1391,13 +1368,6 @@ export const processStopTool: ToolDefinition = {
       },
     ],
   }),
-  selectionHints: {
-    tags: ["process", "stop", "server", "session"],
-    aliases: ["stop_process"],
-    examples: ["stop the development server"],
-    domain: "execution",
-    priority: 27,
-  },
   async execute(input): Promise<ToolResult> {
     const parsed = validateProcessStopInput(input);
     if ("ok" in parsed) return parsed;
@@ -1469,20 +1439,10 @@ export const processStopTool: ToolDefinition = {
   },
 };
 
-const PROCESS_PROMPT_BLOCK = [
-  "Focused process tools are built in for project commands that no domain tool owns.",
-  "Use process_run for one non-interactive executable, or process_start/process_poll/process_send_input/process_stop for one long-running process lifecycle.",
-  "Pass executable and args separately. Shell command strings, shell interpreters, inline interpreter code, and direct filesystem/search/database/Git commands are rejected.",
-  "Use read_files, search_in_files, find_files, list_directory, inspect_paths, filesystem mutation tools, database tools, Python tools, file_fetch_url, and Context Engine tools for their owned capabilities.",
-  "Default process cwd to the selected bound resource. Any supplied cwd and mutation targets must be canonical absolute paths.",
-  "For a project command that may create generated files, declare every bounded absolute mutation target in targets.",
-].join("\n");
-
 const processSkill: SkillDefinition = {
   id: "process",
   version: "1.0.0",
   description: "Run focused project executables and manage long-running process lifecycles.",
-  promptBlock: PROCESS_PROMPT_BLOCK,
   tools: [
     processRunTool,
     processStartTool,

@@ -1,8 +1,9 @@
 import type {
   ContextCheckpointRecord,
-  RecentWorkReference,
+  RecentFileMetadata,
+  RecentWorkStateHandoff,
+  RecentWorkstreamMetadata,
   ResourceRef,
-  ReusableObservationProjection,
   RunContextProjection,
   StreamMessage,
   WorkstreamCandidate,
@@ -24,7 +25,9 @@ export interface ContextAgentStreamProjection {
   meta: ContextAgentStreamMeta;
   checkpoint?: ContextCheckpointRecord;
   recentMessages: StreamMessage[];
-  recentWork: RecentWorkReference[];
+  recentWorkstreams: RecentWorkstreamMetadata[];
+  recentFiles: RecentFileMetadata[];
+  recentWorkStates: RecentWorkStateHandoff[];
   resources: ResourceRef[];
 }
 
@@ -71,7 +74,7 @@ export interface ContextWorkstreamProjection {
 }
 
 /**
- * Bounded daemon projection of authoritative V7 Context Engine state.
+ * Bounded daemon projection of authoritative current-schema Context Engine state.
  * The projection deliberately separates slow agent-stream continuity from
  * fast current-run state and never exposes storage paths to the model layer.
  */
@@ -79,11 +82,9 @@ export interface ContextEngineMachineContext {
   contextRevision: string;
   streamRevision: string;
   runRevision?: string;
-  observationRevision: string;
   agentStream: ContextAgentStreamProjection;
   current: ContextCurrentProjection;
   focus: ContextFocus;
-  observations: ReusableObservationProjection;
   run?: RunContextProjection;
   workstreamCandidates?: WorkstreamCandidate[];
   ingressResources?: ResourceRef[];

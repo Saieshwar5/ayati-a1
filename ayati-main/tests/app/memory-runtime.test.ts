@@ -11,7 +11,7 @@ describe("personal-memory checkpoint extraction", () => {
     const selectedMessages = [
       message(5, "system_event", "Background event."),
       message(6, "user", "Please remember that I prefer concise reports."),
-      message(7, "assistant", "I will keep reports concise."),
+      message(7, "assistant", "I will keep reports concise.", "reply"),
     ];
     const payload = buildPersonalMemoryCheckpointPayload({
       userId: "local",
@@ -42,6 +42,7 @@ describe("personal-memory checkpoint extraction", () => {
           timestamp: "2026-07-20T10:07:00.000Z",
           sessionPath: "agent-stream:AST-LOCAL",
           workRunId: "RUN-7",
+          assistantResponseKind: "reply",
         },
       ],
     });
@@ -62,6 +63,7 @@ function message(
   sequence: number,
   role: StreamMessage["role"],
   content: string,
+  responseKind?: StreamMessage["responseKind"],
 ): StreamMessage {
   return {
     messageId: `MSG-${sequence}`,
@@ -72,6 +74,7 @@ function message(
     content,
     contentHash: `sha256:${sequence}`,
     at: `2026-07-20T10:0${sequence}:00.000Z`,
+    ...(responseKind ? { responseKind } : {}),
   };
 }
 

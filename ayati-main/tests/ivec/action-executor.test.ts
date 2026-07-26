@@ -35,10 +35,10 @@ function cleanup(path: string): void {
 
 function emptyWorkState(): WorkState {
   return {
-    status: "not_done",
-    summary: "",
-    verifiedFacts: [],
-    evidence: [],
+    status: "in_progress",
+    summary: "Run started.",
+    plan: [],
+    importantContext: [],
   };
 }
 
@@ -108,7 +108,7 @@ describe("executeAgentAction verification gates", () => {
       expect(result.verifyOutput.summary).toContain("Sequential action requested 5 calls");
       expect(result.actOutput.toolCalls).toEqual([]);
       expect(result.actOutput.finalText).toContain("Sequential action requested 5 calls");
-      expect(result.nextWorkState.status).toBe("blocked");
+      expect(result.nextWorkState).toEqual(emptyWorkState());
     } finally {
       cleanup(runPath);
     }
@@ -192,9 +192,13 @@ describe("executeAgentAction verification gates", () => {
       expect(result.actOutput.toolCalls).toHaveLength(2);
       expect(result.actOutput.toolCalls[0]?.error).toBe("boom");
       expect(result.actOutput.toolCalls[1]?.error).toContain("Skipped because an earlier sequential call failed");
+      expect(result.actOutput.toolCalls.map((call) => call.verification?.status)).toEqual([
+        "failed",
+        "failed",
+      ]);
       expect(result.verifyOutput.passed).toBe(false);
       expect(result.verifyOutput.executionStatus).toBe("all_failed");
-      expect(result.nextWorkState.status).toBe("blocked");
+      expect(result.nextWorkState).toEqual(emptyWorkState());
     } finally {
       cleanup(runPath);
     }
@@ -237,10 +241,15 @@ describe("executeAgentAction verification gates", () => {
 
       expect(result.actOutput.toolCalls).toHaveLength(3);
       expect(result.actOutput.toolCalls.map((call) => call.callId)).toEqual(["call_1", "call_2", "call_3"]);
+      expect(result.actOutput.toolCalls.map((call) => call.verification?.status)).toEqual([
+        "not_available",
+        "failed",
+        "not_available",
+      ]);
       expect(result.verifyOutput.passed).toBe(false);
       expect(result.verifyOutput.executionStatus).toBe("partial_success");
       expect(result.verifyOutput.summary).toContain("read_files: parallel boom");
-      expect(result.nextWorkState.status).toBe("blocked");
+      expect(result.nextWorkState).toEqual(emptyWorkState());
     } finally {
       cleanup(runPath);
     }
@@ -266,6 +275,61 @@ describe("executeAgentAction verification gates", () => {
       expect(result.verifyOutput.passed).toBe(true);
       expect(result.actOutput.toolCalls).toHaveLength(2);
       expect(result.actOutput.toolCalls.map((call) => call.callId)).toEqual(["call_1", "call_2"]);
+    } finally {
+      cleanup(runPath);
+    }
+  });
+
+  it("derives step validation from every independent call record", async () => {
+    const runPath = makeTmpDir();
+    try {
+      const verifiedTool: ToolDefinition = {
+        ...createTool("read_files", { domain: "filesystem", readOnly: true }),
+        resultContract: {
+          operationStatusPath: "$.operationStatus",
+          successWhen: [{
+            id: "operation_succeeded",
+            kind: "tool_status",
+            status: "succeeded",
+          }],
+        },
+        async execute() {
+          return {
+            ok: true,
+            output: "verified",
+            v2: {
+              transportOk: true,
+              operationStatus: "succeeded",
+              code: "OK",
+              message: "Verified read completed.",
+              structuredContent: {},
+            },
+          };
+        },
+      };
+      const executionOnlyTool = createTool("calculator", {
+        domain: "calculator",
+        readOnly: true,
+      });
+      const result = await runAction([verifiedTool, executionOnlyTool], {
+        mode: "parallel",
+        calls: [
+          callSpec("call_1", "read_files"),
+          callSpec("call_2", "calculator"),
+        ],
+        allowedTools: ["read_files", "calculator"],
+        assertions: [],
+      }, runPath);
+
+      expect(result.actOutput.toolCalls.map((call) => call.verification?.status)).toEqual([
+        "passed",
+        "not_available",
+      ]);
+      expect(result.verifyOutput).toMatchObject({
+        passed: true,
+        method: "execution_gate",
+        validationStatus: "skipped",
+      });
     } finally {
       cleanup(runPath);
     }
@@ -443,7 +507,7 @@ describe("executeAgentAction verification gates", () => {
       expect(result.verifyOutput.executionStatus).toBe("all_failed");
       expect(result.verifyOutput.validationStatus).toBe("skipped");
       expect(result.verifyOutput.evidenceItems).toContain("fail_tool: boom");
-      expect(result.nextWorkState.status).toBe("blocked");
+      expect(result.nextWorkState).toEqual(emptyWorkState());
     } finally {
       cleanup(runPath);
     }
@@ -478,8 +542,13 @@ describe("executeAgentAction verification gates", () => {
       expect(result.verifyOutput.method).toBe("script");
       expect(result.verifyOutput.executionStatus).toBe("all_succeeded");
       expect(result.verifyOutput.validationStatus).toBe("passed");
+      expect(result.actOutput.toolCalls[0]?.verification).toMatchObject({
+        status: "passed",
+        method: "runtime_check",
+        contract: "deterministic_success_gate_v1",
+      });
       expect(result.verifyOutput.evidenceSummary).toContain("dataset_query succeeded");
-      expect(result.nextWorkState.verifiedFacts.some((fact) => fact.includes("dataset_query succeeded"))).toBe(true);
+      expect(result.nextWorkState).toEqual(emptyWorkState());
     } finally {
       cleanup(runPath);
     }
@@ -529,7 +598,7 @@ describe("executeAgentAction verification gates", () => {
     }
   });
 
-  it("preserves contract-backed facts when deterministic filesystem work succeeds", async () => {
+  it("keeps contract-backed filesystem proof in verification while leaving WorkState unchanged", async () => {
     const runPath = makeTmpDir();
     const outputPath = join(runPath, "created.txt");
     try {
@@ -543,10 +612,14 @@ describe("executeAgentAction verification gates", () => {
 
       expect(result.verifyOutput.passed).toBe(true);
       expect(result.verifyOutput.method).toBe("script");
+      expect(result.actOutput.toolCalls[0]?.verification).toMatchObject({
+        status: "passed",
+        method: "tool_contract",
+        contract: "tool_result_v2",
+      });
       expect(result.verifyOutput.artifacts).toContain(outputPath);
-      expect(result.nextWorkState.status).toBe("not_done");
-      expect(result.nextWorkState.verifiedFacts.some((fact) => fact.includes("Read-back hash verified"))).toBe(true);
-      expect(result.nextWorkState.artifacts).toContain(outputPath);
+      expect(result.verifyOutput.newFacts.some((fact) => fact.includes("Read-back hash verified"))).toBe(true);
+      expect(result.nextWorkState).toEqual(emptyWorkState());
       expect(existsSync(outputPath)).toBe(true);
     } finally {
       cleanup(runPath);

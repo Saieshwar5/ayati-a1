@@ -1,31 +1,112 @@
-export type VirtualModeName = "observe.locate" | "observe.investigate" | "execute";
+import type {
+  ModeTransitionValidationCheck,
+  ValidationCheckResult,
+  ValidationCheckStatus,
+} from "./task-validation-contracts.js";
+
+export type {
+  FileReadValidationScope,
+  ModeTransitionValidationCheck,
+  TaskValidationOutcomeKind,
+  ValidationCheckResult,
+  ValidationCheckStatus,
+  ValidationExpectedPathKind,
+} from "./task-validation-contracts.js";
+
+export const VIRTUAL_MODE_NAMES = [
+  "context.retrieve",
+  "observe.locate",
+  "observe.investigate",
+  "execute",
+  "validation",
+] as const;
+
+export type VirtualModeName = (typeof VIRTUAL_MODE_NAMES)[number];
 
 export type VirtualModeTransitionTarget = VirtualModeName | "resolve";
 
 export type VirtualModeSource = "ENTRY" | VirtualModeName;
 
+export function isVirtualModeName(value: unknown): value is VirtualModeName {
+  return typeof value === "string"
+    && (VIRTUAL_MODE_NAMES as readonly string[]).includes(value);
+}
+
+export type ModeTransitionReference =
+  | {
+      kind: "filesystem";
+      path: string;
+    }
+  | {
+      kind: "resource";
+      resourceId: string;
+    }
+  | {
+      kind: "workstream";
+      workstreamId: string;
+    }
+  | {
+      kind: "url";
+      url: string;
+    };
+
+export type ModeTransitionMutationScope =
+  | {
+      kind: "filesystem";
+      path: string;
+    }
+  | {
+      kind: "resource";
+      resourceId: string;
+    };
+
+export interface ValidationModeProgress {
+  returnMode: Exclude<VirtualModeName, "validation" | "context.retrieve">;
+  status: ValidationCheckStatus;
+  checks: ValidationCheckResult[];
+}
+
+export interface ContextRetrieveModeProgress {
+  returnState: {
+    active: Exclude<VirtualModeName, "context.retrieve"> | null;
+    purpose?: string;
+    capabilities: string[];
+    targets: string[];
+    enteredAtIteration?: number;
+  };
+}
+
 export interface ModeTransitionRequest {
   to: VirtualModeTransitionTarget;
   purpose: string;
   capabilities: string[];
+  subjects?: string[];
+  references?: ModeTransitionReference[];
+  mutationScopes?: ModeTransitionMutationScope[];
+  validationChecks?: ModeTransitionValidationCheck[];
+  /**
+   * Compatibility input for journaled/tests calls created before typed mode
+   * references. The native model schema no longer exposes this field.
+   */
   targets?: string[];
   binding?: import("../workstream-binding/contracts.js").WorkstreamBindingProposal;
 }
 
-export interface ValidationRequest {
-  outcome: "completed" | "needs_user_input" | "blocked" | "failed";
-  summary: string;
+export interface TerminalStopRequest {
+  outcome: "needs_user_input" | "blocked" | "failed";
   response: string;
-  resources?: import("./decision.js").WorkstreamCompletionResourceInput[];
 }
 
 export interface VirtualModeState {
   active: VirtualModeName | null;
   revision: number;
+  operational: boolean;
   purpose?: string;
   capabilities: string[];
   targets: string[];
   enteredAtIteration?: number;
+  validation?: ValidationModeProgress;
+  contextRetrieve?: ContextRetrieveModeProgress;
 }
 
 export interface VirtualModeCard {
@@ -34,7 +115,11 @@ export interface VirtualModeCard {
   purpose?: string;
   capabilities: string[];
   targets: string[];
-  allowedNext: Array<VirtualModeTransitionTarget | "normal_reply" | "validate">;
+  allowedNext: Array<VirtualModeTransitionTarget | "normal_reply" | "stop">;
+  validation?: ValidationModeProgress;
+  contextRetrieve?: {
+    returnTo: Exclude<VirtualModeSource, "context.retrieve">;
+  };
 }
 
 export type VirtualModeRepairCode =
@@ -42,6 +127,7 @@ export type VirtualModeRepairCode =
   | "MODE_INPUT_INVALID"
   | "MODE_CAPABILITY_UNKNOWN"
   | "MODE_CAPABILITY_FORBIDDEN"
+  | "MODE_CAPABILITY_SURFACE_TOO_LARGE"
   | "MODE_TARGET_REQUIRED"
   | "MODE_TARGET_UNVERIFIED"
   | "MODE_MUTATION_INTENT_REQUIRED"
@@ -51,9 +137,7 @@ export type VirtualModeRepairCode =
   | "MODE_RESOLUTION_AMBIGUOUS"
   | "MODE_NO_PROGRESS"
   | "MODE_RESOLUTION_UNAVAILABLE"
-  | "VALIDATION_EVIDENCE_MISSING"
   | "VALIDATION_REJECTED"
-  | "DIRECT_RESPONSE_REQUIRES_MODE"
   | "TERMINAL_REQUIRES_VALIDATION";
 
 export interface VirtualModeRepair {
@@ -64,16 +148,19 @@ export interface VirtualModeRepair {
 }
 
 export const VIRTUAL_MODE_GRAPH: Readonly<Record<VirtualModeSource, readonly VirtualModeTransitionTarget[]>> = {
-  ENTRY: ["observe.locate", "observe.investigate", "resolve"],
-  "observe.locate": ["observe.locate", "observe.investigate", "resolve"],
-  "observe.investigate": ["observe.locate", "observe.investigate", "resolve"],
-  execute: ["execute", "observe.locate", "observe.investigate"],
+  ENTRY: ["context.retrieve", "observe.locate", "observe.investigate", "resolve"],
+  "context.retrieve": [],
+  "observe.locate": ["context.retrieve", "observe.locate", "observe.investigate", "resolve", "validation"],
+  "observe.investigate": ["context.retrieve", "observe.locate", "observe.investigate", "resolve", "validation"],
+  execute: ["context.retrieve", "execute", "observe.locate", "observe.investigate", "validation"],
+  validation: ["observe.locate", "observe.investigate"],
 };
 
 export function createEntryVirtualModeState(): VirtualModeState {
   return {
     active: null,
     revision: 0,
+    operational: false,
     capabilities: [],
     targets: [],
   };
@@ -84,7 +171,7 @@ export function virtualModeSource(state: VirtualModeState | undefined): VirtualM
 }
 
 export function isVirtualGraphActive(state: VirtualModeState | undefined): boolean {
-  return (state?.revision ?? 0) > 0 || state?.active != null;
+  return state?.operational ?? false;
 }
 
 export function allowedVirtualModeTransitions(
@@ -93,9 +180,16 @@ export function allowedVirtualModeTransitions(
 ): VirtualModeTransitionTarget[] {
   const source = virtualModeSource(state);
   const allowed = [...VIRTUAL_MODE_GRAPH[source]];
+  if (options.workstreamBound && source === "ENTRY") {
+    return allowed.filter((mode) => mode !== "resolve").concat("execute");
+  }
   if (
     options.workstreamBound
-    && (source === "observe.locate" || source === "observe.investigate")
+    && (
+      source === "observe.locate"
+      || source === "observe.investigate"
+      || source === "validation"
+    )
   ) {
     return allowed.filter((mode) => mode !== "resolve").concat("execute");
   }
@@ -116,13 +210,22 @@ export function applyVirtualModeTransition(
   active: VirtualModeName,
   iteration: number,
 ): VirtualModeState {
+  const validation = active === "validation"
+    ? createValidationModeProgress(previous, request)
+    : undefined;
+  const contextRetrieve = active === "context.retrieve"
+    ? createContextRetrieveModeProgress(previous)
+    : undefined;
   return {
     active,
     revision: previous.revision + 1,
+    operational: previous.operational || active !== "context.retrieve",
     purpose: normalizeText(request.purpose),
     capabilities: normalizeStrings(request.capabilities),
-    targets: normalizeStrings(request.targets ?? []),
+    targets: modeTransitionTargetValues(request),
     enteredAtIteration: iteration,
+    ...(validation ? { validation } : {}),
+    ...(contextRetrieve ? { contextRetrieve } : {}),
   };
 }
 
@@ -134,27 +237,38 @@ export function recordVirtualResolveVisit(
   return {
     ...previous,
     revision: previous.revision + 1,
+    operational: true,
     purpose: normalizeText(request.purpose),
     capabilities: normalizeStrings(request.capabilities),
-    targets: normalizeStrings(request.targets ?? []),
+    targets: modeTransitionTargetValues(request),
     enteredAtIteration: iteration,
   };
 }
 
 export function buildVirtualModeCard(
   state: VirtualModeState | undefined,
-  options: { workstreamBound: boolean },
+  options: {
+    workstreamBound: boolean;
+    hotContextAvailable?: boolean;
+  },
 ): VirtualModeCard {
   const current = state ?? createEntryVirtualModeState();
   const source = virtualModeSource(current);
   const allowedNext: VirtualModeCard["allowedNext"] = [
     ...allowedVirtualModeTransitions(current, options),
-  ];
+  ].filter((destination) => (
+    destination !== "context.retrieve"
+    || options.hotContextAvailable !== false
+  ));
   if (source === "ENTRY" && !isVirtualGraphActive(current)) {
     allowedNext.unshift("normal_reply");
   }
-  if (source !== "ENTRY" || isVirtualGraphActive(current)) {
-    allowedNext.push("validate");
+  if (source === "validation" && current.validation?.status === "passed") {
+    allowedNext.unshift("normal_reply");
+  } else if (source !== "ENTRY" && source !== "context.retrieve") {
+    allowedNext.push("stop");
+  } else if (isVirtualGraphActive(current)) {
+    allowedNext.push("stop");
   }
   return {
     active: source,
@@ -163,6 +277,37 @@ export function buildVirtualModeCard(
     capabilities: [...current.capabilities],
     targets: [...current.targets],
     allowedNext,
+    ...(current.validation ? {
+      validation: {
+        ...current.validation,
+        checks: current.validation.checks.map((check) => ({ ...check })),
+      },
+    } : {}),
+    ...(current.contextRetrieve ? {
+      contextRetrieve: {
+        returnTo: current.contextRetrieve.returnState.active ?? "ENTRY",
+      },
+    } : {}),
+  };
+}
+
+export function restoreVirtualModeAfterContextRetrieval(
+  current: VirtualModeState,
+): VirtualModeState {
+  if (current.active !== "context.retrieve" || !current.contextRetrieve) {
+    return current;
+  }
+  const previous = current.contextRetrieve.returnState;
+  return {
+    active: previous.active,
+    revision: current.revision + 1,
+    operational: current.operational,
+    capabilities: [...previous.capabilities],
+    targets: [...previous.targets],
+    ...(previous.purpose ? { purpose: previous.purpose } : {}),
+    ...(previous.enteredAtIteration !== undefined
+      ? { enteredAtIteration: previous.enteredAtIteration }
+      : {}),
   };
 }
 
@@ -173,7 +318,87 @@ export function identicalVirtualModeRequest(
   return state.active === request.to
     && normalizeText(state.purpose ?? "") === normalizeText(request.purpose)
     && equalStrings(state.capabilities, request.capabilities)
-    && equalStrings(state.targets, request.targets ?? []);
+    && equalStrings(state.targets, modeTransitionTargetValues(request));
+}
+
+export function modeTransitionReferenceValues(request: ModeTransitionRequest): string[] {
+  return normalizeStrings((request.references ?? []).map(referenceValue));
+}
+
+export function modeTransitionMutationScopeValues(request: ModeTransitionRequest): string[] {
+  const scopes = normalizeStrings((request.mutationScopes ?? []).map(mutationScopeValue));
+  if (scopes.length > 0) return scopes;
+  return request.to === "resolve" || request.to === "execute"
+    ? normalizeStrings(request.targets ?? [])
+    : [];
+}
+
+export function modeTransitionEvidenceTargetValues(request: ModeTransitionRequest): string[] {
+  const typed = normalizeStrings([
+    ...modeTransitionReferenceValues(request),
+    ...modeTransitionMutationScopeValues(request),
+    ...(request.validationChecks ?? []).map((check) => check.subject),
+  ]);
+  return typed.length > 0 ? typed : normalizeStrings(request.targets ?? []);
+}
+
+export function modeTransitionTargetValues(request: ModeTransitionRequest): string[] {
+  return normalizeStrings([
+    ...(request.subjects ?? []),
+    ...modeTransitionEvidenceTargetValues(request),
+  ]);
+}
+
+function referenceValue(reference: ModeTransitionReference): string {
+  switch (reference.kind) {
+    case "filesystem":
+      return reference.path;
+    case "resource":
+      return reference.resourceId;
+    case "workstream":
+      return reference.workstreamId;
+    case "url":
+      return reference.url;
+  }
+}
+
+function mutationScopeValue(scope: ModeTransitionMutationScope): string {
+  return scope.kind === "filesystem" ? scope.path : scope.resourceId;
+}
+
+function createValidationModeProgress(
+  previous: VirtualModeState,
+  request: ModeTransitionRequest,
+): ValidationModeProgress {
+  const returnMode = previous.active
+    && previous.active !== "validation"
+    && previous.active !== "context.retrieve"
+    ? previous.active
+    : "observe.investigate";
+  return {
+    returnMode,
+    status: "pending",
+    checks: (request.validationChecks ?? []).map((check) => ({
+      ...check,
+      status: "pending",
+    })),
+  };
+}
+
+function createContextRetrieveModeProgress(
+  previous: VirtualModeState,
+): ContextRetrieveModeProgress {
+  return {
+    returnState: {
+      active: previous.active === "context.retrieve" ? null : previous.active,
+      ...(previous.purpose ? { purpose: previous.purpose } : {}),
+      capabilities: [...previous.capabilities],
+      targets: [...previous.targets],
+      ...(previous.enteredAtIteration !== undefined
+        ? { enteredAtIteration: previous.enteredAtIteration }
+        : {}),
+    },
+  };
 }
 
 export function createVirtualModeRepair(

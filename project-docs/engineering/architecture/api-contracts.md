@@ -36,7 +36,7 @@ Current routes include uploads, artifacts, and Pulse ingress. Use
 
 The daemon calls the in-process `ContextEngineService` interface directly.
 `SqliteContextEngineService` is the default implementation. SQLite uses clean
-schema version 7; no compatibility migration reader is provided for older
+schema version 8; no compatibility migration reader is provided for older
 development state.
 
 The service is the single serialization owner for context persistence. Harness
@@ -47,7 +47,6 @@ The service owns:
 - atomic agent-run preparation;
 - agent streams and immutable messages;
 - pressure checkpoints and bounded exact history access;
-- resource-versioned reusable observations;
 - one-run lifecycle and structured steps;
 - workstream/request catalog, discovery, creation, activation, and stars;
 - resource admission, metadata, bindings, inspection, and reverse discovery;
@@ -60,11 +59,12 @@ run-start or direct assistant-message persistence API. Workstream creation and
 activation require the existing run identity; they cannot allocate or switch
 the run.
 
-One `recordRunStep` operation stores an ordered structured action record,
-updates WorkState and reusable observations in the same transaction, and
-returns the updated authoritative agent projection from that serialized
-operation. One `finalizeRun` operation loads binding from the run and returns
-distinct facts:
+One `recordRunStep` operation stores an ordered structured action record and
+returns the authoritative agent projection without changing WorkState. A
+separate optimistic `checkpointRunWorkState` operation owns sparse `plan` and
+`context_pressure` handoffs. One `finalizeRun` operation loads binding from
+the run, writes the terminal WorkState—including bounded validation receipts
+already derived by the main runtime—and returns distinct facts:
 
 ```text
 run + immutable assistant message

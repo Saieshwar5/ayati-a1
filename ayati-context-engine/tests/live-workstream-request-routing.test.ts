@@ -304,7 +304,13 @@ function doneFinalization(
     streamSummary: summary,
     summary,
     validation: "passed",
-    workState: workState({ status: "done", summary, artifacts: outputPath ? [outputPath] : [] }),
+    workState: workState({
+      status: "done",
+      summary,
+      importantContext: outputPath
+        ? [{ kind: "artifact", value: "Verified learning lesson.", ref: outputPath }]
+        : [],
+    }),
     workstream: {
       completion: {
         accepted: true,

@@ -1,11 +1,15 @@
-import type { LoopState, ToolContextState, ToolObservation, WorkState } from "../types.js";
+import type { LoopState, ToolContextState, ToolObservation } from "../types.js";
 import type { RepairPromptCard } from "./repair-policy.js";
 import { buildPromptToolCallsForRun } from "./run-tool-call-context.js";
 import type { PromptToolCalls } from "./run-tool-call-context.js";
-import type { ToolLoadResult } from "./tool-working-set.js";
+import { buildPromptVerifiedOutcomes } from "./run-verified-outcome-context.js";
+import type { PromptVerifiedOutcomes } from "./run-verified-outcome-context.js";
+import type { CapabilitySurfaceResult } from "./capabilities/contracts.js";
 import { buildAgentContextPack } from "./context-pack.js";
 import { projectAgentPromptContext } from "./prompt-context.js";
 import { buildVirtualModeCard } from "./virtual-mode.js";
+import { getActiveFailures } from "./failure-lifecycle.js";
+import { hasMaterialWorkState } from "./work-state/selectors.js";
 import type {
   AgentPromptContext,
   PromptHarnessContext,
@@ -20,14 +24,14 @@ export interface PromptObservations {
   latest: ToolObservation[];
 }
 
-export interface PromptToolLoadState {
-  status: ToolLoadResult["status"];
-  requested: ToolLoadResult["requested"];
+export interface PromptCapabilitySurfaceState {
+  status: CapabilitySurfaceResult["status"];
+  requested: CapabilitySurfaceResult["requested"];
   loaded: string[];
   alreadyActive: string[];
   evicted: string[];
   missing: string[];
-  unavailable: ToolLoadResult["unavailable"];
+  unavailable: CapabilitySurfaceResult["unavailable"];
   message: string;
 }
 
@@ -58,7 +62,7 @@ export interface PromptTrace {
 
 export interface PromptWorkingFeedbackItem {
   severity: "info" | "warning" | "error";
-  source: "tool_load" | "tool_validation" | "tool_execution" | "verification";
+  source: "capability_surface" | "tool_validation" | "tool_execution" | "verification";
   code?: string;
   message: string;
   retryHint?: string;
@@ -73,7 +77,7 @@ export interface AgentStateView {
   context: AgentPromptContext;
   progress?: PromptProgressState;
   workingFeedback?: PromptWorkingFeedback;
-  toolLoad?: PromptToolLoadState;
+  capabilitySurface?: PromptCapabilitySurfaceState;
   observations?: PromptObservations;
   toolCalls?: PromptToolCalls;
   trace?: PromptTrace;
@@ -99,12 +103,16 @@ export interface AgentStateViewOptions {
 }
 
 export function buildAgentStateView(state: LoopState, options: AgentStateViewOptions = {}): AgentStateView {
-  const progress = buildProgressView(state.workState);
-  const toolLoad = buildToolLoadView(state.lastToolLoad);
+  const progress = buildProgressView(state);
+  const capabilitySurface = buildCapabilitySurfaceView(state.lastCapabilitySurface);
   const workingFeedback = buildWorkingFeedbackView(state);
   const observations = buildObservationsView(state.toolContext);
   const contextPack = buildAgentContextPack(state);
   const toolCalls = buildPromptToolCallsForRun(state.toolContext?.toolCalls);
+  const verifiedOutcomes = buildPromptVerifiedOutcomes({
+    runId: state.runId,
+    calls: state.toolContext?.toolCalls,
+  });
   const trace = buildTraceView(state);
   const attachments = buildAttachmentState(state);
   const systemEvent = state.systemEvent ? {
@@ -119,7 +127,7 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
     context: contextPack,
     tools: buildToolsContext({
       activeTools: options.activeTools,
-      toolLoad,
+      capabilitySurface,
     }),
     harness: buildHarnessContext({
       workingFeedback,
@@ -127,9 +135,11 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
     run: buildRunContext({
       mode: buildVirtualModeCard(state.virtualMode, {
         workstreamBound: state.harnessContext.contextEngine?.current.routing?.status === "bound",
+        hotContextAvailable: state.hotContext.available.length > 0,
       }),
       workState: progress,
       toolCalls,
+      verifiedOutcomes,
       contextPressure: buildContextPressureView(state),
     }),
   });
@@ -138,7 +148,7 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
     context,
     ...(progress ? { progress } : {}),
     ...(workingFeedback ? { workingFeedback } : {}),
-    ...(toolLoad ? { toolLoad } : {}),
+    ...(capabilitySurface ? { capabilitySurface } : {}),
     ...(observations ? { observations } : {}),
     ...(toolCalls ? { toolCalls } : {}),
     ...(trace ? { trace } : {}),
@@ -149,17 +159,17 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
 
 function buildToolsContext(input: {
   activeTools?: string[];
-  toolLoad?: PromptToolLoadState;
+  capabilitySurface?: PromptCapabilitySurfaceState;
 }): PromptToolsContext | undefined {
   const active = [...new Set(input.activeTools ?? [])]
     .map((tool) => tool.trim())
     .filter((tool) => tool.length > 0);
-  if (active.length === 0 && !input.toolLoad) {
+  if (active.length === 0 && !input.capabilitySurface) {
     return undefined;
   }
   return {
     active,
-    ...(input.toolLoad ? { lastLoad: input.toolLoad } : {}),
+    ...(input.capabilitySurface ? { lastSurface: input.capabilitySurface } : {}),
   };
 }
 
@@ -167,12 +177,16 @@ function buildRunContext(input: {
   mode: NonNullable<PromptRunContext["mode"]>;
   workState?: PromptProgressState;
   toolCalls?: PromptToolCalls;
+  verifiedOutcomes?: PromptVerifiedOutcomes;
   contextPressure?: PromptRunContext["contextPressure"];
 }): PromptRunContext {
   return {
     mode: input.mode,
     ...(input.workState ? { workState: input.workState } : {}),
     ...(input.toolCalls ? { toolCalls: input.toolCalls } : {}),
+    ...(input.verifiedOutcomes
+      ? { verifiedOutcomes: input.verifiedOutcomes }
+      : {}),
     ...(input.contextPressure ? { contextPressure: input.contextPressure } : {}),
   };
 }
@@ -213,12 +227,14 @@ function buildWorkingFeedbackView(state: LoopState): PromptWorkingFeedback | und
     latest.push(pendingTurnFeedback);
   }
 
-  const toolLoadFeedback = buildToolLoadWorkingFeedback(state.lastToolLoad);
-  if (toolLoadFeedback) {
-    latest.push(toolLoadFeedback);
+  const capabilitySurfaceFeedback = buildCapabilitySurfaceWorkingFeedback(
+    state.lastCapabilitySurface,
+  );
+  if (capabilitySurfaceFeedback) {
+    latest.push(capabilitySurfaceFeedback);
   }
 
-  for (const failure of state.failureHistory.slice(-3)) {
+  for (const failure of getActiveFailures(state.failureHistory).slice(-3)) {
     const repair = failure.repair;
     latest.push({
       severity: "error",
@@ -250,19 +266,21 @@ function buildPendingTurnWorkingFeedback(state: LoopState): PromptWorkingFeedbac
   return undefined;
 }
 
-function buildToolLoadWorkingFeedback(result: ToolLoadResult | undefined): PromptWorkingFeedbackItem | undefined {
+function buildCapabilitySurfaceWorkingFeedback(
+  result: CapabilitySurfaceResult | undefined,
+): PromptWorkingFeedbackItem | undefined {
   if (!result || ["loaded", "already_active", "not_needed"].includes(result.status)) {
     return undefined;
   }
   return {
     severity: result.status === "failed" ? "error" : "warning",
-    source: "tool_load",
+    source: "capability_surface",
     message: truncate(result.message, 360),
     retryHint: result.unavailable.some((entry) => entry.reason === "requires_workstream_binding")
-      ? "Use decision_transition_mode to enter resolve with the exact binding-required capability and evidence-backed target."
+      ? "Use decision_resolve_activate or decision_resolve_create with the exact binding-required capability and evidence-backed mutation scope."
       : result.missing.length > 0
-      ? `Requested capabilities were not available: ${compactList(result.missing, 5, 80).join(", ")}. Choose an exact group from the capability catalog.`
-      : "If the current capability surface is insufficient, use a bounded self-transition with different exact capability groups.",
+      ? `Requested capabilities were not available: ${compactList(result.missing, 5, 80).join(", ")}. Choose an exact id from the capability catalog.`
+      : "If the current capability surface is insufficient, use a bounded self-transition with different exact capability ids.",
   };
 }
 
@@ -292,17 +310,15 @@ function buildFailureRetryHint(failureType: LoopState["failureHistory"][number][
   return undefined;
 }
 
-function buildToolLoadView(result: ToolLoadResult | undefined): PromptToolLoadState | undefined {
+function buildCapabilitySurfaceView(
+  result: CapabilitySurfaceResult | undefined,
+): PromptCapabilitySurfaceState | undefined {
   if (!result) {
     return undefined;
   }
   return {
     status: result.status,
-    requested: {
-      ...(result.requested.query ? { query: truncate(result.requested.query, 240) } : {}),
-      toolNames: compactList(result.requested.toolNames, 12, 120),
-      groups: compactList(result.requested.groups, 12, 120),
-    },
+    requested: compactList(result.requested, 12, 120),
     loaded: compactList(result.loaded, 12, 120),
     alreadyActive: compactList(result.alreadyActive, 12, 120),
     evicted: compactList(result.evicted, 12, 120),
@@ -312,39 +328,42 @@ function buildToolLoadView(result: ToolLoadResult | undefined): PromptToolLoadSt
   };
 }
 
-function buildProgressView(workState: WorkState): PromptProgressState | undefined {
-  const summary = truncate(workState.summary, 500);
-  const openWork = compactList(workState.openWork, 5, 180);
-  const blockers = compactList(workState.blockers, 4, 180);
-  const verifiedFacts = compactList(workState.verifiedFacts, 6, 180);
-  const evidence = compactList(workState.evidence, 5, 180);
-  const artifacts = compactList(workState.artifacts, 6, 180);
-  const nextStep = workState.nextStep?.trim() ? truncate(workState.nextStep, 220) : undefined;
-  const userInputNeeded = workState.userInputNeeded?.trim() ? truncate(workState.userInputNeeded, 220) : undefined;
-  const hasUsefulState = workState.status !== "not_done"
-    || summary.length > 0
-    || openWork.length > 0
-    || blockers.length > 0
-    || verifiedFacts.length > 0
-    || evidence.length > 0
-    || artifacts.length > 0
-    || nextStep !== undefined
-    || userInputNeeded !== undefined;
-
-  if (!hasUsefulState) {
+function buildProgressView(state: LoopState): PromptProgressState | undefined {
+  const workState = state.workState;
+  if (
+    state.workStateRuntime.updateReason === "initial"
+    && !hasMaterialWorkState(workState)
+  ) {
     return undefined;
   }
+  const summary = truncate(workState.summary, 500);
+  const plan = workState.plan.slice(0, 12);
+  const importantContext = workState.importantContext.slice(0, 12);
+  const nextAction = workState.nextAction?.trim()
+    ? truncate(workState.nextAction, 320)
+    : undefined;
+  const workstream = state.harnessContext.contextEngine?.workstream;
 
   return {
     status: workState.status,
     ...(summary.length > 0 ? { summary } : {}),
-    ...(openWork.length > 0 ? { openWork } : {}),
-    ...(blockers.length > 0 ? { blockers } : {}),
-    ...(verifiedFacts.length > 0 ? { verifiedFacts } : {}),
-    ...(evidence.length > 0 ? { evidence } : {}),
-    ...(artifacts.length > 0 ? { artifacts } : {}),
-    ...(nextStep ? { nextStep } : {}),
-    ...(userInputNeeded ? { userInputNeeded } : {}),
+    ...(plan.length > 0 ? { plan } : {}),
+    ...(importantContext.length > 0 ? { importantContext } : {}),
+    ...(nextAction ? { nextAction } : {}),
+    ...(workstream
+      ? {
+          activeWorkstream: {
+            workstreamId: workstream.workstreamId,
+            title: workstream.title,
+            ...(workstream.currentRequest
+              ? {
+                  requestId: workstream.currentRequest.id,
+                  requestTitle: workstream.currentRequest.title,
+                }
+              : {}),
+          },
+        }
+      : {}),
   };
 }
 
@@ -396,7 +415,7 @@ function buildRecentStepTrace(state: LoopState): PromptTraceStep[] {
 }
 
 function buildRecentFailureTrace(state: LoopState): PromptTraceFailure[] {
-  return state.failureHistory.slice(-3).map((failure) => ({
+  return getActiveFailures(state.failureHistory).slice(-3).map((failure) => ({
     step: failure.step,
     failureType: failure.failureType,
     ...(failure.repairCode ? { code: failure.repairCode } : {}),

@@ -165,6 +165,8 @@ function checkpointMessages(
         "Use only the supplied previous checkpoint and exact messages; never invent facts.",
         "Every array item must cite the exact message sequence that supports it.",
         "Preserve requests, constraints, decisions, corrections, important facts, unresolved questions, and literal references.",
+        "Treat assistant responseKind and feedbackKind as exact relationship metadata. Preserve an unanswered feedback question under unresolvedQuestions.",
+        "Treat attachmentRefs as belonging only to their exact user-message sequence. Preserve important attachment identities under references.",
         "Do not include tool action logs, WorkState, workstream state, or personal memory.",
         `Keep the JSON within ${plan.estimatedCheckpointTokens} estimated tokens.`,
         "Return only the requested JSON object.",
@@ -184,6 +186,11 @@ function checkpointMessages(
           role: message.role,
           at: message.at,
           content: message.content,
+          ...(message.responseKind ? { responseKind: message.responseKind } : {}),
+          ...(message.feedbackKind ? { feedbackKind: message.feedbackKind } : {}),
+          ...(message.attachmentRefs && message.attachmentRefs.length > 0
+            ? { attachmentRefs: message.attachmentRefs }
+            : {}),
         })),
       }, null, 2),
     },

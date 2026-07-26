@@ -28,7 +28,7 @@ import { pulseTool } from "../skills/builtins/pulse/index.js";
 import { loadSystemEventPolicy } from "../ivec/system-event-policy.js";
 import { createMemoryRuntime } from "./memory-runtime.js";
 import { createContentRuntime } from "./content-runtime.js";
-import { appendSkillBlocks, createSkillRuntime } from "./skill-runtime.js";
+import { createSkillRuntime } from "./skill-runtime.js";
 import { loadAyatiRuntimeConfig } from "../config/runtime-config.js";
 import embeddingProvider from "../embeddings/runtime/index.js";
 import imageGenerationProvider from "../image-generation/runtime/index.js";
@@ -241,14 +241,11 @@ export async function main(): Promise<void> {
     workspaceOrchestrator: content.workspaceOrchestrator,
     config: runtimeConfig,
     contextEngineService: contextEngineService,
+    personalMemorySnapshot: (clientId) => memory.personalMemorySnapshotCache.getSnapshot(clientId),
   });
   const toolExecutor = createEvaluationToolExecutor(skills.toolExecutor);
 
-  staticContext = await loadStaticContext({
-    skillsProvider: skills.staticSkillsProvider,
-    toolDefinitions: skills.runtimeToolDefs,
-  });
-  appendSkillBlocks(staticContext, skills.additionalSkills);
+  staticContext = await loadStaticContext();
   const chatContextRuntime = contextEngineRuntime;
   const systemEventContextRuntime = contextEngineRuntime;
   const chatTurnRuntime = createChatTurnRuntime({
@@ -261,8 +258,8 @@ export async function main(): Promise<void> {
     provider,
     staticContext,
     toolExecutor,
-    skillActivationManager: skills.skillActivationManager,
-    toolWorkingSetManager: skills.toolWorkingSetManager,
+    capabilitySurfaceManager: skills.capabilitySurfaceManager,
+    hotContextRuntime: skills.hotContextRuntime,
     dataDir: resolve(projectRoot, "data"),
     documentStore: content.documentStore,
     preparedAttachmentRegistry: content.preparedAttachmentRegistry,
@@ -272,7 +269,6 @@ export async function main(): Promise<void> {
     feedbackLedger,
     chatContextRuntime,
     contextEngineService,
-    personalMemorySnapshot: (clientId) => memory.personalMemorySnapshotCache.getSnapshot(clientId),
   });
   const systemEventRuntime = createSystemEventRuntime({
     onReply: (clientId, data) => {
@@ -283,8 +279,8 @@ export async function main(): Promise<void> {
     provider,
     staticContext,
     toolExecutor,
-    skillActivationManager: skills.skillActivationManager,
-    toolWorkingSetManager: skills.toolWorkingSetManager,
+    capabilitySurfaceManager: skills.capabilitySurfaceManager,
+    hotContextRuntime: skills.hotContextRuntime,
     systemEventContextRuntime,
     contextEngineService,
     dataDir: resolve(projectRoot, "data"),
@@ -295,7 +291,6 @@ export async function main(): Promise<void> {
     systemEventPolicy,
     loopConfig: runtimeConfig.agent.loopConfig,
     feedbackLedger,
-    personalMemorySnapshot: (clientId) => memory.personalMemorySnapshotCache.getSnapshot(clientId),
   });
 
   const uploadServer = new UploadServer({

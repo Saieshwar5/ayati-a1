@@ -5,29 +5,80 @@ import {
   collectVirtualModeTargetEvidence,
   directResponseRepair,
   dispatchVirtualModeTransition,
-  dispatchVirtualValidation,
 } from "../../src/ivec/agent-runner/virtual-mode-runtime.js";
 import {
   createEntryVirtualModeState,
   type ModeTransitionRequest,
 } from "../../src/ivec/agent-runner/virtual-mode.js";
+import { findUnverifiedVirtualModeTargets } from "../../src/ivec/agent-runner/virtual-mode-targets.js";
+import { buildRecentFilesHotContextEntry } from "../../src/ivec/hot-context/index.js";
+import { CapabilitySurfaceManager } from "../../src/ivec/agent-runner/capabilities/surface-manager.js";
+import { ToolRegistry } from "../../src/ivec/agent-runner/capabilities/registry.js";
 import { deriveTurnMutationConstraints } from "../../src/ivec/agent-runner/turn-intent-policy.js";
+import { buildFinalFeedbackWarnings } from "../../src/ivec/agent-runner/runner-feedback.js";
 import type { LoopState } from "../../src/ivec/types.js";
-import { isObservationalTool } from "../../src/skills/tool-taxonomy.js";
+import { createToolExecutor } from "../../src/skills/tool-executor.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
 import { contextEngineFixture } from "../fixtures/agent-context.js";
 
 const READ_TOOL = tool("read_files");
+const INSPECT_TOOL = tool("inspect_paths");
 const FIND_TOOL = tool("find_files");
 const SEARCH_TOOL = tool("search_in_files");
 const PATCH_TOOL = tool("patch_files");
 const WRITE_TOOL = tool("write_files");
+const CREATE_TOOL = tool("create_directory");
+const SYSTEM_TIME_TOOL = tool("system_time");
+const SYSTEM_HEALTH_TOOL = tool("system_health");
+const READ_TOOLS = [INSPECT_TOOL, READ_TOOL];
+const WRITE_TOOLS = [CREATE_TOOL, WRITE_TOOL, PATCH_TOOL];
 
 describe("virtual mode runtime", () => {
-  it("builds a compact exact capability catalog without a working-set manager", () => {
-    expect(buildVirtualCapabilitySummary([READ_TOOL, WRITE_TOOL])).toBe(
-      "Available capability groups: file:create, file:read, file:refactor, file:verify, file:write.",
+  it("builds a compact exact capability catalog without an inferred selector", () => {
+    expect(buildVirtualCapabilitySummary([...READ_TOOLS, ...WRITE_TOOLS])).toBe(
+      [
+        "- file:read: Inspect exact paths and read file contents.",
+        "- file:write: Create directories and write or patch files.",
+        "- task:validation: Check important verified current-run responsibility outcomes before the final response.",
+      ].join("\n"),
     );
+  });
+
+  it("accepts a canonical capability advertised by the explicit catalog", async () => {
+    const tools = READ_TOOLS;
+    const manager = new CapabilitySurfaceManager({
+      registry: new ToolRegistry(tools),
+      toolExecutor: createToolExecutor([]),
+      validateCoverage: false,
+    });
+    const current = state("Read /tmp/known.md and summarize it.");
+
+    expect(manager.getCapabilitySummary(current, { runId: current.runId })).toContain(
+      "- file:read: Inspect exact paths and read file contents.",
+    );
+    const result = await dispatchVirtualModeTransition({
+      state: current,
+      request: {
+        to: "observe.investigate",
+        purpose: "Read the exact requested file.",
+        capabilities: ["file:read"],
+        targets: ["/tmp/known.md"],
+      },
+      iteration: 1,
+      toolDefinitions: [],
+      capabilitySurfaceManager: manager,
+      toolContext: { runId: current.runId, stepNumber: 1 },
+      bindingAlreadyAttempted: false,
+      applyContext(context) {
+        current.harnessContext.contextEngine = context;
+      },
+    });
+
+    expect(result).toMatchObject({
+      kind: "applied",
+      active: "observe.investigate",
+      toolNames: ["inspect_paths", "read_files"],
+    });
   });
 
   it("accepts exact current-input targets and rejects invented investigation targets", async () => {
@@ -37,7 +88,7 @@ describe("virtual mode runtime", () => {
       purpose: "Read the exact requested file.",
       capabilities: ["file:read"],
       targets: ["/tmp/known.md"],
-    }, [READ_TOOL]);
+    }, READ_TOOLS);
     expect(accepted).toMatchObject({ kind: "applied", active: "observe.investigate" });
 
     const invented = await transition(state("Read /tmp/known.md and summarize it."), {
@@ -45,7 +96,7 @@ describe("virtual mode runtime", () => {
       purpose: "Read an invented file.",
       capabilities: ["file:read"],
       targets: ["/tmp/invented.md"],
-    }, [READ_TOOL]);
+    }, READ_TOOLS);
     expect(invented).toMatchObject({
       kind: "rejected",
       repair: {
@@ -55,11 +106,218 @@ describe("virtual mode runtime", () => {
     });
   });
 
+  it("allows targetless system observations while retaining targets for file reads", async () => {
+    const time = await transition(state("What time is it?"), {
+      to: "observe.investigate",
+      purpose: "Observe the current configured time.",
+      capabilities: ["system:time"],
+    }, [SYSTEM_TIME_TOOL]);
+    expect(time).toMatchObject({
+      kind: "applied",
+      active: "observe.investigate",
+      toolNames: ["system_time"],
+    });
+
+    const health = await transition(state("Is the machine healthy?"), {
+      to: "observe.investigate",
+      purpose: "Observe current local system health.",
+      capabilities: ["system:health"],
+    }, [SYSTEM_HEALTH_TOOL]);
+    expect(health).toMatchObject({
+      kind: "applied",
+      active: "observe.investigate",
+      toolNames: ["system_health"],
+    });
+
+    const fileWithoutReference = await transition(
+      state("Read the relevant file."),
+      {
+        to: "observe.investigate",
+        purpose: "Read an exact file.",
+        capabilities: ["file:read"],
+      },
+      READ_TOOLS,
+    );
+    expect(fileWithoutReference).toMatchObject({
+      kind: "rejected",
+      repair: { code: "MODE_TARGET_REQUIRED" },
+    });
+
+    const mixedWithoutReference = await transition(
+      state("Read the file and tell me the time."),
+      {
+        to: "observe.investigate",
+        purpose: "Read a file and observe current time.",
+        capabilities: ["system:time", "file:read"],
+      },
+      [...READ_TOOLS, SYSTEM_TIME_TOOL],
+    );
+    expect(mixedWithoutReference).toMatchObject({
+      kind: "rejected",
+      repair: { code: "MODE_TARGET_REQUIRED" },
+    });
+  });
+
+  it("rejects context retrieval when no unloaded Hot Context is available", async () => {
+    const current = state("Continue.");
+    const result = await transition(current, {
+      to: "context.retrieve",
+      purpose: "Load optional personal context.",
+      capabilities: ["context:load"],
+    }, [tool("context_load")]);
+
+    expect(result).toMatchObject({
+      kind: "rejected",
+      repair: {
+        code: "MODE_NO_PROGRESS",
+        message: "No unloaded Hot Context entry is currently available.",
+      },
+    });
+  });
+
+  it("enters proof-only validation and passes from verified current-run read evidence", async () => {
+    const current = observationState();
+    current.workState.status = "done";
+    current.toolContext = {
+      recent: [],
+      toolCalls: [{
+        step: 1,
+        callId: "read-known",
+        tool: "read_files",
+        input: { files: [{ path: "/tmp/known.md" }] },
+        status: "success",
+        output: "known contents",
+        verificationPassed: true,
+        completionEvidence: [{
+          kind: "file_read",
+          path: "/tmp/known.md",
+          requestedPath: "/tmp/known.md",
+          coverage: "complete",
+          contentAvailable: true,
+          change: "observed",
+          tool: "read_files",
+          step: 1,
+          callId: "read-known",
+        }],
+      }],
+    };
+    const result = await transition(current, {
+      to: "validation",
+      purpose: "Check completion proof for the important requested file.",
+      capabilities: ["task:validation"],
+      validationChecks: [{
+        kind: "file.read_complete",
+        subject: "/tmp/known.md",
+        expectedKind: "file",
+      }],
+    }, []);
+
+    expect(result).toMatchObject({
+      kind: "applied",
+      active: "validation",
+      toolNames: [],
+    });
+    expect(current.virtualMode).toMatchObject({
+      active: "validation",
+      validation: {
+        returnMode: "observe.investigate",
+        status: "passed",
+        checks: [{
+          kind: "file.read_complete",
+          subject: "/tmp/known.md",
+          expectedKind: "file",
+          status: "passed",
+          satisfiedBy: {
+            step: 1,
+            callId: "read-known",
+            tool: "read_files",
+          },
+        }],
+      },
+    });
+    expect(directResponseRepair(current)).toBeUndefined();
+
+    current.workState.status = "in_progress";
+    current.workState.plan = [{
+      id: "confirm-summary",
+      task: "Confirm the requested summary is complete.",
+      status: "active",
+    }];
+    expect(directResponseRepair(current)).toMatchObject({
+      code: "VALIDATION_REJECTED",
+      blockedTargets: ["Confirm the requested summary is complete."],
+    });
+  });
+
+  it("requires absolute filesystem references in typed mode requests", async () => {
+    const result = await transition(state("Read /tmp/known.md and summarize it."), {
+      to: "observe.investigate",
+      purpose: "Read the requested file.",
+      capabilities: ["file:read"],
+      references: [{ kind: "filesystem", path: "known.md" }],
+    }, READ_TOOLS);
+
+    expect(result).toMatchObject({
+      kind: "rejected",
+      repair: {
+        code: "MODE_INPUT_INVALID",
+        blockedTargets: ["known.md"],
+      },
+    });
+  });
+
+  it("allows descendants of an admitted directory but rejects siblings", async () => {
+    const current = state("Inspect the attached website directory.");
+    current.harnessContext.contextEngine!.ingressResources = [{
+      resourceId: "RES-111111111111111111111111",
+      kind: "directory",
+      origin: "user_attachment",
+      displayName: "website",
+      description: "Attached website directory",
+      aliases: [],
+      locator: { kind: "filesystem", path: "/tmp/authorized-site" },
+      version: {
+        key: "directory:website",
+        observedAt: "2026-07-22T12:00:00.000Z",
+        exists: true,
+        kind: "directory",
+        entryCount: 0,
+      },
+      availability: "available",
+      metadataStatus: "enriched",
+      createdAt: "2026-07-22T12:00:00.000Z",
+      updatedAt: "2026-07-22T12:00:00.000Z",
+    }];
+
+    await expect(transition(current, {
+      to: "observe.investigate",
+      purpose: "Inspect a child in the admitted directory.",
+      capabilities: ["file:read"],
+      references: [{ kind: "filesystem", path: "/tmp/authorized-site/index.html" }],
+    }, READ_TOOLS)).resolves.toMatchObject({ kind: "applied" });
+
+    const sibling = state("Inspect the attached website directory.");
+    sibling.harnessContext.contextEngine!.ingressResources = current.harnessContext.contextEngine!.ingressResources;
+    await expect(transition(sibling, {
+      to: "observe.investigate",
+      purpose: "Inspect a sibling outside the admitted directory.",
+      capabilities: ["file:read"],
+      references: [{ kind: "filesystem", path: "/tmp/authorized-site-other/index.html" }],
+    }, READ_TOOLS)).resolves.toMatchObject({
+      kind: "rejected",
+      repair: {
+        code: "MODE_TARGET_UNVERIFIED",
+        blockedTargets: ["/tmp/authorized-site-other/index.html"],
+      },
+    });
+  });
+
   it("allows successful locate evidence to ground a later investigation target", async () => {
     const current = state("Find the requested notes file in the workspace.");
     current.virtualMode = {
       active: "observe.locate",
       revision: 1,
+      operational: true,
       purpose: "Find the notes file.",
       capabilities: ["file:search"],
       targets: [],
@@ -84,26 +342,95 @@ describe("virtual mode runtime", () => {
       purpose: "Read the located notes file.",
       capabilities: ["file:read"],
       targets: ["/tmp/discovered-notes.md"],
-    }, [READ_TOOL])).resolves.toMatchObject({
+    }, READ_TOOLS)).resolves.toMatchObject({
       kind: "applied",
       active: "observe.investigate",
     });
   });
 
-  it("filters mixed capabilities to read-only tools in observation modes", async () => {
+  it("uses loaded recent-file metadata only to ground read-only investigation", async () => {
+    const path = "/tmp/archive/lumen-garden-field-brief.txt";
+    const current = state("What else did that same file say?");
+    const entry = buildRecentFilesHotContextEntry([{
+      name: "lumen-garden-field-brief.txt",
+      path,
+      lastReadAt: "2026-07-25T08:21:08.000Z",
+      evidenceRef: "run:RUN-OLD:step:2:call:call-read",
+      coverage: "complete",
+      status: "navigation_only",
+      requestSeq: 19,
+      responseSeq: 20,
+    }])!;
+    current.hotContext = {
+      available: [],
+      loaded: [{ ...entry, mountedAtStep: 0 }],
+      budget: {
+        maxMountedTokens: 8_000,
+        mountedTokens: entry.estimatedTokens,
+      },
+    };
+
+    expect(collectVirtualModeTargetEvidence(current)).not.toContain(path);
+    await expect(findUnverifiedVirtualModeTargets(current, [path]))
+      .resolves.toEqual([path]);
+    await expect(findUnverifiedVirtualModeTargets(current, [path], {
+      includeRecentFileNavigation: true,
+    })).resolves.toEqual([]);
+    await expect(transition(current, {
+      to: "observe.investigate",
+      purpose: "Read the exact recent file again for current contents.",
+      capabilities: ["file:read"],
+      references: [{ kind: "filesystem", path }],
+    }, READ_TOOLS)).resolves.toMatchObject({
+      kind: "applied",
+      active: "observe.investigate",
+    });
+    expect(current.virtualMode.targets).toEqual([path]);
+  });
+
+  it("uses an always-visible active-document pointer only to ground read-only investigation", async () => {
+    const path = "/tmp/archive/active-field-brief.txt";
+    const current = state("What else did that same file say?");
+    current.harnessContext.contextEngine!.agentStream.recentFiles = [{
+      name: "active-field-brief.txt",
+      path,
+      lastReadAt: "2026-07-26T08:21:08.000Z",
+      evidenceRef: "run:RUN-OLD:step:2:call:call-read",
+      coverage: "complete",
+      status: "navigation_only",
+      requestSeq: 19,
+      responseSeq: 20,
+    }];
+
+    expect(collectVirtualModeTargetEvidence(current)).not.toContain(path);
+    await expect(findUnverifiedVirtualModeTargets(current, [path]))
+      .resolves.toEqual([path]);
+    await expect(findUnverifiedVirtualModeTargets(current, [path], {
+      includeRecentFileNavigation: true,
+    })).resolves.toEqual([]);
+    await expect(transition(current, {
+      to: "observe.investigate",
+      purpose: "Read the active document again for current contents.",
+      capabilities: ["file:read"],
+      references: [{ kind: "filesystem", path }],
+    }, READ_TOOLS)).resolves.toMatchObject({
+      kind: "applied",
+      active: "observe.investigate",
+    });
+  });
+
+  it("rejects a mutation capability in an observation mode", async () => {
     const current = state("Find config.ts before changing it.");
     const result = await transition(current, {
       to: "observe.locate",
       purpose: "Locate the configuration source.",
-      capabilities: ["file:refactor"],
-    }, [FIND_TOOL, SEARCH_TOOL, READ_TOOL, PATCH_TOOL, WRITE_TOOL]);
+      capabilities: ["file:write"],
+    }, [FIND_TOOL, SEARCH_TOOL, ...READ_TOOLS, ...WRITE_TOOLS]);
 
-    expect(result.kind).toBe("applied");
-    if (result.kind !== "applied") return;
-    expect(result.toolNames).toEqual(expect.arrayContaining(["find_files", "search_in_files", "read_files"]));
-    expect(result.toolNames.every(isObservationalTool)).toBe(true);
-    expect(result.toolNames).not.toContain("patch_files");
-    expect(result.toolNames).not.toContain("write_files");
+    expect(result).toMatchObject({
+      kind: "rejected",
+      repair: { code: "MODE_CAPABILITY_FORBIDDEN" },
+    });
   });
 
   it("requires mutation intent and a binding-required capability at resolve", async () => {
@@ -112,7 +439,7 @@ describe("virtual mode runtime", () => {
       purpose: "Try to write despite the read-only request.",
       capabilities: ["file:write"],
       targets: ["/tmp/output.txt"],
-    }, [WRITE_TOOL]);
+    }, WRITE_TOOLS);
     expect(readOnly).toMatchObject({
       kind: "rejected",
       repair: { code: "MODE_MUTATION_INTENT_REQUIRED" },
@@ -123,10 +450,10 @@ describe("virtual mode runtime", () => {
       purpose: "Resolve with a read-only capability.",
       capabilities: ["file:read"],
       targets: ["/tmp/output.txt"],
-    }, [READ_TOOL]);
+    }, READ_TOOLS);
     expect(observationalCapability).toMatchObject({
       kind: "rejected",
-      repair: { code: "MODE_BINDING_REQUIRED" },
+      repair: { code: "MODE_CAPABILITY_FORBIDDEN" },
     });
   });
 
@@ -178,7 +505,7 @@ describe("virtual mode runtime", () => {
         },
       },
       iteration: 1,
-      toolDefinitions: [WRITE_TOOL],
+      toolDefinitions: WRITE_TOOLS,
       toolContext: { runId: "RUN-1", stepNumber: 1 },
       workstreamBinding: coordinator,
       bindingAlreadyAttempted: false,
@@ -190,7 +517,7 @@ describe("virtual mode runtime", () => {
     expect(result).toMatchObject({
       kind: "resolved",
       active: "execute",
-      toolNames: ["write_files"],
+      toolNames: ["create_directory", "write_files", "patch_files"],
     });
     expect(coordinator.bind).toHaveBeenCalledOnce();
     expect(current.virtualMode).toMatchObject({
@@ -206,121 +533,39 @@ describe("virtual mode runtime", () => {
     current.harnessContext.contextEngine = boundContext(current.harnessContext.contextEngine!);
 
     const result = await transition(current, {
-      to: "resolve",
-      purpose: "Use the existing authoritative binding before updating the file.",
+      to: "execute",
+      purpose: "Use the existing authoritative binding to update the file.",
       capabilities: ["file:write"],
       targets: ["/tmp/output.txt"],
-    }, [WRITE_TOOL]);
+    }, WRITE_TOOLS);
 
     expect(result).toMatchObject({
-      kind: "resolved",
+      kind: "applied",
       active: "execute",
-      binding: { kind: "not_required", attempted: false },
-      toolNames: ["write_files"],
+      toolNames: ["create_directory", "write_files", "patch_files"],
     });
     expect(current.virtualMode.active).toBe("execute");
   });
 
-  it("preserves mode and WorkState when validation is rejected", async () => {
-    const current = observationState();
-    const beforeMode = structuredClone(current.virtualMode);
-    const beforeWorkState = structuredClone(current.workState);
-
-    const result = await dispatchVirtualValidation(current, {
-      outcome: "completed",
-      summary: "Claimed completion without evidence.",
-      response: "The file says hello.",
-    });
-
-    expect(result).toMatchObject({
-      accepted: false,
-      repair: { code: "VALIDATION_EVIDENCE_MISSING" },
-    });
-    expect(current.virtualMode).toEqual(beforeMode);
-    expect(current.workState).toEqual(beforeWorkState);
-  });
-
-  it("accepts evidence-backed completed, needs-input, blocked, and failed outcomes", async () => {
-    const completed = observationState();
-    completed.completedSteps.push(successfulReadStep());
-    await expect(dispatchVirtualValidation(completed, {
-      outcome: "completed",
-      summary: "Read the requested file.",
-      response: "The file contains the verified value.",
-    })).resolves.toMatchObject({
-      accepted: true,
-      outcome: "completed",
-      nextWorkState: { status: "done" },
-    });
-
-    const needsInput = state("Find the requested configuration.");
-    needsInput.virtualMode = {
-      active: "observe.locate",
-      revision: 1,
-      purpose: "Locate the configuration.",
-      capabilities: ["file:search"],
-      targets: [],
-    };
-    await expect(dispatchVirtualValidation(needsInput, {
-      outcome: "needs_user_input",
-      summary: "The target is ambiguous.",
-      response: "Which configuration file should I inspect?",
-    })).resolves.toMatchObject({
-      accepted: true,
-      outcome: "needs_user_input",
-      nextWorkState: { status: "needs_user_input" },
-    });
-
-    const blocked = observationState();
-    blocked.failureHistory.push({
-      step: 1,
-      failureType: "permission",
-      reason: "Permission denied.",
-      blockedTargets: ["/tmp/known.md"],
-    });
-    await expect(dispatchVirtualValidation(blocked, {
-      outcome: "blocked",
-      summary: "Access is blocked.",
-      response: "I cannot read the file without access.",
-    })).resolves.toMatchObject({
-      accepted: true,
-      outcome: "blocked",
-      nextWorkState: { status: "blocked" },
-    });
-
-    const failed = observationState();
-    failed.failureHistory.push({
-      step: 1,
-      failureType: "tool_error",
-      reason: "Read failed.",
-      blockedTargets: ["/tmp/known.md"],
-    });
-    await expect(dispatchVirtualValidation(failed, {
-      outcome: "failed",
-      summary: "The read failed.",
-      response: "I could not read the requested file.",
-    })).resolves.toMatchObject({
-      accepted: true,
-      outcome: "failed",
-      nextWorkState: { status: "not_done" },
-    });
-  });
-
-  it("allows tool-free conversation while guarding explicit unperformed work", () => {
+  it("allows every direct ENTRY reply while preserving the active-graph validation gate", () => {
     expect(directResponseRepair(state("Hello!"))).toBeUndefined();
     expect(directResponseRepair(state("What is Newton's first law?"))).toBeUndefined();
     expect(directResponseRepair(state("What is a file descriptor?"))).toBeUndefined();
     expect(directResponseRepair(state("How do I create a file in TypeScript?"))).toBeUndefined();
     expect(directResponseRepair(state("Where is France?"))).toBeUndefined();
-    expect(directResponseRepair(state("Where is upload handling?"))).toMatchObject({
-      code: "DIRECT_RESPONSE_REQUIRES_MODE",
-    });
-    expect(directResponseRepair(state("Read /tmp/known.md."))).toMatchObject({
-      code: "DIRECT_RESPONSE_REQUIRES_MODE",
-    });
-    expect(directResponseRepair(state("Create /tmp/output.txt."))).toMatchObject({
-      code: "DIRECT_RESPONSE_REQUIRES_MODE",
-    });
+    expect(directResponseRepair(state("Where is upload handling?"))).toBeUndefined();
+    expect(directResponseRepair(state("Read /tmp/known.md."))).toBeUndefined();
+    expect(directResponseRepair(state("Create /tmp/output.txt."))).toBeUndefined();
+    expect(directResponseRepair(state(
+      "Read exactly one of the two release-notes.txt files and tell me its coordinator.",
+    ))).toBeUndefined();
+    expect(buildFinalFeedbackWarnings({
+      status: "completed",
+      totalToolCalls: 0,
+      modeTransitionCount: 0,
+      failedVerificationCount: 0,
+      state: state("Read exactly one of the two release-notes.txt files."),
+    })).toEqual([]);
 
     const active = observationState();
     expect(directResponseRepair(active)).toMatchObject({
@@ -334,11 +579,25 @@ describe("virtual mode runtime", () => {
       observationalOnly: true,
       mutationRequested: false,
       observationRequested: true,
+      scopePolicy: {
+        allowedScopes: [],
+        denyOutsideAllowedScopes: false,
+      },
     });
     expect(deriveTurnMutationConstraints("Read the file, then edit the heading.")).toMatchObject({
       mutationForbidden: false,
       mutationRequested: true,
       observationRequested: true,
+    });
+    expect(deriveTurnMutationConstraints(
+      "Build the website in /tmp/site. Do not modify anything outside /tmp/site.",
+    )).toMatchObject({
+      mutationForbidden: false,
+      mutationRequested: true,
+      scopePolicy: {
+        allowedScopes: ["/tmp/site"],
+        denyOutsideAllowedScopes: true,
+      },
     });
   });
 });
@@ -380,10 +639,15 @@ function state(message: string): LoopState {
     inputKind: "user_message",
     userMessage: message,
     workState: {
-      status: "not_done",
-      summary: "",
-      verifiedFacts: [],
-      evidence: [],
+      status: "in_progress",
+      summary: "Run started.",
+      plan: [],
+      importantContext: [],
+    },
+    workStateRuntime: {
+      revision: 0,
+      afterStep: 0,
+      updateReason: "initial",
     },
     status: "running",
     finalOutput: "",
@@ -394,8 +658,12 @@ function state(message: string): LoopState {
     runPath: "",
     failureHistory: [],
     virtualMode: createEntryVirtualModeState(),
+    hotContext: {
+      available: [],
+      loaded: [],
+      budget: { maxMountedTokens: 8_000, mountedTokens: 0 },
+    },
     harnessContext: {
-      personalMemorySnapshot: "",
       contextEngine: {
         ...contextEngine,
         current: {
@@ -413,27 +681,13 @@ function observationState(): LoopState {
   current.virtualMode = {
     active: "observe.investigate",
     revision: 1,
+    operational: true,
     purpose: "Read the exact file.",
     capabilities: ["file:read"],
     targets: ["/tmp/known.md"],
     enteredAtIteration: 1,
   };
   return current;
-}
-
-function successfulReadStep(): LoopState["completedSteps"][number] {
-  return {
-    step: 1,
-    outcome: "success",
-    summary: "Read /tmp/known.md.",
-    newFacts: ["The file contains the verified value."],
-    artifacts: [],
-    toolsUsed: ["read_files"],
-    toolSuccessCount: 1,
-    toolFailureCount: 0,
-    expectationCheckStatus: "passed",
-    validationStatus: "passed",
-  };
 }
 
 function boundContext(context: ContextEngineMachineContext): ContextEngineMachineContext {

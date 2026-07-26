@@ -22,7 +22,6 @@ import {
   recognizeCommittedWorkstreamContextPlan,
 } from "../git/workstream-context-transaction.js";
 import { appendStreamMessage, readRunMessages } from "../repositories/message-records.js";
-import { readReusableObservationProjection } from "../repositories/reusable-observation-records.js";
 import {
   finalizeRunRecord,
   markRunRecoveryRequired,
@@ -38,6 +37,7 @@ import {
   type WorkstreamFinalizationRecord,
 } from "../repositories/workstream-finalization-records.js";
 import { readResourceEventsForRun } from "../repositories/resource-records.js";
+import { resolveAssistantResponseMetadata } from "./assistant-response-metadata.js";
 import {
   readWorkstreamInitialization,
   updateWorkstreamHead,
@@ -127,11 +127,13 @@ export class WorkstreamFinalizationService {
       now: input.at,
       execute: () => {
         if (input.assistantResponse) {
+          const responseMetadata = resolveAssistantResponseMetadata(input);
           appendStreamMessage(this.options.database, {
             streamId: prepared.run.streamId,
             runId: input.runId,
             role: "assistant",
             content: input.assistantResponse,
+            ...responseMetadata,
             at: input.at,
           });
         }
@@ -176,6 +178,7 @@ export class WorkstreamFinalizationService {
           runId: input.runId,
           afterStep: prepared.run.stepCount,
           state: input.workState,
+          reason: input.outcome === "done" ? "run_completed" : "run_paused",
           at: input.at,
         });
         return { runId: input.runId };
@@ -285,6 +288,7 @@ export class WorkstreamFinalizationService {
       runId: input.runId,
       revision: currentWorkState.revision + 1,
       afterStep: run.stepCount,
+      updateReason: input.outcome === "done" ? "run_completed" : "run_paused",
       updatedAt: input.at,
     };
     const reduced = reduceSimpleWorkstreamContext({
@@ -649,7 +653,6 @@ function response(
   return {
     run,
     ...(assistantMessage ? { assistantMessage } : {}),
-    observationRevision: readReusableObservationProjection(database, record.streamId).revision,
     resourceEffects: {
       status: record.resourceEvents.length > 0 ? "verified" : "none",
       events: record.resourceEvents.map((event) => ({

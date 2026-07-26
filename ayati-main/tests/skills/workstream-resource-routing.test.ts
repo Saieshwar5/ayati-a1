@@ -350,7 +350,6 @@ function activeContext(selected: boolean, userText = "Add the menu.") {
   return {
     contextRevision: "sha256:test",
     streamRevision: "sha256:stream",
-    observationRevision: "observations:empty",
     stream: {
       stream: {
         streamId: "S-1",
@@ -370,7 +369,8 @@ function activeContext(selected: boolean, userText = "Add the menu.") {
         runId: "RUN-1",
         at: NOW,
       }],
-      recentWork: [],
+      recentWorkstreams: [],
+      recentFiles: [],
       resources: { count: 1, recent: [resourceBinding().resource] },
     },
     run: {
@@ -393,15 +393,12 @@ function activeContext(selected: boolean, userText = "Add the menu.") {
         runId: "RUN-1",
         revision: 0,
         afterStep: 0,
-        status: "not_done" as const,
-        summary: "",
-        openWork: [],
-        blockers: [],
-        facts: [],
-        evidence: [],
-        artifacts: [],
-        nextStep: null,
-        userInputNeeded: [],
+        status: "in_progress" as const,
+        summary: "Run started.",
+        plan: [],
+        importantContext: [],
+        nextAction: null,
+        updateReason: "initial" as const,
         updatedAt: NOW,
       },
       steps: [],
@@ -409,7 +406,6 @@ function activeContext(selected: boolean, userText = "Add the menu.") {
     ...(selected ? { activeWorkstream: workstreamContext() } : {}),
     workstreamCandidates: [],
     ingressResources: [],
-    observations: { revision: "observations:empty", inventory: [], discovery: [], evidence: [] },
     warnings: [],
   };
 }

@@ -57,14 +57,10 @@ export class TurnPreparationService {
 
 function initialWorkState(): RunWorkStateInput {
   return {
-    status: "not_done",
+    status: "in_progress",
     summary: "Run started.",
-    openWork: [],
-    blockers: [],
-    facts: [],
-    evidence: [],
-    artifacts: [],
-    nextStep: null,
-    userInputNeeded: [],
+    plan: [],
+    importantContext: [],
+    nextAction: null,
   };
 }

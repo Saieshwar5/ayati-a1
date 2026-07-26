@@ -36,7 +36,8 @@ describe("workstream binding coordinator", () => {
 
     const result = await coordinator.bind({
       purpose: "Continue the exact workstream.",
-      targets: [WORKSTREAM_ID],
+      referenceTargets: [WORKSTREAM_ID],
+      mutationScopes: [],
       expectedContextRevision: "ctx:unbound",
       proposal: {
         kind: "activate",
@@ -93,7 +94,8 @@ describe("workstream binding coordinator", () => {
 
     const result = await coordinator.bind({
       purpose: "Bind website ownership.",
-      targets: ["website"],
+      referenceTargets: ["website"],
+      mutationScopes: [],
       expectedContextRevision: "ctx:unbound",
       proposal: {
         kind: "create",
@@ -113,9 +115,220 @@ describe("workstream binding coordinator", () => {
     expect(result).toMatchObject({
       status: "needs_user_input",
       candidateIds: [WORKSTREAM_ID],
-      question: expect.stringContaining(WORKSTREAM_ID),
+      question: expect.stringContaining("new independent workstream"),
     });
     expect(createWorkstreamForRun).not.toHaveBeenCalled();
+  });
+
+  it("honors an explicit create-new choice and never promotes references into mutation scope", async () => {
+    const findWorkstreams = vi.fn(async () => ({ workstreams: [candidate("definite")] }));
+    const inspectResourceForRun = vi.fn(async () => ({
+      mutationEligible: true,
+      resource: { resourceId: "RES-0123456789ABCDEF01234567" },
+    }));
+    const createWorkstreamForRun = vi.fn(async () => ({
+      run: {
+        runId: "RUN-1",
+        streamId: "S-1",
+        workstreamBinding: {
+          workstreamId: WORKSTREAM_ID,
+          requestId: "R-0001",
+          boundAt: NOW,
+        },
+      },
+    }));
+    const service = {
+      getAgentContext: vi.fn()
+        .mockResolvedValueOnce(agentContext(false))
+        .mockResolvedValueOnce(agentContext(true)),
+      findWorkstreams,
+      inspectResourceForRun,
+      createWorkstreamForRun,
+    } as unknown as ContextEngineService;
+    const coordinator = createWorkstreamBindingCoordinator({
+      service,
+      runId: "RUN-1",
+      streamId: "S-1",
+      currentInput: "Create a new independent workstream for this website.",
+      now: () => new Date(NOW),
+    });
+
+    const result = await coordinator.bind({
+      purpose: "Create independent website ownership.",
+      referenceTargets: ["/tmp/requirements.md"],
+      mutationScopes: ["/tmp/site"],
+      expectedContextRevision: "ctx:unbound",
+      proposal: {
+        kind: "create",
+        title: "Independent website",
+        objective: "Build the website independently.",
+        initialRequest: {
+          title: "Build website",
+          request: "Build the website in /tmp/site.",
+          acceptance: ["The website is verified."],
+          constraints: ["Do not modify anything outside /tmp/site."],
+        },
+        resources: [],
+        evidence: ["run:RUN-1:step:1:call:find-owner"],
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "resolved",
+      kind: "created_workstream",
+    });
+    expect(findWorkstreams).not.toHaveBeenCalled();
+    expect(inspectResourceForRun).toHaveBeenCalledOnce();
+    expect(inspectResourceForRun).toHaveBeenCalledWith(expect.objectContaining({
+      locator: { kind: "filesystem", path: "/tmp/site" },
+    }));
+    expect(inspectResourceForRun).not.toHaveBeenCalledWith(expect.objectContaining({
+      locator: { kind: "filesystem", path: "/tmp/requirements.md" },
+    }));
+  });
+
+  it("rechecks and binds a typed mutation resource without model-built binding details", async () => {
+    const resourceId = "RES-ABCDEF0123456789ABCDEF01";
+    const createWorkstreamForRun = vi.fn(async () => ({
+      run: {
+        runId: "RUN-1",
+        streamId: "S-1",
+        workstreamBinding: {
+          workstreamId: WORKSTREAM_ID,
+          requestId: "R-0001",
+          boundAt: NOW,
+        },
+      },
+    }));
+    const service = {
+      getAgentContext: vi.fn()
+        .mockResolvedValueOnce(agentContext(false))
+        .mockResolvedValueOnce(agentContext(true)),
+      findResources: vi.fn(async () => ({
+        resources: [{
+          resource: {
+            resourceId,
+            availability: "available",
+          },
+          workstreamIds: [],
+          roles: [],
+        }],
+      })),
+      createWorkstreamForRun,
+    } as unknown as ContextEngineService;
+    const coordinator = createWorkstreamBindingCoordinator({
+      service,
+      runId: "RUN-1",
+      streamId: "S-1",
+      currentInput: "Create a new independent workstream for this resource.",
+      now: () => new Date(NOW),
+    });
+
+    const result = await coordinator.bind({
+      purpose: "Create independent resource ownership.",
+      referenceTargets: [],
+      mutationScopes: [resourceId],
+      expectedContextRevision: "ctx:unbound",
+      proposal: {
+        kind: "create",
+        title: "Independent resource work",
+        objective: "Update the requested resource.",
+        initialRequest: {
+          title: "Update resource",
+          request: "Update the requested resource.",
+          acceptance: ["The resource update is verified."],
+          constraints: [],
+        },
+        resources: [],
+        evidence: ["run:RUN-1:step:1:call:find-owner"],
+      },
+    });
+
+    expect(result).toMatchObject({ status: "resolved", kind: "created_workstream" });
+    expect(createWorkstreamForRun).toHaveBeenCalledWith(expect.objectContaining({
+      resources: [{
+        resourceId,
+        role: "primary",
+        access: "mutate",
+        primary: true,
+      }],
+    }));
+  });
+
+  it("carries a create-new answer across runs from the durable exact conversation", async () => {
+    const unbound = agentContext(false);
+    unbound.stream.recentMessages = [
+      ...unbound.stream.recentMessages,
+      {
+        messageId: "M-2",
+        streamId: "S-1",
+        sequence: 2,
+        role: "assistant",
+        content: "Should I create a new independent workstream, or use the existing match “Website”?",
+        responseKind: "feedback",
+        feedbackKind: "clarification",
+        runId: "RUN-PRIOR",
+        at: NOW,
+      },
+      {
+        messageId: "M-3",
+        streamId: "S-1",
+        sequence: 3,
+        role: "user",
+        content: "Use the new one.",
+        runId: "RUN-1",
+        at: NOW,
+      },
+    ];
+    const findWorkstreams = vi.fn(async () => ({ workstreams: [candidate("definite")] }));
+    const createWorkstreamForRun = vi.fn(async () => ({
+      run: {
+        runId: "RUN-1",
+        streamId: "S-1",
+        workstreamBinding: {
+          workstreamId: WORKSTREAM_ID,
+          requestId: "R-0001",
+          boundAt: NOW,
+        },
+      },
+    }));
+    const service = {
+      getAgentContext: vi.fn()
+        .mockResolvedValueOnce(unbound)
+        .mockResolvedValueOnce(agentContext(true)),
+      findWorkstreams,
+      createWorkstreamForRun,
+    } as unknown as ContextEngineService;
+    const coordinator = createWorkstreamBindingCoordinator({
+      service,
+      runId: "RUN-1",
+      streamId: "S-1",
+      currentInput: "Use the new one.",
+      now: () => new Date(NOW),
+    });
+
+    const result = await coordinator.bind({
+      purpose: "Apply the user's pending ownership choice.",
+      referenceTargets: [],
+      mutationScopes: [],
+      expectedContextRevision: "ctx:unbound",
+      proposal: {
+        kind: "create",
+        title: "New website",
+        objective: "Build the website in a separate workstream.",
+        initialRequest: {
+          title: "Build website",
+          request: "Build the website.",
+          acceptance: ["The website is verified."],
+          constraints: [],
+        },
+        resources: [],
+        evidence: ["run:RUN-1:step:1:call:find-owner"],
+      },
+    });
+
+    expect(result).toMatchObject({ status: "resolved", kind: "created_workstream" });
+    expect(findWorkstreams).not.toHaveBeenCalled();
   });
 
   it("fails before lifecycle mutation when the authoritative revision changed", async () => {
@@ -133,7 +346,8 @@ describe("workstream binding coordinator", () => {
 
     const result = await coordinator.bind({
       purpose: "Bind notes output.",
-      targets: ["notes.md"],
+      referenceTargets: ["notes.md"],
+      mutationScopes: [],
       expectedContextRevision: "ctx:stale",
       proposal: {
         kind: "create",
@@ -181,7 +395,6 @@ function agentContext(bound: boolean) {
   return {
     contextRevision: bound ? "ctx:bound" : "ctx:unbound",
     streamRevision: "stream:1",
-    observationRevision: "observations:empty",
     stream: {
       stream: {
         streamId: "S-1",
@@ -201,7 +414,8 @@ function agentContext(bound: boolean) {
         runId: "RUN-1",
         at: NOW,
       }],
-      recentWork: [],
+      recentWorkstreams: [],
+      recentFiles: [],
       resources: { count: 0, recent: [] },
     },
     run: {
@@ -226,15 +440,12 @@ function agentContext(bound: boolean) {
         runId: "RUN-1",
         revision: 1,
         afterStep: 1,
-        status: "not_done" as const,
-        summary: "",
-        openWork: [],
-        blockers: [],
-        facts: [],
-        evidence: [],
-        artifacts: [],
-        nextStep: null,
-        userInputNeeded: [],
+        status: "in_progress" as const,
+        summary: "Run started.",
+        plan: [],
+        importantContext: [],
+        nextAction: null,
+        updateReason: "initial" as const,
         updatedAt: NOW,
       },
       steps: [],
@@ -276,12 +487,6 @@ function agentContext(bound: boolean) {
       : {}),
     workstreamCandidates: [],
     ingressResources: [],
-    observations: {
-      revision: "observations:empty",
-      inventory: [],
-      discovery: [],
-      evidence: [],
-    },
     warnings: [],
   };
 }

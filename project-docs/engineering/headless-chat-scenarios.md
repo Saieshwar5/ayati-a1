@@ -56,7 +56,7 @@ alias for the unified latest report. Also inspect:
 - request files and `resources.json`;
 - context Git status and history;
 - real deliverables at resource locators;
-- reusable read context and restart/reopen behavior.
+- exact run-history retrieval and restart/reopen behavior.
 
 Success requires agreement among final text, feedback, SQLite, context Git, and
 real resources. A polished reply alone is insufficient.

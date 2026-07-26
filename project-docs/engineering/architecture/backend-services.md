@@ -9,13 +9,19 @@ Major backend services and stores:
   request, run, checkpoint, history, and context-projection operations.
 - `SqliteContextEngineService`: in-process owner of agent-stream continuity, the
   context catalog, workstream/resource selection, request lifecycle, run journals,
-  reusable observations, checkpoints, and Git finalization coordination.
+  checkpoints, and Git finalization coordination.
 - `PersonalMemoryStore`: canonical user memory storage for personalization.
-- `PersonalMemorySnapshotCache`: prompt-ready personal memory snapshots.
+- `PersonalMemorySnapshotCache`: rebuildable compact personal-memory source.
+- `HotContextRuntime`: typed optional-context catalog and bounded disposable
+  run mounts; loaded content is projected once into the next decision context.
 - `EpisodicMemoryIndexer`: indexes episodic records when embeddings are available.
 - `EpisodicMemoryRetriever`: semantic recall for past sessions.
-- `ToolCatalog`: hidden catalog of available built-in/runtime tools, groups, aliases, and deterministic follow-up metadata.
-- `ToolWorkingSetManager`: mounts a bounded run-scoped set of visible executable tool schemas for each decision.
+- `ToolRegistry`: canonical exact-name registry for every executable tool;
+  duplicate names and missing safety taxonomy fail startup.
+- `CapabilityCatalog`: explicit small responsibilities with core/optional
+  tools, allowed modes, and deterministic next-capability suggestions.
+- `CapabilitySurfaceManager`: filters capabilities by mode and authority, then
+  replaces the bounded run-scoped native tool surface.
 - `DocumentStore`: prepared-document compatibility storage.
 - `DocumentContextBackend`: document reads and retrieval for prepared text attachments.
 - `PreparedAttachmentService`: compatibility layer for document/dataset workflows.
@@ -25,7 +31,6 @@ Major backend services and stores:
 - `SystemIngressService`: normalizes and queues internal/external system events for daemon processing.
 - `SystemEventWorker`: processes queued system events through the engine.
 - `PluginRegistry`: starts and stops plugins.
-- `SkillActivationManager`: optional support for mounting skill-provided tools into the executor.
 
 Daemon-specific responsibilities:
 

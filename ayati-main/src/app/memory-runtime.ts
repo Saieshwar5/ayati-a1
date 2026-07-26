@@ -163,6 +163,9 @@ export function buildPersonalMemoryCheckpointPayload(
       timestamp: message.at,
       sessionPath,
       workRunId: message.runId,
+      ...(message.role === "assistant" && message.responseKind
+        ? { assistantResponseKind: message.responseKind }
+        : {}),
     })),
   };
 }

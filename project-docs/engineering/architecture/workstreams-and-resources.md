@@ -124,26 +124,17 @@ calls are normal main-run observation steps and produce routing evidence, not
 task-completion evidence. Direct mutation at `ENTRY` remains unavailable.
 
 The model then enters the transient `resolve` gate with exact
-binding-required capability groups, evidence-backed targets, and one typed
+binding-required capability ids, evidence-backed mutation scopes, and one typed
 proposal: activate an exact observed workstream or create a new one. The
 proposal cites exact current-run routing evidence references. The gate checks
 the proposal and uses Context Engine's atomic operations without making a
 model request.
 
-The main prompt keeps workstream state compact:
-
-```text
-context.work = {
-  candidates: WorkstreamCandidate[]       // zero to five; empty once bound
-  active?: {
-    workstreamId, title, objective, summary, currentRequest, resources, ...
-  }                                       // exactly one when bound
-}
-```
-
+The main prompt does not automatically include or advertise current workstream
+candidates. The model uses read-only workstream search/read capabilities when
+the current request requires discovery, continuation, or ownership resolution.
 Routing calls and their exact `evidenceRef` values remain in
-`context.run.toolCalls`. Authoritative selected workstream content arrives
-through the refreshed `context.work.active` projection.
+`context.run.toolCalls`.
 
 Candidate ordering is deterministic and explained. Exact identity, resource
 ownership, and explicit unfinished-request continuation are strongest. Text
@@ -155,8 +146,7 @@ activate operation binds the already-prepared run; it never allocates another
 run. It rechecks exact candidate identity and HEAD immediately before
 activation. Creation performs a fresh search and asks the user when a probable
 or definite existing owner remains. Once bound, the workstream/request
-identity is immutable. At most five recent/relevant candidates are mounted
-while unbound, and only the single active workstream is mounted after binding.
+identity is immutable.
 
 Activating an existing workstream requires an explicit choice:
 
@@ -165,6 +155,14 @@ Activating an existing workstream requires an explicit choice:
   workstream.
 
 A recent workstream never silently owns the current turn.
+
+Recent navigation is available through the optional
+`workstreams.recent` Hot Context entry. It contains at most ten distinct
+metadata-only records ranked by creation, open, or binding activity. Loading
+the entry helps interpret requests such as “continue yesterday's context
+work,” but it supplies neither routing evidence nor authority. The agent must
+read or discover the selected workstream's current authoritative state before
+activation.
 
 ## Run Capabilities
 
@@ -223,10 +221,6 @@ The terminal response envelope is sent only after finalization is durably
 acknowledged. A dirty context repository, mismatched HEAD, unverified resource
 operation, or uncertain commit identity produces failure or
 `recovery_required`, never a false success.
-
-Reusable observations are resource-versioned and remain available while their
-sources are relevant. Workstream commits do not erase unrelated stream
-observations.
 
 ## Recovery
 

@@ -1,7 +1,12 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { ContextCheckpointSummary, RunStepToolCall } from "../src/contracts.js";
+import type {
+  ContextCheckpointSummary,
+  RunStepToolCall,
+  StreamMessage,
+} from "../src/contracts.js";
+import { contextCheckpointSourceHash } from "../src/repositories/context-checkpoint-records.js";
 import { readRecentStreamMessages } from "../src/repositories/message-records.js";
 import {
   createWorkstreamServiceFixture,
@@ -15,7 +20,44 @@ afterEach(async () => {
   await Promise.all(fixtures.splice(0).map(async (fixture) => await fixture.dispose()));
 });
 
-describe("V7 agent-facing context", () => {
+describe("current-schema agent-facing context", () => {
+  it("includes response semantics and exact attachment links in checkpoint source identity", () => {
+    const baseMessage = {
+      messageId: "M-1",
+      streamId: "S-1",
+      runId: "RUN-1",
+      sequence: 1,
+      content: "Should I continue?",
+      contentHash: "sha256:message",
+      at: "2026-07-20T10:00:00+05:30",
+    };
+    const message: StreamMessage = {
+      ...baseMessage,
+      role: "assistant",
+      responseKind: "feedback",
+      feedbackKind: "confirmation",
+    };
+
+    expect(contextCheckpointSourceHash({ messages: [message] })).not.toBe(
+      contextCheckpointSourceHash({
+        messages: [{ ...baseMessage, role: "assistant", responseKind: "reply" }],
+      }),
+    );
+    expect(contextCheckpointSourceHash({
+      messages: [{
+        ...baseMessage,
+        role: "user",
+        attachmentRefs: [{
+          resourceId: "RES-0123456789ABCDEF01234567",
+          kind: "document",
+          displayName: "source.md",
+        }],
+      }],
+    })).not.toBe(contextCheckpointSourceHash({
+      messages: [{ ...baseMessage, role: "user" }],
+    }));
+  });
+
   it("reads the newest exact stream tail in chronological order", async () => {
     const fixture = await createFixture("recent-tail", "turn 1");
     await finalize(fixture, "answer 1", "recent-tail-1");
@@ -169,8 +211,8 @@ describe("V7 agent-facing context", () => {
     expect(evidence.truncated).toBe(false);
   });
 
-  it("projects only successful list/search/read observations and invalidates changed resources", async () => {
-    const fixture = await createFixture("observations", "Inspect the project inventory.");
+  it("keeps verified reads in run history without materializing a reusable context lane", async () => {
+    const fixture = await createFixture("run-evidence", "Inspect the project inventory.");
     const project = join(fixture.root, "external", "project");
     await mkdir(project, { recursive: true });
     await writeFile(join(project, "README.md"), "version one\n", "utf8");
@@ -199,7 +241,7 @@ describe("V7 agent-facing context", () => {
       {
         callId: "call-failed-read",
         tool: "read_files",
-        purpose: "Failed read is not reusable.",
+        purpose: "Failed read is not historical evidence.",
         toolPurpose: "read",
         toolEffect: "read_only",
         status: "failed",
@@ -209,23 +251,67 @@ describe("V7 agent-facing context", () => {
       {
         callId: "call-control",
         tool: "git_context_inspect_resource",
-        purpose: "Control calls are not reusable.",
+        purpose: "Control calls are not historical evidence.",
         toolPurpose: "control",
         toolEffect: "context_mutation",
         status: "success",
         input: {},
         output: {},
       },
+      {
+        callId: "call-database-read",
+        tool: "db_query",
+        purpose: "Read the current queue depth.",
+        toolPurpose: "read",
+        toolEffect: "read_only",
+        status: "success",
+        input: { sql: "SELECT COUNT(*) AS count FROM jobs" },
+        output: { rows: [{ count: 4 }] },
+      },
+      {
+        callId: "call-history-search",
+        tool: "agent_history_search",
+        purpose: "Find the earlier queue discussion.",
+        toolPurpose: "search",
+        toolEffect: "read_only",
+        status: "success",
+        input: { query: "queue depth" },
+        output: { hits: ["seq:12"] },
+      },
     ]);
-    let context = await fixture.service.getAgentContext({ streamId: fixture.prepared.stream.streamId });
-    expect(context.observations.inventory).toHaveLength(1);
-    expect(context.observations.discovery).toEqual([]);
-    expect(context.observations.evidence).toEqual([]);
-    expect(context.observations.inventory[0]?.resources).toEqual([{
-      resourceId: inspected.resource.resourceId,
-      versionKey: inspected.resource.version.key,
-    }]);
-
+    const context = await fixture.service.getAgentContext({
+      streamId: fixture.prepared.stream.streamId,
+    });
+    expect("observations" in context).toBe(false);
+    expect(fixture.database.prepare([
+      "SELECT COUNT(*) AS count FROM sqlite_schema",
+      "WHERE type = 'table' AND name = 'reusable_observations'",
+    ].join(" ")).get())
+      .toEqual({ count: 0 });
+    await fixture.service.recordRunStep({
+      requestId: fixture.prepared.run.runId + ":step:2",
+      runId: fixture.prepared.run.runId,
+      record: {
+        version: 1,
+        step: 2,
+        status: "failed",
+        summary: "A successful transport result failed deterministic verification.",
+        decision: { kind: "act" },
+        action: { calls: ["db_get_table_ddl"] },
+        toolCalls: [{
+          callId: "call-unverified-read",
+          tool: "db_get_table_ddl",
+          purpose: "Read a table definition.",
+          toolPurpose: "read",
+          toolEffect: "read_only",
+          status: "success",
+          input: { table: "jobs" },
+          output: { ddl: "CREATE TABLE jobs (...)" },
+        }],
+        verification: { passed: false },
+        createdAt: "2026-07-20T10:00:02.500+05:30",
+      },
+    });
     await writeFile(join(project, "README.md"), "version two with a different size\n", "utf8");
     await fixture.service.inspectResourceForRun({
       requestId: "REQ-observation-refresh",
@@ -235,16 +321,76 @@ describe("V7 agent-facing context", () => {
       origin: "user_reference",
       at: "2026-07-20T10:00:03+05:30",
     });
-    context = await fixture.service.getAgentContext({ streamId: fixture.prepared.stream.streamId });
-    expect(context.observations.inventory).toEqual([]);
-    expect(await fixture.service.searchAgentHistory({
+    const history = await fixture.service.searchAgentHistory({
       streamId: fixture.prepared.stream.streamId,
       query: "project inventory",
       kinds: ["evidence"],
-    })).toEqual({ hits: [] });
-    expect(fixture.database.prepare(
-      "SELECT status, invalidation_reason FROM reusable_observations",
-    ).get()).toEqual({ status: "invalidated", invalidation_reason: "resource_version_changed" });
+    });
+    expect(history.hits).toEqual([
+      expect.objectContaining({
+        ref: `run:${fixture.prepared.run.runId}:step:1:call:call-list`,
+        kind: "evidence",
+      }),
+    ]);
+    expect(fixture.database.prepare([
+      "SELECT COUNT(*) AS count FROM sqlite_schema",
+      "WHERE type = 'table' AND name = 'reusable_observations'",
+    ].join(" ")).get())
+      .toEqual({ count: 0 });
+  });
+
+  it("searches exact read-only run evidence across runs without a reusable projection", async () => {
+    const fixture = await createFixture("run-evidence-search", "Find the current queue.");
+    await recordStep(fixture, [{
+      callId: "call-queue",
+      tool: "agent_history_search",
+      purpose: "Find the current queue.",
+      toolPurpose: "search",
+      toolEffect: "read_only",
+      status: "success",
+      input: { query: "current queue" },
+      output: { hits: ["seq:1"] },
+    }]);
+    const oldestRunId = fixture.prepared.run.runId;
+    await finalize(fixture, "The queue was found.", "run-evidence-search-first");
+
+    fixture.prepared = await fixture.service.prepareAgentRun(prepare(
+      "REQ-run-evidence-search-second",
+      "Find the current queue again.",
+      "2026-07-20T10:02:00+05:30",
+    ));
+    const newestRunId = fixture.prepared.run.runId;
+    await recordStep(fixture, [{
+      callId: "call-queue",
+      tool: "agent_history_search",
+      purpose: "Find the current queue.",
+      toolPurpose: "search",
+      toolEffect: "read_only",
+      status: "success",
+      input: { query: "current queue" },
+      output: { hits: ["seq:3"] },
+    }], "2026-07-20T10:02:01+05:30");
+
+    const history = await fixture.service.searchAgentHistory({
+      streamId: fixture.prepared.stream.streamId,
+      query: "current queue",
+      kinds: ["evidence"],
+    });
+    expect(history.hits).toEqual([
+      expect.objectContaining({
+        ref: `run:${newestRunId}:step:1:call:call-queue`,
+        preview: expect.stringContaining("seq:3"),
+      }),
+      expect.objectContaining({
+        ref: `run:${oldestRunId}:step:1:call:call-queue`,
+        preview: expect.stringContaining("seq:1"),
+      }),
+    ]);
+    expect(fixture.database.prepare([
+      "SELECT COUNT(*) AS count FROM sqlite_schema",
+      "WHERE type = 'table' AND name = 'reusable_observations'",
+    ].join(" ")).get())
+      .toEqual({ count: 0 });
   });
 });
 
@@ -284,6 +430,7 @@ async function finalize(fixture: WorkstreamServiceFixture, response: string, suf
 async function recordStep(
   fixture: WorkstreamServiceFixture,
   calls: RunStepToolCall[],
+  createdAt = "2026-07-20T10:00:02+05:30",
 ): Promise<void> {
   await fixture.service.recordRunStep({
     requestId: fixture.prepared.run.runId + ":step:1",
@@ -297,8 +444,7 @@ async function recordStep(
       action: { calls: calls.map((call) => call.tool) },
       toolCalls: calls,
       verification: { passed: true },
-      workStateAfter: workState({ summary: "Recorded observational calls." }),
-      createdAt: "2026-07-20T10:00:02+05:30",
+      createdAt,
     },
   });
 }

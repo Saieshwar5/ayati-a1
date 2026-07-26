@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { basename, extname, join, relative, resolve } from "node:path";
+import {
+  canonicalizeAbsoluteFilesystemPath,
+  requireAbsoluteFilesystemPath,
+} from "../shared/filesystem-paths.js";
 import type {
   DirectoryAttachmentEntry,
   DirectoryAttachmentRecord,
@@ -75,11 +79,9 @@ export class DirectoryLibrary {
   }
 
   async registerPath(input: RegisterDirectoryInput): Promise<DirectoryAttachmentRecord> {
-    const rawPath = input.path.trim();
-    if (rawPath.length === 0) {
-      throw new Error("path must be a non-empty string.");
-    }
-    const rootPath = resolve(rawPath);
+    const required = requireAbsoluteFilesystemPath(input.path);
+    if (!required.ok) throw new Error(required.message);
+    const rootPath = await canonicalizeAbsoluteFilesystemPath(required.absolutePath);
 
     const info = await stat(rootPath);
     if (!info.isDirectory()) {

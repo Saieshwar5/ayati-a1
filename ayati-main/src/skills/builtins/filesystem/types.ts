@@ -8,6 +8,13 @@ export interface ReadFileInput {
   maxBlocks?: number;
 }
 
+export type ReadFileCoverage =
+  | "complete"
+  | "partial"
+  | "search_matches"
+  | "profile"
+  | "sampled";
+
 export interface ReadFilesInputFile extends ReadFileInput {}
 
 export interface ReadFilesInput {

@@ -1,8 +1,9 @@
-export type FeedbackVirtualMode =
-  | "ENTRY"
-  | "observe.locate"
-  | "observe.investigate"
-  | "execute";
+import {
+  isVirtualModeName,
+  type VirtualModeSource,
+} from "./agent-runner/virtual-mode.js";
+
+export type FeedbackVirtualMode = VirtualModeSource;
 
 export type FeedbackBindingStatus =
   | "not_started"
@@ -61,14 +62,11 @@ export function updateNavigationFeedbackSummary(
       summary.transitionRequests++;
     } else if (input.event === "transition_applied" || input.event === "transition_resolved") {
       summary.transitionAccepted++;
+      if (input.event === "transition_applied") {
+        applyValidationSnapshot(summary, input.data?.["mode"]);
+      }
     } else if (input.event.startsWith("transition_")) {
       summary.transitionRejected++;
-    } else if (input.event === "validation_accepted") {
-      summary.validationAttempts++;
-      summary.validationAccepted++;
-    } else if (input.event === "validation_rejected") {
-      summary.validationAttempts++;
-      summary.validationRejected++;
     }
     applyModeSnapshot(summary, input.data?.["mode"]);
     return summary;
@@ -156,13 +154,26 @@ function applyModeSnapshot(
   if (revision !== undefined) summary.modeRevision = Math.max(summary.modeRevision, revision);
 }
 
+function applyValidationSnapshot(
+  summary: AgentFeedbackNavigationSummary,
+  value: unknown,
+): void {
+  const mode = readRecord(value);
+  if (mode?.["active"] !== "validation") return;
+  const validation = readRecord(mode["validation"]);
+  const status = validation?.["status"];
+  if (status !== "passed" && status !== "failed") return;
+  summary.validationAttempts++;
+  if (status === "passed") {
+    summary.validationAccepted++;
+  } else {
+    summary.validationRejected++;
+  }
+}
+
 function readMode(value: unknown): FeedbackVirtualMode | undefined {
-  return value === "ENTRY"
-    || value === "observe.locate"
-    || value === "observe.investigate"
-    || value === "execute"
-    ? value
-    : value === null ? "ENTRY" : undefined;
+  if (value === "ENTRY" || value === null) return "ENTRY";
+  return isVirtualModeName(value) ? value : undefined;
 }
 
 function readBindingStatus(value: unknown): FeedbackBindingStatus | undefined {

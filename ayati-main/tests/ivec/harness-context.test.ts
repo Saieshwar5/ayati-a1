@@ -15,26 +15,25 @@ describe("harness context", () => {
     });
 
     expect(context).toMatchObject({
-      personalMemorySnapshot: "",
       contextEngine,
     });
+    expect(context).not.toHaveProperty("personalMemorySnapshot");
     expect(context).not.toHaveProperty("continuity");
     expect(context).not.toHaveProperty("sessionWork");
     expect(context).not.toHaveProperty("taskThreadContext");
   });
 
-  it("builds harness context from explicit personal memory and context-engine input", () => {
+  it("builds harness context only from authoritative context-engine input", () => {
     const contextEngine = contextEngineFixture();
 
     const context = buildHarnessContextFromSources({
       input: {
-        personalMemorySnapshot: "- Likes short plans.",
         contextEngine,
       },
     });
 
-    expect(context.personalMemorySnapshot).toBe("- Likes short plans.");
     expect(context.contextEngine).toBe(contextEngine);
+    expect(context).not.toHaveProperty("personalMemorySnapshot");
     expect(context).not.toHaveProperty("sessionEvents");
     expect(context).not.toHaveProperty("sessionWork");
     expect(context).not.toHaveProperty("taskThreadContext");

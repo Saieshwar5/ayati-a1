@@ -85,15 +85,11 @@ export async function createBoundWorkstream(
 
 export function workState(overrides: Partial<RunWorkStateInput> = {}): RunWorkStateInput {
   return {
-    status: "not_done",
+    status: "in_progress",
     summary: "Work is in progress.",
-    openWork: [],
-    blockers: [],
-    facts: [],
-    evidence: [],
-    artifacts: [],
-    nextStep: null,
-    userInputNeeded: [],
+    plan: [],
+    importantContext: [],
+    nextAction: null,
     ...overrides,
   };
 }

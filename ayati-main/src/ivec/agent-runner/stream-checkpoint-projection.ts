@@ -1,11 +1,11 @@
-import type { ContextCheckpointPlan, ContextCheckpointRecord, StreamMessage } from "ayati-context-engine";
+import type { ContextCheckpointPlan, ContextCheckpointRecord } from "ayati-context-engine";
 import type { LlmMessage, LlmTurnInput } from "../../core/contracts/llm-protocol.js";
 import { projectAgentStateViewForPrompt } from "./prompt-context.js";
 import type { AgentPromptStateView, PromptRunContext } from "./prompt-context.js";
 import type { PromptToolCalls } from "./run-tool-call-context.js";
 import type { AgentStateView } from "./state-view.js";
-import { projectStateViewForStreamPressure } from "./stream-context-projection.js";
-import type { AgentTemporalEvent } from "./agent-context-events.js";
+import { projectStreamMessageEvent } from "./agent-context-events.js";
+import { buildCoreCapsule } from "./core-capsule.js";
 
 export function buildCommittedStreamCheckpointTurnInput(input: {
   stateView: AgentStateView;
@@ -15,28 +15,37 @@ export function buildCommittedStreamCheckpointTurnInput(input: {
   projectedToolCalls?: PromptToolCalls;
   buildPrompt: (stateView: AgentPromptStateView) => string;
 }): LlmTurnInput {
-  const pressureState = projectStateViewForStreamPressure(
+  const pressureState = projectCheckpointRunState(
     input.stateView,
     input.projectedToolCalls,
   );
   const run = pressureState.context.run;
   const exactTail = input.plan.exactTail.map((message) =>
-    timelineMessage(message, input.stateView.context.current.inputSeq)
+    projectStreamMessageEvent(
+      message,
+      message.sequence === input.stateView.context.core.current.input.seq,
+    )
   );
   const projectedStateView: AgentStateView = {
     ...pressureState,
     context: {
       ...pressureState.context,
-      temporal: {
-        checkpoint: {
-          coveredFromSeq: input.checkpoint.coveredFromSeq,
-          coveredToSeq: input.checkpoint.coveredToSeq,
-          summary: input.checkpoint.summary,
-          exactAnchors: input.checkpoint.exactAnchors,
-          createdAt: input.checkpoint.createdAt,
-        },
-        recent: exactTail,
-      },
+      core: buildCoreCapsule({
+        revision: input.stateView.context.core.revision,
+        runId: input.stateView.context.core.current.runId,
+        timeline: exactTail,
+        checkpoint: input.checkpoint,
+        ...(input.stateView.context.core.current.routing
+          ? { routing: input.stateView.context.core.current.routing }
+          : {}),
+        ...(input.stateView.context.core.current.activeDocuments
+          ? {
+              activeDocuments:
+                input.stateView.context.core.current.activeDocuments,
+            }
+          : {}),
+        continuityMaxTokens: input.stateView.context.core.budget.continuityMaxTokens,
+      }),
       ...(run ? {
         run: {
           ...run,
@@ -56,32 +65,21 @@ export function buildCommittedStreamCheckpointTurnInput(input: {
   };
 }
 
-function timelineMessage(message: StreamMessage, currentSeq: number | undefined): AgentTemporalEvent {
-  const current = message.sequence === currentSeq;
-  if (message.role === "assistant") {
-    return {
-      kind: "assistant",
-      seq: message.sequence,
-      timestamp: message.at,
-      content: message.content,
-      ...(current ? { current: true } : {}),
-    };
-  }
-  if (message.role === "system_event") {
-    return {
-      kind: "system",
-      seq: message.sequence,
-      timestamp: message.at,
-      content: message.content,
-      ...(current ? { current: true } : {}),
-    };
-  }
+function projectCheckpointRunState(
+  stateView: AgentStateView,
+  projectedToolCalls: PromptToolCalls | undefined,
+): AgentStateView {
+  const run = stateView.context.run;
+  if (!run || !projectedToolCalls) return stateView;
   return {
-    kind: "user",
-    seq: message.sequence,
-    timestamp: message.at,
-    content: message.content,
-    ...(current ? { current: true } : {}),
+    ...stateView,
+    context: {
+      ...stateView.context,
+      run: {
+        ...run,
+        toolCalls: projectedToolCalls,
+      },
+    },
   };
 }
 

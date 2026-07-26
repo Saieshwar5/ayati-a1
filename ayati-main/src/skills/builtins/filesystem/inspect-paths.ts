@@ -111,13 +111,6 @@ export const inspectPathsTool: ToolDefinition = {
       path: "$.result.structuredContent.results",
     }],
   }),
-  selectionHints: {
-    tags: ["filesystem", "metadata", "stat", "inspect", "files", "directories", "read"],
-    aliases: ["file_metadata", "stat_files", "inspect_files", "path_metadata"],
-    examples: ["inspect metadata for these files before reading", "check sizes and line counts for candidate files"],
-    domain: "filesystem",
-    priority: 8,
-  },
   async execute(input, context): Promise<ToolResult> {
     const parsed = validateInspectPathsInput(input);
     if ("ok" in parsed) return parsed;

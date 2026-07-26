@@ -1,15 +1,16 @@
 import type { DatabaseSync } from "node:sqlite";
+import schemaVersion from "./schema-version.json" with { type: "json" };
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = schemaVersion.version;
 
 const BASELINE_TABLES = [
   "agent_streams",
   "context_checkpoints",
   "idempotency_requests",
   "message_resources",
+  "message_response_metadata",
   "message_search",
   "messages",
-  "observation_resources",
   "request_resources",
   "resource_accesses",
   "resource_events",
@@ -18,7 +19,6 @@ const BASELINE_TABLES = [
   "resource_mutation_operations",
   "resource_search",
   "resources",
-  "reusable_observations",
   "run_steps",
   "run_work_state",
   "runs",
@@ -33,6 +33,11 @@ const BASELINE_TABLES = [
   "workstream_resources",
   "workstream_search",
   "workstreams",
+] as const;
+
+const RETIRED_OBSERVATION_TABLES = [
+  "observation_resources",
+  "reusable_observations",
 ] as const;
 
 const BASELINE_SQL = [
@@ -120,6 +125,17 @@ const BASELINE_SQL = [
   "BEGIN SELECT RAISE(ABORT, 'messages are immutable'); END;",
   "CREATE TRIGGER messages_immutable_delete BEFORE DELETE ON messages",
   "BEGIN SELECT RAISE(ABORT, 'messages are immutable'); END;",
+  "",
+  "CREATE TABLE message_response_metadata (",
+  "  message_id TEXT PRIMARY KEY REFERENCES messages(message_id) ON DELETE CASCADE,",
+  "  response_kind TEXT NOT NULL CHECK (response_kind IN ('reply', 'feedback', 'notification')),",
+  "  feedback_kind TEXT CHECK (feedback_kind IN ('approval', 'confirmation', 'clarification')),",
+  "  CHECK (response_kind = 'feedback' OR feedback_kind IS NULL)",
+  ");",
+  "CREATE TRIGGER message_response_metadata_immutable_update BEFORE UPDATE ON message_response_metadata",
+  "BEGIN SELECT RAISE(ABORT, 'message response metadata is immutable'); END;",
+  "CREATE TRIGGER message_response_metadata_immutable_delete BEFORE DELETE ON message_response_metadata",
+  "BEGIN SELECT RAISE(ABORT, 'message response metadata is immutable'); END;",
   "",
   "CREATE TABLE runs (",
   "  run_id TEXT PRIMARY KEY,",
@@ -303,49 +319,14 @@ const BASELINE_SQL = [
   "  run_id TEXT PRIMARY KEY REFERENCES runs(run_id),",
   "  revision INTEGER NOT NULL,",
   "  after_step INTEGER NOT NULL,",
-  "  status TEXT NOT NULL CHECK (status IN ('not_done', 'done', 'blocked', 'needs_user_input')),",
+  "  status TEXT NOT NULL CHECK (status IN ('in_progress', 'done', 'blocked', 'needs_user_input')),",
   "  summary TEXT NOT NULL,",
-  "  open_work_json TEXT NOT NULL,",
-  "  blockers_json TEXT NOT NULL,",
-  "  facts_json TEXT NOT NULL,",
-  "  evidence_json TEXT NOT NULL,",
-  "  artifacts_json TEXT NOT NULL,",
-  "  next_step TEXT,",
-  "  user_input_needed_json TEXT NOT NULL,",
+  "  plan_json TEXT NOT NULL,",
+  "  important_context_json TEXT NOT NULL,",
+  "  next_action TEXT,",
+  "  update_reason TEXT NOT NULL CHECK (update_reason IN ('initial', 'plan', 'context_pressure', 'run_completed', 'run_paused', 'continuation')),",
   "  updated_at TEXT NOT NULL",
   ");",
-  "",
-  "CREATE TABLE reusable_observations (",
-  "  observation_id TEXT PRIMARY KEY,",
-  "  stream_id TEXT NOT NULL REFERENCES agent_streams(stream_id),",
-  "  source_run_id TEXT NOT NULL REFERENCES runs(run_id),",
-  "  source_step INTEGER NOT NULL CHECK (source_step >= 1),",
-  "  source_call_id TEXT,",
-  "  source_key TEXT NOT NULL UNIQUE,",
-  "  kind TEXT NOT NULL CHECK (kind IN ('inventory', 'discovery', 'evidence')),",
-  "  query_key TEXT NOT NULL,",
-  "  purpose TEXT NOT NULL,",
-  "  preview TEXT NOT NULL,",
-  "  output_hash TEXT,",
-  "  evidence_ref TEXT,",
-  "  retention TEXT NOT NULL CHECK (retention IN ('while_relevant', 'evidence_only')),",
-  "  workstream_id TEXT REFERENCES workstreams(workstream_id),",
-  "  request_id TEXT,",
-  "  status TEXT NOT NULL CHECK (status IN ('valid', 'invalidated')),",
-  "  created_at TEXT NOT NULL,",
-  "  invalidated_at TEXT,",
-  "  invalidation_reason TEXT",
-  ");",
-  "CREATE INDEX reusable_observations_stream ON reusable_observations(stream_id, status, created_at DESC);",
-  "CREATE INDEX reusable_observations_query ON reusable_observations(stream_id, query_key, status);",
-  "",
-  "CREATE TABLE observation_resources (",
-  "  observation_id TEXT NOT NULL REFERENCES reusable_observations(observation_id) ON DELETE CASCADE,",
-  "  resource_id TEXT NOT NULL REFERENCES resources(resource_id),",
-  "  version_key TEXT NOT NULL,",
-  "  PRIMARY KEY(observation_id, resource_id)",
-  ");",
-  "CREATE INDEX observation_resources_resource ON observation_resources(resource_id, version_key);",
   "",
   "CREATE TABLE resource_mutation_leases (",
   "  lease_id TEXT PRIMARY KEY,",
@@ -521,12 +502,18 @@ export function initializeSchema(database: DatabaseSync, now: () => string): voi
     : [];
   const versionMatches = versions.length === 1
     && Number(versions[0]?.version) === SCHEMA_VERSION;
-  const tablesMatch = JSON.stringify(existingTables) === JSON.stringify(BASELINE_TABLES);
+  const currentTables = [...BASELINE_TABLES];
+  const tablesWithRetiredObservations = [
+    ...BASELINE_TABLES,
+    ...RETIRED_OBSERVATION_TABLES,
+  ].sort();
+  const tablesMatch = JSON.stringify(existingTables) === JSON.stringify(currentTables)
+    || JSON.stringify(existingTables) === JSON.stringify(tablesWithRetiredObservations);
   if (!versionMatches || !tablesMatch) {
     throw new Error([
       "Context Engine database reset required.",
-      "The configured database uses a pre-V7 or unsupported schema and was not modified.",
-      "Run context:archive-reset explicitly, then restart Ayati to create the V7 baseline.",
+      "The configured database uses a pre-V8 or unsupported schema and was not modified.",
+      "Run context:archive-reset explicitly, then restart Ayati to create the V8 baseline.",
     ].join(" "));
   }
 }

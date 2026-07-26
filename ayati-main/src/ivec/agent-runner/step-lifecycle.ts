@@ -8,6 +8,8 @@ import type { ContextRunStepRecord } from "../../context-engine/index.js";
 import type { HarnessContextInput } from "../harness-context.js";
 import type { AgentAction } from "./decision.js";
 import type { AgentActionExecutionResult } from "./action-executor.js";
+import { deriveFilesystemCompletionEvidence } from "./filesystem-completion-evidence.js";
+import { toolCallVerificationPassed } from "./tool-call-verification.js";
 
 export interface ExecuteActionStepResult {
   execution: AgentActionExecutionResult;
@@ -151,10 +153,20 @@ function buildContextRunStepRecord(input: {
       toolFailureCount: step.toolFailureCount,
       stoppedEarlyReason: step.stoppedEarlyReason,
     },
-    toolCalls: input.stepResult.execution.actOutput.toolCalls.map((call) => ({
-      ...call,
-      status: call.error ? "failed" : "success",
-    })),
+    toolCalls: input.stepResult.execution.actOutput.toolCalls.map((call) => {
+      const verificationPassed = toolCallVerificationPassed(call);
+      return {
+        ...call,
+        status: call.error ? "failed" : "success",
+        ...(call.verification ? { verification: call.verification } : {}),
+        verificationPassed,
+        completionEvidence: deriveFilesystemCompletionEvidence(
+          call,
+          step.step,
+          verificationPassed,
+        ),
+      };
+    }),
     verification: {
       passed: verification.passed,
       policy: step.verificationPolicy,
@@ -170,7 +182,6 @@ function buildContextRunStepRecord(input: {
       expectationCheckStatus: verification.expectationCheckStatus,
       expectationCheckSummary: verification.expectationCheckSummary,
     },
-    workStateAfter: input.stepResult.execution.nextWorkState,
     facts: uniqueStrings([
       ...step.newFacts,
       ...verification.newFacts,

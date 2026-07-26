@@ -5,15 +5,6 @@ export interface DocumentSkillDeps {
   preparedAttachmentService: PreparedAttachmentService;
 }
 
-const DOCUMENT_PROMPT_BLOCK = [
-  "Prepared document tools are built in for unstructured text attachments.",
-  "Use document_list_sections to understand document structure.",
-  "Use document_read_section when the task needs exact text from specific sections.",
-  "Use document_query for semantic questions over prepared text attachments.",
-  "Inputs accept a prepared attachment reference: preparedInputId is preferred, but the exact display name also works.",
-  "If exactly one unstructured attachment exists in the run, the document tools can auto-select it.",
-].join("\n");
-
 function buildSuccessResult(output: Record<string, unknown>, meta?: Record<string, unknown>): ToolResult {
   return {
     ok: true,
@@ -39,11 +30,6 @@ function createDocumentListSectionsTool(deps: DocumentSkillDeps): ToolDefinition
         preparedInputId: { type: "string", description: "Prepared unstructured attachment reference. Use the preparedInputId when known; the display name also works." },
       },
       additionalProperties: false,
-    },
-    selectionHints: {
-      tags: ["document", "sections", "outline"],
-      domain: "documents",
-      priority: 70,
     },
     async execute(input, context): Promise<ToolResult> {
       const preparedInputId = readOptionalString(input, "preparedInputId");
@@ -73,11 +59,6 @@ function createDocumentReadSectionTool(deps: DocumentSkillDeps): ToolDefinition 
         },
       },
       additionalProperties: false,
-    },
-    selectionHints: {
-      tags: ["document", "read", "section"],
-      domain: "documents",
-      priority: 85,
     },
     async execute(input, context): Promise<ToolResult> {
       const preparedInputId = readOptionalString(input, "preparedInputId");
@@ -109,11 +90,6 @@ function createDocumentQueryTool(deps: DocumentSkillDeps): ToolDefinition {
       },
       additionalProperties: false,
     },
-    selectionHints: {
-      tags: ["document", "semantic", "question", "rag"],
-      domain: "documents",
-      priority: 95,
-    },
     async execute(input, context): Promise<ToolResult> {
       const preparedInputId = readOptionalString(input, "preparedInputId");
       const query = readRequiredString(input, "query");
@@ -138,7 +114,6 @@ export function createDocumentSkill(deps: DocumentSkillDeps): SkillDefinition {
     id: "documents",
     version: "1.0.0",
     description: "Prepared text attachment tools for section reads and semantic retrieval.",
-    promptBlock: DOCUMENT_PROMPT_BLOCK,
     tools: [
       createDocumentListSectionsTool(deps),
       createDocumentReadSectionTool(deps),

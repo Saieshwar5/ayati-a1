@@ -18,18 +18,28 @@ export function buildPromptContextManifest(input: {
 
   addSystemMessages(parts, input.turnInput.messages);
   addPart(parts, "system.tool_schemas", "system", "exact", input.turnInput.tools ?? [], []);
-  addTemporalParts(parts, context.temporal);
-  addPart(parts, "session.stream", "session", "referenceable", context.stream, workstreamRefs(context.stream.recentWork));
-  if (context.personal) {
-    addPart(parts, "session.personal", "session", "summarizable", context.personal, []);
+  addCoreCapsuleParts(parts, context.core);
+  addPart(
+    parts,
+    "session.hot.available",
+    "session",
+    "referenceable",
+    {
+      available: context.hot.available,
+      budget: context.hot.budget,
+    },
+    context.hot.available.flatMap((entry) => entry.sourceRefs),
+  );
+  if (context.hot.loaded.length > 0) {
+    addPart(
+      parts,
+      "session.hot.loaded",
+      "session",
+      "hot",
+      context.hot.loaded,
+      context.hot.loaded.flatMap((entry) => entry.sourceRefs),
+    );
   }
-  addPart(parts, "work.current", "work", "exact", context.current, currentRefs(context.current));
-  addPart(parts, "work.candidates", "work", "referenceable", context.work.candidates, candidateRefs(context.work.candidates));
-  if (context.work.active) {
-    addPart(parts, "work.active", "work", "exact", context.work.active, activeWorkRefs(context.work.active));
-  }
-  addPart(parts, "work.resources", "work", "exact", context.resources, resourceRefs(context.resources));
-  addPart(parts, "work.observations", "work", "referenceable", context.observations, observationRefs(context.observations));
   if (context.tools) addPart(parts, "work.tool_state", "work", "exact", context.tools, []);
   if (context.harness) addPart(parts, "work.harness", "work", "hot", context.harness, []);
   if (context.run?.workState) {
@@ -37,6 +47,16 @@ export function buildPromptContextManifest(input: {
   }
   if (context.run?.toolCalls) {
     addPart(parts, "work.run.tool_calls", "work", "hot", context.run.toolCalls, toolCallRefs(context.run.toolCalls));
+  }
+  if (context.run?.verifiedOutcomes) {
+    addPart(
+      parts,
+      "work.run.verified_outcomes",
+      "work",
+      "exact",
+      context.run.verifiedOutcomes,
+      verifiedOutcomeRefs(context.run.verifiedOutcomes),
+    );
   }
   if (context.run?.focus) {
     addPart(parts, "work.run.focus", "work", "summarizable", context.run.focus, focusRefs(context.run.focus));
@@ -97,100 +117,82 @@ function addPart(
   });
 }
 
-function addTemporalParts(
+function addCoreCapsuleParts(
   parts: PromptContextPart[],
-  temporal: AgentPromptStateView["context"]["temporal"],
+  core: AgentPromptStateView["context"]["core"],
 ): void {
-  if (temporal.checkpoint) {
+  addPart(
+    parts,
+    "session.core.metadata",
+    "session",
+    "referenceable",
+    {
+      schemaVersion: core.schemaVersion,
+      revision: core.revision,
+      maintenanceRequired: core.continuity.maintenanceRequired,
+      budget: core.budget,
+    },
+    [],
+  );
+  addPart(
+    parts,
+    "work.core.current",
+    "work",
+    "exact",
+    core.current,
+    currentRefs(core.current),
+  );
+  if (core.continuity.checkpoint) {
     addPart(
       parts,
-      "session.temporal.checkpoint",
+      "session.core.checkpoint",
       "session",
       "referenceable",
-      temporal.checkpoint,
-      temporal.checkpoint.exactAnchors.map((seq) => `seq:${seq}`),
+      core.continuity.checkpoint,
+      core.continuity.checkpoint.exactAnchors.map((seq) => `seq:${seq}`),
     );
   }
-  for (const event of temporal.recent) {
+  for (const event of core.continuity.recentExact) {
     addPart(
       parts,
-      `session.temporal.seq.${event.seq}`,
+      `session.core.seq.${event.seq}`,
       "session",
-      event.current ? "exact" : "summarizable",
+      "summarizable",
       event,
       [`seq:${event.seq}`],
     );
   }
+  if (core.continuity.unloadedRanges.length > 0) {
+    addPart(
+      parts,
+      "session.core.unloaded_ranges",
+      "session",
+      "referenceable",
+      core.continuity.unloadedRanges,
+      core.continuity.unloadedRanges.map((range) => range.sourceRef),
+    );
+  }
 }
 
-function currentRefs(current: AgentPromptStateView["context"]["current"]): string[] {
+function currentRefs(current: AgentPromptStateView["context"]["core"]["current"]): string[] {
   return [
-    `seq:${current.inputSeq}`,
+    `seq:${current.input.seq}`,
     `run:${current.runId}`,
     ...(current.routing?.workstreamId ? [`workstream:${current.routing.workstreamId}`] : []),
     ...(current.routing?.requestId ? [`request:${current.routing.requestId}`] : []),
+    ...(current.activeDocuments ?? []).map((document) => document.evidenceRef),
   ];
-}
-
-function candidateRefs(
-  candidates: AgentPromptStateView["context"]["work"]["candidates"],
-): string[] {
-  return candidates.flatMap((candidate) => {
-    const record = candidate as unknown as Record<string, unknown>;
-    return typeof record["workstreamId"] === "string"
-      ? [`workstream:${record["workstreamId"]}`]
-      : [];
-  });
-}
-
-function activeWorkRefs(
-  active: NonNullable<AgentPromptStateView["context"]["work"]["active"]>,
-): string[] {
-  return [
-    `workstream:${active.workstreamId}`,
-    ...(active.currentRequest?.id ? [`request:${active.currentRequest.id}`] : []),
-  ];
-}
-
-function workstreamRefs(values: unknown[]): string[] {
-  return values.flatMap((value) => {
-    const record = asRecord(value);
-    return typeof record?.["workstreamId"] === "string"
-      ? [`workstream:${record["workstreamId"]}`]
-      : [];
-  });
-}
-
-function resourceRefs(resources: AgentPromptStateView["context"]["resources"]): string[] {
-  return [resources.stream, resources.ingress, resources.activeWorkstream]
-    .flat()
-    .flatMap((value) => {
-      const record = asRecord(value);
-      const nested = asRecord(record?.["resource"]);
-      const id = record?.["resourceId"] ?? nested?.["resourceId"];
-      return typeof id === "string" ? [`resource:${id}`] : [];
-    });
-}
-
-function observationRefs(observations: AgentPromptStateView["context"]["observations"]): string[] {
-  return [observations.inventory, observations.discovery, observations.evidence]
-    .flat()
-    .flatMap((value) => {
-      const record = asRecord(value);
-      return [
-        typeof record?.["observationId"] === "string" ? `observation:${record["observationId"]}` : undefined,
-        typeof record?.["evidenceRef"] === "string" ? record["evidenceRef"] : undefined,
-      ].filter((item): item is string => Boolean(item));
-    });
 }
 
 function workStateRefs(
   workState: NonNullable<NonNullable<AgentPromptStateView["context"]["run"]>["workState"]>,
 ): string[] {
-  return [
-    ...(workState.evidence ?? []),
-    ...(workState.artifacts ?? []).map((artifact) => `artifact:${artifact}`),
-  ];
+  return workState.importantContext?.flatMap((item) => [
+    ...(item.ref ? [item.ref] : []),
+    ...(item.kind === "artifact" && !item.ref
+      ? [`artifact:${item.value}`]
+      : []),
+  ]) ?? [];
 }
 
 function toolCallRefs(
@@ -206,6 +208,15 @@ function toolCallRefs(
   ];
 }
 
+function verifiedOutcomeRefs(
+  outcomes: NonNullable<NonNullable<AgentPromptStateView["context"]["run"]>["verifiedOutcomes"]>,
+): string[] {
+  return outcomes.flatMap((outcome) => [
+    `step:${outcome.source.step}`,
+    ...(outcome.source.callId ? [`call:${outcome.source.callId}`] : []),
+  ]);
+}
+
 function focusRefs(
   focus: NonNullable<NonNullable<AgentPromptStateView["context"]["run"]>["focus"]>,
 ): string[] {
@@ -218,10 +229,4 @@ function focusRefs(
     ...focus.artifacts.flatMap((statement) => statement.refs),
     ...focus.unresolvedQuestions.flatMap((statement) => statement.refs),
   ];
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
 }

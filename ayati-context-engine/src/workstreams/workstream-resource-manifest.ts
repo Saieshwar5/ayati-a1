@@ -1,4 +1,5 @@
 import { ContextEngineServiceError } from "../errors.js";
+import { isAbsolute, resolve } from "node:path";
 import type {
   ResourceAvailability,
   ResourceKind,
@@ -177,7 +178,11 @@ function isAvailability(value: unknown): value is ResourceAvailability {
 
 function isLocator(value: unknown): value is ResourcePublicLocator {
   if (!isRecord(value)) return false;
-  if (value["kind"] === "filesystem") return typeof value["path"] === "string";
+  if (value["kind"] === "filesystem") {
+    return typeof value["path"] === "string"
+      && isAbsolute(value["path"])
+      && resolve(value["path"]) === value["path"];
+  }
   if (value["kind"] === "managed_blob") return typeof value["resourceId"] === "string";
   if (value["kind"] === "url") return typeof value["url"] === "string";
   return value["kind"] === "external"

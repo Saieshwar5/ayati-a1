@@ -157,13 +157,6 @@ export const writeFilesTool: ToolDefinition = {
       },
     },
   },
-  selectionHints: {
-    tags: ["filesystem", "write", "create", "file", "batch"],
-    aliases: ["save_files", "overwrite_files", "batch_write_files"],
-    examples: ["write multiple generated files", "save view.html and script.js together"],
-    domain: "filesystem",
-    priority: 4,
-  },
   async execute(input, context): Promise<ToolResult> {
     const parsed = validateWriteFilesInput(input);
     if ("ok" in parsed) return parsed;

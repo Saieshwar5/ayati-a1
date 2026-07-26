@@ -8,6 +8,7 @@ import {
   createEntryVirtualModeState,
   identicalVirtualModeRequest,
   isVirtualModeTransitionAllowed,
+  restoreVirtualModeAfterContextRetrieval,
   type VirtualModeName,
   type VirtualModeState,
   type VirtualModeTransitionTarget,
@@ -15,19 +16,23 @@ import {
 import { DEFAULT_LOOP_CONFIG, type AgentLoopDeps } from "../../src/ivec/types.js";
 
 const TARGETS: VirtualModeTransitionTarget[] = [
+  "context.retrieve",
   "observe.locate",
   "observe.investigate",
   "resolve",
   "execute",
+  "validation",
 ];
 
 describe("virtual mode graph", () => {
   it("accepts every declared edge and rejects every undeclared edge", () => {
     const states: Array<["ENTRY" | VirtualModeName, VirtualModeState]> = [
       ["ENTRY", createEntryVirtualModeState()],
+      ["context.retrieve", mode("context.retrieve")],
       ["observe.locate", mode("observe.locate")],
       ["observe.investigate", mode("observe.investigate")],
       ["execute", mode("execute")],
+      ["validation", mode("validation")],
     ];
 
     for (const [source, state] of states) {
@@ -39,10 +44,20 @@ describe("virtual mode graph", () => {
   });
 
   it("lets a bound repair observation return to execute without resolving again", () => {
+    expect(allowedVirtualModeTransitions(createEntryVirtualModeState(), {
+      workstreamBound: true,
+    })).toEqual([
+      "context.retrieve",
+      "observe.locate",
+      "observe.investigate",
+      "execute",
+    ]);
     for (const source of ["observe.locate", "observe.investigate"] as const) {
       expect(allowedVirtualModeTransitions(mode(source), { workstreamBound: true })).toEqual([
+        "context.retrieve",
         "observe.locate",
         "observe.investigate",
+        "validation",
         "execute",
       ]);
     }
@@ -57,14 +72,70 @@ describe("virtual mode graph", () => {
       revision: 0,
       capabilities: [],
       targets: [],
-      allowedNext: ["normal_reply", "observe.locate", "observe.investigate", "resolve"],
+      allowedNext: ["normal_reply", "context.retrieve", "observe.locate", "observe.investigate", "resolve"],
     });
 
     expect(buildVirtualModeCard(mode("observe.investigate"), { workstreamBound: false }))
       .toMatchObject({
         active: "observe.investigate",
-        allowedNext: ["observe.locate", "observe.investigate", "resolve", "validate"],
+        allowedNext: ["context.retrieve", "observe.locate", "observe.investigate", "resolve", "validation", "stop"],
       });
+
+    expect(buildVirtualModeCard(createEntryVirtualModeState(), {
+      workstreamBound: false,
+      hotContextAvailable: false,
+    }).allowedNext).toEqual([
+      "normal_reply",
+      "observe.locate",
+      "observe.investigate",
+      "resolve",
+    ]);
+  });
+
+  it("returns from context retrieval without activating final validation", () => {
+    const enteredFromEntry = applyVirtualModeTransition(
+      createEntryVirtualModeState(),
+      {
+        to: "context.retrieve",
+        purpose: "Load relevant personal memory.",
+        capabilities: ["context:load"],
+      },
+      "context.retrieve",
+      1,
+    );
+
+    expect(buildVirtualModeCard(enteredFromEntry, { workstreamBound: false }))
+      .toMatchObject({
+        active: "context.retrieve",
+        allowedNext: [],
+        contextRetrieve: { returnTo: "ENTRY" },
+      });
+    expect(enteredFromEntry.operational).toBe(false);
+    expect(restoreVirtualModeAfterContextRetrieval(enteredFromEntry)).toMatchObject({
+      active: null,
+      revision: 2,
+      operational: false,
+      capabilities: [],
+      targets: [],
+    });
+
+    const executing = mode("execute");
+    const enteredFromExecute = applyVirtualModeTransition(
+      executing,
+      {
+        to: "context.retrieve",
+        purpose: "Load relevant personal memory.",
+        capabilities: ["context:load"],
+      },
+      "context.retrieve",
+      2,
+    );
+    expect(restoreVirtualModeAfterContextRetrieval(enteredFromExecute)).toMatchObject({
+      active: "execute",
+      operational: true,
+      capabilities: ["file:write"],
+      targets: ["known.txt"],
+    });
   });
 
   it("detects identical self-transitions and resets every new run to ENTRY", () => {
@@ -89,6 +160,7 @@ describe("virtual mode graph", () => {
     expect(createEntryVirtualModeState()).toEqual({
       active: null,
       revision: 0,
+      operational: false,
       capabilities: [],
       targets: [],
     });
@@ -128,9 +200,14 @@ function mode(active: VirtualModeName): VirtualModeState {
   return {
     active,
     revision: 1,
+    operational: active !== "context.retrieve",
     purpose: `Use ${active}.`,
-    capabilities: active === "execute" ? ["file:write"] : ["file:read"],
-    targets: ["known.txt"],
+    capabilities: active === "execute"
+      ? ["file:write"]
+      : active === "context.retrieve"
+        ? ["context:load"]
+        : ["file:read"],
+    targets: active === "context.retrieve" ? [] : ["known.txt"],
     enteredAtIteration: 1,
   };
 }

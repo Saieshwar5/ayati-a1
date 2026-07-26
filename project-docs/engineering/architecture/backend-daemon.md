@@ -8,7 +8,7 @@ Core responsibilities:
 
 - Bootstrap the runtime.
 - Load provider configuration.
-- Load static prompt context and skill prompt blocks.
+- Load stable base and soul prompt context.
 - Start WebSocket chat transport.
 - Start HTTP upload/artifact/Pulse API.
 - Start plugins and system-event worker.
@@ -16,7 +16,8 @@ Core responsibilities:
   agent-stream, workstream, request, run, checkpoint, history, and
   context-projection operations.
 - Manage personal memory stores and episodic recall services.
-- Register a hidden tool catalog and expose only a capped run-scoped working set of tool schemas.
+- Register every tool once, validate explicit capability ownership, and expose
+  only the exact bounded run-scoped capability surface.
 - Execute the IVec decision-action-reducer agent loop.
 - Preserve daemon-owned runtime state under `ayati-main/data/`.
 - Provide replies, feedback, notifications, and background event handling to client transports.

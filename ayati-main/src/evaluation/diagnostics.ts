@@ -156,7 +156,7 @@ export function buildDeterministicFindings(input: {
       "medium",
       "agent_harness",
       `Tool ${tool} produced ${count} recorded results in one run.`,
-      "Check whether each call advanced evidence or whether tool loading, reads, or retries repeated unchanged work.",
+      "Check whether each call advanced evidence or whether capability changes, reads, or retries repeated unchanged work.",
       toolResults.filter(({ data }) => data?.["tool"] === tool).map(({ record }) => eventEvidence(record)),
     );
   }
@@ -410,10 +410,14 @@ export function buildDeterministicFindings(input: {
     );
   }
 
-  const workingSets = input.events.filter(({ record, data }) =>
-    record.component === "tools" && record.event === "working_set_prepared" && data?.["selected"] !== undefined);
-  const repeatedWorkingSets = repeatedValues(workingSets.map(({ data }) => canonicalHash(data?.["selected"])));
-  for (const [hash, count] of repeatedWorkingSets) {
+  const capabilitySurfaces = input.events.filter(({ record, data }) =>
+    record.component === "tools"
+      && (record.event === "capability_surface_prepared" || record.event === "working_set_prepared")
+      && data?.["selected"] !== undefined);
+  const repeatedCapabilitySurfaces = repeatedValues(
+    capabilitySurfaces.map(({ data }) => canonicalHash(data?.["selected"])),
+  );
+  for (const [hash, count] of repeatedCapabilitySurfaces) {
     if (count < 3) continue;
     add(
       "REPEATED_TOOL_SURFACE",
@@ -421,8 +425,10 @@ export function buildDeterministicFindings(input: {
       "medium",
       "tool_selection",
       `The same selected tool surface was prepared ${count} times in one run.`,
-      "Check whether each model iteration or routing retry needed a fresh tool-loading decision.",
-      workingSets.filter(({ data }) => canonicalHash(data?.["selected"]) === hash).map(({ record }) => eventEvidence(record)),
+      "Check whether each model iteration or routing retry needed a fresh capability-surface decision.",
+      capabilitySurfaces
+        .filter(({ data }) => canonicalHash(data?.["selected"]) === hash)
+        .map(({ record }) => eventEvidence(record)),
     );
   }
 

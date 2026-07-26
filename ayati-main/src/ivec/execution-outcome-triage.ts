@@ -11,6 +11,8 @@ export interface FeedbackExecutionTriageFinding {
 export interface FeedbackExecutionTriageInput {
   execution?: FeedbackExecutionOutcome;
   actionSteps?: number;
+  toolCalls?: number;
+  modeTransitions?: number;
   workstreamBound: boolean;
   commitIdentity?: string;
 }
@@ -97,10 +99,21 @@ export function buildExecutionOutcomeFindings(
 export function isHealthyConversationOutcome(input: FeedbackExecutionTriageInput): boolean {
   const actionSteps = validCount(input.actionSteps);
   return input.workstreamBound === false
-    && (actionSteps === 0
-      ? input.execution?.verification === "not_applicable"
-      : input.execution?.verification === "passed")
+    && actionSteps === 0
+    && validCount(input.toolCalls) === 0
+    && validCount(input.modeTransitions) === 0
+    && input.execution?.verification === "not_applicable"
     && input.execution?.finalization === "completed"
+    && input.execution.commit === "not_required";
+}
+
+export function isHealthyVerifiedObservationOutcome(
+  input: FeedbackExecutionTriageInput,
+): boolean {
+  return input.workstreamBound === false
+    && validCount(input.actionSteps) > 0
+    && input.execution?.verification === "passed"
+    && input.execution.finalization === "completed"
     && input.execution.commit === "not_required";
 }
 

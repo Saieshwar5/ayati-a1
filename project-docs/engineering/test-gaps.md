@@ -1,6 +1,6 @@
 # Test Gaps To Watch
 
-The V5 workstream/resource services and daemon integration have deterministic
+The current workstream/resource services and daemon integration have deterministic
 coverage. Remaining risk is concentrated at live provider, restart, and
 external-system boundaries.
 

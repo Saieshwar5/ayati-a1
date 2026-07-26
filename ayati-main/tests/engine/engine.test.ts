@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -25,6 +25,7 @@ import type {
 } from "../../src/app/context-engine-runtime.js";
 import { createContextEngineRuntime } from "../../src/app/context-engine-runtime.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
+import { inspectPathsTool } from "../../src/skills/builtins/filesystem/inspect-paths.js";
 import { createGitContextSkill } from "../../src/skills/builtins/git-context/index.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
@@ -162,13 +163,24 @@ function createSingleLoopMutationProvider(outputPath: string): LlmProvider {
       }
       if (decision === 5) {
         return nativeDecisionFixture({
-          kind: "validate",
+          kind: "transition_mode",
           request: {
-            outcome: "completed",
-            summary: "Created and verified one-run.txt.",
-            response: "Created one-run.txt.",
-            resources: [],
+            to: "validation",
+            purpose: "Check current-run proof for the important output file.",
+            capabilities: ["task:validation"],
+            validationChecks: [{
+              kind: "path.exists",
+              subject: outputPath,
+              expectedKind: "file",
+            }],
           },
+        });
+      }
+      if (decision === 6) {
+        return nativeDecisionFixture({
+          kind: "reply",
+          status: "completed",
+          message: "Created one-run.txt.",
         });
       }
       throw new Error("No queued provider response.");
@@ -278,7 +290,6 @@ function createContextRuntime(prepared: ContextEnginePreparedTurn): ContextEngin
         contentHash: "sha256:assistant",
         at: input.at,
       },
-      observationRevision: "observations:finalized",
       resourceEffects: { status: "none", events: [] },
       workstreamContextCommit: workstreamBound
         ? {
@@ -416,6 +427,47 @@ function createReadTool(): ToolDefinition {
   };
 }
 
+function createFindTool(path = "/tmp/health-notes.md"): ToolDefinition {
+  return {
+    name: "find_files",
+    description: "Find a fixture file.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+    annotations: {
+      domain: "filesystem",
+      readOnly: true,
+      mutatesWorkspace: false,
+      mutatesExternalWorld: false,
+      destructive: false,
+      idempotent: true,
+      retrySafe: true,
+      longRunning: false,
+    },
+    async execute() {
+      return {
+        ok: true,
+        output: path,
+        v2: {
+          transportOk: true,
+          operationStatus: "succeeded",
+          code: "FILES_FOUND",
+          message: "Found one file.",
+          structuredContent: {
+            query: "health notes",
+            roots: [],
+            matches: [{ absolutePath: path, kind: "file" }],
+            capped: false,
+            errors: [],
+          },
+        },
+      };
+    },
+  };
+}
+
 function pulseEvent(eventId = "evt-1") {
   return {
     type: "system_event" as const,
@@ -489,18 +541,19 @@ describe("IVecEngine one-run integration", () => {
     });
   });
 
-  it("finalizes a provider direct reply on the prepared run", async () => {
+  it("finalizes request-like direct response text as completed", async () => {
     const dataDir = makeTmpDir();
+    const response = "Could you please send me the report whenever you have a chance?";
     try {
       const provider = createProvider([
-        { kind: "reply", status: "completed", message: "Hello from Ayati." },
+        { kind: "reply", status: "completed", message: response },
       ]);
       const onReply = vi.fn();
       const runtime = createContextRuntime(createPreparedTurn({ role: "user", runId: "R-direct" }));
       const engine = createEngine({ onReply, provider, dataDir, chatContextRuntime: runtime });
 
       await engine.start();
-      engine.handleMessage("c1", { type: "chat", content: "Hello" });
+      engine.handleMessage("c1", { type: "chat", content: "Rewrite this politely: Send me the report now." });
 
       await vi.waitFor(() => expect(onReply).toHaveBeenCalledOnce());
       expect(provider.generateTurn).toHaveBeenCalledOnce();
@@ -510,10 +563,14 @@ describe("IVecEngine one-run integration", () => {
         turn: expect.objectContaining({ run: expect.objectContaining({ runId: "R-direct" }) }),
         outcome: "done",
         stopReason: "completed",
+        workState: expect.objectContaining({
+          status: "done",
+          nextAction: undefined,
+        }),
       }));
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "reply",
-        content: "Hello from Ayati.",
+        content: response,
         runId: "R-direct",
         commitStatus: "not_required",
       });
@@ -531,11 +588,11 @@ describe("IVecEngine one-run integration", () => {
           request: {
             to: "observe.locate",
             purpose: "Identify which file the user means.",
-            capabilities: ["file:read"],
+            capabilities: ["file:search"],
           },
         },
         {
-          kind: "validate",
+          kind: "stop",
           request: {
             outcome: "needs_user_input",
             summary: "The requested file is ambiguous.",
@@ -550,7 +607,7 @@ describe("IVecEngine one-run integration", () => {
         provider,
         dataDir,
         chatContextRuntime: runtime,
-        toolExecutor: createToolExecutor([createReadTool()]),
+        toolExecutor: createToolExecutor([createFindTool(), createReadTool()]),
       });
 
       await engine.start();
@@ -585,10 +642,23 @@ describe("IVecEngine one-run integration", () => {
             purpose: "Bind the exact output target before creating it.",
             capabilities: ["file:write"],
             targets: [outputPath],
+            binding: {
+              kind: "create",
+              title: "Create requested output",
+              objective: "Create and verify the requested output file.",
+              initialRequest: {
+                title: "Create requested output",
+                request: "Create the requested output file.",
+                acceptance: ["The requested output file exists."],
+                constraints: [],
+              },
+              resources: [],
+              evidence: ["run:R-unbound-write:step:1:call:missing-routing-observation"],
+            },
           },
         },
         {
-          kind: "validate",
+          kind: "stop",
           request: {
             outcome: "failed",
             summary: "Workstream resolution was unavailable before mutation.",
@@ -653,7 +723,7 @@ describe("IVecEngine one-run integration", () => {
       dataDir,
       chatContextRuntime: runtime,
       contextEngineService: service,
-      toolExecutor: createToolExecutor([writeFilesTool, ...gitContextTools]),
+      toolExecutor: createToolExecutor([writeFilesTool, inspectPathsTool, ...gitContextTools]),
     });
 
     try {
@@ -697,7 +767,7 @@ describe("IVecEngine one-run integration", () => {
       }));
       expect(startWorkstreamResolution).not.toHaveBeenCalled();
       expect(createWorkstreamForRun).toHaveBeenCalledOnce();
-      expect(provider.generateTurn).toHaveBeenCalledTimes(5);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(6);
       const terminalReplyIndex = onReply.mock.calls.findIndex(([, response]) => (
         response as { type?: string }
       ).type === "reply");
@@ -787,6 +857,8 @@ describe("IVecEngine one-run integration", () => {
   it("records an observational system-event step on its prepared run", async () => {
     const dataDir = makeTmpDir();
     try {
+      const healthNotesPath = join(dataDir, "health-notes.md");
+      writeFileSync(healthNotesPath, "Health notes are current.\n", "utf8");
       const runtime = createContextRuntime(createPreparedTurn({
         role: "system_event",
         runId: "R-system-read",
@@ -799,7 +871,7 @@ describe("IVecEngine one-run integration", () => {
             request: {
               to: "observe.locate",
               purpose: "Locate and inspect the health notes referenced by the reminder.",
-              capabilities: ["file:read"],
+              capabilities: ["file:search"],
             },
           },
           {
@@ -807,26 +879,39 @@ describe("IVecEngine one-run integration", () => {
             action: {
               mode: "single",
               calls: [{
-                id: "read-health",
-                tool: "read_files",
-                input: { path: "health-notes.md" },
+                id: "find-health",
+                tool: "find_files",
+                input: {},
                 dependsOn: [],
-                purpose: "Inspect health notes",
+                purpose: "Locate health notes",
               }],
-              allowedTools: ["read_files"],
+              allowedTools: ["find_files"],
               assertions: [],
             },
           },
           {
-            kind: "validate",
+            kind: "transition_mode",
             request: {
-              outcome: "completed",
-              summary: "Verified the current health notes.",
-              response: "Health notes are current.",
+              to: "validation",
+              purpose: "Check current-run proof for the located health notes file.",
+              capabilities: ["task:validation"],
+              validationChecks: [{
+                kind: "path.exists",
+                subject: healthNotesPath,
+                expectedKind: "file",
+              }],
             },
           },
+          {
+            kind: "reply",
+            status: "completed",
+            message: "Health notes are current.",
+          },
         ]),
-        toolExecutor: createToolExecutor([readTool]),
+        toolExecutor: createToolExecutor([
+          createFindTool(healthNotesPath),
+          readTool,
+        ]),
         dataDir,
         systemEventContextRuntime: runtime,
         systemEventPolicy: createSystemEventPolicy(),
@@ -835,15 +920,15 @@ describe("IVecEngine one-run integration", () => {
       await engine.start();
       await engine.handleSystemEvent("c1", pulseEvent("system-read"));
 
-      expect(runtime.recordRunStep).toHaveBeenCalledOnce();
+      expect(runtime.recordRunStep).toHaveBeenCalledTimes(1);
       expect(runtime.recordRunStep).toHaveBeenCalledWith(expect.objectContaining({
         turn: expect.objectContaining({ run: expect.objectContaining({ runId: "R-system-read" }) }),
         record: expect.objectContaining({
           runId: "R-system-read",
           step: 1,
           toolCalls: [expect.objectContaining({
-            callId: "read-health",
-            tool: "read_files",
+            callId: "find-health",
+            tool: "find_files",
             status: "success",
           })],
         }),

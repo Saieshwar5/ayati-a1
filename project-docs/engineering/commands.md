@@ -49,7 +49,7 @@ pnpm context:catalog-rebuild -- --confirm
 ```
 
 Both mutation commands refuse a live Context Engine writer. Archive reset
-preserves `<AYATI_ROOT_DIR>/workspace/`. Catalog rebuild requires an empty V5
+preserves `<AYATI_ROOT_DIR>/workspace/`. Catalog rebuild requires an empty V8
 catalog; after an archive reset, start and stop Ayati once before confirming
 rebuild.
 

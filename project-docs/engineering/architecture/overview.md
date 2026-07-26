@@ -18,32 +18,48 @@ context SQLite and context-only Git writes. The daemon depends on its typed
 2. One `prepareAgentRun` transaction resolves the default agent stream,
    appends an immutable ingress message, creates a run with initial WorkState,
    and returns the authoritative agent-facing projection.
-3. The projection separates slow stream continuity from fast run state. It
-   includes a checkpoint plus exact message tail, recent work references,
-   resources, reusable observations, routing candidates, and the current run.
+3. The projection separates slow stream continuity from fast run state. Its
+   model-facing Core Capsule contains the exact current input and routing, up
+   to five active-document navigation pointers, plus a strict-budget
+   checkpoint and exact tail. The model-facing pack contains
+   only Core Capsule, optional Hot Context, current capabilities, harness
+   feedback, and current-run truth. Authoritative work and resources stay
+   outside the prompt.
 4. Before each primary decision, the runtime builds a structured prompt
-   manifest, measures the complete serialized provider request, and checks the
-   run-owned context-preparation lane. Disposable checkpoint or focus
-   candidates may be prepared beside foreground model work; they are not
-   agents or model-facing tools.
-5. Every run starts at `ENTRY`. The decision model may reply directly for a
-   tool-free request or enter a read-only observation mode. Workstream and
-   resource-owner discovery are read-only observations in that same loop. A
+   manifest. Core Capsule maintenance runs from its own continuity budget;
+   whole-request preparation separately measures the complete serialized
+   provider request. Disposable checkpoint or focus candidates may be
+   prepared beside foreground model work; they are not agents or model-facing
+   tools.
+5. Every run starts at `ENTRY`. The decision model may reply directly for
+   conversation or a focused clarification, briefly enter read-only
+   `context.retrieve` to mount optional context, or enter a read-only
+   observation mode. The runtime does not classify or reject an `ENTRY` reply
+   from request wording alone; prompt policy tells the model to enter the graph
+   whenever a response depends on unperformed observation or action.
+   Workstream and resource-owner discovery are read-only observations in that
+   same loop. A
    transition to `resolve` requires mutation intent, a binding-required
-   capability, evidence-backed targets, and one typed binding proposal. The
+   capability, evidence-backed mutation scopes, and one typed binding proposal. The
    deterministic gate makes no model call, enters `execute` mechanically after
    binding, and mounts authoritative context before a fresh decision. Mode
-   changes replace the tool surface.
-6. The shared action executor runs calls. Deterministic verification and the
-   progress reducer update WorkState. `recordRunStep` persists each ordered
-   step, its calls, verification, and resulting WorkState, then returns the
-   updated authoritative projection for the next decision.
+   changes replace the exact capability surface.
+6. The shared action executor runs calls and deterministically verifies each
+   result. `recordRunStep` persists each ordered step, its calls, and
+   verification without revising WorkState. The model creates a sparse
+   WorkState checkpoint only for a material plan or context pressure; terminal
+   finalization and exact-request continuation update it deterministically. A
+   successful terminal update also promotes at most four selected passed
+   validation outcomes into compact important-context receipts with exact
+   proof references.
 7. Context recovery removes duplicate/invalid projections, compacts
-   recoverable outputs, and applies deterministic bounds first. It then
-   prefers a durable source-anchored stream checkpoint and uses a temporary
-   anchored run-focus overlay only when durable recovery is insufficient.
-   Durable candidates commit only when adopted, and the commit's fresh Context
-   Engine projection replaces the loop projection before prompt rebuild.
+   recoverable outputs, and applies deterministic bounds first. Both Core
+   Capsule maintenance and whole-prompt pressure prefer the same durable
+   source-anchored stream checkpoint. Whole-prompt recovery may additionally
+   use a temporary anchored run-focus overlay when durable recovery is
+   insufficient. Durable candidates commit only when adopted, and the
+   commit's fresh Context Engine projection replaces the loop projection
+   before prompt rebuild.
 8. `finalizeRun` closes the run, appends the immutable assistant message,
    verifies resource effects, and optionally commits reduced workstream
    continuity.
@@ -61,10 +77,13 @@ context pack -> decision -> action executor -> deterministic verification -> pro
 ```text
 agent stream (slow growth, many runs)
   immutable user/system-event/assistant messages
-  pressure checkpoint + exact tail
-  recent work references
+  durable continuity checkpoint + exact tail
+  recent-workstream metadata prepared for optional Hot Context
+  recent material WorkState handoffs derived for optional Hot Context
+  one 32-record recent-document registry derived from exact run steps
+    newest five -> Core Capsule active-document pointers
+    older 27 -> optional files.recent Hot Context
   stream resources
-  reusable list/search/read observations
 
 run context (fast growth, one accepted input)
   run-scoped virtual mode and revision
@@ -76,6 +95,7 @@ run context (fast growth, one accepted input)
 
 personal memory (independent)
   stable facts, preferences, evolving and time-scoped facts
+  compact snapshot exposed as optional personal.memory Hot Context
 ```
 
 There is one default stream for the local agent: `agentId=local` and
@@ -89,7 +109,7 @@ container, and the stream is never used as an action log.
 <AYATI_ROOT_DIR>/
   workspace/       default visible output
   workstreams/     context-only Git repositories
-  .ayati/          V7 database and managed resources
+  .ayati/          V8 database and managed resources
 ```
 
 Workstream Git never contains deliverables. The resource catalog points to

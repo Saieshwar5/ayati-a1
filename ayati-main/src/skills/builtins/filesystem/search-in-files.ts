@@ -106,13 +106,6 @@ export const searchInFilesTool: ToolDefinition = {
       path: "$.result.structuredContent.matches",
     }],
   }),
-  selectionHints: {
-    tags: ["filesystem", "search", "grep", "content", "text"],
-    aliases: ["grep_files", "find_text", "content_search"],
-    examples: ["search TODO in codebase", "find text in all files"],
-    domain: "filesystem-search",
-    priority: 35,
-  },
   async execute(input, context): Promise<ToolResult> {
     const parsed = validateSearchInFilesInput(input);
     if ("ok" in parsed) return parsed;

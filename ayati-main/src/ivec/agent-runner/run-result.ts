@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { PreparedAttachmentRecord } from "../../documents/prepared-attachment-registry.js";
 import type { PreparedAttachmentSummary } from "../../documents/types.js";
 import type {
@@ -15,6 +15,15 @@ import {
   isDurableStepArtifact,
   stepHasGeneratedArtifactEvidence,
 } from "./final-response-policy.js";
+import { latestActiveFailure } from "./failure-lifecycle.js";
+import { isFilesystemTaskValidationOutcomeKind } from "./task-validation-contracts.js";
+import { validationModePassed } from "./validation-mode.js";
+import {
+  workStateBlockers,
+  workStateEvidenceRefs,
+  workStateFindings,
+  workStateOpenTasks,
+} from "./work-state/selectors.js";
 
 export function buildWorkstreamSummaryRecord(
   state: LoopState,
@@ -40,15 +49,17 @@ export function buildWorkstreamSummaryRecord(
     objective: state.userMessage.trim() || undefined,
     summary: userFacingSummary || progressSummary,
     progressSummary: progressSummary || undefined,
-    currentFocus: state.workState.nextStep?.trim() || undefined,
+    currentFocus: state.workState.nextAction?.trim() || undefined,
     completedMilestones: state.harnessContext.contextEngine?.workstream?.workstreamStatus === "done"
       ? [state.harnessContext.contextEngine.workstream.summary]
       : [],
     openWork,
     blockers,
-    keyFacts: normalizeList(state.workState.verifiedFacts),
-    evidence: normalizeList(state.workState.evidence),
-    userInputNeeded: state.workState.userInputNeeded?.trim() || undefined,
+    keyFacts: normalizeList(workStateFindings(state.workState)),
+    evidence: normalizeList(workStateEvidenceRefs(state.workState)),
+    userInputNeeded: state.workState.status === "needs_user_input"
+      ? state.workState.nextAction?.trim() || undefined
+      : undefined,
     userMessage: state.userMessage.trim() || undefined,
     assistantResponse,
     assistantResponseKind: responseKind === "none" ? undefined : responseKind,
@@ -103,20 +114,47 @@ export function buildRunResources(state: LoopState): AgentResourceRecord[] {
 }
 
 export function buildVerifiedCompletionResources(state: LoopState): AgentResourceRecord[] {
-  return (state.completionResources ?? []).map((asset) => ({
-    resourceId: stableResourceId(asset.resolvedPath),
-    role: "deliverable",
-    kind: asset.kind,
-    origin: "agent_created",
-    displayName: asset.path.split("/").pop() || asset.path,
-    description: asset.description,
-    aliases: [asset.path.split("/").pop() || asset.path],
-    locator: { kind: "filesystem", path: asset.resolvedPath },
-  }));
+  const validation = state.virtualMode.validation;
+  if (
+    !validationModePassed(state.virtualMode)
+    || validation?.returnMode !== "execute"
+  ) {
+    return [];
+  }
+
+  const generatedArtifacts = generatedArtifactPaths(state);
+  return validation.checks.flatMap((check) => {
+    if (!isFilesystemTaskValidationOutcomeKind(check.kind)) {
+      return [];
+    }
+    const path = absolutePath(check.subject);
+    const kind = check.actualKind
+      ?? (check.expectedKind && check.expectedKind !== "either"
+        ? check.expectedKind
+        : undefined);
+    if (
+      check.status !== "passed"
+      || !kind
+      || !validatesGeneratedArtifact(path, kind, generatedArtifacts)
+    ) {
+      return [];
+    }
+    const displayName = path.split("/").pop() || path;
+    return [{
+      resourceId: stableResourceId(path),
+      role: "deliverable",
+      kind,
+      origin: "agent_created",
+      displayName,
+      description: `Validated ${kind} deliverable ${displayName}.`,
+      aliases: [displayName],
+      locator: { kind: "filesystem", path },
+    } satisfies AgentResourceRecord];
+  });
 }
 
 function toWorkstreamSummaryStatus(status: WorkState["status"]): AgentWorkstreamSummaryRecord["workstreamStatus"] {
-  return status === "not_done" ? "open" : status;
+  return status === "in_progress" ? "open" : status;
 }
 
 function buildWorkstreamSummaryOpenWork(
@@ -124,7 +162,7 @@ function buildWorkstreamSummaryOpenWork(
   workstreamStatus: AgentWorkstreamSummaryRecord["workstreamStatus"],
   failureSummary: WorkstreamSummaryFailureSummary | undefined,
 ): string[] {
-  const openWork = normalizeList(state.workState.openWork);
+  const openWork = normalizeList(workStateOpenTasks(state.workState));
   if (workstreamStatus !== "open" || openWork.length > 0) {
     return openWork;
   }
@@ -143,7 +181,7 @@ function buildWorkstreamSummaryBlockers(
   workstreamStatus: AgentWorkstreamSummaryRecord["workstreamStatus"],
   failureSummary: WorkstreamSummaryFailureSummary | undefined,
 ): string[] {
-  const blockers = normalizeList(state.workState.blockers);
+  const blockers = normalizeList(workStateBlockers(state.workState));
   if (workstreamStatus !== "blocked" || blockers.length > 0) {
     return blockers;
   }
@@ -154,17 +192,14 @@ function buildWorkstreamSummaryBlockers(
 }
 
 function deriveNextAction(state: LoopState): string | undefined {
-  if (state.workState.userInputNeeded?.trim()) {
-    return state.workState.userInputNeeded.trim();
+  if (state.workState.nextAction?.trim()) {
+    return state.workState.nextAction.trim();
   }
-  if (state.workState.nextStep?.trim()) {
-    return state.workState.nextStep.trim();
-  }
-  const openWork = state.workState.openWork ?? [];
+  const openWork = workStateOpenTasks(state.workState);
   if (openWork.length > 0) {
     return openWork[0];
   }
-  const blockers = state.workState.blockers ?? [];
+  const blockers = workStateBlockers(state.workState);
   if (blockers.length > 0) {
     return blockers[0];
   }
@@ -196,11 +231,11 @@ function buildFailureSummary(state: LoopState): WorkstreamSummaryFailureSummary 
     return undefined;
   }
   const failedStep = [...state.completedSteps].reverse().find((step) => step.outcome === "failed");
-  const latestFailure = state.failureHistory[state.failureHistory.length - 1];
+  const latestFailure = latestActiveFailure(state.failureHistory);
   const error = latestFailure?.reason
     || failedStep?.evidenceSummary
     || failedStep?.summary
-    || state.workState.blockers?.[0]
+    || workStateBlockers(state.workState)[0]
     || state.workState.summary;
   const failedTool = failedStep?.toolsUsed?.[0];
   const failureType = failedStep?.failureType ?? latestFailure?.failureType;
@@ -247,11 +282,7 @@ function buildAttachmentNames(preparedAttachments: PreparedAttachmentSummary[] |
 }
 
 function buildGeneratedResources(state: LoopState): AgentResourceRecord[] {
-  const artifacts = normalizeList(state.completedSteps.flatMap((step) => (
-    stepHasGeneratedArtifactEvidence(step) ? step.artifacts : []
-  )))
-    .filter((artifact) => isDurableStepArtifact(artifact))
-    .map((artifact) => absolutePath(artifact));
+  const artifacts = generatedArtifactPaths(state);
   const resources: AgentResourceRecord[] = [];
   const directoryCounts = new Map<string, number>();
 
@@ -267,8 +298,7 @@ function buildGeneratedResources(state: LoopState): AgentResourceRecord[] {
       kind,
       origin: "agent_created",
       displayName: artifact.split("/").pop() || artifact,
-      description: completionResourceDescription(state, artifact)
-        ?? `Agent-created ${kind} ${artifact.split("/").pop() || artifact}.`,
+      description: `Agent-created ${kind} ${artifact.split("/").pop() || artifact}.`,
       aliases: [artifact.split("/").pop() || artifact],
       locator: { kind: "filesystem", path: artifact },
     });
@@ -284,8 +314,7 @@ function buildGeneratedResources(state: LoopState): AgentResourceRecord[] {
       kind: "directory",
       origin: "agent_created",
       displayName: directoryPath.split("/").pop() || directoryPath,
-      description: completionResourceDescription(state, directoryPath)
-        ?? `Agent-created directory ${directoryPath.split("/").pop() || directoryPath}.`,
+      description: `Agent-created directory ${directoryPath.split("/").pop() || directoryPath}.`,
       aliases: [directoryPath.split("/").pop() || directoryPath],
       locator: { kind: "filesystem", path: directoryPath },
     });
@@ -294,12 +323,33 @@ function buildGeneratedResources(state: LoopState): AgentResourceRecord[] {
   return resources;
 }
 
-function completionResourceDescription(
-  state: LoopState,
-  path: string,
-): string | undefined {
-  const asset = state.completionResources?.find((candidate) => candidate.resolvedPath === path);
-  return asset?.description;
+function generatedArtifactPaths(state: LoopState): string[] {
+  return normalizeList(state.completedSteps.flatMap((step) => (
+    stepHasGeneratedArtifactEvidence(step) ? step.artifacts : []
+  )))
+    .filter((artifact) => isDurableStepArtifact(artifact))
+    .map((artifact) => absolutePath(artifact));
+}
+
+function validatesGeneratedArtifact(
+  validationPath: string,
+  kind: "file" | "directory",
+  generatedArtifacts: string[],
+): boolean {
+  if (kind === "file") {
+    return generatedArtifacts.includes(validationPath);
+  }
+  return generatedArtifacts.some((artifact) => (
+    artifact === validationPath || isDescendantPath(validationPath, artifact)
+  ));
+}
+
+function isDescendantPath(parent: string, candidate: string): boolean {
+  const child = relative(parent, candidate);
+  return child.length > 0
+    && child !== ".."
+    && !child.startsWith(`..${sep}`)
+    && !isAbsolute(child);
 }
 
 function attachmentRecordToResource(

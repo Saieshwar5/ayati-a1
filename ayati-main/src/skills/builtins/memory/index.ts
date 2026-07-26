@@ -10,6 +10,10 @@ import {
   type MemorySectionId,
 } from "../../../memory/personal/types.js";
 import type { SkillDefinition, ToolDefinition, ToolResult } from "../../types.js";
+import {
+  genericObjectOutputSchema,
+  succeededContract,
+} from "../contract-helpers.js";
 
 export interface MemorySkillDeps {
   store: PersonalMemoryStore;
@@ -39,6 +43,19 @@ function createSearchTool(deps: MemorySkillDeps): ToolDefinition {
         limit: { type: "number", description: "Maximum matches, default 10." },
       },
     },
+    outputSchema: genericObjectOutputSchema,
+    resultContract: succeededContract({
+      assertions: [{
+        id: "memory_matches_present",
+        kind: "json_path_exists",
+        path: "$.result.structuredContent.matches",
+      }],
+      progressFacts: [{
+        kind: "memory_read_completed",
+        path: "$.result.structuredContent.subject",
+        message: "Canonical personal memory search completed.",
+      }],
+    }),
     async execute(input, context): Promise<ToolResult> {
       const value = validateObject(input) ?? {};
       const userId = userIdFromContext(context?.clientId, deps.defaultUserId);
@@ -54,7 +71,8 @@ function createSearchTool(deps: MemorySkillDeps): ToolDefinition {
         ...serializeMemory(memory),
         score: scoreMemory(memory),
       }));
-      return { ok: true, output: JSON.stringify({ matches }, null, 2) };
+      const subject = memorySearchSubject(value);
+      return { ok: true, output: JSON.stringify({ subject, matches }, null, 2) };
     },
   };
 }
@@ -80,6 +98,19 @@ function createRememberTool(deps: MemorySkillDeps): ToolDefinition {
         importance: { type: "number", description: "Optional importance from 0 to 1." },
       },
     },
+    outputSchema: genericObjectOutputSchema,
+    resultContract: succeededContract({
+      assertions: [{
+        id: "memory_resolution_present",
+        kind: "json_path_exists",
+        path: "$.result.structuredContent.result",
+      }],
+      progressFacts: [{
+        kind: "memory_change_completed",
+        path: "$.result.structuredContent.subject",
+        message: "Approved personal memory was resolved and saved.",
+      }],
+    }),
     async execute(input, context): Promise<ToolResult> {
       const value = validateObject(input);
       const text = typeof value?.["text"] === "string"
@@ -120,7 +151,10 @@ function createRememberTool(deps: MemorySkillDeps): ToolDefinition {
         reason: "manual_memory_remember",
         turns: [],
       }, [proposal], DEFAULT_MEMORY_POLICY);
-      return { ok: true, output: JSON.stringify({ result }, null, 2) };
+      return {
+        ok: true,
+        output: JSON.stringify({ subject: slot, result }, null, 2),
+      };
     },
   };
 }
@@ -137,6 +171,19 @@ function createForgetTool(deps: MemorySkillDeps): ToolDefinition {
         sectionId: { type: "string", description: "Optional section: user_facts, time_based, or evolving_memory." },
       },
     },
+    outputSchema: genericObjectOutputSchema,
+    resultContract: succeededContract({
+      assertions: [{
+        id: "memory_archive_result_present",
+        kind: "json_path_exists",
+        path: "$.result.structuredContent.archived",
+      }],
+      progressFacts: [{
+        kind: "memory_change_completed",
+        path: "$.result.structuredContent.archived[*]",
+        message: "Personal memory was archived.",
+      }],
+    }),
     async execute(input, context): Promise<ToolResult> {
       const value = validateObject(input);
       if (!value) {
@@ -174,6 +221,19 @@ function createExplainTool(deps: MemorySkillDeps): ToolDefinition {
         memoryId: { type: "string", description: "Memory id to explain." },
       },
     },
+    outputSchema: genericObjectOutputSchema,
+    resultContract: succeededContract({
+      assertions: [{
+        id: "memory_explanation_present",
+        kind: "json_path_exists",
+        path: "$.result.structuredContent.memory",
+      }],
+      progressFacts: [{
+        kind: "memory_read_completed",
+        path: "$.result.structuredContent.memory.id",
+        message: "Canonical personal memory explanation was read.",
+      }],
+    }),
     async execute(input): Promise<ToolResult> {
       const value = validateObject(input);
       const memoryId = typeof value?.["memoryId"] === "string" ? value["memoryId"].trim() : "";
@@ -211,6 +271,19 @@ function createFeedbackTool(deps: MemorySkillDeps): ToolDefinition {
         outcome: { type: "string", description: "helpful or harmful." },
       },
     },
+    outputSchema: genericObjectOutputSchema,
+    resultContract: succeededContract({
+      assertions: [{
+        id: "memory_feedback_present",
+        kind: "json_path_exists",
+        path: "$.result.structuredContent.memoryId",
+      }],
+      progressFacts: [{
+        kind: "memory_change_completed",
+        path: "$.result.structuredContent.memoryId",
+        message: "Personal memory feedback was recorded.",
+      }],
+    }),
     async execute(input, context): Promise<ToolResult> {
       const value = validateObject(input);
       const memoryId = typeof value?.["memoryId"] === "string" ? value["memoryId"].trim() : "";
@@ -224,23 +297,21 @@ function createFeedbackTool(deps: MemorySkillDeps): ToolDefinition {
   };
 }
 
-const MEMORY_PROMPT_BLOCK = [
-  "The personal memory tools are built in.",
-  "Personal memory currently stores User Facts, Time-Based, and Evolving Memory cards.",
-  "Use memory_search for canonical personal memory cards. Use recall_memory for prior conversations and episodic history.",
-  "Use memory_remember only when the user explicitly asks to save or remember a stable fact, timed memory, or evolving personalization memory.",
-  "Time-Based memories must include expiresAt.",
-  "Use sectionId=evolving_memory for preferences, goals, skills, environment, constraints, procedures, feedback, routines, decisions, relationships, and permissions.",
-  "Use memory_forget when the user asks to forget, remove, or correct a stored memory.",
-  "Use memory_explain when the user asks why Ayati believes a memory or how it evolved.",
-].join("\n");
+function memorySearchSubject(value: Record<string, unknown>): string {
+  for (const key of ["query", "slot", "kind", "type", "sectionId", "section_id"]) {
+    const subject = value[key];
+    if (typeof subject === "string" && subject.trim()) {
+      return subject.trim();
+    }
+  }
+  return "all";
+}
 
 export function createMemorySkill(deps: MemorySkillDeps): SkillDefinition {
   return {
     id: "memory",
     version: "1.0.0",
     description: "Search and manage canonical User Facts memories.",
-    promptBlock: MEMORY_PROMPT_BLOCK,
     tools: [
       createSearchTool(deps),
       createRememberTool(deps),

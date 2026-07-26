@@ -55,6 +55,13 @@ describe("resource catalog and durable workstream relationships", () => {
     });
     const digest = createHash("sha256").update(bytes).digest("hex");
     expect(resource?.resourceId).toBe("RES-" + digest.slice(0, 24).toUpperCase());
+    expect(fixture.prepared.message.attachmentRefs).toEqual([{
+      resourceId: resource?.resourceId,
+      kind: "document",
+      displayName: "notes.txt",
+    }]);
+    expect(fixture.prepared.context.stream?.recentMessages[0]?.attachmentRefs)
+      .toEqual(fixture.prepared.message.attachmentRefs);
     const storedPath = join(fixture.root, ".ayati", "resources", "sha256", digest.slice(0, 2), digest);
     expect(await readFile(storedPath, "utf8")).toBe(bytes);
 

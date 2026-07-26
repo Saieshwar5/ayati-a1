@@ -25,13 +25,19 @@ describe("navigation feedback reduction", () => {
       },
       {
         stage: "virtual_mode",
-        event: "validation_rejected",
-        data: { mode: { active: "execute", revision: 2 } },
+        event: "transition_requested",
+        data: { source: "execute" },
       },
       {
         stage: "virtual_mode",
-        event: "validation_accepted",
-        data: { mode: { active: "execute", revision: 2 } },
+        event: "transition_applied",
+        data: {
+          mode: {
+            active: "validation",
+            revision: 3,
+            validation: { status: "passed", checks: [{ status: "passed" }] },
+          },
+        },
       },
     ];
 
@@ -41,17 +47,54 @@ describe("navigation feedback reduction", () => {
     );
 
     expect(summary).toEqual({
-      currentMode: "execute",
-      modeRevision: 2,
-      transitionRequests: 2,
-      transitionAccepted: 2,
+      currentMode: "validation",
+      modeRevision: 3,
+      transitionRequests: 3,
+      transitionAccepted: 3,
       transitionRejected: 0,
       bindingAttempts: 1,
       bindingStatus: "resolved",
-      validationAttempts: 2,
+      validationAttempts: 1,
       validationAccepted: 1,
+      validationRejected: 0,
+    });
+  });
+
+  it("counts an applied failed validation checklist without rejecting the transition", () => {
+    const summary = updateNavigationFeedbackSummary(undefined, {
+      stage: "virtual_mode",
+      event: "transition_applied",
+      data: {
+        mode: {
+          active: "validation",
+          revision: 1,
+          validation: { status: "failed", checks: [{ status: "failed" }] },
+        },
+      },
+    });
+
+    expect(summary).toMatchObject({
+      currentMode: "validation",
+      transitionAccepted: 1,
+      transitionRejected: 0,
+      validationAttempts: 1,
+      validationAccepted: 0,
       validationRejected: 1,
     });
+  });
+
+  it("recognizes transient context retrieval but never invents resolve as a current mode", () => {
+    const retrieved = updateNavigationFeedbackSummary(undefined, {
+      stage: "virtual_mode",
+      event: "transition_applied",
+      data: { mode: { active: "context.retrieve", revision: 1 } },
+    });
+
+    expect(retrieved?.currentMode).toBe("context.retrieve");
+    expect(readNavigationFeedbackSummary({
+      ...retrieved,
+      currentMode: "resolve",
+    })).toBeUndefined();
   });
 
   it("keeps the latest mode while merging final counters with observed events", () => {
@@ -60,7 +103,7 @@ describe("navigation feedback reduction", () => {
     final.bindingAttempts = 1;
     final.bindingStatus = "resolved";
     const observed = readNavigationFeedbackSummary({
-      currentMode: "execute",
+      currentMode: "validation",
       modeRevision: 3,
       transitionRequests: 2,
       transitionAccepted: 2,
@@ -73,7 +116,7 @@ describe("navigation feedback reduction", () => {
     });
 
     expect(mergeNavigationFeedbackSummary(final, observed)).toMatchObject({
-      currentMode: "execute",
+      currentMode: "validation",
       modeRevision: 3,
       transitionRequests: 2,
       bindingAttempts: 1,

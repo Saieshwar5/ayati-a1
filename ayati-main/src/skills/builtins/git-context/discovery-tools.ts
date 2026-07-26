@@ -41,12 +41,6 @@ function findWorkstreamsTool(service: ContextEngineService): ToolDefinition {
     outputSchema: listOutputSchema("workstreams"),
     annotations: readAnnotations(),
     resultContract: succeededContract(),
-    selectionHints: {
-      tags: ["git-context", "workstream", "find", "recent", "starred"],
-      aliases: ["find workstream", "search durable work", "recent work"],
-      domain: "git_context",
-      priority: 10,
-    },
     async execute(input, context): Promise<ToolResult> {
       const record = objectInput(input);
       const streamId = context?.sessionId?.trim();
@@ -98,12 +92,6 @@ function readWorkstreamTool(service: ContextEngineService): ToolDefinition {
     },
     annotations: readAnnotations(),
     resultContract: succeededContract(),
-    selectionHints: {
-      tags: ["git-context", "workstream", "read", "inspect"],
-      aliases: ["open workstream", "inspect durable work"],
-      domain: "git_context",
-      priority: 10,
-    },
     async execute(input, context): Promise<ToolResult> {
       const workstreamId = optionalString(objectInput(input), "workstreamId");
       const identity = executionIdentity(context);
@@ -151,12 +139,6 @@ function setWorkstreamStarTool(service: ContextEngineService): ToolDefinition {
     },
     annotations: controlAnnotations(true),
     resultContract: succeededContract(),
-    selectionHints: {
-      tags: ["git-context", "workstream", "preference", "star"],
-      aliases: ["star workstream", "favorite work"],
-      domain: "git_context",
-      priority: 8,
-    },
     async execute(input, context): Promise<ToolResult> {
       const record = objectInput(input);
       const workstreamId = optionalString(record, "workstreamId");
@@ -214,12 +196,6 @@ function findResourcesTool(service: ContextEngineService): ToolDefinition {
     outputSchema: listOutputSchema("resources"),
     annotations: readAnnotations(),
     resultContract: succeededContract(),
-    selectionHints: {
-      tags: ["git-context", "resource", "find", "ownership"],
-      aliases: ["find resource", "who owns this file", "search artifacts"],
-      domain: "git_context",
-      priority: 10,
-    },
     async execute(input): Promise<ToolResult> {
       const record = objectInput(input);
       const limit = integer(record["limit"]);
@@ -266,19 +242,6 @@ function inspectResourceTool(service: ContextEngineService): ToolDefinition {
     outputSchema: { type: "object" },
     annotations: controlAnnotations(true),
     resultContract: succeededContract(),
-    selectionHints: {
-      tags: ["git-context", "resource", "inspect", "register"],
-      aliases: [
-        "inspect path",
-        "register resource",
-        "inspect url",
-        "register existing directory",
-        "adopt existing project path",
-        "catalog user provided path",
-      ],
-      domain: "git_context",
-      priority: 10,
-    },
     async execute(input, context): Promise<ToolResult> {
       const record = objectInput(input);
       const identity = executionIdentity(context);
@@ -338,12 +301,6 @@ function bindResourcesTool(service: ContextEngineService): ToolDefinition {
     outputSchema: { type: "object" },
     annotations: controlAnnotations(false),
     resultContract: succeededContract(),
-    selectionHints: {
-      tags: ["git-context", "resource", "bind", "workstream"],
-      aliases: ["bind resource", "add path to workstream"],
-      domain: "git_context",
-      priority: 10,
-    },
     async execute(input, context): Promise<ToolResult> {
       const identity = executionIdentity(context);
       const bindings = parseBindings(objectInput(input)["bindings"]);

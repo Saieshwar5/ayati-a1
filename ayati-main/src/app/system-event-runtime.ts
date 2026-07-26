@@ -7,12 +7,12 @@ import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
 import type { AgentResponseKind, RunRecorder, SessionInputHandle } from "../memory/types.js";
 import type { AgentRunHandle, ContextEngineService, FinalizeRunResponse } from "ayati-context-engine";
-import type { SkillActivationManager } from "../skills/activation-manager.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition } from "../skills/types.js";
 import { devError, devLog } from "../shared/index.js";
 import { agentLoop } from "../ivec/agent-loop.js";
-import type { ToolWorkingSetManager } from "../ivec/agent-runner/tool-working-set.js";
+import type { CapabilitySurfaceManager } from "../ivec/agent-runner/capabilities/surface-manager.js";
+import type { HotContextRuntime } from "../ivec/hot-context/index.js";
 import { summarizeHarnessContext } from "../ivec/agent-runner/feedback-summary.js";
 import {
   buildContextEngineFeedbackSummary,
@@ -48,8 +48,8 @@ export interface CreateSystemEventRuntimeOptions {
   systemEventContextRuntime: ContextEngineRuntime;
   contextEngineService?: ContextEngineService;
   toolExecutor?: ToolExecutor;
-  skillActivationManager?: SkillActivationManager;
-  toolWorkingSetManager?: ToolWorkingSetManager;
+  capabilitySurfaceManager?: CapabilitySurfaceManager;
+  hotContextRuntime?: HotContextRuntime;
   loopConfig?: Partial<LoopConfig>;
   now?: () => Date;
   dataDir?: string;
@@ -59,7 +59,6 @@ export interface CreateSystemEventRuntimeOptions {
   directoryLibrary?: DirectoryLibrary;
   systemEventPolicy?: SystemEventPolicyConfig;
   feedbackLedger?: AgentFeedbackLedger;
-  personalMemorySnapshot?: (clientId: string) => string;
 }
 
 interface SystemEventExecutionPlan {
@@ -99,8 +98,8 @@ class AppSystemEventRuntime implements SystemEventRuntime {
   private readonly systemEventContextRuntime: ContextEngineRuntime;
   private readonly contextEngineService?: ContextEngineService;
   private readonly toolExecutor?: ToolExecutor;
-  private readonly skillActivationManager?: SkillActivationManager;
-  private readonly toolWorkingSetManager?: ToolWorkingSetManager;
+  private readonly capabilitySurfaceManager?: CapabilitySurfaceManager;
+  private readonly hotContextRuntime?: HotContextRuntime;
   private readonly loopConfig?: Partial<LoopConfig>;
   private readonly nowProvider: () => Date;
   private readonly dataDir?: string;
@@ -110,7 +109,6 @@ class AppSystemEventRuntime implements SystemEventRuntime {
   private readonly directoryLibrary?: DirectoryLibrary;
   private readonly systemEventPolicy?: SystemEventPolicyConfig;
   private readonly feedbackLedger?: AgentFeedbackLedger;
-  private readonly personalMemorySnapshot?: (clientId: string) => string;
 
   constructor(options: CreateSystemEventRuntimeOptions) {
     this.onReply = options.onReply;
@@ -119,8 +117,8 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     this.systemEventContextRuntime = options.systemEventContextRuntime;
     this.contextEngineService = options.contextEngineService;
     this.toolExecutor = options.toolExecutor;
-    this.skillActivationManager = options.skillActivationManager;
-    this.toolWorkingSetManager = options.toolWorkingSetManager;
+    this.capabilitySurfaceManager = options.capabilitySurfaceManager;
+    this.hotContextRuntime = options.hotContextRuntime;
     this.loopConfig = options.loopConfig;
     this.nowProvider = options.now ?? (() => new Date());
     this.dataDir = options.dataDir;
@@ -130,7 +128,6 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     this.directoryLibrary = options.directoryLibrary;
     this.systemEventPolicy = options.systemEventPolicy;
     this.feedbackLedger = options.feedbackLedger;
-    this.personalMemorySnapshot = options.personalMemorySnapshot;
   }
 
   async processSystemEvent(input: SystemEventRuntimeInput): Promise<void> {
@@ -221,8 +218,8 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       const result = await agentLoop({
         provider: this.provider,
         toolExecutor: this.toolExecutor,
-        skillActivationManager: this.skillActivationManager,
-        toolWorkingSetManager: this.toolWorkingSetManager,
+        capabilitySurfaceManager: this.capabilitySurfaceManager,
+        hotContextRuntime: this.hotContextRuntime,
         toolDefinitions,
         runRecorder: systemEventRunRecorder,
         inputHandle,
@@ -233,6 +230,16 @@ class AppSystemEventRuntime implements SystemEventRuntime {
             record,
           });
           return context ? { contextEngine: context } : undefined;
+        },
+        checkpointWorkState: async (checkpoint) => {
+          const result = await this.systemEventContextRuntime.checkpointRunWorkState({
+            turn: preparedContextTurn,
+            ...checkpoint,
+          });
+          return {
+            ...(result ? { context: { contextEngine: result.context } } : {}),
+            runtime: result?.runtime ?? checkpoint.runtime,
+          };
         },
         contextCheckpoint: this.systemEventContextRuntime.contextCheckpointCoordinator(preparedContextTurn),
         ...(this.contextEngineService
@@ -263,9 +270,6 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         systemContext: buildStaticSystemContext(this.staticContext),
         harnessContext: {
           contextEngine: preparedContextTurn.context,
-          ...(this.personalMemorySnapshot
-            ? { personalMemorySnapshot: this.personalMemorySnapshot(clientId) }
-            : {}),
         },
         feedbackLedger: this.feedbackLedger,
         fileLibrary: this.fileLibrary,
@@ -435,7 +439,6 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         stopReason: finalized.run.stopReason,
         workstreamBinding: finalized.run.workstreamBinding,
         assistantMessageId: finalized.assistantMessage?.messageId,
-        observationRevision: finalized.observationRevision,
         resourceEffects: finalized.resourceEffects,
         workstreamContextCommit: finalized.workstreamContextCommit,
       },
@@ -620,10 +623,8 @@ function systemEventResult(
     workState: {
       status: "done",
       summary: content || "System event recorded.",
-      openWork: [],
-      blockers: [],
-      verifiedFacts: [],
-      evidence: [],
+      plan: [],
+      importantContext: [],
     },
     completedSteps: [],
   };
@@ -644,11 +645,9 @@ function failedSystemEventResult(runId: string, error: unknown): AgentLoopResult
     workState: {
       status: "blocked",
       summary: "System event processing failed.",
-      openWork: ["Retry the system event after resolving the failure."],
-      blockers: [message],
-      verifiedFacts: [],
-      evidence: [],
-      nextStep: "Retry the system event.",
+      plan: [],
+      importantContext: [{ kind: "constraint", value: message }],
+      nextAction: "Retry the system event.",
     },
     completedSteps: [],
   };

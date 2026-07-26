@@ -55,17 +55,6 @@ describe("recall skill", () => {
     expect(result.error).toContain("provide query and/or a date range");
   });
 
-  it("exposes a prompt block that explains the one-tool recall flow", () => {
-    const skill = createRecallSkill({
-      retriever: {
-        recall: async () => [],
-      } as never,
-    });
-
-    expect(skill.promptBlock).toContain("recall_memory");
-    expect(skill.promptBlock).toContain("read_files");
-  });
-
   it("exposes episodic memory status and enable controls", async () => {
     let enabled = false;
     const skill = createRecallSkill({

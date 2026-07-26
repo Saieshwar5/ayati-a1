@@ -16,6 +16,11 @@ import { listDirectoryTool } from "../../src/skills/builtins/filesystem/list-dir
 import { patchFilesTool } from "../../src/skills/builtins/filesystem/patch-files.js";
 import { readFilesTool } from "../../src/skills/builtins/filesystem/read-files.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
+import { createContextSkill } from "../../src/skills/builtins/context/index.js";
+import {
+  createPersonalMemoryHotContextSource,
+  HotContextRuntime,
+} from "../../src/ivec/hot-context/index.js";
 
 const NOW = "2026-07-19T10:00:00.000Z";
 const temporaryDirectories: string[] = [];
@@ -27,7 +32,7 @@ afterEach(() => {
 });
 
 describe("resource-scoped tool executor", () => {
-  it("maps the root shorthand to the default workspace for an unbound read", async () => {
+  it("uses the exact default workspace path for an unbound read", async () => {
     const workspace = tempDirectory("ayati-unbound-workspace-");
     writeFileSync(join(workspace, "workspace-only.txt"), "safe\n", "utf-8");
     const service = serviceFor(unboundActiveContext("R-unbound"));
@@ -38,7 +43,7 @@ describe("resource-scoped tool executor", () => {
     });
 
     const result = await executor.execute("list_directory", {
-      path: "/",
+      path: workspace,
       recursive: false,
       showHidden: false,
     }, executionContext("R-unbound", "call-list"));
@@ -48,6 +53,24 @@ describe("resource-scoped tool executor", () => {
       dirPath: workspace,
       entries: [expect.objectContaining({ name: "workspace-only.txt" })],
     });
+  });
+
+  it("does not reinterpret the filesystem root as the default workspace", async () => {
+    const workspace = tempDirectory("ayati-unbound-workspace-");
+    const executor = createResourceScopedToolExecutor({
+      base: createToolExecutor([listDirectoryTool]),
+      contextEngine: serviceFor(unboundActiveContext("R-unbound")),
+      workspaceRoot: workspace,
+    });
+
+    const result = await executor.execute("list_directory", {
+      path: "/",
+      recursive: false,
+      showHidden: false,
+    }, executionContext("R-unbound", "call-root"));
+
+    expect(result.ok).toBe(false);
+    expect(result.v2?.code).toBe("PATH_OUTSIDE_WORKSPACE_ROOT");
   });
 
   it("allows an unbound read from an ingress filesystem resource", async () => {
@@ -133,7 +156,33 @@ describe("resource-scoped tool executor", () => {
     expect(existsSync(join(workspace, "index.html"))).toBe(false);
   });
 
-  it("maps the root shorthand to the primary bound resource", async () => {
+  it("does not apply filesystem resource scope to a context-domain tool", async () => {
+    const runtime = new HotContextRuntime({
+      sources: [
+        createPersonalMemoryHotContextSource({
+          getSnapshot: () => "The user prefers concise answers.",
+        }),
+      ],
+    });
+    const contextTool = createContextSkill({ hotContextRuntime: runtime }).tools[0]!;
+    const service = serviceFor(boundActiveContext([]));
+    const executor = createResourceScopedToolExecutor({
+      base: createToolExecutor([contextTool]),
+      contextEngine: service,
+    });
+
+    const result = await executor.execute(
+      "context_load",
+      { keys: ["personal.memory"] },
+      executionContext(),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.v2?.code).toBe("HOT_CONTEXT_LOADED");
+    expect(service.getAgentContext).not.toHaveBeenCalled();
+  });
+
+  it("uses the exact primary bound resource path", async () => {
     const workspace = tempDirectory("ayati-workspace-");
     const site = tempDirectory("ayati-site-");
     writeFileSync(join(site, "index.html"), "ready\n", "utf-8");
@@ -144,7 +193,7 @@ describe("resource-scoped tool executor", () => {
     });
 
     const result = await executor.execute("list_directory", {
-      path: "/",
+      path: site,
       recursive: false,
       showHidden: false,
     }, executionContext());

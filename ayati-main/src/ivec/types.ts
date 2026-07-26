@@ -1,7 +1,7 @@
 import type { LlmProvider } from "../core/contracts/provider.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
-import type { SkillActivationManager } from "../skills/activation-manager.js";
-import type { ToolLoadResult, ToolWorkingSetManager } from "./agent-runner/tool-working-set.js";
+import type { CapabilitySurfaceResult } from "./agent-runner/capabilities/contracts.js";
+import type { CapabilitySurfaceManager } from "./agent-runner/capabilities/surface-manager.js";
 import type { RepairCode, RepairPromptCard } from "./agent-runner/repair-policy.js";
 import type { WorkstreamBindingCoordinator } from "./workstream-binding/contracts.js";
 import type {
@@ -44,6 +44,28 @@ import type { AgentFeedbackLedger } from "./feedback-ledger.js";
 import type { HarnessContext, HarnessContextInput } from "./harness-context.js";
 import type { ContextPressureState } from "./context-pressure-state.js";
 import type { VirtualModeState } from "./agent-runner/virtual-mode.js";
+import type {
+  HotContextProjection,
+  HotContextRuntime,
+} from "./hot-context/index.js";
+import type { ToolCallVerificationRecord } from "./agent-runner/tool-call-verification-contracts.js";
+import type { FilesystemCompletionEvidence } from "./agent-runner/filesystem-completion-evidence-contracts.js";
+import type {
+  WorkState,
+  WorkStateRuntimeMetadata,
+  WorkStateUpdateReason,
+} from "./agent-runner/work-state/contracts.js";
+export type {
+  ImportantContextItem,
+  ImportantContextKind,
+  WorkPlanItem,
+  WorkPlanItemStatus,
+  WorkState,
+  WorkStateRuntimeMetadata,
+  WorkStateUpdateInput,
+  WorkStateUpdateReason,
+  WorkStatus,
+} from "./agent-runner/work-state/contracts.js";
 import type {
   AgentRunHandle,
   ContextCheckpointPlan,
@@ -120,8 +142,6 @@ export interface AgentResourceRecord {
 
 // --- State ---
 
-export type WorkStatus = "not_done" | "done" | "blocked" | "needs_user_input";
-
 export type ToolAvailableAction = "search" | "read_range" | "read_next_range" | "inspect" | "rerun_narrower" | "list_narrower";
 export type ToolObservationMode = "full" | "focused" | "chunk" | "large_ref" | "summary";
 export type ToolObservationRetention = "next_step" | "while_relevant" | "evidence_only";
@@ -155,8 +175,19 @@ export interface PromptToolCallStepRef {
   callId?: string;
 }
 
+export type {
+  FilesystemCompletionEvidence,
+  FilesystemReadCoverage,
+  FilesystemReadMode,
+} from "./agent-runner/filesystem-completion-evidence-contracts.js";
+
 export interface RunToolCallContext {
   step: number;
+  /**
+   * Transient context loads have their own ordinal namespace and never refer
+   * to a durable run step. Omitted means the call belongs to a durable step.
+   */
+  stepKind?: "transient_context";
   callId?: string;
   tool: string;
   purpose?: string;
@@ -174,6 +205,10 @@ export interface RunToolCallContext {
   evidenceRef?: string;
   rawOutputChars?: number;
   outputTruncated?: boolean;
+  verification?: ToolCallVerificationRecord;
+  /** Compatibility projection for records created before per-call verification. */
+  verificationPassed?: boolean;
+  completionEvidence?: FilesystemCompletionEvidence[];
 }
 
 export interface ToolContextState {
@@ -181,16 +216,21 @@ export interface ToolContextState {
   toolCalls?: RunToolCallContext[];
 }
 
-export interface WorkState {
-  status: WorkStatus;
-  summary: string;
-  openWork?: string[];
-  blockers?: string[];
-  verifiedFacts: string[];
-  evidence: string[];
-  artifacts?: string[];
-  nextStep?: string;
-  userInputNeeded?: string;
+export type FailureRepairScope =
+  | "navigation"
+  | "binding"
+  | "action"
+  | "validation";
+
+export type FailureResolutionKind =
+  | "accepted_mode_transition"
+  | "authoritative_binding"
+  | "verified_action"
+  | "validation_accepted";
+
+export interface FailureResolution {
+  iteration: number;
+  kind: FailureResolutionKind;
 }
 
 export interface FailureRecord {
@@ -201,6 +241,8 @@ export interface FailureRecord {
   blockedTargets: string[];
   repairCode?: RepairCode;
   repair?: RepairPromptCard;
+  repairScope?: FailureRepairScope;
+  resolution?: FailureResolution;
 }
 
 export interface ReadProgressState {
@@ -228,18 +270,9 @@ export interface LoopState {
   contextVisibility?: SystemEventContextVisibility;
   preferredResponseKind?: AgentResponseKind;
   workState: WorkState;
-  /** Exact accepted completion summary, retained outside compact prompt state. */
-  verifiedCompletionSummary?: string;
-  completionResources?: Array<{
-    resourceId: string;
-    path: string;
-    resolvedPath: string;
-    kind: "file" | "directory";
-    description: string;
-    aliases: string[];
-  }>;
+  workStateRuntime: WorkStateRuntimeMetadata;
   toolContext?: ToolContextState;
-  lastToolLoad?: ToolLoadResult;
+  lastCapabilitySurface?: CapabilitySurfaceResult;
   workingNotes?: string[];
   status: "running" | "completed" | "failed" | "stuck";
   finalOutput: string;
@@ -255,6 +288,7 @@ export interface LoopState {
   interrupted?: boolean;
   readProgress?: ReadProgressState;
   virtualMode: VirtualModeState;
+  hotContext: HotContextProjection;
   attachedDocuments?: ManagedDocumentManifest[];
   attachmentWarnings?: string[];
   preparedAttachments?: PreparedAttachmentSummary[];
@@ -330,6 +364,7 @@ export interface ActToolCallRecord {
   artifacts?: ArtifactRef[];
   verifiedFacts?: VerifiedFact[];
   assertionResults?: AssertionResult[];
+  verification?: ToolCallVerificationRecord;
   observation?: ToolObservation;
 }
 
@@ -380,7 +415,7 @@ export interface LoopConfig {
   maxParallelToolCallsPerStep: number;
   maxInlineActOutputChars: number;
   maxVerifyArtifactChars: number;
-  maxSelectedTools: number;
+  maxCapabilitySurfaceTools: number;
   strategyReviewFailureThreshold: number;
   toolContextProjectionPolicy: ToolContextProjectionPolicy;
 }
@@ -393,7 +428,7 @@ export const DEFAULT_LOOP_CONFIG: LoopConfig = {
   maxParallelToolCallsPerStep: 3,
   maxInlineActOutputChars: 8_000,
   maxVerifyArtifactChars: 20_000,
-  maxSelectedTools: 15,
+  maxCapabilitySurfaceTools: 8,
   strategyReviewFailureThreshold: 3,
   toolContextProjectionPolicy: "enforce",
 };
@@ -412,7 +447,7 @@ export interface AgentLoopResult {
   runPath: string;
   workstreamSummary?: AgentWorkstreamSummaryRecord;
   resources?: AgentResourceRecord[];
-  /** Exact resources accepted by deterministic workstream-completion verification. */
+  /** Generated filesystem resources confirmed by the passed validation mode. */
   verifiedCompletionResources?: AgentResourceRecord[];
   artifacts?: AgentArtifact[];
   workState?: WorkState;
@@ -457,8 +492,8 @@ export interface AgentContextCheckpointCoordinator {
 export interface AgentLoopDeps {
   provider: LlmProvider;
   toolExecutor?: ToolExecutor;
-  skillActivationManager?: SkillActivationManager;
-  toolWorkingSetManager?: ToolWorkingSetManager;
+  capabilitySurfaceManager?: CapabilitySurfaceManager;
+  hotContextRuntime?: HotContextRuntime;
   toolDefinitions: ToolDefinition[];
   runRecorder?: RunRecorder;
   inputHandle?: SessionInputHandle;
@@ -482,6 +517,16 @@ export interface AgentLoopDeps {
     record: ContextRunStepRecord,
     currentContext: HarnessContextInput,
   ) => void | HarnessContextInput | Promise<void | HarnessContextInput>;
+  checkpointWorkState?: (input: {
+    reason: Extract<WorkStateUpdateReason, "plan" | "context_pressure">;
+    workState: WorkState;
+    runtime: WorkStateRuntimeMetadata;
+    afterStep: number;
+    at: string;
+  }) => Promise<{
+    context?: HarnessContextInput;
+    runtime: WorkStateRuntimeMetadata;
+  }>;
   contextCheckpoint?: AgentContextCheckpointCoordinator;
   /** Runtime-owned disposable context preparation for this run. */
   contextPreparation?: ContextPreparationManager;

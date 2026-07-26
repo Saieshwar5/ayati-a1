@@ -30,7 +30,6 @@ describe("ui built-in skill", () => {
       const skill = createSkill(dataDir);
 
       expect(skill.id).toBe("ui-workspace");
-      expect(skill.promptBlock).toContain("CLI window is the protected anchor");
       expect(skill.tools.map((tool) => tool.name)).toEqual([
         "workspace_get_state",
         "workspace_set_layout",

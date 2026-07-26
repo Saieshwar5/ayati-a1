@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import type {
   AgentRunHandle,
+  AssistantFeedbackKind,
+  AssistantResponseKind,
+  CheckpointRunWorkStateResponse,
   ContextCheckpointPlan,
   ContextCheckpointRecord,
   FinalizeRunResponse,
@@ -19,7 +22,12 @@ import {
   type ContextRunStepRecord,
 } from "../context-engine/index.js";
 import { compactWorkState } from "../ivec/state-compaction.js";
-import type { AgentContextCheckpointCoordinator } from "../ivec/types.js";
+import type {
+  AgentContextCheckpointCoordinator,
+  WorkState,
+  WorkStateRuntimeMetadata,
+  WorkStateUpdateReason,
+} from "../ivec/types.js";
 import { getToolTaxonomy } from "../skills/tool-taxonomy.js";
 
 export interface ContextEnginePreparedTurn {
@@ -38,6 +46,8 @@ export interface ContextEngineFinalizeRunInput {
   outcome: RunOutcome;
   stopReason: RunStopReason;
   assistantResponse: string;
+  assistantResponseKind?: AssistantResponseKind;
+  assistantFeedbackKind?: AssistantFeedbackKind;
   streamSummary: string;
   summary: string;
   validation: "passed" | "failed" | "not_applicable";
@@ -77,6 +87,17 @@ export interface ContextEngineRuntime {
     turn: ContextEnginePreparedTurn | null;
     record: ContextRunStepRecord;
   }): Promise<ContextEngineMachineContext | null>;
+  checkpointRunWorkState(input: {
+    turn: ContextEnginePreparedTurn | null;
+    reason: Extract<WorkStateUpdateReason, "plan" | "context_pressure">;
+    workState: WorkState;
+    runtime: WorkStateRuntimeMetadata;
+    afterStep: number;
+    at: string;
+  }): Promise<{
+    context: ContextEngineMachineContext;
+    runtime: WorkStateRuntimeMetadata;
+  } | null>;
   contextCheckpointCoordinator(turn: ContextEnginePreparedTurn): AgentContextCheckpointCoordinator;
 }
 
@@ -143,6 +164,12 @@ class AppContextEngineRuntime implements ContextEngineRuntime {
         outcome: input.outcome,
         stopReason: input.stopReason,
         assistantResponse: input.assistantResponse,
+        ...(input.assistantResponseKind
+          ? { assistantResponseKind: input.assistantResponseKind }
+          : {}),
+        ...(input.assistantFeedbackKind
+          ? { assistantFeedbackKind: input.assistantFeedbackKind }
+          : {}),
         streamSummary: input.streamSummary,
         summary: input.summary,
         validation: input.validation,
@@ -166,7 +193,6 @@ class AppContextEngineRuntime implements ContextEngineRuntime {
           stopReason: response.run.stopReason,
           workstreamBinding: response.run.workstreamBinding,
           assistantMessageId: response.assistantMessage?.messageId,
-          observationRevision: response.observationRevision,
           resourceEffects: response.resourceEffects,
           workstreamContextCommit: response.workstreamContextCommit,
         },
@@ -234,15 +260,6 @@ class AppContextEngineRuntime implements ContextEngineRuntime {
           workStateRevision: response.run.workState.revision,
           afterStep: response.run.workState.afterStep,
           contextRevision: response.context.contextRevision,
-          observationRevision: response.context.observationRevision,
-          observationCounts: {
-            inventory: response.context.observations.inventory.length,
-            discovery: response.context.observations.discovery.length,
-            evidence: response.context.observations.evidence.length,
-            total: response.context.observations.inventory.length
-              + response.context.observations.discovery.length
-              + response.context.observations.evidence.length,
-          },
         },
       });
       return projection;
@@ -259,6 +276,34 @@ class AppContextEngineRuntime implements ContextEngineRuntime {
       });
       throw error;
     }
+  }
+
+  async checkpointRunWorkState(input: {
+    turn: ContextEnginePreparedTurn | null;
+    reason: Extract<WorkStateUpdateReason, "plan" | "context_pressure">;
+    workState: WorkState;
+    runtime: WorkStateRuntimeMetadata;
+    afterStep: number;
+    at: string;
+  }): Promise<{
+    context: ContextEngineMachineContext;
+    runtime: WorkStateRuntimeMetadata;
+  } | null> {
+    if (!input.turn) return null;
+    const turn = input.turn;
+    const response = await this.options.service.checkpointRunWorkState({
+      requestId: operationRequestId(
+        turn.run.runId,
+        `work-state-${input.reason}-${input.runtime.revision + 1}`,
+      ),
+      runId: turn.run.runId,
+      expectedRevision: input.runtime.revision,
+      afterStep: input.afterStep,
+      reason: input.reason,
+      workState: toRunWorkState(input.workState),
+      at: input.at,
+    });
+    return this.applyWorkStateCheckpoint(turn, response);
   }
 
   contextCheckpointCoordinator(turn: ContextEnginePreparedTurn): AgentContextCheckpointCoordinator {
@@ -356,6 +401,40 @@ class AppContextEngineRuntime implements ContextEngineRuntime {
       context,
     };
   }
+
+  private applyWorkStateCheckpoint(
+    turn: ContextEnginePreparedTurn,
+    response: CheckpointRunWorkStateResponse,
+  ): {
+    context: ContextEngineMachineContext;
+    runtime: WorkStateRuntimeMetadata;
+  } {
+    const projection = buildContextEngineProjection(response.context);
+    turn.context = projection;
+    const persisted = response.run.workState;
+    this.observer.emit({
+      level: "info",
+      event: "run_work_state_checkpointed",
+      streamId: turn.streamId,
+      runId: turn.run.runId,
+      step: persisted.afterStep,
+      outcome: "succeeded",
+      data: {
+        revision: persisted.revision,
+        reason: persisted.updateReason,
+        contextRevision: response.context.contextRevision,
+      },
+    });
+    return {
+      context: projection,
+      runtime: {
+        revision: persisted.revision,
+        afterStep: persisted.afterStep,
+        updateReason: persisted.updateReason,
+        updatedAt: persisted.updatedAt,
+      },
+    };
+  }
 }
 
 function toRunStepRecord(record: ContextRunStepRecord): RunStepRecord {
@@ -385,10 +464,18 @@ function toRunStepRecord(record: ContextRunStepRecord): RunStepRecord {
         input: call.input,
         ...(call.output !== undefined ? { output: call.output } : {}),
         ...(call.error !== undefined ? { error: call.error } : {}),
+        ...(call.verification ? { verification: call.verification } : {}),
+        ...(typeof call["verificationPassed"] === "boolean"
+          ? { verificationPassed: call["verificationPassed"] }
+          : {}),
+        ...(Array.isArray(call["completionEvidence"]) && call["completionEvidence"].length > 0
+          ? {
+              completionEvidence: call["completionEvidence"],
+            }
+          : {}),
       };
     }),
     verification: record.verification,
-    workStateAfter: toRunWorkState(record.workStateAfter),
     createdAt: record.completedAt,
   };
 }
@@ -403,8 +490,8 @@ function toRunWorkState(value: unknown, outcome?: RunOutcome): RunWorkStateInput
       ? "blocked"
       : outcome === "needs_user_input"
         ? "needs_user_input"
-        : "not_done";
-  const status = ["not_done", "done", "blocked", "needs_user_input"].includes(
+        : "in_progress";
+  const status = ["in_progress", "done", "blocked", "needs_user_input"].includes(
     String(state["status"]),
   )
     ? state["status"] as RunWorkStateInput["status"]
@@ -415,30 +502,25 @@ function toRunWorkState(value: unknown, outcome?: RunOutcome): RunWorkStateInput
   const summary = typeof state["summary"] === "string" && state["summary"].trim()
     ? state["summary"]
     : fallbackSummary;
-  const userInputNeeded = typeof state["userInputNeeded"] === "string"
-    ? state["userInputNeeded"]
-    : strings(state["userInputNeeded"]).find((item) => item.trim().length > 0);
   const compacted = compactWorkState({
     status,
     summary,
-    openWork: strings(state["openWork"]),
-    blockers: strings(state["blockers"]),
-    verifiedFacts: strings(state["verifiedFacts"] ?? state["facts"]),
-    evidence: strings(state["evidence"]),
-    artifacts: strings(state["artifacts"]),
-    ...(typeof state["nextStep"] === "string" ? { nextStep: state["nextStep"] } : {}),
-    ...(userInputNeeded ? { userInputNeeded } : {}),
+    plan: Array.isArray(state["plan"])
+      ? state["plan"].filter(isWorkPlanItem)
+      : [],
+    importantContext: Array.isArray(state["importantContext"])
+      ? state["importantContext"].filter(isImportantContextItem)
+      : [],
+    ...(typeof state["nextAction"] === "string"
+      ? { nextAction: state["nextAction"] }
+      : {}),
   });
   return {
     status: compacted.status,
     summary: compacted.summary,
-    openWork: compacted.openWork ?? [],
-    blockers: compacted.blockers ?? [],
-    facts: compacted.verifiedFacts,
-    evidence: compacted.evidence,
-    artifacts: compacted.artifacts ?? [],
-    nextStep: compacted.nextStep ?? null,
-    userInputNeeded: compacted.userInputNeeded ? [compacted.userInputNeeded] : [],
+    plan: compacted.plan,
+    importantContext: compacted.importantContext,
+    nextAction: compacted.nextAction ?? null,
   };
 }
 
@@ -459,8 +541,20 @@ function operationRequestId(runId: string, operation: string): string {
   return runId + ":" + operation;
 }
 
-function strings(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
+function isWorkPlanItem(value: unknown): value is WorkState["plan"][number] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const item = value as Record<string, unknown>;
+  return typeof item["id"] === "string"
+    && typeof item["task"] === "string"
+    && ["pending", "active", "done", "blocked"].includes(String(item["status"]));
+}
+
+function isImportantContextItem(
+  value: unknown,
+): value is WorkState["importantContext"][number] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const item = value as Record<string, unknown>;
+  return ["artifact", "decision", "finding", "constraint"].includes(String(item["kind"]))
+    && typeof item["value"] === "string"
+    && (item["ref"] === undefined || typeof item["ref"] === "string");
 }

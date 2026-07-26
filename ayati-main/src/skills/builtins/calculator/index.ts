@@ -125,20 +125,10 @@ export const calculatorTool: ToolDefinition = {
   },
 };
 
-const CALC_PROMPT_BLOCK = [
-  "The `calculator` tool is built in.",
-  "Use it directly for mathematical computation instead of mental math.",
-  "Supports: arithmetic, exponents, trig, logs, factorial, combinatorics, constants (pi, e, tau, phi).",
-  "Supports hex (0xFF), binary (0b1010), octal (0o77), scientific notation (1.5e10).",
-  "Implicit multiplication: 2pi, 3(4+5). Percentage: 50% = 0.5. Factorial: 5! = 120.",
-  "All computation uses arbitrary-precision decimal arithmetic — no floating-point errors.",
-].join("\n");
-
 const calculatorSkill: SkillDefinition = {
   id: "calculator",
   version: "1.0.0",
   description: "Arbitrary-precision calculator with full math function support.",
-  promptBlock: CALC_PROMPT_BLOCK,
   tools: [calculatorTool],
 };
 

@@ -1,4 +1,9 @@
-import type { ContextCheckpointSummary } from "ayati-context-engine";
+import type {
+  AssistantFeedbackKind,
+  AssistantResponseKind,
+  MessageAttachmentRef,
+  StreamMessage,
+} from "ayati-context-engine";
 
 export type AgentTemporalExactEvent =
   | {
@@ -6,6 +11,7 @@ export type AgentTemporalExactEvent =
       seq: number;
       timestamp: string;
       content: string;
+      attachmentRefs?: MessageAttachmentRef[];
       current?: true;
     }
   | {
@@ -13,8 +19,8 @@ export type AgentTemporalExactEvent =
       seq: number;
       timestamp: string;
       content: string;
-      responseKind?: string;
-      expectsUserResponse?: boolean;
+      responseKind?: AssistantResponseKind;
+      feedbackKind?: AssistantFeedbackKind;
       current?: true;
     }
   | {
@@ -34,20 +40,43 @@ export type AgentTemporalExactEvent =
       current?: true;
     };
 
-export interface AgentTemporalCheckpointEvent {
-  kind: "checkpoint";
-  seq: number;
-  timestamp: string;
-  current?: never;
-  schemaVersion: 1;
-  coveredFromSeq: number;
-  coveredToSeq: number;
-  sourceEventCount: number;
-  sourceHash: string;
-  summary: ContextCheckpointSummary;
-}
+export type AgentTemporalEvent = AgentTemporalExactEvent;
 
-export type AgentTemporalEvent = AgentTemporalExactEvent | AgentTemporalCheckpointEvent;
+export function projectStreamMessageEvent(
+  message: StreamMessage,
+  current = false,
+): AgentTemporalExactEvent {
+  if (message.role === "assistant") {
+    return {
+      kind: "assistant",
+      seq: message.sequence,
+      timestamp: message.at,
+      content: message.content,
+      ...(message.responseKind ? { responseKind: message.responseKind } : {}),
+      ...(message.feedbackKind ? { feedbackKind: message.feedbackKind } : {}),
+      ...(current ? { current: true } : {}),
+    };
+  }
+  if (message.role === "system_event") {
+    return {
+      kind: "system",
+      seq: message.sequence,
+      timestamp: message.at,
+      content: message.content,
+      ...(current ? { current: true } : {}),
+    };
+  }
+  return {
+    kind: "user",
+    seq: message.sequence,
+    timestamp: message.at,
+    content: message.content,
+    ...(message.attachmentRefs && message.attachmentRefs.length > 0
+      ? { attachmentRefs: message.attachmentRefs }
+      : {}),
+    ...(current ? { current: true } : {}),
+  };
+}
 
 const CHECKPOINT_STATEMENT_SCHEMA = {
   type: "object",

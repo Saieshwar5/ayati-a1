@@ -3,6 +3,8 @@ import {
   type AgentContextProjection,
   type BindResourcesForRunRequest,
   type BindResourcesForRunResponse,
+  type CheckpointRunWorkStateRequest,
+  type CheckpointRunWorkStateResponse,
   type CommitContextCheckpointRequest,
   type CommitContextCheckpointResponse,
   type CommitWorkstreamResolutionRequest,
@@ -194,6 +196,12 @@ export class ContractOnlyContextEngineService implements ContextEngineService {
   }
 
   async recordRunStep(_input: RecordRunStepRequest): Promise<RecordRunStepResponse> {
+    throw notReady();
+  }
+
+  async checkpointRunWorkState(
+    _input: CheckpointRunWorkStateRequest,
+  ): Promise<CheckpointRunWorkStateResponse> {
     throw notReady();
   }
 }

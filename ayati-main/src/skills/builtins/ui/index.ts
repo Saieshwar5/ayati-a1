@@ -5,23 +5,11 @@ export interface UiSkillDeps {
   workspaceOrchestrator: WorkspaceOrchestrator;
 }
 
-const UI_PROMPT_LINES = [
-  "UI workspace tools are built in for the current Omarchy/Hyprland workspace anchored by the user's Ayati CLI window.",
-  "Use general workspace tools for coding, browsing, app previews, references, scratch explanations, and other visual work.",
-  "The current CLI window is the protected anchor. You may focus, resize, and arrange it, but do not close it unless the user explicitly asks.",
-  "The workspace has a hard maximum of five windows, including the CLI. Reuse same-role windows when possible; when capacity is reached, cleanup closes the least useful unpinned non-CLI window first.",
-  "Prefer role-based control over raw window addresses: cli, primary, secondary, browser, code, preview, terminal, reference, scratch.",
-  "Use layout presets instead of improvising geometry: 50-50 for discussion, 30-70 as the default work layout, 20-80 for visual-heavy work, grid for several supporting windows, focus for one dominant surface.",
-  "After calling workspace_set_layout, inspect lastActionStatus and layoutVerification. Tell the user the layout is done only when the status is applied; if it is failed, explain the measured ratio or failure reason. The 30-70 layout is the reliable agent workspace mode: protected CLI on the left and primary visual surface on the right.",
-  "Do not recover from a failed workspace_set_layout by issuing raw shell hyprctl resize or move commands unless the user explicitly asks for diagnosis; the workspace tool owns layout retries and verification.",
-];
-
 export function createUiSkill(deps: UiSkillDeps): SkillDefinition {
   return {
     id: "ui-workspace",
     version: "1.0.0",
     description: "Scoped OS/window control for Ayati-owned visual workspaces.",
-    promptBlock: UI_PROMPT_LINES.join("\n"),
     tools: [
       createWorkspaceGetStateTool(deps),
       createWorkspaceSetLayoutTool(deps),
@@ -42,11 +30,6 @@ function createWorkspaceGetStateTool(deps: UiSkillDeps): ToolDefinition {
       type: "object",
       properties: {},
       additionalProperties: false,
-    },
-    selectionHints: {
-      tags: ["workspace", "hyprland", "state", "windows"],
-      domain: "ui",
-      priority: 115,
     },
     async execute(_input, context): Promise<ToolResult> {
       return withJsonResult(async () => deps.workspaceOrchestrator.getState({
@@ -70,11 +53,6 @@ function createWorkspaceSetLayoutTool(deps: UiSkillDeps): ToolDefinition {
         primaryAddress: { type: "string", description: "Optional exact Hyprland window address to use as primary." },
       },
       additionalProperties: false,
-    },
-    selectionHints: {
-      tags: ["workspace", "layout", "hyprland", "arrange", "50-50", "30-70", "20-80"],
-      domain: "ui",
-      priority: 125,
     },
     async execute(input, context): Promise<ToolResult> {
       return withJsonResult(async () => {
@@ -102,11 +80,6 @@ function createWorkspaceFocusWindowTool(deps: UiSkillDeps): ToolDefinition {
         address: { type: "string", description: "Exact Hyprland window address to focus." },
       },
       additionalProperties: false,
-    },
-    selectionHints: {
-      tags: ["workspace", "focus", "window", "hyprland"],
-      domain: "ui",
-      priority: 110,
     },
     async execute(input, context): Promise<ToolResult> {
       return withJsonResult(async () => {
@@ -137,11 +110,6 @@ function createWorkspaceRegisterWindowTool(deps: UiSkillDeps): ToolDefinition {
         contentHint: { type: "string", description: "Short note about what this window is currently showing." },
       },
       additionalProperties: false,
-    },
-    selectionHints: {
-      tags: ["workspace", "role", "register", "window"],
-      domain: "ui",
-      priority: 100,
     },
     async execute(input, context): Promise<ToolResult> {
       return withJsonResult(async () => {
@@ -179,11 +147,6 @@ function createWorkspaceReuseOrOpenWindowTool(deps: UiSkillDeps): ToolDefinition
       },
       additionalProperties: false,
     },
-    selectionHints: {
-      tags: ["workspace", "open", "reuse", "window", "capacity", "lru"],
-      domain: "ui",
-      priority: 120,
-    },
     async execute(input, context): Promise<ToolResult> {
       return withJsonResult(async () => {
         const value = asRecord(input);
@@ -217,11 +180,6 @@ function createWorkspaceCloseWindowTool(deps: UiSkillDeps): ToolDefinition {
       },
       additionalProperties: false,
     },
-    selectionHints: {
-      tags: ["workspace", "close", "window", "cleanup"],
-      domain: "ui",
-      priority: 95,
-    },
     async execute(input, context): Promise<ToolResult> {
       return withJsonResult(async () => {
         const value = asRecord(input);
@@ -245,11 +203,6 @@ function createWorkspaceCleanupUnusedTool(deps: UiSkillDeps): ToolDefinition {
       type: "object",
       properties: {},
       additionalProperties: false,
-    },
-    selectionHints: {
-      tags: ["workspace", "cleanup", "lru", "max windows"],
-      domain: "ui",
-      priority: 100,
     },
     async execute(_input, context): Promise<ToolResult> {
       return withJsonResult(async () => deps.workspaceOrchestrator.cleanupUnused({

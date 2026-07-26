@@ -12,8 +12,8 @@ Avoid these:
 - Coupling provider-specific behavior into the core loop when provider abstraction should handle it.
 - Adding a new tool without validation and tests.
 - Changing prompt context without considering token budget, the structured context pack, and deterministic workstream/resource resolution.
-- Adding tool-loading behavior in prompt prose instead of the tool taxonomy,
-  working-set policy, and focused tests.
+- Adding tool-surface behavior in prompt prose or safety taxonomy instead of
+  the explicit capability catalog, surface policy, and focused tests.
 - Loading process tools for generic create/build requests when file
   create/write/read tools are the safer deterministic default.
 - Solving read loops by storing all raw file context in workstream state instead of

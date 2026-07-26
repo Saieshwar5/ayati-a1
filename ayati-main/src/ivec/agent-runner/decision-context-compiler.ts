@@ -5,7 +5,6 @@ import type { ContextBudgetReport } from "../../prompt/context-budget.js";
 import {
   buildFullContextCompilationReceipt,
   buildStreamCheckpointCompilationReceipt,
-  buildStreamProjectionCompilationReceipt,
   buildToolCompactContextCompilationReceipt,
 } from "../../prompt/context-compilation-receipt.js";
 import type { ContextCompilationReceipt } from "../../prompt/context-compilation-receipt.js";
@@ -19,10 +18,6 @@ import type { AgentPromptStateView } from "./prompt-context.js";
 import type { AgentStateView } from "./state-view.js";
 import { planToolContextProjection } from "./tool-context-projection-planner.js";
 import { buildToolContextProjectionCandidate } from "./tool-context-shadow.js";
-import {
-  buildStreamContextProjectionCandidate,
-  type StreamContextProjectionReceipt,
-} from "./stream-context-projection.js";
 import { generateStreamCheckpoint } from "./stream-checkpoint-generator.js";
 import { buildCommittedStreamCheckpointTurnInput } from "./stream-checkpoint-projection.js";
 import type { ContextPreparationManager } from "../context-preparation/manager.js";
@@ -132,53 +127,13 @@ export async function compileDecisionContext(input: {
   const projectedToolCalls = input.policy === "enforce" && toolTransformations.length > 0
     ? toolPlan.projectedCalls
     : undefined;
-  const streamCandidate = buildStreamContextProjectionCandidate({
-    stateView: input.stateView,
-    turnInput: intermediateTurnInput,
-    ...(projectedToolCalls ? { projectedToolCalls } : {}),
-    buildPrompt: input.buildPrompt,
-  });
-  const streamTurnInput = streamCandidate.receipt.triggered
-    ? streamCandidate.turnInput
-    : intermediateTurnInput;
-  const streamBudget = streamCandidate.receipt.triggered
-    ? await measureTurnContext({
-        provider: input.provider,
-        turnInput: streamTurnInput,
-        limits: input.contextLimits,
-      })
-    : intermediateBudget;
-  const streamTransformation = streamCandidate.receipt.triggered ? [{
-    kind: "stream_context_projection",
-    from: "full_stream_projection",
-    to: "bounded_stream_projection",
-    reason: "soft_limit_after_tool_compaction",
-    tokensBefore: intermediateBudget.measuredInputTokens,
-    tokensAfter: streamBudget.measuredInputTokens,
-  }] : [];
-  const streamCompilation = streamCandidate.receipt.triggered
-    ? enforcedStreamProjectionCompilation({
-        turnInput: streamTurnInput,
-        candidateBudget,
-        intermediateBudget,
-        finalBudget: streamBudget,
-        decisionAttempt: input.decisionAttempt,
-        transformations: [...toolTransformations, ...streamTransformation],
-        ...(projectionResult ? { projection: projectionResult } : {}),
-        streamProjection: streamCandidate.receipt,
-      })
-    : toolCompilation;
-
-  if (!streamBudget.softLimitExceeded) {
-    return streamCompilation;
-  }
 
   const protectFromSeq = currentInputSequence(input.stateView);
   if (!input.contextCheckpoint || protectFromSeq === undefined) {
     return exhaustedCompilation({
-      ...streamCompilation,
-      finalBudget: streamBudget,
-      finalTurnInput: streamTurnInput,
+      ...toolCompilation,
+      finalBudget: intermediateBudget,
+      finalTurnInput: intermediateTurnInput,
       finalBudgetMeasured: true,
     });
   }
@@ -186,15 +141,15 @@ export async function compileDecisionContext(input: {
     protectFromSeq,
     requiredSavingsTokens: Math.max(
       1,
-      streamBudget.measuredInputTokens - streamBudget.recoveryTargetTokens,
+      intermediateBudget.measuredInputTokens - intermediateBudget.recoveryTargetTokens,
     ),
     estimatedCheckpointTokens: 1_200,
   });
   if (!checkpointPlan.triggered) {
     return exhaustedCompilation({
-      ...streamCompilation,
-      finalBudget: streamBudget,
-      finalTurnInput: streamTurnInput,
+      ...toolCompilation,
+      finalBudget: intermediateBudget,
+      finalTurnInput: intermediateTurnInput,
       finalBudgetMeasured: true,
       streamCheckpoint: { plan: checkpointPlan },
     });
@@ -208,9 +163,9 @@ export async function compileDecisionContext(input: {
   });
   if (generation.status !== "success" || !generation.summary || generation.tokenCount === undefined) {
     return exhaustedCompilation({
-      ...streamCompilation,
-      finalBudget: streamBudget,
-      finalTurnInput: streamTurnInput,
+      ...toolCompilation,
+      finalBudget: intermediateBudget,
+      finalTurnInput: intermediateTurnInput,
       finalBudgetMeasured: true,
       streamCheckpoint: { plan: checkpointPlan, generation },
     });
@@ -225,7 +180,7 @@ export async function compileDecisionContext(input: {
   const checkpoint = committed.checkpoint;
   const finalTurnInput = buildCommittedStreamCheckpointTurnInput({
     stateView: input.stateView,
-    turnInput: streamTurnInput,
+    turnInput: intermediateTurnInput,
     plan: checkpointPlan,
     checkpoint,
     ...(projectedToolCalls ? { projectedToolCalls } : {}),
@@ -244,21 +199,21 @@ export async function compileDecisionContext(input: {
     coveredFromSeq: checkpoint.coveredFromSeq,
     coveredToSeq: checkpoint.coveredToSeq,
     sourceHash: checkpoint.sourceHash,
-    tokensBefore: streamBudget.measuredInputTokens,
+    tokensBefore: intermediateBudget.measuredInputTokens,
     tokensAfter: finalBudget.measuredInputTokens,
   };
   return {
     candidateBudget,
-    intermediateBudget: streamBudget,
+    intermediateBudget,
     finalBudget,
     finalTurnInput,
     finalBudgetMeasured: true,
     receipt: buildStreamCheckpointCompilationReceipt({
       candidate: candidateBudget,
-      intermediate: streamBudget,
+      intermediate: intermediateBudget,
       final: finalBudget,
       decisionAttempt: input.decisionAttempt,
-      transformations: [...toolTransformations, ...streamTransformation, checkpointTransformation],
+      transformations: [...toolTransformations, checkpointTransformation],
       checkpoint: {
         coveredFromSeq: checkpoint.coveredFromSeq,
         coveredToSeq: checkpoint.coveredToSeq,
@@ -269,66 +224,10 @@ export async function compileDecisionContext(input: {
         cacheStatus: "generated",
         generationAttempts: generation.attempts.length,
       },
-      ...(streamCandidate.receipt.triggered ? {
-        streamProjection: toStreamProjectionReceipt(
-          streamCandidate.receipt,
-          intermediateBudget.measuredInputTokens,
-          streamBudget.measuredInputTokens,
-        ),
-      } : {}),
       recoveryExhausted: finalBudget.softLimitExceeded,
     }),
     ...(projectionResult ? { projection: projectionResult } : {}),
-    ...(streamCandidate.receipt.triggered ? { streamProjection: streamCandidate.receipt } : {}),
     streamCheckpoint: { plan: checkpointPlan, generation, checkpoint },
-  };
-}
-
-function enforcedStreamProjectionCompilation(input: {
-  turnInput: LlmTurnInput;
-  candidateBudget: ContextBudgetReport;
-  intermediateBudget: ContextBudgetReport;
-  finalBudget: ContextBudgetReport;
-  decisionAttempt: number;
-  transformations: ContextCompilationReceipt["transformations"];
-  projection?: NonNullable<DecisionContextCompilation["projection"]>;
-  streamProjection: StreamContextProjectionReceipt;
-}): DecisionContextCompilation {
-  return {
-    candidateBudget: input.candidateBudget,
-    intermediateBudget: input.intermediateBudget,
-    finalBudget: input.finalBudget,
-    finalTurnInput: input.turnInput,
-    finalBudgetMeasured: true,
-    receipt: buildStreamProjectionCompilationReceipt({
-      candidate: input.candidateBudget,
-      intermediate: input.intermediateBudget,
-      final: input.finalBudget,
-      decisionAttempt: input.decisionAttempt,
-      transformations: input.transformations,
-      projection: toStreamProjectionReceipt(
-        input.streamProjection,
-        input.intermediateBudget.measuredInputTokens,
-        input.finalBudget.measuredInputTokens,
-      ),
-    }),
-    ...(input.projection ? { projection: input.projection } : {}),
-    streamProjection: input.streamProjection,
-  };
-}
-
-function toStreamProjectionReceipt(
-  projection: StreamContextProjectionReceipt,
-  tokensBefore: number,
-  tokensAfter: number,
-): NonNullable<ContextCompilationReceipt["streamProjection"]> {
-  return {
-    removedCandidateCount: projection.removedCandidateCount,
-    removedRecentWorkCount: projection.removedRecentWorkCount,
-    removedResourceCount: projection.removedResourceCount,
-    removedObservationCount: projection.removedObservationCount,
-    tokensBefore,
-    tokensAfter,
   };
 }
 
@@ -388,8 +287,8 @@ function enforcedToolCompilation(input: {
 }
 
 function currentInputSequence(stateView: AgentStateView): number | undefined {
-  return stateView.context.current.inputSeq > 0
-    ? stateView.context.current.inputSeq
+  return stateView.context.core.current.input.seq > 0
+    ? stateView.context.core.current.input.seq
     : undefined;
 }
 

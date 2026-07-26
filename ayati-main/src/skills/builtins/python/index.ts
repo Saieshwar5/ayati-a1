@@ -1,10 +1,13 @@
 import { readFile } from "node:fs/promises";
 import type { SkillDefinition, ToolDefinition, ToolExecutionContext, ToolResult } from "../../types.js";
 import {
+  genericObjectOutputSchema,
+  succeededContract,
+} from "../contract-helpers.js";
+import {
   allocatePythonArtifacts,
   buildPythonExecutionEnvironment,
   collectArtifactPaths,
-  DEFAULT_MANAGED_PYTHON_INTERPRETER,
   readPythonJsonResult,
   runManagedPythonProcess,
   writeExecutionManifest,
@@ -402,13 +405,26 @@ function createInspectDatasetTool(deps: PythonSkillDeps): ToolDefinition {
         maxOutputChars: { type: "number", description: "Optional cap for stdout/stderr previews." },
       },
     },
-    selectionHints: {
-      tags: ["python", "data", "analysis", "csv", "xlsx", "spreadsheet", "dataset", "sqlite", "pandas", "ml"],
-      aliases: ["inspect_dataset", "profile_dataset", "inspect_csv", "inspect_xlsx"],
-      examples: ["inspect this CSV", "inspect this XLSX", "profile the SQLite table", "show dataset schema"],
-      domain: "analysis",
-      priority: 55,
-    },
+    outputSchema: genericObjectOutputSchema,
+    resultContract: succeededContract({
+      assertions: [
+        {
+          id: "resolved_source_present",
+          kind: "json_path_exists",
+          path: "$.result.structuredContent.resolvedSource",
+        },
+        {
+          id: "row_count_present",
+          kind: "json_path_exists",
+          path: "$.result.structuredContent.rowCount",
+        },
+      ],
+      progressFacts: [{
+        kind: "python_execution_succeeded",
+        path: "$.result.structuredContent.resolvedSource",
+        message: "Managed Python dataset inspection completed successfully.",
+      }],
+    }),
     async execute(input, context): Promise<ToolResult> {
       const parsed = validatePythonInspectDatasetInput(input, context?.resourceScope?.rootPath);
       if ("ok" in parsed) {
@@ -463,13 +479,28 @@ function createPythonExecuteTool(deps: PythonSkillDeps): ToolDefinition {
         },
       },
     },
-    selectionHints: {
-      tags: ["python", "analysis", "chart", "visualization", "machine learning", "ml", "dataframe"],
-      aliases: ["python_run", "run_python", "python_exec"],
-      examples: ["run Python analysis", "make a chart with matplotlib", "train a small model"],
-      domain: "analysis",
-      priority: 50,
-    },
+    outputSchema: genericObjectOutputSchema,
+    resultContract: succeededContract({
+      assertions: [
+        {
+          id: "exit_code_zero",
+          kind: "json_path_equals",
+          path: "$.result.structuredContent.exitCode",
+          value: 0,
+        },
+        {
+          id: "not_timed_out",
+          kind: "json_path_equals",
+          path: "$.result.structuredContent.timedOut",
+          value: false,
+        },
+      ],
+      progressFacts: [{
+        kind: "python_execution_succeeded",
+        path: "$.result.structuredContent.files.manifestPath",
+        message: "Managed Python execution completed successfully.",
+      }],
+    }),
     async execute(input, context): Promise<ToolResult> {
       const parsed = validatePythonExecuteInput(input, context?.resourceScope?.rootPath);
       if ("ok" in parsed) {
@@ -480,23 +511,11 @@ function createPythonExecuteTool(deps: PythonSkillDeps): ToolDefinition {
   };
 }
 
-const PYTHON_PROMPT_BLOCK = [
-  "Managed Python data tools are built in.",
-  `Always use the managed interpreter at ${DEFAULT_MANAGED_PYTHON_INTERPRETER} (or AYATI_PYTHON_INTERPRETER when explicitly configured).`,
-  "Prefer python_inspect_dataset before python_execute for CSV, JSON, Parquet, SQLite analysis, or ML tasks.",
-  "Prefer these Python tools over process execution whenever the job is primarily dataframe work, statistics, visualization, or machine learning.",
-  "python_execute exposes AYATI_PYTHON_RUN_DIR, AYATI_PYTHON_ARTIFACT_DIR, AYATI_PYTHON_INPUT_FILES, and AYATI_PYTHON_SQLITE_DB_PATHS to the Python process.",
-  "Write generated charts, reports, and derived files into AYATI_PYTHON_ARTIFACT_DIR so they are captured as Python artifacts.",
-  "If Python code may create or modify bound resource files outside AYATI_PYTHON_ARTIFACT_DIR, declare every exact canonical absolute path in targets.",
-  "Do not use bare python, python3, or pip through process execution when these managed Python tools can do the job.",
-].join("\n");
-
 export function createPythonSkill(deps: PythonSkillDeps): SkillDefinition {
   return {
     id: "python",
     version: "1.0.0",
     description: "Managed Python runtime for dataset inspection, analysis, visualization, and ML workflows.",
-    promptBlock: PYTHON_PROMPT_BLOCK,
     tools: [
       createInspectDatasetTool(deps),
       createPythonExecuteTool(deps),

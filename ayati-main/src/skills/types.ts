@@ -1,19 +1,6 @@
 import type { AgentUiContext } from "../ui/context.js";
 import type { WorkstreamResourceBinding } from "ayati-context-engine";
 
-export interface SkillPromptBlock {
-  id: string;
-  content: string;
-}
-
-export interface ToolSelectionHints {
-  tags?: string[];
-  aliases?: string[];
-  examples?: string[];
-  domain?: string;
-  priority?: number;
-}
-
 export interface ToolExecutionContext {
   clientId?: string;
   runId?: string;
@@ -40,6 +27,8 @@ export type JsonSchema = Record<string, unknown>;
 
 export type ToolDomain =
   | "general"
+  | "context"
+  | "system"
   | "filesystem"
   | "process"
   | "calculator"
@@ -234,7 +223,6 @@ export interface ToolDefinition {
   resultContract?: ToolResultContract;
   errorContract?: ToolErrorContract;
   observationPolicy?: ToolObservationPolicy;
-  selectionHints?: ToolSelectionHints;
   execute(input: unknown, context?: ToolExecutionContext): Promise<ToolResult>;
 }
 
@@ -242,12 +230,5 @@ export interface SkillDefinition {
   id: string;
   version: string;
   description: string;
-  promptBlock: string;
   tools: ToolDefinition[];
-}
-
-export interface SkillsProvider {
-  getAllSkills(): Promise<SkillDefinition[]>;
-  getAllSkillBlocks(): Promise<SkillPromptBlock[]>;
-  getAllTools(): Promise<ToolDefinition[]>;
 }

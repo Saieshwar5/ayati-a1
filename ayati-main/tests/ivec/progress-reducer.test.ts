@@ -3,12 +3,12 @@ import { reduceVerifiedWorkState } from "../../src/ivec/verification-contracts/p
 import type { WorkState } from "../../src/ivec/types.js";
 
 describe("reduceVerifiedWorkState", () => {
-  it("records verified facts and evidence without synthetic completion", () => {
+  it("leaves WorkState unchanged because tool proof belongs to the run journal", () => {
     const previous: WorkState = {
-      status: "not_done",
-      summary: "",
-      verifiedFacts: [],
-      evidence: [],
+      status: "in_progress",
+      summary: "Run started.",
+      plan: [],
+      importantContext: [],
     };
 
     const next = reduceVerifiedWorkState(previous, {
@@ -25,10 +25,6 @@ describe("reduceVerifiedWorkState", () => {
       ],
     });
 
-    expect(next.status).toBe("not_done");
-    expect(next.summary).toContain("Verification contract passed");
-    expect(next.verifiedFacts).toContain("Read-back hash verified for /tmp/a.txt.");
-    expect(next.evidence).toContain("write_files.written_hashes_match: Verified read-back hashes for 2 written file(s).");
-    expect(next.artifacts).toContain("/tmp/a.txt");
+    expect(next).toBe(previous);
   });
 });

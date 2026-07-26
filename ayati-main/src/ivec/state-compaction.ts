@@ -1,14 +1,14 @@
 import type { LoopState, StepSummary, ToolContextState, ToolObservation, WorkState } from "./types.js";
 
 const WORK_STATE_LIMITS = {
-  summaryChars: 900,
-  nextStepChars: 240,
-  userInputNeededChars: 320,
-  openWork: { count: 5, chars: 220 },
-  blockers: { count: 4, chars: 220 },
-  verifiedFacts: { count: 8, chars: 220 },
-  evidence: { count: 6, chars: 240 },
-  artifacts: { count: 8, chars: 240 },
+  summaryChars: 1_000,
+  planItems: 12,
+  planIdChars: 32,
+  planTaskChars: 240,
+  importantContextItems: 12,
+  importantContextValueChars: 320,
+  importantContextRefChars: 500,
+  nextActionChars: 320,
 };
 
 const LOOP_STATE_LIMITS = {
@@ -31,16 +31,33 @@ const STEP_SUMMARY_LIMITS = {
 };
 
 export function compactWorkState(workState: WorkState): WorkState {
+  const seenPlanIds = new Set<string>();
   return {
     status: workState.status,
     summary: compactText(workState.summary, WORK_STATE_LIMITS.summaryChars),
-    openWork: compactStringList(workState.openWork, WORK_STATE_LIMITS.openWork),
-    blockers: compactStringList(workState.blockers, WORK_STATE_LIMITS.blockers),
-    verifiedFacts: compactStringList(workState.verifiedFacts, WORK_STATE_LIMITS.verifiedFacts),
-    evidence: compactStringList(workState.evidence, WORK_STATE_LIMITS.evidence),
-    artifacts: compactStringList(workState.artifacts, WORK_STATE_LIMITS.artifacts),
-    nextStep: compactOptionalText(workState.nextStep, WORK_STATE_LIMITS.nextStepChars),
-    userInputNeeded: compactOptionalText(workState.userInputNeeded, WORK_STATE_LIMITS.userInputNeededChars),
+    plan: workState.plan
+      .map((item) => ({
+        id: compactText(item.id, WORK_STATE_LIMITS.planIdChars),
+        task: compactText(item.task, WORK_STATE_LIMITS.planTaskChars),
+        status: item.status,
+      }))
+      .filter((item) => {
+        if (!item.id || !item.task || seenPlanIds.has(item.id)) return false;
+        seenPlanIds.add(item.id);
+        return true;
+      })
+      .slice(0, WORK_STATE_LIMITS.planItems),
+    importantContext: workState.importantContext
+      .map((item) => ({
+        kind: item.kind,
+        value: compactText(item.value, WORK_STATE_LIMITS.importantContextValueChars),
+        ...(item.ref
+          ? { ref: compactText(item.ref, WORK_STATE_LIMITS.importantContextRefChars) }
+          : {}),
+      }))
+      .filter((item) => item.value.length > 0)
+      .slice(0, WORK_STATE_LIMITS.importantContextItems),
+    nextAction: compactOptionalText(workState.nextAction, WORK_STATE_LIMITS.nextActionChars),
   };
 }
 

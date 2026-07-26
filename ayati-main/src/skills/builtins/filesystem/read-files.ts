@@ -11,7 +11,7 @@ import { readFileCoreTool } from "./read-file-core.js";
 import { addFileMetadataAdvisory, fileMetadataAdvisoryCondition } from "./read-advisory.js";
 import { splitFileLines } from "./text-lines.js";
 import { MAX_READ_FILES, validateReadFilesInput } from "./validators.js";
-import type { ReadFileInput } from "./types.js";
+import type { ReadFileCoverage, ReadFileInput } from "./types.js";
 
 const DEFAULT_MAX_PER_FILE_CHARS = 4_000;
 const MAX_PER_FILE_CHARS = 20_000;
@@ -25,6 +25,7 @@ interface ReadFilesSuccessEntry {
   mode: string;
   content: string;
   summary: string;
+  coverage: ReadFileCoverage;
   lineCount?: number;
   lineCountKnown?: boolean;
   truncated: boolean;
@@ -97,6 +98,10 @@ export const readFilesTool: ToolDefinition = {
             mode: { type: "string" },
             content: { type: "string" },
             summary: { type: "string" },
+            coverage: {
+              type: "string",
+              enum: ["complete", "partial", "search_matches", "profile", "sampled"],
+            },
             lineCount: { type: "integer" },
             lineCountKnown: { type: "boolean" },
             truncated: { type: "boolean" },
@@ -134,13 +139,6 @@ export const readFilesTool: ToolDefinition = {
       message: "Files inspected by read_files.",
     }],
   }),
-  selectionHints: {
-    tags: ["filesystem", "read", "files", "batch", "content", "grep", "slice", "profile"],
-    aliases: ["read_many_files", "batch_read_files", "inspect_files", "open_files"],
-    examples: ["read index.html, styles.css, and script.js", "inspect several files before editing"],
-    domain: "filesystem",
-    priority: 7,
-  },
   async execute(input, context): Promise<ToolResult> {
     const parsed = validateReadFilesInput(input);
     if ("ok" in parsed) return parsed;
@@ -180,6 +178,13 @@ export const readFilesTool: ToolDefinition = {
       remainingChars = Math.max(0, remainingChars - boundedContent.length);
       const filePath = readString(structured, "filePath") ?? file.path;
       const observation = compactObservation(structured["observation"]);
+      const truncated = readBoolean(structured, "truncated") === true
+        || boundedContent.length < content.length
+        || allowedChars === 0;
+      const sourceCoverage = readCoverage(structured["coverage"]);
+      const coverage = sourceCoverage === "complete" && truncated
+        ? "partial"
+        : sourceCoverage;
 
       results.push({
         requestedPath: readString(structured, "requestedPath") ?? file.path,
@@ -188,9 +193,10 @@ export const readFilesTool: ToolDefinition = {
         mode: readString(structured, "mode") ?? resolveMode(file),
         content: boundedContent,
         summary: observation?.summary ?? `Inspected file: ${filePath}`,
+        coverage,
         ...(readNumber(structured, "lineCount") !== undefined ? { lineCount: readNumber(structured, "lineCount") } : {}),
         ...(readBoolean(structured, "lineCountKnown") !== undefined ? { lineCountKnown: readBoolean(structured, "lineCountKnown") } : {}),
-        truncated: readBoolean(structured, "truncated") === true || boundedContent.length < content.length || allowedChars === 0,
+        truncated,
         ...(readNumber(structured, "sizeBytes") !== undefined ? { sizeBytes: readNumber(structured, "sizeBytes") } : {}),
         ...(readString(structured, "sha256") ? { sha256: readString(structured, "sha256") } : {}),
         ...(readString(structured, "query") ? { query: readString(structured, "query") } : {}),
@@ -314,6 +320,16 @@ export const readFilesTool: ToolDefinition = {
 function resolveMode(input: ReadFileInput): string {
   if (input.mode) return input.mode;
   return input.query?.trim() ? "search" : "auto";
+}
+
+function readCoverage(value: unknown): ReadFileCoverage {
+  return value === "complete"
+    || value === "partial"
+    || value === "search_matches"
+    || value === "profile"
+    || value === "sampled"
+    ? value
+    : "partial";
 }
 
 function readFilesMetadataAdvisoryReason(results: ReadFilesEntry[], requestedFiles: ReadFileInput[]): string | undefined {

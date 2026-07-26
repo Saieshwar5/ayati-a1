@@ -32,19 +32,79 @@ describe("recordRunStep", () => {
     expect(replayed).toEqual(first);
     expect(first.run).toMatchObject({
       run: { stepCount: 1 },
-      workState: { revision: 1, afterStep: 1 },
-      steps: [{ step: 1, toolCalls: [{ callId: "call-read" }] }],
+      workState: { revision: 0, afterStep: 0 },
+      steps: [{
+        step: 1,
+        toolCalls: [{
+          callId: "call-read",
+          verification: {
+            version: 1,
+            status: "passed",
+            method: "tool_contract",
+          },
+        }],
+      }],
     });
     expect(first.context).toMatchObject({
       run: {
         run: { runId: prepared.run.runId, stepCount: 1 },
-        workState: { revision: 1, afterStep: 1 },
+        workState: { revision: 0, afterStep: 0 },
       },
       stream: { stream: { streamId: prepared.stream.streamId } },
     });
     expect(fixture.database.prepare(
       "SELECT COUNT(*) AS count FROM run_steps WHERE run_id = ?",
     ).get(prepared.run.runId)).toEqual({ count: 1 });
+  });
+
+  it("persists deterministic zero-match search evidence on the exact tool call", async () => {
+    const fixture = await createFixture();
+    const prepared = await prepare(fixture.service, "search-evidence");
+    const searchCall: RunStepToolCall = {
+      callId: "call-search",
+      tool: "find_files",
+      purpose: "Search for the requested file.",
+      toolPurpose: "search",
+      toolEffect: "read_only",
+      status: "success",
+      input: { query: "missing-report.txt", roots: ["/workspace"] },
+      output: { matches: [] },
+      verification: {
+        version: 1,
+        status: "passed",
+        method: "tool_contract",
+        contract: "tool_result_v2",
+        summary: "The filename search passed deterministic verification.",
+        checks: [],
+        facts: [],
+      },
+      completionEvidence: [{
+        kind: "file_search",
+        query: "missing-report.txt",
+        roots: ["/workspace"],
+        matchCount: 0,
+        maxDepth: 10,
+        includeHidden: false,
+        capped: false,
+        errorCount: 0,
+        depthLimitedDirectoryCount: 0,
+        complete: true,
+        change: "observed",
+        tool: "find_files",
+        step: 1,
+        callId: "call-search",
+      }],
+    };
+
+    const result = await fixture.service.recordRunStep({
+      requestId: "REQ-search-evidence",
+      runId: prepared.run.runId,
+      record: step(1, searchCall),
+    });
+
+    expect(result.run.steps[0]?.toolCalls[0]?.completionEvidence).toEqual(
+      searchCall.completionEvidence,
+    );
   });
 
   it("requires contiguous unique step numbers", async () => {
@@ -66,6 +126,82 @@ describe("recordRunStep", () => {
       runId: prepared.run.runId,
       record: step(1, readCall()),
     })).rejects.toMatchObject({ code: "RUN_STEP_NOT_CONTIGUOUS" });
+  });
+
+  it("revises WorkState only through an explicit named checkpoint", async () => {
+    const fixture = await createFixture();
+    const prepared = await prepare(fixture.service, "work-state-checkpoint");
+    await fixture.service.recordRunStep({
+      requestId: "REQ-checkpoint-step-one",
+      runId: prepared.run.runId,
+      record: step(1, readCall()),
+    });
+
+    const checkpoint = await fixture.service.checkpointRunWorkState({
+      requestId: "REQ-checkpoint-plan",
+      runId: prepared.run.runId,
+      expectedRevision: 0,
+      afterStep: 1,
+      reason: "plan",
+      workState: {
+        status: "in_progress",
+        summary: "The exact source was inspected; implementation is now multi-step.",
+        plan: [
+          { id: "design", task: "Finish the design contract.", status: "active" },
+          { id: "tests", task: "Add deterministic coverage.", status: "pending" },
+        ],
+        importantContext: [{
+          kind: "artifact",
+          value: "Primary source file",
+          ref: "/workspace/src/app.ts",
+        }],
+        nextAction: "Finish the design contract.",
+      },
+      at: "2026-07-19T10:01:02+05:30",
+    });
+
+    expect(checkpoint.run.workState).toMatchObject({
+      revision: 1,
+      afterStep: 1,
+      updateReason: "plan",
+      status: "in_progress",
+    });
+    expect(checkpoint.run.workState.plan).toContainEqual({
+      id: "design",
+      task: "Finish the design contract.",
+      status: "active",
+    });
+    await fixture.service.recordRunStep({
+      requestId: "REQ-checkpoint-step-two",
+      runId: prepared.run.runId,
+      record: step(2, readCall()),
+    });
+    const context = await fixture.service.getAgentContext({
+      streamId: prepared.stream.streamId,
+    });
+    expect(context.run).toMatchObject({
+      run: { stepCount: 2 },
+      workState: {
+        revision: 1,
+        afterStep: 1,
+        updateReason: "plan",
+      },
+    });
+    await expect(fixture.service.checkpointRunWorkState({
+      requestId: "REQ-checkpoint-stale",
+      runId: prepared.run.runId,
+      expectedRevision: 0,
+      afterStep: 2,
+      reason: "context_pressure",
+      workState: {
+        status: "in_progress",
+        summary: "Stale update.",
+        plan: [],
+        importantContext: [],
+        nextAction: null,
+      },
+      at: "2026-07-19T10:01:03+05:30",
+    })).rejects.toThrow("revision conflict");
   });
 
   it("rejects mutation calls before workstream binding", async () => {
@@ -136,12 +272,6 @@ describe("recordRunStep", () => {
         action: { mode: "single", calls: [] },
         toolCalls: [],
         verification: { passed: false, error: "Action contains no tool calls." },
-        workStateAfter: {
-          ...workState(),
-          status: "blocked",
-          summary: "The action plan failed deterministic validation.",
-          blockers: ["Action contains no tool calls."],
-        },
         createdAt: "2026-07-19T10:01:01+05:30",
       },
     });
@@ -149,7 +279,7 @@ describe("recordRunStep", () => {
     expect(result.run).toMatchObject({
       run: { stepCount: 1 },
       steps: [{ status: "failed", toolCalls: [] }],
-      workState: { revision: 1, afterStep: 1, status: "blocked" },
+      workState: { revision: 0, afterStep: 0, status: "in_progress" },
     });
   });
 
@@ -220,7 +350,6 @@ function step(number: number, call: RunStepToolCall): RunStepRecord {
     action: { callId: call.callId },
     toolCalls: [call],
     verification: { passed: true },
-    workStateAfter: { ...workState(), summary: "Step completed." },
     createdAt: `2026-07-19T10:01:0${number}+05:30`,
   };
 }
@@ -235,19 +364,29 @@ function readCall(): RunStepToolCall {
     status: "success",
     input: { paths: ["src/app.ts"] },
     output: { files: [] },
+    verification: {
+      version: 1,
+      status: "passed",
+      method: "tool_contract",
+      contract: "tool_result_v2",
+      summary: "The exact read call passed deterministic verification.",
+      checks: [],
+      facts: [{
+        kind: "file_read",
+        message: "The requested file was read.",
+        subject: "src/app.ts",
+      }],
+    },
+    verificationPassed: true,
   };
 }
 
 function workState() {
   return {
-    status: "not_done" as const,
+    status: "in_progress" as const,
     summary: "Run is active.",
-    openWork: [],
-    blockers: [],
-    facts: [],
-    evidence: [],
-    artifacts: [],
-    nextStep: null,
-    userInputNeeded: [],
+    plan: [],
+    importantContext: [],
+    nextAction: null,
   };
 }

@@ -3,10 +3,7 @@ import { createInitialHarnessContext } from "../../src/ivec/harness-context.js";
 import type { LoopState, StepSummary } from "../../src/ivec/types.js";
 import {
   buildFailureReply,
-  buildVerifiedCompletionReply,
-  canFinalizeFromWorkState,
   canMarkTerminalReplyDone,
-  deriveUserInputNeededFromTerminalReply,
   isUsableFinalResponseMessage,
   shouldRejectTerminalReplyForUnresolvedMutation,
 } from "../../src/ivec/agent-runner/final-response-policy.js";
@@ -19,10 +16,15 @@ function state(input: Partial<LoopState> = {}): LoopState {
     currentSeq: 1,
     userMessage: "update the html file",
     workState: {
-      status: "not_done",
-      summary: "",
-      verifiedFacts: [],
-      evidence: [],
+      status: "in_progress",
+      summary: "Run started.",
+      plan: [],
+      importantContext: [],
+    },
+    workStateRuntime: {
+      revision: 0,
+      afterStep: 0,
+      updateReason: "initial",
     },
     status: "running",
     finalOutput: "",
@@ -103,12 +105,14 @@ describe("final response policy", () => {
     expect(canMarkTerminalReplyDone(state())).toBe(true);
     expect(canMarkTerminalReplyDone(state({
       workState: {
-        status: "not_done",
-        summary: "",
-        openWork: ["verify output"],
-        blockers: [],
-        verifiedFacts: [],
-        evidence: [],
+        status: "in_progress",
+        summary: "Implementation is waiting for validation.",
+        plan: [{
+          id: "verify",
+          task: "Verify output",
+          status: "active",
+        }],
+        importantContext: [],
       },
     }))).toBe(false);
     expect(canMarkTerminalReplyDone(state({
@@ -116,73 +120,81 @@ describe("final response policy", () => {
     }))).toBe(false);
   });
 
-  it("extracts direct user-input requests from final replies", () => {
-    expect(deriveUserInputNeededFromTerminalReply("I need one detail. Please send the target filename")).toBe("Please send the target filename.");
-    expect(deriveUserInputNeededFromTerminalReply("Done.")).toBeUndefined();
+  it("requires all current failures to be resolved before marking work done", () => {
+    const failure = {
+      step: 2,
+      failureType: "tool_error" as const,
+      reason: "The database query failed.",
+      blockedTargets: ["db_query"],
+      repairScope: "action" as const,
+    };
+    expect(canMarkTerminalReplyDone(state({
+      failureHistory: [failure],
+    }))).toBe(false);
+    expect(canMarkTerminalReplyDone(state({
+      failureHistory: [{
+        ...failure,
+        resolution: {
+          iteration: 3,
+          kind: "verified_action",
+        },
+      }],
+    }))).toBe(true);
   });
 
   it("rejects control-tool payloads as final user-facing messages", () => {
-    expect(isUsableFinalResponseMessage("decision_transition_mode")).toBe(false);
-    expect(isUsableFinalResponseMessage("decision_validate")).toBe(false);
+    expect(isUsableFinalResponseMessage("decision_enter_observe_investigate")).toBe(false);
+    expect(isUsableFinalResponseMessage("decision_resolve_create")).toBe(false);
+    expect(isUsableFinalResponseMessage("decision_stop")).toBe(false);
     expect(isUsableFinalResponseMessage("workstream_completion")).toBe(false);
     expect(isUsableFinalResponseMessage(JSON.stringify({ kind: "act" }))).toBe(false);
-    expect(isUsableFinalResponseMessage(JSON.stringify({ kind: "validate" }))).toBe(false);
+    expect(isUsableFinalResponseMessage(JSON.stringify({ kind: "stop" }))).toBe(false);
     expect(isUsableFinalResponseMessage("Done. I updated the file.")).toBe(true);
   });
 
-  it("builds verified completion replies from generated artifacts or clean summaries", () => {
-    expect(buildVerifiedCompletionReply(state(), {
-      ...step("write_files", "success", 1),
-      artifacts: ["/tmp/workspace/index.html"],
-    })).toBe("Done. I created or updated `/tmp/workspace/index.html`.");
-
-    expect(buildVerifiedCompletionReply(state({
-      workState: {
-        status: "done",
-        summary: "The checklist is ready.",
-        verifiedFacts: [],
-        evidence: [],
-      },
-    }))).toBe("The checklist is ready.");
-  });
-
-  it("keeps the exact accepted completion summary outside compact WorkState", () => {
-    const completeSummary = "Verified implementation detail. ".repeat(80)
-      + "END-OF-COMPLETION";
-    expect(completeSummary.length).toBeGreaterThan(900);
-
-    expect(buildVerifiedCompletionReply(state({
-      verifiedCompletionSummary: completeSummary,
-      workState: {
-        status: "done",
-        summary: completeSummary.slice(0, 897) + "...",
-        verifiedFacts: [],
-        evidence: [],
-      },
-    }))).toBe(completeSummary);
-  });
-
-  it("falls back to latest failure details for failure replies", () => {
-    expect(buildFailureReply(state())).toBe("I couldn't complete the workstream.");
+  it("uses safe user-facing failure categories without leaking internal repairs", () => {
+    expect(buildFailureReply(state())).toBe("I couldn't complete the current workstream request.");
     expect(buildFailureReply(state({
       failureHistory: [{
         step: 3,
         failureType: "validation_error",
-        reason: "Missing path",
+        reason: "VALIDATION_REJECTED: No current blocker supports a blocked outcome.",
         blockedTargets: ["write_files"],
       }],
-    }))).toBe("I couldn't complete the workstream. Latest failure: Missing path");
+    }))).toBe(
+      "I couldn't complete the current workstream request. The request could not be completed safely.",
+    );
+    expect(buildFailureReply(state({
+      failureHistory: [{
+        step: 3,
+        failureType: "validation_error",
+        reason: "Recovered missing path",
+        blockedTargets: ["write_files"],
+        repairScope: "action",
+        resolution: {
+          iteration: 4,
+          kind: "verified_action",
+        },
+      }],
+    }))).toBe("I couldn't complete the current workstream request.");
+
+    const unboundContext = contextEngineFixture({
+      runId: "R-1",
+      message: "Find the missing file.",
+    });
+    expect(buildFailureReply(state({
+      harnessContext: createInitialHarnessContext({
+        contextEngine: unboundContext,
+      }),
+      failureHistory: [{
+        step: 2,
+        failureType: "missing_path",
+        reason: "PATH_OUTSIDE_WORKSPACE_ROOT: internal path details",
+        blockedTargets: [],
+      }],
+    }))).toBe(
+      "I couldn't complete this request. A required path was unavailable.",
+    );
   });
 
-  it("detects work-state finalization statuses", () => {
-    expect(canFinalizeFromWorkState(state({
-      workState: {
-        status: "done",
-        summary: "Done.",
-        verifiedFacts: [],
-        evidence: [],
-      },
-    }))).toBe(true);
-    expect(canFinalizeFromWorkState(state())).toBe(false);
-  });
 });

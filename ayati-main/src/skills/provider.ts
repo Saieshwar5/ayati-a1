@@ -3,39 +3,12 @@ import databaseSkill from "./builtins/database/index.js";
 import filesystemSkill from "./builtins/filesystem/index.js";
 import pulseSkill from "./builtins/pulse/index.js";
 import processSkill from "./builtins/process/index.js";
-import type {
-  SkillDefinition,
-  SkillPromptBlock,
-  SkillsProvider,
-  ToolDefinition,
-} from "./types.js";
+import type { SkillDefinition } from "./types.js";
 
 const BUILTIN_SKILLS: SkillDefinition[] = [processSkill, calculatorSkill, filesystemSkill, databaseSkill, pulseSkill];
 
-export const builtInSkillsProvider: SkillsProvider = {
+export const builtInSkillsProvider = {
   async getAllSkills(): Promise<SkillDefinition[]> {
     return BUILTIN_SKILLS;
-  },
-
-  async getAllSkillBlocks(): Promise<SkillPromptBlock[]> {
-    return BUILTIN_SKILLS.map((skill) => ({ id: skill.id, content: skill.promptBlock }));
-  },
-
-  async getAllTools(): Promise<ToolDefinition[]> {
-    return BUILTIN_SKILLS.flatMap((skill) => skill.tools);
-  },
-};
-
-export const noopSkillsProvider: SkillsProvider = {
-  async getAllSkills(): Promise<SkillDefinition[]> {
-    return [];
-  },
-
-  async getAllSkillBlocks(): Promise<SkillPromptBlock[]> {
-    return [];
-  },
-
-  async getAllTools(): Promise<ToolDefinition[]> {
-    return [];
   },
 };

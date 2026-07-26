@@ -6,15 +6,6 @@ export interface DatasetSkillDeps {
   preparedAttachmentService: PreparedAttachmentService;
 }
 
-const DATASET_PROMPT_BLOCK = [
-  "Prepared dataset tools are built in for structured attachments.",
-  "Use dataset_profile to inspect a prepared CSV or XLSX attachment before generating SQL.",
-  "Use dataset_query for SQL over staged prepared datasets.",
-  "Use dataset_promote_table only when the user explicitly wants the data saved into a durable SQLite table.",
-  "Inputs accept a prepared attachment reference: preparedInputId is preferred, but the exact display name also works.",
-  "If exactly one structured attachment exists in the run, the dataset tools can auto-select it.",
-].join("\n");
-
 function buildSuccessResult(output: Record<string, unknown>, meta?: Record<string, unknown>): ToolResult {
   return {
     ok: true,
@@ -41,11 +32,6 @@ function createDatasetProfileTool(deps: DatasetSkillDeps): ToolDefinition {
       },
       additionalProperties: false,
     },
-    selectionHints: {
-      tags: ["dataset", "csv", "xlsx", "spreadsheet", "profile", "schema"],
-      domain: "data",
-      priority: 70,
-    },
     async execute(input, context): Promise<ToolResult> {
       const preparedInputId = readOptionalString(input, "preparedInputId");
       const runId = readRunId(context);
@@ -71,11 +57,6 @@ function createDatasetQueryTool(deps: DatasetSkillDeps): ToolDefinition {
         maxRows: { type: "number", description: "Optional row cap for returned results." },
       },
       additionalProperties: false,
-    },
-    selectionHints: {
-      tags: ["dataset", "csv", "xlsx", "spreadsheet", "sql", "query"],
-      domain: "data",
-      priority: 90,
     },
     async execute(input, context): Promise<ToolResult> {
       const preparedInputId = readOptionalString(input, "preparedInputId");
@@ -108,11 +89,6 @@ function createDatasetPromoteTableTool(deps: DatasetSkillDeps): ToolDefinition {
       },
       additionalProperties: false,
     },
-    selectionHints: {
-      tags: ["dataset", "csv", "xlsx", "spreadsheet", "save", "database", "import"],
-      domain: "data",
-      priority: 85,
-    },
     async execute(input, context): Promise<ToolResult> {
       const preparedInputId = readOptionalString(input, "preparedInputId");
       const targetTable = readRequiredString(input, "targetTable");
@@ -139,7 +115,6 @@ export function createDatasetSkill(deps: DatasetSkillDeps): SkillDefinition {
     id: "datasets",
     version: "1.0.0",
     description: "Prepared structured attachment tools for schema inspection, SQL querying, and durable import.",
-    promptBlock: DATASET_PROMPT_BLOCK,
     tools: [
       createDatasetProfileTool(deps),
       createDatasetQueryTool(deps),

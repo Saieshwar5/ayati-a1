@@ -1,5 +1,9 @@
 import type { SkillDefinition, ToolDefinition, ToolResult } from "../../types.js";
 import type { EpisodicMemoryEpisodeType, EpisodicMemoryStatus } from "../../../memory/episodic/index.js";
+import {
+  genericObjectOutputSchema,
+  succeededContract,
+} from "../contract-helpers.js";
 
 interface RecallMemoryInput {
   query?: string;
@@ -123,6 +127,19 @@ function createRecallTool(deps: RecallSkillDeps): ToolDefinition {
         },
       },
     },
+    outputSchema: genericObjectOutputSchema,
+    resultContract: succeededContract({
+      assertions: [{
+        id: "episodic_matches_present",
+        kind: "json_path_exists",
+        path: "$.result.structuredContent.matches",
+      }],
+      progressFacts: [{
+        kind: "memory_read_completed",
+        path: "$.result.structuredContent.subject",
+        message: "Episodic memory recall completed.",
+      }],
+    }),
     async execute(input, context): Promise<ToolResult> {
       const parsed = validateRecallInput(input);
       if ("ok" in parsed) {
@@ -140,7 +157,10 @@ function createRecallTool(deps: RecallSkillDeps): ToolDefinition {
 
       return {
         ok: true,
-        output: JSON.stringify({ matches }, null, 2),
+        output: JSON.stringify({
+          subject: parsed.query?.trim() || "all",
+          matches,
+        }, null, 2),
       };
     },
   };
@@ -154,6 +174,14 @@ function createMemoryStatusTool(deps: RecallSkillDeps): ToolDefinition {
       type: "object",
       properties: {},
     },
+    outputSchema: genericObjectOutputSchema,
+    resultContract: succeededContract({
+      progressFacts: [{
+        kind: "memory_read_completed",
+        path: "$.result.structuredContent.enabled",
+        message: "Episodic memory status was read.",
+      }],
+    }),
     async execute(_input, context): Promise<ToolResult> {
       if (!deps.controls) {
         return { ok: false, error: "Episodic memory controls are unavailable." };
@@ -181,6 +209,14 @@ function createSetEpisodicEnabledTool(deps: RecallSkillDeps): ToolDefinition {
       },
       required: ["enabled"],
     },
+    outputSchema: genericObjectOutputSchema,
+    resultContract: succeededContract({
+      progressFacts: [{
+        kind: "memory_change_completed",
+        path: "$.result.structuredContent.enabled",
+        message: "Episodic memory setting was changed.",
+      }],
+    }),
     async execute(input, context): Promise<ToolResult> {
       if (!deps.controls) {
         return { ok: false, error: "Episodic memory controls are unavailable." };
@@ -198,21 +234,11 @@ function createSetEpisodicEnabledTool(deps: RecallSkillDeps): ToolDefinition {
   };
 }
 
-const RECALL_PROMPT_BLOCK = [
-  "The `recall_memory` tool is built in.",
-  "Use it directly when the user refers to prior work, earlier conversations, 'like before', or asks what happened on a past date/time.",
-  "recall_memory returns episodic matches with absolute sessionFilePath plus eventStartIndex/eventEndIndex pointers.",
-  "If you need exact details after recall_memory, use read_files with files=[{path: sessionFilePath}], then inspect the session artifacts directly.",
-  "Use memory_status to inspect whether episodic memory is enabled. Use memory_set_episodic_enabled only when the user asks to turn long-term episodic memory on or off.",
-  "Prefer recall_memory before guessing how prior work was done.",
-].join("\n");
-
 export function createRecallSkill(deps: RecallSkillDeps): SkillDefinition {
   return {
     id: "recall",
     version: "1.0.0",
     description: "Recall past episodic conversation memory.",
-    promptBlock: RECALL_PROMPT_BLOCK,
     tools: [
       createRecallTool(deps),
       createMemoryStatusTool(deps),

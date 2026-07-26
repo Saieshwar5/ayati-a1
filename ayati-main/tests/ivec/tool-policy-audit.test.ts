@@ -76,8 +76,6 @@ function policy(
     workstreamBound: false,
     routingSuppressed: false,
     routingAvailable: false,
-    routingFailureLimitReached: false,
-    allowToolLoading: true,
     ...overrides,
   };
 }

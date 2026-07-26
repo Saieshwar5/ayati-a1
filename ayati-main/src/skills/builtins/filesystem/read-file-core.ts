@@ -17,11 +17,12 @@ import { commonAnnotations, errorResult, errorResultFromUnknown, okResult, sha25
 import { addFileMetadataAdvisory, fileMetadataAdvisoryCondition } from "./read-advisory.js";
 import { numberFileLines, splitFileLines } from "./text-lines.js";
 import { validateReadFileInput } from "./validators.js";
-import type { ReadFileInput } from "./types.js";
+import type { ReadFileCoverage, ReadFileInput } from "./types.js";
 
 const MAX_FULL_CAPTURE_BYTES = 10 * 1024 * 1024;
 const LARGE_FILE_SAMPLE_CHARS = 100_000;
 const FULL_CONTENT_CAP_CHARS = 100_000;
+const AUTO_COMPLETE_CONTENT_MAX_CHARS = 12_000;
 const DEFAULT_SLICE_LINES = 160;
 const MAX_SLICE_LINES = 500;
 const DEFAULT_CONTEXT_LINES = 2;
@@ -65,13 +66,17 @@ export const readFileCoreTool: ToolDefinition = {
   },
   outputSchema: {
     type: "object",
-    required: ["requestedPath", "filePath", "mode", "content", "observation", "truncated", "sizeBytes"],
+    required: ["requestedPath", "filePath", "mode", "content", "observation", "coverage", "truncated", "sizeBytes"],
     properties: {
       requestedPath: { type: "string" },
       filePath: { type: "string" },
       mode: { type: "string" },
       content: { type: "string" },
       observation: { type: "object" },
+      coverage: {
+        type: "string",
+        enum: ["complete", "partial", "search_matches", "profile", "sampled"],
+      },
       lineCount: { type: "integer" },
       lineCountKnown: { type: "boolean" },
       truncated: { type: "boolean" },
@@ -108,13 +113,6 @@ export const readFileCoreTool: ToolDefinition = {
       message: "File inspected by read_files.",
     }],
   }),
-  selectionHints: {
-    tags: ["filesystem", "read", "file", "content", "grep", "slice", "profile"],
-    aliases: ["cat_file", "open_file", "inspect_file", "grep_file"],
-    examples: ["inspect this file", "search this file for symbol", "read lines 20-80"],
-    domain: "filesystem",
-    priority: 4,
-  },
   async execute(input, context): Promise<ToolResult> {
     const parsed = validateReadFileInput(input);
     if ("ok" in parsed) return parsed;
@@ -196,6 +194,7 @@ export const readFileCoreTool: ToolDefinition = {
         mode,
         content: built.content,
         observation: built.observation,
+        coverage: built.coverage,
         lineCount: built.lineCount,
         lineCountKnown: built.lineCountKnown,
         truncated: built.truncated,
@@ -304,6 +303,7 @@ async function buildReadOutput(input: {
   content: string;
   rawOutput: string;
   observation: ToolContextObservation;
+  coverage: ReadFileCoverage;
   truncated: boolean;
   lineCount?: number;
   lineCountKnown: boolean;
@@ -335,6 +335,7 @@ async function buildSearchOutput(input: {
   content: string;
   rawOutput: string;
   observation: ToolContextObservation;
+  coverage: ReadFileCoverage;
   truncated: boolean;
   lineCount?: number;
   lineCountKnown: boolean;
@@ -378,6 +379,7 @@ async function buildSearchOutput(input: {
     content: content || `(no matches for "${query}")`,
     rawOutput,
     observation,
+    coverage: "search_matches",
     truncated: search.matchCount > search.blocks.length,
     lineCount,
     lineCountKnown: true,
@@ -395,6 +397,7 @@ async function buildSliceOutput(input: {
   content: string;
   rawOutput: string;
   observation: ToolContextObservation;
+  coverage: ReadFileCoverage;
   truncated: boolean;
   lineCount?: number;
   lineCountKnown: boolean;
@@ -434,6 +437,9 @@ async function buildSliceOutput(input: {
     content,
     rawOutput: content,
     observation,
+    coverage: slice.startLine === 1 && (slice.lineCount === 0 || endLine >= slice.lineCount)
+      ? "complete"
+      : "partial",
     truncated: false,
     lineCount: slice.lineCount,
     lineCountKnown: true,
@@ -451,6 +457,7 @@ function buildFullOutput(input: {
   content: string;
   rawOutput: string;
   observation: ToolContextObservation;
+  coverage: ReadFileCoverage;
   truncated: boolean;
   lineCount?: number;
   lineCountKnown: boolean;
@@ -485,6 +492,7 @@ function buildFullOutput(input: {
     content,
     rawOutput: input.source.complete ? fullContent : content,
     observation,
+    coverage: truncated ? "partial" : "complete",
     truncated,
     lineCount: input.source.lineCount ?? lines.length,
     lineCountKnown: input.source.complete,
@@ -503,10 +511,53 @@ function buildProfileOrAutoOutput(input: {
   content: string;
   rawOutput: string;
   observation: ToolContextObservation;
+  coverage: ReadFileCoverage;
   truncated: boolean;
   lineCount?: number;
   lineCountKnown: boolean;
 } {
+  if (
+    input.mode === "auto"
+    && input.source.complete
+    && input.source.content.length <= AUTO_COMPLETE_CONTENT_MAX_CHARS
+  ) {
+    const lineCount = input.source.lineCount ?? input.source.lines.length;
+    return {
+      content: input.source.content,
+      rawOutput: input.source.content,
+      observation: {
+        mode: "focused",
+        summary: `Read the complete ${lineCount}-line file ${input.filePath}.`,
+        stats: {
+          filePath: input.filePath,
+          mode: input.mode,
+          language: input.language,
+          sizeBytes: input.sizeBytes,
+          lineCount,
+          lineCountKnown: true,
+          complete: true,
+        },
+        highlights: extractOutline(input.source.lines, input.language)
+          .slice(0, 12)
+          .map((item) => `L${item.line}: ${item.text}`),
+        blocks: input.source.lines.length > 0
+          ? [makeBlock({
+              title: "Complete file",
+              lines: numberFileLines(input.source.lines, 1),
+              startLine: 1,
+              maxChars: AUTO_COMPLETE_CONTENT_MAX_CHARS,
+            })]
+          : [],
+        hasMore: false,
+        suggestedReads: [],
+      },
+      coverage: "complete",
+      truncated: false,
+      lineCount,
+      lineCountKnown: true,
+    };
+  }
+
   const outline = extractOutline(input.source.lines, input.language);
   const outlineBlocks = outline.length > 0
     ? [makeBlock({
@@ -554,6 +605,11 @@ function buildProfileOrAutoOutput(input: {
     content,
     rawOutput: input.source.complete ? input.source.content : content,
     observation,
+    coverage: input.mode === "profile"
+      ? "profile"
+      : input.source.complete
+        ? "partial"
+        : "sampled",
     truncated: !input.source.complete,
     lineCount,
     lineCountKnown: input.source.complete,

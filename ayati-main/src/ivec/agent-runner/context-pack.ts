@@ -1,46 +1,20 @@
 import type { ContextEngineMachineContext } from "../../context-engine/index.js";
 import type { LoopState } from "../types.js";
 import { harnessContextFromState } from "../harness-context.js";
-import type { AgentTemporalEvent, AgentTemporalExactEvent } from "./agent-context-events.js";
+import { activeDocumentPointers } from "../recent-document-registry.js";
+import {
+  projectStreamMessageEvent,
+  type AgentTemporalEvent,
+  type AgentTemporalExactEvent,
+} from "./agent-context-events.js";
+import { buildCoreCapsule, type CoreCapsule } from "./core-capsule.js";
 
 export type { AgentTemporalEvent, AgentTemporalExactEvent } from "./agent-context-events.js";
-
-const LIMITS = {
-  memoryChars: 1_200,
-};
+export type { CoreCapsule } from "./core-capsule.js";
 
 export interface AgentContextPack {
-  temporal: {
-    checkpoint?: ContextEngineMachineContext["agentStream"]["checkpoint"] extends infer Value
-      ? Value
-      : never;
-    recent: AgentTemporalEvent[];
-  };
-  current: {
-    inputSeq: number;
-    runId: string;
-    routing?: {
-      status: "unbound" | "bound" | "clarifying";
-      workstreamId?: string;
-      requestId?: string;
-    };
-  };
-  stream: {
-    agentId: string;
-    scopeKey: string;
-    recentWork: ContextEngineMachineContext["agentStream"]["recentWork"];
-  };
-  work: {
-    candidates: NonNullable<ContextEngineMachineContext["workstreamCandidates"]>;
-    active?: ContextEngineMachineContext["workstream"];
-  };
-  resources: {
-    stream: ContextEngineMachineContext["agentStream"]["resources"];
-    ingress: NonNullable<ContextEngineMachineContext["ingressResources"]>;
-    activeWorkstream: NonNullable<ContextEngineMachineContext["workstream"]>["resources"];
-  };
-  observations: ContextEngineMachineContext["observations"];
-  personalMemorySnapshot?: string;
+  core: CoreCapsule;
+  hot: LoopState["hotContext"];
 }
 
 export function buildAgentContextPack(state: LoopState): AgentContextPack {
@@ -49,48 +23,17 @@ export function buildAgentContextPack(state: LoopState): AgentContextPack {
   const recent = buildTimeline(state, context);
   const currentInput = recent.find((event) => "current" in event && event.current === true);
   return {
-    temporal: {
-      ...(context?.agentStream.checkpoint ? { checkpoint: context.agentStream.checkpoint } : {}),
-      recent,
-    },
-    current: {
-      inputSeq: currentInput?.seq ?? state.currentSeq,
+    core: buildCoreCapsule({
+      revision: context?.contextRevision ?? `core:${state.runId}:${currentInput?.seq ?? state.currentSeq}`,
       runId: state.runId,
-      ...(context?.current.routing ? {
-        routing: {
-          status: context.current.routing.status,
-          ...(context.current.routing.workstreamId
-            ? { workstreamId: context.current.routing.workstreamId }
-            : {}),
-          ...(context.current.routing.requestId
-            ? { requestId: context.current.routing.requestId }
-            : {}),
-        },
-      } : {}),
-    },
-    stream: {
-      agentId: context?.agentStream.meta.agentId ?? "local",
-      scopeKey: context?.agentStream.meta.scopeKey ?? "default",
-      recentWork: context?.agentStream.recentWork ?? [],
-    },
-    work: {
-      candidates: context?.workstreamCandidates ?? [],
-      ...(context?.workstream ? { active: context.workstream } : {}),
-    },
-    resources: {
-      stream: context?.agentStream.resources ?? [],
-      ingress: context?.ingressResources ?? [],
-      activeWorkstream: context?.workstream?.resources ?? [],
-    },
-    observations: context?.observations ?? {
-      revision: "observations:empty",
-      inventory: [],
-      discovery: [],
-      evidence: [],
-    },
-    ...(harnessContext.personalMemorySnapshot.trim()
-      ? { personalMemorySnapshot: truncate(harnessContext.personalMemorySnapshot, LIMITS.memoryChars) }
-      : {}),
+      timeline: recent,
+      ...(context?.agentStream.checkpoint ? { checkpoint: context.agentStream.checkpoint } : {}),
+      ...(context?.current.routing ? { routing: context.current.routing } : {}),
+      activeDocuments: activeDocumentPointers(
+        context?.agentStream.recentFiles ?? [],
+      ),
+    }),
+    hot: state.hotContext,
   };
 }
 
@@ -106,33 +49,7 @@ function buildTimeline(
     );
   }
   const fromStream = messages.map((message, index): AgentTemporalExactEvent => {
-    const current = index === currentRecordIndex;
-    if (message.role === "assistant") {
-      return {
-        kind: "assistant",
-        seq: message.sequence,
-        timestamp: message.at,
-        content: message.content,
-        ...(assistantExpectsUserResponse(message.content) ? { expectsUserResponse: true } : {}),
-        ...(current ? { current: true } : {}),
-      };
-    }
-    if (message.role === "system_event") {
-      return {
-        kind: "system",
-        seq: message.sequence,
-        timestamp: message.at,
-        content: message.content,
-        ...(current ? { current: true } : {}),
-      };
-    }
-    return {
-      kind: "user",
-      seq: message.sequence,
-      timestamp: message.at,
-      content: message.content,
-      ...(current ? { current: true } : {}),
-    };
+    return projectStreamMessageEvent(message, index === currentRecordIndex);
   });
 
   const timeline = orderTimeline(ensureCurrentEvent(state, fromStream));
@@ -207,17 +124,6 @@ function verifyCurrentUserInput(state: LoopState, timeline: AgentTemporalExactEv
   }
 }
 
-function assistantExpectsUserResponse(content: string): boolean {
-  const normalized = normalizeText(content);
-  return normalized.endsWith("?") || normalized.includes("which one");
-}
-
 function normalizeText(value: string): string {
   return value.replace(/\s+/g, " ").trim().toLowerCase();
-}
-
-function truncate(value: string, maxChars: number): string {
-  const compact = value.replace(/\s+/g, " ").trim();
-  if (compact.length <= maxChars) return compact;
-  return `${compact.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
 }

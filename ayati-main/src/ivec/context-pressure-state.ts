@@ -146,7 +146,6 @@ function laterRecommendedMode(
 ): ContextPressureRecommendedMode {
   if (!current) return observed;
   const order: ContextPressureRecommendedMode[] = [
-    "stream_project",
     "stream_checkpoint",
     "step_ledger",
   ];
@@ -160,7 +159,6 @@ function laterContextMode(
   const order: ContextCompilationMode[] = [
     "full",
     "tool_compact",
-    "stream_project",
     "stream_checkpoint",
     "step_ledger",
   ];

@@ -51,13 +51,6 @@ export const createDirectoryTool: ToolDefinition = {
       message: "Directory created by create_directory.",
     }],
   }),
-  selectionHints: {
-    tags: ["filesystem", "directory", "mkdir", "create"],
-    aliases: ["make_directory", "mkdir"],
-    examples: ["create folder", "make directory"],
-    domain: "filesystem",
-    priority: 3,
-  },
   async execute(input, context): Promise<ToolResult> {
     const parsed = validateCreateDirectoryInput(input);
     if ("ok" in parsed) return parsed;

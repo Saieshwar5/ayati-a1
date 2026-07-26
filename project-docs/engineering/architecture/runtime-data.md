@@ -90,4 +90,4 @@ workstreams into a timestamped sibling archive with a manifest. It preserves
 
 `pnpm context:catalog-rebuild` scans validated context repositories and previews
 the reconstructible workstream/resource catalog. `--confirm` requires an empty
-initialized V7 database and a stopped daemon.
+initialized V8 database and a stopped daemon.

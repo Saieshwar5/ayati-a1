@@ -28,7 +28,6 @@ import {
   appendPulseProposalQuestion,
   PulseProposalReflectionService,
 } from "../pulse/proposal-reflection.js";
-import type { SkillActivationManager } from "../skills/activation-manager.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition } from "../skills/types.js";
 import type { ContextEngineMachineContext } from "../context-engine/index.js";
@@ -43,7 +42,8 @@ import {
   type AgentFeedbackLedger,
 } from "../ivec/feedback-ledger.js";
 import type { ChatTurnRuntime, ChatTurnRuntimeInput } from "../ivec/chat-turn-runtime.js";
-import type { ToolWorkingSetManager } from "../ivec/agent-runner/tool-working-set.js";
+import type { CapabilitySurfaceManager } from "../ivec/agent-runner/capabilities/surface-manager.js";
+import type { HotContextRuntime } from "../ivec/hot-context/index.js";
 import { summarizeHarnessContext } from "../ivec/agent-runner/feedback-summary.js";
 import type {
   AgentArtifact,
@@ -73,8 +73,8 @@ export interface CreateChatTurnRuntimeOptions {
   provider?: LlmProvider;
   staticContext?: StaticContext;
   toolExecutor?: ToolExecutor;
-  skillActivationManager?: SkillActivationManager;
-  toolWorkingSetManager?: ToolWorkingSetManager;
+  capabilitySurfaceManager?: CapabilitySurfaceManager;
+  hotContextRuntime?: HotContextRuntime;
   chatContextRuntime: ContextEngineRuntime;
   contextEngineService?: ContextEngineService;
   loopConfig?: Partial<LoopConfig>;
@@ -85,7 +85,6 @@ export interface CreateChatTurnRuntimeOptions {
   fileLibrary?: FileLibrary;
   directoryLibrary?: DirectoryLibrary;
   feedbackLedger?: AgentFeedbackLedger;
-  personalMemorySnapshot?: (clientId: string) => string;
 }
 
 interface RegisteredChatAttachments {
@@ -132,8 +131,8 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   private readonly provider?: LlmProvider;
   private readonly staticContext?: StaticContext;
   private readonly toolExecutor?: ToolExecutor;
-  private readonly skillActivationManager?: SkillActivationManager;
-  private readonly toolWorkingSetManager?: ToolWorkingSetManager;
+  private readonly capabilitySurfaceManager?: CapabilitySurfaceManager;
+  private readonly hotContextRuntime?: HotContextRuntime;
   private readonly loopConfig?: Partial<LoopConfig>;
   private readonly nowProvider: () => Date;
   private readonly dataDir?: string;
@@ -144,7 +143,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   private readonly feedbackLedger?: AgentFeedbackLedger;
   private readonly chatContextRuntime: ContextEngineRuntime;
   private readonly contextEngineService?: ContextEngineService;
-  private readonly personalMemorySnapshot?: (clientId: string) => string;
   private readonly pulseProposalReflectionService = new PulseProposalReflectionService();
   private readonly turnSerializer = new AsyncKeySerializer();
 
@@ -154,8 +152,8 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     this.provider = options.provider;
     this.staticContext = options.staticContext;
     this.toolExecutor = options.toolExecutor;
-    this.skillActivationManager = options.skillActivationManager;
-    this.toolWorkingSetManager = options.toolWorkingSetManager;
+    this.capabilitySurfaceManager = options.capabilitySurfaceManager;
+    this.hotContextRuntime = options.hotContextRuntime;
     this.loopConfig = options.loopConfig;
     this.nowProvider = options.now ?? (() => new Date());
     this.dataDir = options.dataDir;
@@ -167,7 +165,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     this.feedbackLedger = options.feedbackLedger;
     this.chatContextRuntime = options.chatContextRuntime;
     this.contextEngineService = options.contextEngineService;
-    this.personalMemorySnapshot = options.personalMemorySnapshot;
   }
 
   async processChat(input: ChatTurnRuntimeInput): Promise<void> {
@@ -238,7 +235,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
 
       if (this.provider) {
         await this.associateRegisteredAttachmentsWithRun(registeredAttachments, runHandle.runId);
-        const harnessContext = this.harnessContextFromPreparedTurn(input.clientId, chatContextTurn);
+        const harnessContext = this.harnessContextFromPreparedTurn(chatContextTurn);
         const toolDefinitions = this.toolExecutor?.definitions({
           clientId: input.clientId,
           runId: runHandle.runId,
@@ -247,8 +244,8 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         let result = await agentLoop({
           provider: this.provider,
           toolExecutor: this.toolExecutor,
-          skillActivationManager: this.skillActivationManager,
-          toolWorkingSetManager: this.toolWorkingSetManager,
+          capabilitySurfaceManager: this.capabilitySurfaceManager,
+          hotContextRuntime: this.hotContextRuntime,
           toolDefinitions,
           runRecorder: chatRunRecorder,
           inputHandle,
@@ -259,6 +256,16 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
               record,
             });
             return context ? { contextEngine: context } : undefined;
+          },
+          checkpointWorkState: async (checkpoint) => {
+            const result = await this.chatContextRuntime.checkpointRunWorkState({
+              turn: chatContextTurn,
+              ...checkpoint,
+            });
+            return {
+              ...(result ? { context: { contextEngine: result.context } } : {}),
+              runtime: result?.runtime ?? checkpoint.runtime,
+            };
           },
           contextCheckpoint: this.chatContextRuntime.contextCheckpointCoordinator(chatContextTurn),
           ...(this.contextEngineService
@@ -516,7 +523,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         stopReason: finalized.run.stopReason,
         workstreamBinding: finalized.run.workstreamBinding,
         assistantMessageId: finalized.assistantMessage?.messageId,
-        observationRevision: finalized.observationRevision,
         resourceEffects: finalized.resourceEffects,
         workstreamContextCommit: finalized.workstreamContextCommit,
       },
@@ -544,14 +550,12 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         workState: {
           status: "blocked",
           summary: "Run failed before completion.",
-          openWork: ["Retry or continue the workstream after resolving the runtime failure."],
-          blockers: [message],
-          verifiedFacts: [],
-          evidence: [],
-          nextStep: "Retry or continue the workstream.",
+          plan: [],
+          importantContext: [{ kind: "constraint", value: message }],
+          nextAction: "Retry or continue the workstream.",
         },
         completedSteps: [],
-        harnessContext: createInitialHarnessContext(this.harnessContextFromPreparedTurn(clientId, prepared)),
+        harnessContext: createInitialHarnessContext(this.harnessContextFromPreparedTurn(prepared)),
       });
     } catch (finalizationError) {
       devWarn(`[${clientId}] git memory failed-run finalization failed: ${errMessage(finalizationError)}`);
@@ -567,7 +571,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   }
 
   private harnessContextFromPreparedTurn(
-    clientId: string,
     turn: ContextEnginePreparedTurn | null,
   ): HarnessContextInput {
     if (!turn) {
@@ -575,9 +578,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     }
     return {
       contextEngine: turn.context,
-      ...(this.personalMemorySnapshot
-        ? { personalMemorySnapshot: this.personalMemorySnapshot(clientId) }
-        : {}),
     };
   }
 
@@ -621,6 +621,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           ...result.workstreamSummary,
           assistantResponse: content,
           assistantResponseKind: "feedback",
+          feedbackKind: "approval",
         },
       };
     } catch (err) {
@@ -1179,10 +1180,8 @@ function directReplyResult(runId: string, content: string): AgentLoopResult {
     workState: {
       status: "done",
       summary: content,
-      openWork: [],
-      blockers: [],
-      verifiedFacts: [],
-      evidence: [],
+      plan: [],
+      importantContext: [],
     },
     completedSteps: [],
   };

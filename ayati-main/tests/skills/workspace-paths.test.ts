@@ -88,6 +88,14 @@ describe("workspace paths", () => {
       ok: false,
       code: "ABSOLUTE_PATH_REQUIRED",
     });
+    expect(requireAbsolutePath("file:///tmp/report.md", "path")).toMatchObject({
+      ok: false,
+      code: "ABSOLUTE_PATH_REQUIRED",
+    });
+    expect(requireAbsolutePath("/tmp/unsafe\nreport.md", "path")).toMatchObject({
+      ok: false,
+      code: "ABSOLUTE_PATH_REQUIRED",
+    });
     expect(requireAbsolutePath("/tmp/../tmp/report.md", "path")).toEqual({
       ok: true,
       absolutePath: "/tmp/report.md",

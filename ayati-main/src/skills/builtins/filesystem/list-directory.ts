@@ -107,13 +107,6 @@ export const listDirectoryTool: ToolDefinition = {
     }],
     artifacts: [{ kind: "directory", path: "$.result.structuredContent.dirPath" }],
   }),
-  selectionHints: {
-    tags: ["filesystem", "directory", "list", "browse"],
-    aliases: ["ls_tree", "dir_list"],
-    examples: ["list folder contents", "show files in this directory"],
-    domain: "filesystem",
-    priority: 2,
-  },
   async execute(input, context): Promise<ToolResult> {
     const parsed = validateListDirectoryInput(input);
     if ("ok" in parsed) return parsed;

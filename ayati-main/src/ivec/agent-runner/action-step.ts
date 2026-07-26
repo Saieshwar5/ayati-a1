@@ -25,6 +25,8 @@ import {
   isWorkstreamRoutingObservationTool,
   workstreamRoutingEvidenceReference,
 } from "./workstream-routing-evidence.js";
+import { deriveFilesystemCompletionEvidence } from "./filesystem-completion-evidence.js";
+import { toolCallVerificationPassed } from "./tool-call-verification.js";
 
 const noopRunRecorder: RunRecorder = {
   recordToolCall(): void {
@@ -52,6 +54,7 @@ export interface ExecuteActionStepInput {
   selectedTools: ToolDefinition[];
   decision: Extract<AgentDecision, { kind: "act" }>;
   stepNumber: number;
+  preserveWorkState?: boolean;
   runHandle?: MemoryRunHandle;
 }
 
@@ -102,6 +105,12 @@ export async function executeActionStep(input: ExecuteActionStepInput): Promise<
   }
 
   await applyToolStateUpdates(input.state, input.deps, execution.actOutput.toolCalls);
+  if (input.preserveWorkState) {
+    execution = {
+      ...execution,
+      nextWorkState: input.state.workState,
+    };
+  }
   syncPreparedAttachmentsFromRegistry(input.state, input.deps);
 
   const stepSummary = buildStepSummary({
@@ -132,6 +141,12 @@ function isWorkstreamBound(state: LoopState): boolean {
 
 export async function applyToolStateUpdates(state: LoopState, deps: AgentLoopDeps, calls: ActToolCallRecord[]): Promise<void> {
   for (const update of calls.flatMap((call) => readToolStateUpdates(call.meta))) {
+    if (update["type"] === "sync_hot_context_mounts") {
+      if (deps.hotContextRuntime) {
+        state.hotContext = deps.hotContextRuntime.project(deps.clientId, state.runId);
+      }
+      continue;
+    }
     if (update["type"] === "restore_prepared_attachment") {
       syncPreparedAttachmentsFromRegistry(state, deps);
       continue;
@@ -190,12 +205,20 @@ export function buildUpdatedToolContext(
   state: LoopState,
   execution: AgentActionExecutionResult,
   stepNumber: number,
+  options: {
+    stepKind?: RunToolCallContext["stepKind"];
+  } = {},
 ): LoopState["toolContext"] {
   return compactToolContext({
     recent: getLatestObservations(execution),
     toolCalls: [
       ...(state.toolContext?.toolCalls ?? []),
-      ...execution.actOutput.toolCalls.map((call) => toRunToolCallContext(state.runId, stepNumber, call)),
+      ...execution.actOutput.toolCalls.map((call) => toRunToolCallContext(
+        state.runId,
+        stepNumber,
+        call,
+        options,
+      )),
     ],
   });
 }
@@ -254,14 +277,29 @@ function getLatestObservations(execution: AgentActionExecutionResult): ToolObser
     .filter((observation): observation is NonNullable<ActToolCallRecord["observation"]> => observation !== undefined);
 }
 
-function toRunToolCallContext(runId: string, step: number, call: ActToolCallRecord): RunToolCallContext {
+function toRunToolCallContext(
+  runId: string,
+  step: number,
+  call: ActToolCallRecord,
+  options: {
+    stepKind?: RunToolCallContext["stepKind"];
+  },
+): RunToolCallContext {
+  const transientContext = options.stepKind === "transient_context";
+  const verificationPassed = toolCallVerificationPassed(call);
   const projectionMetadata = buildToolProjectionMetadata(call.tool, call.result?.structuredContent);
-  const evidenceRef = call.observation?.evidenceRef
-    ?? (isWorkstreamRoutingObservationTool(call.tool)
-      ? workstreamRoutingEvidenceReference(runId, step, call.callId)
-      : undefined);
+  const completionEvidence = transientContext
+    ? []
+    : deriveFilesystemCompletionEvidence(call, step, verificationPassed);
+  const evidenceRef = transientContext
+    ? undefined
+    : call.observation?.evidenceRef
+      ?? (isWorkstreamRoutingObservationTool(call.tool)
+        ? workstreamRoutingEvidenceReference(runId, step, call.callId)
+        : undefined);
   return {
     step,
+    ...(options.stepKind ? { stepKind: options.stepKind } : {}),
     ...(call.callId ? { callId: call.callId } : {}),
     tool: call.tool,
     ...(call.purpose ? { purpose: call.purpose } : {}),
@@ -275,9 +313,14 @@ function toRunToolCallContext(runId: string, step: number, call: ActToolCallReco
     ...(call.operationStatus ? { operationStatus: call.operationStatus } : {}),
     ...(call.artifacts && call.artifacts.length > 0 ? { artifacts: call.artifacts } : {}),
     ...(call.observation?.hasMore !== undefined ? { hasMore: call.observation.hasMore } : {}),
-    ...(runId.trim().length > 0 ? { stepRef: { runId, step, ...(call.callId ? { callId: call.callId } : {}) } } : {}),
+    ...(!transientContext && runId.trim().length > 0
+      ? { stepRef: { runId, step, ...(call.callId ? { callId: call.callId } : {}) } }
+      : {}),
     ...(evidenceRef ? { evidenceRef } : {}),
     ...(call.rawOutputChars !== undefined ? { rawOutputChars: call.rawOutputChars } : {}),
     ...(call.outputTruncated !== undefined ? { outputTruncated: call.outputTruncated } : {}),
+    ...(call.verification ? { verification: call.verification } : {}),
+    verificationPassed,
+    ...(completionEvidence.length > 0 ? { completionEvidence } : {}),
   };
 }

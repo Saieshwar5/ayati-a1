@@ -10,6 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import {
   basename,
   dirname,
@@ -31,6 +32,8 @@ if (unknownArguments.length > 0) {
 }
 const confirmed = argumentsList.includes("--confirm");
 const paths = resolveRuntimePaths(process.env);
+const targetSchemaVersion = await readTargetSchemaVersion();
+const archivedSchemaVersion = await readDatabaseSchemaVersion(paths.databasePath);
 
 if (!confirmed) {
   await writeStandardOutput([
@@ -39,6 +42,8 @@ if (!confirmed) {
     `resource-root: ${paths.resourceRoot}`,
     `workstream-root: ${paths.workstreamRoot}`,
     `workspace: ${paths.workspaceRoot} (preserved)`,
+    `database-schema: ${archivedSchemaVersion ?? "unknown or absent"}`,
+    `target-schema: ${targetSchemaVersion}`,
     "No files were changed. Re-run with --confirm to archive this state.",
     "",
   ].join("\n"));
@@ -78,8 +83,8 @@ const entries = [
 ];
 const manifest = {
   version: 3,
-  archivedSchemaVersion: 5,
-  nextSchemaVersion: 6,
+  archivedSchemaVersion,
+  nextSchemaVersion: targetSchemaVersion,
   operation: "context_archive_reset",
   createdAt: new Date().toISOString(),
   ayatiRoot: paths.rootDirectory,
@@ -142,6 +147,40 @@ function normalizeSpecialPath(value) {
   if (trimmed === "~") return homedir();
   if (trimmed.startsWith("~/")) return join(homedir(), trimmed.slice(2));
   return trimmed;
+}
+
+async function readTargetSchemaVersion() {
+  const path = fileURLToPath(
+    new URL("../ayati-context-engine/src/database/schema-version.json", import.meta.url),
+  );
+  const parsed = JSON.parse(await readFile(path, "utf8"));
+  const version = Number(parsed?.version);
+  if (!Number.isInteger(version) || version < 1) {
+    throw new Error(`Invalid Context Engine target schema version in ${path}.`);
+  }
+  return version;
+}
+
+async function readDatabaseSchemaVersion(databasePath) {
+  const stat = await lstat(databasePath).catch((error) => {
+    if (error?.code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (!stat?.isFile()) return undefined;
+
+  let database;
+  try {
+    database = new DatabaseSync(databasePath, { readOnly: true });
+    const row = database.prepare(
+      "SELECT version FROM schema_metadata WHERE singleton = 1",
+    ).get();
+    const version = Number(row?.version);
+    return Number.isInteger(version) && version >= 1 ? version : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    database?.close();
+  }
 }
 
 function validateSafePaths(paths) {
