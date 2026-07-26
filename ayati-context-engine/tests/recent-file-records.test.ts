@@ -1,13 +1,17 @@
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type {
+  RunOutcome,
+  RunStopReason,
   RunStepFilesystemCompletionEvidence,
   RunStepToolCall,
+  RunWorkStatus,
 } from "../src/contracts.js";
 import {
   MAX_RECENT_FILES,
   readRecentFiles,
 } from "../src/repositories/recent-file-records.js";
+import { markRunRecoveryRequired } from "../src/repositories/run-records.js";
 import {
   createWorkstreamServiceFixture,
   workState,
@@ -26,6 +30,7 @@ describe("recent file records", () => {
     const completePath = join(fixture.root, "archive", "field-brief.txt");
     const partialPath = join(fixture.root, "archive", "partial.txt");
     const unverifiedPath = join(fixture.root, "archive", "unverified.txt");
+    const failedPath = join(fixture.root, "archive", "failed.txt");
     const sourceRunId = fixture.prepared.run.runId;
     await recordReadStep(fixture, [
       readCall(completePath, {
@@ -42,6 +47,12 @@ describe("recent file records", () => {
         callId: "call-unverified",
         coverage: "complete",
         verificationPassed: false,
+      }),
+      readCall(failedPath, {
+        callId: "call-failed",
+        coverage: "complete",
+        verificationPassed: false,
+        status: "failed",
       }),
     ], "2026-07-25T08:00:01.000Z");
     await finalize(fixture, "I read the field brief.", "first");
@@ -130,6 +141,87 @@ describe("recent file records", () => {
     });
     expect(new Set(recent.map((file) => file.path)).size).toBe(MAX_RECENT_FILES);
   });
+
+  it("keeps verified reads from every stable terminal run outcome", async () => {
+    const fixture = await createFixture("recent-files-run-outcomes");
+    const terminalOutcomes = [
+      "incomplete",
+      "failed",
+      "blocked",
+      "needs_user_input",
+      "done",
+    ] satisfies RunOutcome[];
+    const expectedPaths: string[] = [];
+
+    for (const [index, outcome] of terminalOutcomes.entries()) {
+      const minute = index + 1;
+      const path = join(fixture.root, "docs", `${outcome}.txt`);
+      expectedPaths.unshift(path);
+      await recordReadStep(
+        fixture,
+        [readCall(path, {
+          callId: `call-${outcome}`,
+          coverage: "complete",
+          verificationPassed: true,
+        })],
+        timestamp(minute, 1),
+      );
+      await finalizeWithOutcome(fixture, {
+        suffix: outcome,
+        outcome,
+        response: outcome === "needs_user_input"
+          ? "Which file should I inspect next?"
+          : `The ${outcome} run read its file before stopping.`,
+        at: timestamp(minute, 2),
+      });
+      fixture.prepared = await fixture.service.prepareAgentRun({
+        requestId: `REQ-recent-files-after-${outcome}`,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+        scopeKey: "default",
+        role: "user",
+        content: `Continue after the ${outcome} run.`,
+        at: timestamp(minute, 3),
+      });
+    }
+
+    const runningPath = join(fixture.root, "docs", "running.txt");
+    await recordReadStep(
+      fixture,
+      [readCall(runningPath, {
+        callId: "call-running",
+        coverage: "complete",
+        verificationPassed: true,
+      })],
+      timestamp(6, 1),
+    );
+
+    const recent = readRecentFiles(fixture.database, {
+      streamId: fixture.prepared.stream.streamId,
+    });
+    expect(recent.map((file) => file.path)).toEqual(expectedPaths);
+    expect(recent.map((file) => file.path)).not.toContain(runningPath);
+    expect(fixture.prepared.context.stream?.recentFiles).toEqual(recent);
+  });
+
+  it("excludes verified reads while their run requires recovery", async () => {
+    const fixture = await createFixture("recent-files-recovery");
+    const path = join(fixture.root, "docs", "recovery.txt");
+    await recordReadStep(
+      fixture,
+      [readCall(path, {
+        callId: "call-recovery",
+        coverage: "complete",
+        verificationPassed: true,
+      })],
+      timestamp(1, 1),
+    );
+    markRunRecoveryRequired(fixture.database, fixture.prepared.run.runId);
+
+    expect(readRecentFiles(fixture.database, {
+      streamId: fixture.prepared.stream.streamId,
+    })).toEqual([]);
+  });
 });
 
 async function createFixture(name: string): Promise<WorkstreamServiceFixture> {
@@ -166,6 +258,7 @@ function readCall(
     callId: string;
     coverage: "complete" | "partial";
     verificationPassed: boolean;
+    status?: "success" | "failed";
   },
 ): RunStepToolCall {
   const evidence: RunStepFilesystemCompletionEvidence = {
@@ -188,9 +281,11 @@ function readCall(
     purpose: "Read the requested file.",
     toolPurpose: "read",
     toolEffect: "read_only",
-    status: "success",
+    status: input.status ?? "success",
     input: { files: [{ path }] },
-    output: { results: [{ ok: true, filePath: path }] },
+    output: input.status === "failed"
+      ? { results: [{ ok: false, filePath: path, error: "Read failed." }] }
+      : { results: [{ ok: true, filePath: path }] },
     verification: {
       version: 1,
       status: input.verificationPassed ? "passed" : "failed",
@@ -209,7 +304,7 @@ function readCall(
       } : {}),
     },
     verificationPassed: input.verificationPassed,
-    completionEvidence: [evidence],
+    completionEvidence: input.status === "failed" ? [] : [evidence],
   };
 }
 
@@ -219,19 +314,80 @@ async function finalize(
   suffix: string,
   at = "2026-07-25T08:00:02.000Z",
 ): Promise<void> {
-  await fixture.service.finalizeRun({
-    requestId: `REQ-${suffix}-finalize`,
-    runId: fixture.prepared.run.runId,
+  await finalizeWithOutcome(fixture, {
+    response,
+    suffix,
     outcome: "done",
-    stopReason: "completed",
-    assistantResponse: response,
-    streamSummary: "File reading completed.",
-    summary: "File reading completed.",
-    validation: "passed",
-    workState: workState({
-      status: "done",
-      summary: "File reading completed.",
-    }),
     at,
   });
+}
+
+async function finalizeWithOutcome(
+  fixture: WorkstreamServiceFixture,
+  input: {
+    response: string;
+    suffix: string;
+    outcome: RunOutcome;
+    at: string;
+  },
+): Promise<void> {
+  const terminal = terminalState(input.outcome);
+  await fixture.service.finalizeRun({
+    requestId: `REQ-${input.suffix}-finalize`,
+    runId: fixture.prepared.run.runId,
+    outcome: input.outcome,
+    stopReason: terminal.stopReason,
+    assistantResponse: input.response,
+    streamSummary: "File reading completed.",
+    summary: "File reading completed.",
+    validation: terminal.validation,
+    workState: workState({
+      status: terminal.workStatus,
+      summary: "File reading completed.",
+    }),
+    at: input.at,
+  });
+}
+
+function terminalState(outcome: RunOutcome): {
+  stopReason: RunStopReason;
+  workStatus: RunWorkStatus;
+  validation: "passed" | "failed" | "not_applicable";
+} {
+  switch (outcome) {
+    case "done":
+      return {
+        stopReason: "completed",
+        workStatus: "done",
+        validation: "passed",
+      };
+    case "failed":
+      return {
+        stopReason: "failed",
+        workStatus: "in_progress",
+        validation: "failed",
+      };
+    case "blocked":
+      return {
+        stopReason: "blocked",
+        workStatus: "blocked",
+        validation: "not_applicable",
+      };
+    case "needs_user_input":
+      return {
+        stopReason: "needs_user_input",
+        workStatus: "needs_user_input",
+        validation: "not_applicable",
+      };
+    case "incomplete":
+      return {
+        stopReason: "run_limit",
+        workStatus: "in_progress",
+        validation: "not_applicable",
+      };
+  }
+}
+
+function timestamp(minute: number, second: number): string {
+  return `2026-07-25T08:${String(minute).padStart(2, "0")}:${String(second).padStart(2, "0")}.000Z`;
 }

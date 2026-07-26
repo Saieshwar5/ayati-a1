@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { buildPromptToolCallsForRun } from "../../src/ivec/agent-runner/run-tool-call-context.js";
+import {
+  buildPromptToolCallsForRun,
+  compactPromptToolCall,
+} from "../../src/ivec/agent-runner/run-tool-call-context.js";
 import type { RunToolCallContext } from "../../src/ivec/types.js";
 
 describe("run tool-call prompt context", () => {
@@ -160,5 +163,90 @@ describe("run tool-call prompt context", () => {
       status: "success",
       verificationStatus: "passed",
     });
+  });
+
+  it("projects a compact factual candidate set for a multi-match file search", () => {
+    const call: RunToolCallContext = {
+      step: 1,
+      callId: "find-release-notes",
+      tool: "find_files",
+      purpose: "Find the requested release notes.",
+      input: {
+        query: "release-notes.txt",
+        roots: ["/workspace"],
+      },
+      status: "success",
+      output: "Found 2 matches.",
+      projectionMetadata: {
+        query: "release-notes.txt",
+        roots: ["/workspace"],
+        matches: [
+          {
+            absolutePath: "/workspace/north/release-notes.txt",
+            kind: "file",
+          },
+          {
+            absolutePath: "/workspace/south/release-notes.txt",
+            kind: "file",
+          },
+        ],
+        matchCount: 2,
+        capped: false,
+        traversalComplete: true,
+        errorCount: 0,
+      },
+      verification: {
+        version: 1,
+        status: "passed",
+        method: "tool_contract",
+        contract: "tool_result_v2",
+        summary: "The search contract passed.",
+        checks: [],
+        facts: [],
+      },
+    };
+
+    const projected = buildPromptToolCallsForRun([call])?.[0];
+    expect(projected?.candidateSet).toEqual({
+      query: "release-notes.txt",
+      matchCount: 2,
+      candidates: [
+        {
+          label: "north/release-notes.txt",
+          path: "/workspace/north/release-notes.txt",
+          kind: "file",
+        },
+        {
+          label: "south/release-notes.txt",
+          path: "/workspace/south/release-notes.txt",
+          kind: "file",
+        },
+      ],
+    });
+
+    const compacted = compactPromptToolCall(
+      projected!,
+      "summary",
+      "context_budget",
+    );
+    expect(compacted.candidateSet).toEqual(projected?.candidateSet);
+  });
+
+  it("does not add candidate context to a unique file result", () => {
+    const calls = buildPromptToolCallsForRun([{
+      step: 1,
+      tool: "find_files",
+      input: { query: "notes.txt", roots: ["/workspace"] },
+      status: "success",
+      output: "Found 1 match.",
+      projectionMetadata: {
+        query: "notes.txt",
+        roots: ["/workspace"],
+        matches: [{ absolutePath: "/workspace/notes.txt", kind: "file" }],
+        matchCount: 1,
+      },
+    }]);
+
+    expect(calls?.[0]).not.toHaveProperty("candidateSet");
   });
 });

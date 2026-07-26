@@ -343,6 +343,55 @@ describe("buildAgentStateView", () => {
     }]);
   });
 
+  it("keeps compact multi-match candidates while hiding internal search metadata", () => {
+    const state = createLoopState({ context: createContext() });
+    state.toolContext = {
+      recent: [],
+      toolCalls: [{
+        step: 1,
+        callId: "find-release-notes",
+        tool: "find_files",
+        input: {
+          query: "release-notes.txt",
+          roots: ["/workspace"],
+        },
+        status: "success",
+        output: "Found 2 matches.",
+        verificationPassed: true,
+        projectionMetadata: {
+          query: "release-notes.txt",
+          roots: ["/workspace"],
+          matches: [
+            {
+              absolutePath: "/workspace/north/release-notes.txt",
+              kind: "file",
+            },
+            {
+              absolutePath: "/workspace/south/release-notes.txt",
+              kind: "file",
+            },
+          ],
+          matchCount: 2,
+          internalHash: "do-not-project",
+        },
+      }],
+    };
+
+    const call = projectAgentStateViewForPrompt(
+      buildAgentStateView(state),
+    ).context.run?.toolCalls?.[0];
+
+    expect(call?.candidateSet).toMatchObject({
+      matchCount: 2,
+      candidates: [
+        { label: "north/release-notes.txt" },
+        { label: "south/release-notes.txt" },
+      ],
+    });
+    expect(call).not.toHaveProperty("projectionMetadata");
+    expect(JSON.stringify(call)).not.toContain("do-not-project");
+  });
+
   it("projects only unresolved repairs while retaining resolved records in run history", () => {
     const state = createLoopState({ context: createContext() });
     state.failureHistory = [{

@@ -63,6 +63,11 @@ import type { ModeCapabilityOptions } from "./capabilities/contracts.js";
 import type { WorkStateUpdateInput } from "./work-state/contracts.js";
 import { WORK_STATE_LIMITS } from "./work-state/contracts.js";
 import { normalizeWorkStateUpdateInput } from "./work-state/checkpoint.js";
+import {
+  detectAssistantTextToolCall,
+  looksLikeToolCallRecord,
+  type AssistantTextToolCallViolation,
+} from "./assistant-text-tool-call.js";
 
 export type AgentDecisionStatus = "completed" | "failed";
 export type AgentActionMode = "single" | "sequential" | "parallel";
@@ -161,14 +166,6 @@ interface ToolInputSchemaViolation {
     inputKeys: string[];
     schema: Record<string, unknown>;
   }>;
-}
-
-interface AssistantTextToolCallViolation {
-  kind: Extract<DecisionFailureKind, "assistant_text_tool_call">;
-  reason: string;
-  toolName?: string;
-  inputKeys: string[];
-  selectedTools: string[];
 }
 
 interface AgentDecisionFeedbackContext {
@@ -282,7 +279,10 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
 
     try {
       const assistantTextToolCallViolation = turn.type === "assistant"
-        ? detectAssistantTextToolCall(rawText, input.toolDefinitions)
+        ? detectAssistantTextToolCall(rawText, {
+            selectedTools: input.toolDefinitions.map((tool) => tool.name),
+            nativeTools: decisionTools,
+          })
         : null;
       if (assistantTextToolCallViolation) {
         const repair = createAssistantTextToolCallRepairSignal(assistantTextToolCallViolation, attempt + 1);
@@ -1148,95 +1148,6 @@ function looksLikeStructuredDecision(text: string): boolean {
   }
   const parsed = parseJsonRecord(trimmed);
   return typeof parsed?.["kind"] === "string" || looksLikeToolCallRecord(parsed);
-}
-
-function detectAssistantTextToolCall(
-  text: string,
-  selectedTools: ToolDefinition[],
-): AssistantTextToolCallViolation | null {
-  const internalAction = detectInternalActionTextToolCall(text, selectedTools);
-  if (internalAction) {
-    return internalAction;
-  }
-
-  const parsed = parseJsonRecord(text);
-  if (!looksLikeToolCallRecord(parsed)) {
-    return null;
-  }
-  const record = parsed as Record<string, unknown>;
-  const toolName = readToolLikeName(record);
-  const input = readToolLikeInput(record);
-  return {
-    kind: "assistant_text_tool_call",
-    reason: "Assistant text contained JSON shaped like a tool call. Native tools must be called through provider tool calling, not printed as text.",
-    ...(toolName ? { toolName } : {}),
-    inputKeys: Object.keys(input ?? {}),
-    selectedTools: selectedTools.map((tool) => tool.name),
-  };
-}
-
-function detectInternalActionTextToolCall(
-  text: string,
-  selectedTools: ToolDefinition[],
-): AssistantTextToolCallViolation | null {
-  const trimmed = text.trimStart();
-  if (parseJsonRecord(trimmed)) {
-    return null;
-  }
-  if (!trimmed.startsWith("{") || !/"kind"\s*:\s*"act"/.test(trimmed)) {
-    return null;
-  }
-  if (!/"action"\s*:/.test(trimmed) && !/"allowedTools"\s*:/.test(trimmed) && !/"calls"\s*:/.test(trimmed)) {
-    return null;
-  }
-  const selectedToolNames = selectedTools.map((tool) => tool.name);
-  const toolName = extractInternalActionToolName(trimmed, selectedToolNames);
-  return {
-    kind: "assistant_text_tool_call",
-    reason: "Assistant text contained internal action JSON. Executable work must use provider native tool calling, not printed harness JSON.",
-    ...(toolName ? { toolName } : {}),
-    inputKeys: [],
-    selectedTools: selectedToolNames,
-  };
-}
-
-function extractInternalActionToolName(text: string, selectedToolNames: string[]): string | undefined {
-  const allowedMatch = text.match(/"allowedTools"\s*:\s*\[\s*"([^"]+)"/);
-  if (allowedMatch?.[1]) {
-    return allowedMatch[1];
-  }
-  const toolMatch = text.match(/"tool"\s*:\s*"([^"]+)"/);
-  if (toolMatch?.[1]) {
-    return toolMatch[1];
-  }
-  return selectedToolNames.find((tool) => text.includes(`"${tool}"`) || text.includes(tool));
-}
-
-function looksLikeToolCallRecord(value: unknown): boolean {
-  if (!isPlainObject(value)) {
-    return false;
-  }
-  if (typeof value["kind"] === "string") {
-    return false;
-  }
-  const hasToolName = typeof value["tool"] === "string" || typeof value["name"] === "string";
-  const hasInput = isPlainObject(value["arguments"]) || isPlainObject(value["input"]);
-  return hasToolName && hasInput;
-}
-
-function readToolLikeName(record: Record<string, unknown>): string | undefined {
-  const name = typeof record["tool"] === "string" ? record["tool"] : record["name"];
-  return typeof name === "string" && name.trim().length > 0 ? name.trim() : undefined;
-}
-
-function readToolLikeInput(record: Record<string, unknown>): Record<string, unknown> | undefined {
-  if (isPlainObject(record["arguments"])) {
-    return record["arguments"];
-  }
-  if (isPlainObject(record["input"])) {
-    return record["input"];
-  }
-  return undefined;
 }
 
 function buildDecisionPromptSections(

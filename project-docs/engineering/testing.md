@@ -110,16 +110,28 @@ Changes should prove the relevant invariants:
     explicit request, excludes active/recovery/initial and trivial completed
     records, orders newest first, caps at five distinct runs, and remains
     historical advisory context rather than authority or completion evidence.
-30. The recent-document registry is rebuilt from exact verified complete-read
-    steps, deduplicates and caps at 32 paths, projects only five lightweight
-    active pointers into the Core Capsule, exposes only the remaining 27
-    through `files.recent`, preserves both views through restart/checkpoint
-    projection, and grounds read-only investigation without granting mutation
-    authority or current-content proof.
+30. The recent-document registry is rebuilt only from exact verified successful
+    complete-read steps belonging to stable terminal runs. It preserves valid
+    reads from done, incomplete, failed, blocked, and needs-input outcomes while
+    excluding running/recovery-required runs and failed or unverified calls. It
+    deduplicates and caps at 32 paths, projects only five lightweight active
+    pointers into the Core Capsule, exposes only the remaining 27 through
+    `files.recent`, preserves both views through restart/checkpoint projection,
+    and grounds read-only investigation without granting mutation authority or
+    current-content proof.
 31. `system:time` and `system:health` enter investigation without a resource
     reference, while target-backed or mixed investigation capabilities still
     require one. Their outputs are bounded, privacy-safe, contract-verified,
     and become typed current-run validation outcomes without a second sample.
+32. A verified multi-match `find_files` call projects a bounded factual
+    candidate set through normal and compacted tool-call context while keeping
+    private projection metadata hidden. Candidate choice and clarification
+    remain model-driven; the runtime does not classify natural-language
+    selections.
+33. A whole assistant-text JSON object matching the required top-level
+    signature of a currently exposed native control is never accepted as a
+    direct reply or executed automatically. The harness requests one native
+    tool-call repair, while unrelated JSON assistant replies remain valid.
 
 ## Prompt and Harness Coverage
 

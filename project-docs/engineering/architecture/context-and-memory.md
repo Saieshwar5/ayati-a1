@@ -124,13 +124,17 @@ partially cut. If even the newest historical turn cannot fit, it is named in
 an unloaded range and becomes eligible checkpoint source rather than silently
 overflowing the capsule.
 
-`core.current.activeDocuments` is derived from the newest verified complete
-historical file reads in the same stream. Each pointer contains only filename,
-canonical path, last-read time, evidence reference, optional request/response
-sequence clues, and `freshness: "unchecked"`. The five pointers are outside
-the conversational checkpoint and survive checkpoint projection unchanged.
-They help a follow-up skip rediscovery, but they contain no file content,
-grant no authority, and require one fresh read when current contents matter.
+`core.current.activeDocuments` is derived from the newest verified successful
+complete historical file reads belonging to stable terminal runs in the same
+stream. A terminal run may be done, incomplete, failed, blocked, or waiting for
+user input; its overall outcome does not invalidate an earlier successful read.
+Running and recovery-required runs are excluded. Each pointer contains only
+filename, canonical path, last-read time, evidence reference, optional
+request/response sequence clues, and `freshness: "unchecked"`. The five
+pointers are outside the conversational checkpoint and survive checkpoint
+projection unchanged. They help a follow-up skip rediscovery, but they contain
+no file content, grant no authority, and require one fresh read when current
+contents matter.
 
 Capsule evolution is automatic:
 
@@ -205,12 +209,13 @@ always override it. Exact details remain recoverable from each advertised
 `run:*` source reference.
 
 The recent-document registry contains at most 32 canonical paths, newest first
-and deduplicated by path. It is rebuilt from exact run steps after every
-projection or restart; no new table or copied cache record exists. The first
-five lightweight pointers appear in `core.current.activeDocuments`. The
-remaining records are available through `files.recent`, including filename,
-path, last complete-read time, request/response sequence clues, exact
-run-step-call evidence reference, and available size/line/hash metadata.
+and deduplicated by path. It is rebuilt from exact verified successful
+complete-read steps belonging to stable terminal runs after every projection
+or restart; no new table or copied cache record exists. The first five
+lightweight pointers appear in `core.current.activeDocuments`. The remaining
+records are available through `files.recent`, including filename, path, last
+complete-read time, request/response sequence clues, exact run-step-call
+evidence reference, and available size/line/hash metadata.
 
 Neither view contains file content or makes a freshness/existence claim.
 Loading `files.recent`, or using an active pointer directly, lets a referential

@@ -2342,7 +2342,7 @@ describe("agentLoop one-run lifecycle", () => {
           request: {
             outcome: "needs_user_input",
             summary: "The requested file is ambiguous.",
-            response: "Which file should I inspect? Please provide the file path.",
+            response: "Please confirm which file I should inspect: North or South.",
           },
         },
       ]);
@@ -2366,6 +2366,7 @@ describe("agentLoop one-run lifecycle", () => {
         outcome: "needs_user_input",
         stopReason: "needs_user_input",
         status: "completed",
+        content: "Please confirm which file I should inspect: North or South.",
         workState: {
           status: "needs_user_input",
         },

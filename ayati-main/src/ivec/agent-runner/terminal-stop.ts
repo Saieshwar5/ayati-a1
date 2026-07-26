@@ -35,9 +35,6 @@ export function dispatchTerminalStop(
 
   switch (request.outcome) {
     case "needs_user_input":
-      if (!hasExactlyOneQuestion(response)) {
-        return rejected("A needs-user-input response must ask exactly one specific question.");
-      }
       if (!hasMaterialUncertainty(state)) {
         return rejected("No current ambiguity or missing user decision supports a needs-user-input outcome.");
       }
@@ -172,20 +169,6 @@ function appendImportantContext(
 function hasCurrentFailure(state: LoopState): boolean {
   return getActiveFailures(state.failureHistory).length > 0
     || state.completedSteps.some((step) => step.outcome === "failed");
-}
-
-function hasExactlyOneQuestion(response: string): boolean {
-  const questions = response.match(/\?/g) ?? [];
-  if (questions.length !== 1) return false;
-  const question = response.slice(
-    Math.max(
-      response.lastIndexOf(".", response.indexOf("?")),
-      response.lastIndexOf("!", response.indexOf("?")),
-      response.lastIndexOf("\n", response.indexOf("?")),
-    ) + 1,
-    response.indexOf("?") + 1,
-  ).trim();
-  return question.length >= 8;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

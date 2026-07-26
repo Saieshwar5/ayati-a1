@@ -80,7 +80,8 @@ agent stream (slow growth, many runs)
   durable continuity checkpoint + exact tail
   recent-workstream metadata prepared for optional Hot Context
   recent material WorkState handoffs derived for optional Hot Context
-  one 32-record recent-document registry derived from exact run steps
+  one 32-record recent-document registry derived from verified successful
+    complete reads belonging to stable terminal runs
     newest five -> Core Capsule active-document pointers
     older 27 -> optional files.recent Hot Context
   stream resources

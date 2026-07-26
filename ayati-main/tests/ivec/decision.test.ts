@@ -992,6 +992,105 @@ describe("callAgentDecision", () => {
     });
   });
 
+  it("repairs bare native-control arguments returned as assistant text", async () => {
+    const bareControlInput = JSON.stringify({
+      purpose: "Read the exact report before answering.",
+      capabilities: ["file:read"],
+      references: [{
+        kind: "filesystem",
+        path: "/tmp/project/report.txt",
+      }],
+    });
+    const feedback = createFeedbackLedger();
+    const { provider, generateTurn } = createNativeToolProvider([
+      {
+        type: "assistant",
+        content: bareControlInput,
+      },
+      {
+        type: "tool_calls",
+        calls: [{
+          id: "call-investigate",
+          name: "decision_enter_observe_investigate",
+          input: {
+            purpose: "Read the exact report before answering.",
+            capabilities: ["file:read"],
+            references: [{
+              kind: "filesystem",
+              value: "/tmp/project/report.txt",
+            }],
+          },
+        }],
+      },
+    ]);
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+      feedbackLedger: feedback.ledger,
+      feedbackContext: {
+        clientId: "local",
+        sessionId: "S-test",
+        seq: 2,
+      },
+    });
+
+    expect(decision).toMatchObject({
+      kind: "transition_mode",
+      request: {
+        to: "observe.investigate",
+        purpose: "Read the exact report before answering.",
+        capabilities: ["file:read"],
+        references: [{
+          kind: "filesystem",
+          path: "/tmp/project/report.txt",
+        }],
+      },
+    });
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+    const repairPrompt = generateTurn.mock.calls[1]?.[0]?.messages.at(-1)?.content ?? "";
+    expect(repairPrompt).toContain("Repair code: R_ASSISTANT_TEXT_TOOL_CALL");
+    expect(repairPrompt).toContain(
+      "Blocked targets: decision_enter_observe_investigate",
+    );
+    expect(feedback.events.some((event) => event.event === "direct_reply")).toBe(false);
+    expect(
+      feedback.events.find((event) => event.event === "assistant_text_tool_call")?.data,
+    ).toMatchObject({
+      toolName: "decision_enter_observe_investigate",
+      inputKeys: ["purpose", "capabilities", "references"],
+      repair: {
+        code: "R_ASSISTANT_TEXT_TOOL_CALL",
+        blockedTargets: ["decision_enter_observe_investigate"],
+      },
+    });
+  });
+
+  it("keeps ordinary JSON assistant replies that do not match a native control", async () => {
+    const response = JSON.stringify({
+      coordinator: "Dr. Nila Voss",
+      emergencyCode: "SILVER-MOSS-42",
+    });
+    const { provider, generateTurn } = createNativeToolProvider([{
+      type: "assistant",
+      content: response,
+    }]);
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+    });
+
+    expect(generateTurn).toHaveBeenCalledTimes(1);
+    expect(decision).toEqual({
+      kind: "reply",
+      status: "completed",
+      message: response,
+    });
+  });
+
   it("repairs truncated internal action JSON returned as assistant text", async () => {
     const truncatedInternalActionJson = "{\"kind\":\"act\",\"action\":{\"mode\":\"single\",\"allowedTools\":[\"write_files\"],\"calls\":[{\"id\":\"call_1\",\"t";
     const feedback = createFeedbackLedger();

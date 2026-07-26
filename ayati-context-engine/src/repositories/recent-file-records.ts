@@ -43,7 +43,7 @@ export function readRecentFiles(
     "FROM run_steps steps",
     "JOIN runs ON runs.run_id = steps.run_id",
     "WHERE runs.stream_id = ?",
-    "  AND runs.status NOT IN ('running', 'recovery_required')",
+    "  AND runs.status IN ('done', 'incomplete', 'failed', 'blocked', 'needs_user_input')",
     "  AND steps.status = 'completed'",
     "ORDER BY steps.created_at DESC, runs.run_sequence DESC, steps.step DESC",
     "LIMIT ?",

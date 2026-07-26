@@ -114,10 +114,19 @@ clarify:     ENTRY -> direct clarification
 preference:  ENTRY -> context.retrieve -> context_load -> ENTRY -> direct response
 exact read:  ENTRY -> observe.investigate -> read -> validation(proof) -> direct response
 vague read:  ENTRY -> observe.locate -> find -> observe.investigate -> read -> validation(proof) -> direct response
-ambiguity:   observe.locate -> resolve(ambiguous) -> decision_stop(needs_user_input)
+read choice: observe.locate -> find(multiple) -> chosen read or clarification
+ownership ambiguity: observe.locate -> resolve(ambiguous) -> decision_stop(needs_user_input)
 mutation:    observe -> resolve -> execute -> validation(proof) -> direct response
 repair:      execute -> validation(failed) -> execute -> validation -> direct response
 ```
+
+A verified `find_files` call with multiple results adds a small factual
+`candidateSet` to that call's model-facing run context. It contains bounded
+exact paths and useful relative labels, and survives tool-output compaction.
+The model decides from the request whether to continue or ask through the
+normal needs-user-input path. The runtime still checks target provenance,
+resource authority, and tool verification, but it does not classify the
+meaning of the user's choice.
 
 The model never sees a separate workstream-resolution agent or lifecycle tool.
 Before `resolve`, it uses read-only workstream search/read and resource-owner
@@ -129,8 +138,13 @@ binding attempt, makes no model request, and requires a fresh primary decision
 after authoritative bound context is mounted.
 
 Executable tools retain native schemas. Harness-only controls are not
-persisted as fake calls. Invalid text-encoded calls and malformed schemas
-receive bounded repair feedback followed by a fresh decision.
+persisted as fake calls. If a provider returns a whole JSON object whose shape
+matches the input of a currently exposed native control, the harness treats it
+as a text-encoded control attempt instead of a user-facing reply. It never
+executes that object automatically; it requests one bounded repair so the
+provider must emit a real native tool call. Unrelated JSON assistant replies
+remain valid. Other invalid text-encoded calls and malformed schemas receive
+the same bounded repair treatment.
 
 ## Workstream Observation and Deterministic Binding
 
@@ -441,8 +455,10 @@ actually produced by successful mutation steps; the model does not declare
 completion resources.
 
 `decision_stop` handles only non-successful terminal outcomes. It requires a
-specific supported question for `needs_user_input` or a current blocker/failure
-for `blocked` and `failed`. Successful work never uses `decision_stop`.
+usable user-facing clarification backed by current ambiguity for
+`needs_user_input`, or a current blocker/failure for `blocked` and `failed`.
+Clarification acceptance does not depend on punctuation. Successful work never
+uses `decision_stop`.
 
 One coordinator serves chat and system events. `finalizeRun` receives outcome,
 stop reason, assistant response, summaries, validation, WorkState, and optional

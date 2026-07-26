@@ -23,11 +23,14 @@ entries for the rest of that run. `workstreams.recent` is
 prepared from creation/open/binding metadata and remains absent from the prompt
 until loaded. It is navigation context only; current workstream state still
 requires an authoritative read. One recent-document registry is rebuilt from
-at most 32 verified complete historical reads. Its five newest lightweight
-pointers are always visible in `core.current.activeDocuments`; only the older
-27 records are mountable through `files.recent`. Both carry navigation
-metadata so a same-file follow-up can skip rediscovery; current contents still
-require one read. `workstates.recent` is
+at most 32 verified successful complete historical reads from stable terminal
+runs. A paused or failed responsibility does not invalidate an earlier
+successful read; running and recovery-required runs remain excluded. Its five
+newest lightweight pointers are always visible in
+`core.current.activeDocuments`; only the older 27 records are mountable through
+`files.recent`. Both carry navigation metadata so a same-file follow-up can
+skip rediscovery; current contents still require one read. `workstates.recent`
+is
 rebuilt from the existing terminal run and WorkState rows. It advertises at
 most five material historical handoffs and mounts their summaries, plans,
 important context, next actions, sequence references, and optional workstream

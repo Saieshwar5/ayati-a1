@@ -1,4 +1,8 @@
 import type { RunToolCallContext } from "../types.js";
+import {
+  buildFileSearchCandidateSet,
+  type FileSearchCandidateSet,
+} from "./file-search-candidates.js";
 import type {
   ToolCallVerificationFailure,
   ToolCallVerificationStatus,
@@ -17,6 +21,7 @@ export interface PromptRunToolCallContext {
   status: "success" | "failed";
   retention?: RunToolCallContext["retention"];
   projectionMetadata?: RunToolCallContext["projectionMetadata"];
+  candidateSet?: FileSearchCandidateSet;
   mode: PromptRunToolCallMode;
   output?: string;
   outputPreview?: string;
@@ -56,6 +61,7 @@ export function buildPromptToolCallsForRun(calls: RunToolCallContext[] | undefin
 }
 
 function projectPromptToolCall(call: RunToolCallContext): PromptRunToolCallContext {
+  const candidateSet = buildFileSearchCandidateSet(call);
   const projected: PromptRunToolCallContext = {
     step: call.step,
     ...(call.stepKind ? { stepKind: call.stepKind } : {}),
@@ -66,6 +72,7 @@ function projectPromptToolCall(call: RunToolCallContext): PromptRunToolCallConte
     status: call.status,
     ...(call.retention ? { retention: call.retention } : {}),
     ...(call.projectionMetadata ? { projectionMetadata: call.projectionMetadata } : {}),
+    ...(candidateSet ? { candidateSet } : {}),
     mode: "full",
     output: call.output,
     ...(call.error ? { error: call.error } : {}),
@@ -139,6 +146,7 @@ export function compactPromptToolCall(
     status: call.status,
     ...(call.retention ? { retention: call.retention } : {}),
     ...(call.projectionMetadata ? { projectionMetadata: call.projectionMetadata } : {}),
+    ...(call.candidateSet ? { candidateSet: call.candidateSet } : {}),
     mode,
     summary: buildToolCallSummary(call),
     ...(outputPreview.length > 0 ? { outputPreview } : {}),
