@@ -1,31 +1,32 @@
 import { describe, expect, it } from "vitest";
-import { createAttachmentSkill } from "../../src/skills/builtins/attachments/index.js";
 import { createGitContextSkill } from "../../src/skills/builtins/git-context/index.js";
-import { createSkillBundle, SkillCatalog } from "../../src/skills/skill-catalog.js";
+import { CapabilityCatalog } from "../../src/ivec/agent-runner/capabilities/catalog.js";
 
-describe("model-facing skill prompt contract", () => {
-  it("uses the workstream/resource and attachment context model", () => {
+describe("model-facing capability contract", () => {
+  it("uses explicit workstream/resource capabilities without static skill prompts", () => {
     const gitContextSkill = createGitContextSkill({ service: {} as never });
-    const attachmentSkill = createAttachmentSkill({ sessionAttachmentService: {} as never });
     const activateWorkstream = gitContextSkill.tools.find((tool) => tool.name === "git_context_activate_workstream");
-    const catalogPrompt = new SkillCatalog([
-      createSkillBundle(gitContextSkill),
-    ]).promptBlock();
+    const capabilityCatalog = new CapabilityCatalog();
 
-    expect(gitContextSkill.promptBlock).toContain("workstream context repository contains only Ayati-maintained context");
-    expect(gitContextSkill.promptBlock).toContain("Continue the active request only for the same unfinished outcome");
     expect(activateWorkstream?.description).toContain("existing workstream");
     expect(activateWorkstream?.inputSchema?.properties?.["workstreamId"]).toMatchObject({
       pattern: "^W-[0-9]{8}-[0-9]{4}$",
     });
-    expect(attachmentSkill.promptBlock).toContain("context.resources.activeWorkstream");
-    expect(catalogPrompt).toContain("agent-stream history, durable workstreams, linked resources, requests, and exact evidence");
+    expect(capabilityCatalog.get("attachment:read")?.coreTools).toContain("attachment_read");
+    expect(capabilityCatalog.get("history:read")?.coreTools).toEqual([
+      "agent_history_search",
+      "agent_history_read",
+    ]);
+    expect(capabilityCatalog.list().flatMap((capability) => capability.coreTools)).not.toContain(
+      "git_context_activate_workstream",
+    );
 
     const allPromptText = [
-      gitContextSkill.promptBlock,
-      attachmentSkill.promptBlock,
+      ...capabilityCatalog.list().flatMap((capability) => [
+        capability.summary,
+        capability.whenToUse,
+      ]),
       activateWorkstream?.description,
-      catalogPrompt,
     ].join("\n");
     expect(allPromptText).not.toContain("context.gitContext");
     expect(allPromptText).not.toContain("context.git.current");

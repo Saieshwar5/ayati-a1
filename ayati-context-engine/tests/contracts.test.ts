@@ -93,9 +93,38 @@ describe("Context Engine contracts", () => {
         status: "success",
         input: { paths: ["/tmp/example/src/app.ts"] },
         output: { files: ["/tmp/example/src/app.ts"] },
+        verification: {
+          version: 1,
+          status: "passed",
+          method: "tool_contract",
+          contract: "tool_result_v2",
+          summary: "The exact call passed deterministic verification.",
+          checks: [{
+            id: "output_schema_valid",
+            kind: "output_schema",
+            status: "passed",
+            severity: "required",
+          }],
+          facts: [{
+            kind: "file.read.complete",
+            message: "The file was completely read.",
+            subject: "/tmp/example/src/app.ts",
+          }],
+        },
+        verificationPassed: true,
+        completionEvidence: [{
+          kind: "file_read",
+          path: "/tmp/example/src/app.ts",
+          requestedPath: "/tmp/example/src/app.ts",
+          coverage: "complete",
+          contentAvailable: true,
+          change: "observed",
+          tool: "read_files",
+          step: 1,
+          callId: "call-1",
+        }],
       }],
       verification: { passed: true },
-      workStateAfter: workState(),
       createdAt: AT,
     };
     expect(isRecordRunStepRequest({ requestId: "REQ-step", runId: RUN_ID, record })).toBe(true);
@@ -107,6 +136,64 @@ describe("Context Engine contracts", () => {
         toolCalls: [{ ...record.toolCalls[0], toolPurpose: "read", toolEffect: "workspace_mutation" }],
       },
     })).toBe(false);
+    expect(isRecordRunStepRequest({
+      requestId: "REQ-step-invalid-coverage",
+      runId: RUN_ID,
+      record: {
+        ...record,
+        toolCalls: [{
+          ...record.toolCalls[0],
+          completionEvidence: [{
+            ...record.toolCalls[0]!.completionEvidence![0],
+            coverage: "unknown",
+          }],
+        }],
+      },
+    })).toBe(false);
+    expect(isRecordRunStepRequest({
+      requestId: "REQ-step-invalid-call-verification",
+      runId: RUN_ID,
+      record: {
+        ...record,
+        toolCalls: [{
+          ...record.toolCalls[0],
+          verification: {
+            ...record.toolCalls[0]!.verification!,
+            status: "unknown",
+          },
+        }],
+      },
+    })).toBe(false);
+    expect(isRecordRunStepRequest({
+      requestId: "REQ-step-file-search",
+      runId: RUN_ID,
+      record: {
+        ...record,
+        toolCalls: [{
+          ...record.toolCalls[0],
+          callId: "call-search",
+          tool: "find_files",
+          toolPurpose: "search",
+          input: { query: "missing-report.txt", roots: ["/tmp/example"] },
+          completionEvidence: [{
+            kind: "file_search",
+            query: "missing-report.txt",
+            roots: ["/tmp/example"],
+            matchCount: 0,
+            maxDepth: 10,
+            includeHidden: false,
+            capped: false,
+            errorCount: 0,
+            depthLimitedDirectoryCount: 0,
+            complete: true,
+            change: "observed",
+            tool: "find_files",
+            step: 1,
+            callId: "call-search",
+          }],
+        }],
+      },
+    })).toBe(true);
   });
 
   it("validates pressure checkpoint planning and anchored commits", () => {
@@ -155,6 +242,26 @@ describe("Context Engine contracts", () => {
   it("enforces truthful terminal pairs", () => {
     const base = finalization();
     expect(isFinalizeRunRequest(base)).toBe(true);
+    expect(isFinalizeRunRequest({
+      ...base,
+      outcome: "needs_user_input",
+      stopReason: "needs_user_input",
+      assistantResponseKind: "feedback",
+      assistantFeedbackKind: "confirmation",
+      workState: workState({ status: "needs_user_input" }),
+    })).toBe(true);
+    expect(isFinalizeRunRequest({
+      ...base,
+      assistantResponseKind: "reply",
+      assistantFeedbackKind: "clarification",
+    })).toBe(false);
+    expect(isFinalizeRunRequest({
+      ...base,
+      outcome: "needs_user_input",
+      stopReason: "needs_user_input",
+      assistantResponseKind: "reply",
+      workState: workState({ status: "needs_user_input" }),
+    })).toBe(false);
     expect(isFinalizeRunRequest({ ...base, outcome: "done", stopReason: "run_limit" })).toBe(false);
     expect(isFinalizeRunRequest({ ...base, streamSummary: "" })).toBe(false);
   });
@@ -229,15 +336,11 @@ function finalization(): FinalizeRunRequest {
 
 function workState(overrides: Partial<RunWorkStateInput> = {}): RunWorkStateInput {
   return {
-    status: "not_done",
+    status: "in_progress",
     summary: "Work is in progress.",
-    openWork: [],
-    blockers: [],
-    facts: [],
-    evidence: [],
-    artifacts: [],
-    nextStep: null,
-    userInputNeeded: [],
+    plan: [],
+    importantContext: [],
+    nextAction: null,
     ...overrides,
   };
 }

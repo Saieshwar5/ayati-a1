@@ -16,7 +16,7 @@ import { ContextEngineServiceError } from "../errors.js";
 import { allocateStreamRunSequence } from "./agent-stream-records.js";
 import {
   insertInitialRunWorkState,
-  replaceRunWorkState,
+  readRunWorkState,
 } from "./run-work-state-records.js";
 
 interface RunRow {
@@ -263,7 +263,7 @@ export function bindActiveRunToWorkstream(
 export function recordRunStep(
   database: ContextDatabase,
   input: RecordRunStepRequest,
-): { step: RunStepContext; workState: ReturnType<typeof replaceRunWorkState> } {
+): { step: RunStepContext; workState: NonNullable<ReturnType<typeof readRunWorkState>> } {
   const run = database.prepare([
     "SELECT stream_id, workstream_id, bound_request_id, status, step_count FROM runs WHERE run_id = ?",
   ].join(" ")).get(input.runId) as {
@@ -316,12 +316,10 @@ export function recordRunStep(
   );
   database.prepare("UPDATE runs SET step_count = step_count + 1 WHERE run_id = ?")
     .run(input.runId);
-  const workState = replaceRunWorkState(database, {
-    runId: input.runId,
-    afterStep: input.record.step,
-    state: input.record.workStateAfter,
-    at: input.record.createdAt,
-  });
+  const workState = readRunWorkState(database, input.runId);
+  if (!workState) {
+    throw new Error("Run WorkState is missing: " + input.runId);
+  }
   return { step: input.record, workState };
 }
 

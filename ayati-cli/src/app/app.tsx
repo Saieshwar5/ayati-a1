@@ -22,7 +22,13 @@ import {
   stripPathMentions,
 } from "./path-mentions.js";
 import { detectAgentCliUiContext } from "./ui-context.js";
-import type { ChatAttachment, ChatMessage, ServerMessage, WorkspaceEventName } from "./types.js";
+import type {
+  ChatAttachment,
+  ChatMessage,
+  ChatRequestAttachment,
+  ServerMessage,
+  WorkspaceEventName,
+} from "./types.js";
 
 const HEADER_HEIGHT = 3;
 const STATUS_HEIGHT = 1;
@@ -314,7 +320,7 @@ export function App(): React.JSX.Element {
   const submitChatMessage = useCallback((
     serverContent: string,
     displayContent: string,
-    attachments: ChatAttachment[],
+    attachments: ChatRequestAttachment[],
     displayAttachments: ChatAttachment[],
   ) => {
     const trimmedServerContent = serverContent.trim();
@@ -489,14 +495,23 @@ function toAssistantMessageKind(kind: unknown): ChatMessage["kind"] {
   return "reply";
 }
 
-function toServerAttachments(attachments: ChatAttachment[]): ChatAttachment[] {
-  return attachments
-    .filter((attachment) => attachment.kind !== "directory")
-    .map((attachment) => ({
+function toServerAttachments(attachments: ChatAttachment[]): ChatRequestAttachment[] {
+  return attachments.map((attachment): ChatRequestAttachment => {
+    const wireAttachment = {
       source: "cli",
       path: attachment.path,
       ...(attachment.name ? { name: attachment.name } : {}),
-    }));
+    } as const;
+
+    if (attachment.kind === "directory") {
+      return {
+        ...wireAttachment,
+        type: "directory",
+      };
+    }
+
+    return wireAttachment;
+  });
 }
 
 function appendDirectoryContext(content: string, attachments: ChatAttachment[]): string {

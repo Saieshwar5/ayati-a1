@@ -1,12 +1,10 @@
 import type { ContextEngineMachineContext } from "../context-engine/index.js";
 
 export interface HarnessContextInput {
-  personalMemorySnapshot?: string;
   contextEngine?: ContextEngineMachineContext;
 }
 
 export interface HarnessContext {
-  personalMemorySnapshot: string;
   contextEngine?: ContextEngineMachineContext;
 }
 
@@ -16,14 +14,12 @@ export interface BuildHarnessContextInput {
 
 export function createInitialHarnessContext(input?: HarnessContextInput): HarnessContext {
   return {
-    personalMemorySnapshot: input?.personalMemorySnapshot ?? "",
     contextEngine: input?.contextEngine,
   };
 }
 
 export function buildHarnessContextFromSources(input: BuildHarnessContextInput): HarnessContext {
   return {
-    personalMemorySnapshot: input.input?.personalMemorySnapshot ?? "",
     contextEngine: input.input?.contextEngine,
   };
 }

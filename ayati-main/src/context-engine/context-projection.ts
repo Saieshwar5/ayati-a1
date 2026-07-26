@@ -21,7 +21,6 @@ export function buildContextEngineProjection(
     contextRevision: context.contextRevision,
     streamRevision: context.streamRevision,
     ...(context.runRevision ? { runRevision: context.runRevision } : {}),
-    observationRevision: context.observationRevision,
     agentStream: stream
       ? {
           meta: {
@@ -36,7 +35,9 @@ export function buildContextEngineProjection(
           },
           ...(stream.checkpoint ? { checkpoint: stream.checkpoint } : {}),
           recentMessages: stream.recentMessages,
-          recentWork: stream.recentWork,
+          recentWorkstreams: stream.recentWorkstreams,
+          recentFiles: stream.recentFiles,
+          recentWorkStates: stream.recentWorkStates,
           resources: stream.resources?.recent ?? [],
         }
       : emptyAgentStream(),
@@ -57,7 +58,6 @@ export function buildContextEngineProjection(
           workstreamId: activeWorkstream.workstream.workstreamId,
         }
       : { status: "none" },
-    observations: context.observations,
     ...(context.run ? { run: context.run } : {}),
     ...(!workstreamBound && context.workstreamCandidates && context.workstreamCandidates.length > 0
       ? { workstreamCandidates: context.workstreamCandidates.slice(0, 5) }
@@ -85,7 +85,9 @@ function emptyAgentStream(): ContextEngineMachineContext["agentStream"] {
       resourceCount: 0,
     },
     recentMessages: [],
-    recentWork: [],
+    recentWorkstreams: [],
+    recentFiles: [],
+    recentWorkStates: [],
     resources: [],
   };
 }

@@ -74,7 +74,14 @@ class ResourceScopedToolExecutor implements ToolExecutor {
     context?: ToolExecutionContext,
   ): Promise<ToolResult> {
     const taxonomy = getToolTaxonomy(toolName);
-    if (!context?.sessionId || !context.runId || !taxonomy || taxonomy.effect === "context_mutation") {
+    const definition = this.base.definitions(context).find((tool) => tool.name === toolName);
+    if (
+      !context?.sessionId
+      || !context.runId
+      || !taxonomy
+      || taxonomy.effect === "context_mutation"
+      || definition?.annotations?.domain === "context"
+    ) {
       return await this.base.execute(toolName, originalInput, context);
     }
 
@@ -119,7 +126,6 @@ class ResourceScopedToolExecutor implements ToolExecutor {
       const scopedInput = scopeToolInput(
         toolName,
         originalInput,
-        selectedRoot.authorityPath,
         selectedRoot.executionRootPath,
       );
       return await this.base.execute(toolName, scopedInput, {
@@ -167,7 +173,6 @@ class ResourceScopedToolExecutor implements ToolExecutor {
     const scopedInput = scopeToolInput(
       toolName,
       originalInput,
-      selectedScope.authorityPath,
       selectedScope.executionRootPath,
     );
     const scopedContext: ToolExecutionContext = {
@@ -250,7 +255,6 @@ function hasFilesystemLocator(
 function scopeToolInput(
   toolName: string,
   value: unknown,
-  rootShorthandPath: string,
   executionRootPath: string,
 ): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
@@ -258,7 +262,7 @@ function scopeToolInput(
   delete input["allowExternalPath"];
   const scope = (path: unknown): unknown => {
     if (typeof path !== "string" || !path.trim() || !isAbsolute(path)) return path;
-    return resolve(path) === resolve("/") ? rootShorthandPath : resolve(path);
+    return resolve(path);
   };
   for (const key of PATH_KEYS) {
     if (key in input) input[key] = scope(input[key]);
@@ -390,12 +394,11 @@ async function selectCallRoot(
   }>,
   paths: string[],
 ): Promise<(typeof bindings)[number] | undefined> {
-  const scopedPaths = paths.filter((path) => resolve(path) !== resolve("/"));
-  if (scopedPaths.length === 0) {
+  if (paths.length === 0) {
     return bindings.find((binding) => binding.primary) ?? bindings[0];
   }
-  const absolutePaths = scopedPaths.filter(isAbsolute);
-  if (absolutePaths.length !== scopedPaths.length) return undefined;
+  const absolutePaths = paths.filter(isAbsolute);
+  if (absolutePaths.length !== paths.length) return undefined;
   const candidates: typeof bindings = [];
   for (const binding of bindings) {
     const scope = await filesystemScope(binding.resource);
@@ -416,12 +419,11 @@ async function selectUnboundReadRoot(
   paths: string[],
   workspaceRoot: string,
 ): Promise<SelectedFilesystemScope | undefined> {
-  const scopedPaths = paths.filter((path) => resolve(path) !== resolve("/"));
-  if (scopedPaths.length === 0) {
+  if (paths.length === 0) {
     return await directoryScope(workspaceRoot);
   }
-  const absolutePaths = scopedPaths.filter(isAbsolute);
-  if (absolutePaths.length !== scopedPaths.length) return undefined;
+  const absolutePaths = paths.filter(isAbsolute);
+  if (absolutePaths.length !== paths.length) return undefined;
   const candidates: Array<{
     authorityPath: string;
     resourceId?: string;
@@ -493,9 +495,7 @@ async function validateSingleAuthority(
     if (!required.ok) {
       return { code: "ABSOLUTE_PATH_REQUIRED", message: `${required.message} Active root: ${root}.` };
     }
-    const requestedPath = resolve(required.absolutePath) === resolve("/")
-      ? root
-      : await canonicalizeAbsolutePath(required.absolutePath);
+    const requestedPath = await canonicalizeAbsolutePath(required.absolutePath);
     if (!authorityOwnsPath(root, authorityKind, requestedPath)) {
       return {
         code: kind === "resource" ? "PATH_OUTSIDE_RESOURCE_SCOPE" : "PATH_OUTSIDE_WORKSPACE_ROOT",

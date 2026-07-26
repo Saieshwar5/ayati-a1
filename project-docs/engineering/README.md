@@ -8,6 +8,8 @@ Important paths:
 - `architecture/`: daemon architecture, agent harness, context/memory, tool contracts, APIs, runtime data, clients, integrations, and trust boundaries.
 - `architecture/workstreams-and-resources.md`: canonical durable-work,
   resource, request, run, and context-repository design.
+- `architecture/capability-surfaces.md`: canonical tool registry, explicit
+  capability catalog, per-mode schemas, and run-scoped native tool surfaces.
 - `history/`: architecture decisions, progress notes, and external references.
 - `history/progress/current-state.md`: current implementation state, runtime
   boundaries, and remaining priorities.

@@ -4,6 +4,8 @@ import {
   type AgentContextProjection,
   type BindResourcesForRunRequest,
   type BindResourcesForRunResponse,
+  type CheckpointRunWorkStateRequest,
+  type CheckpointRunWorkStateResponse,
   type CommitContextCheckpointRequest,
   type CommitContextCheckpointResponse,
   type CommitWorkstreamResolutionRequest,
@@ -73,10 +75,6 @@ import {
 } from "../repositories/agent-stream-records.js";
 import { readStreamMessage } from "../repositories/message-records.js";
 import {
-  invalidateStaleReusableObservations,
-  recordReusableObservations,
-} from "../repositories/reusable-observation-records.js";
-import {
   readRun,
   readRunEvidence,
 } from "../repositories/run-records.js";
@@ -145,9 +143,7 @@ export class SqliteContextEngineService implements ContextEngineService {
     this.now = options.now ?? (() => new Date().toISOString());
     this.observer = options.observer ?? new ContextEngineObserver("context-engine");
     this.turnPreparation = new TurnPreparationService(this.database);
-    this.runs = new RunLifecycleService(this.database, (input) => {
-      recordReusableObservations(this.database, input);
-    });
+    this.runs = new RunLifecycleService(this.database);
     const workstreamRoot = join(options.rootDirectory, "workstreams");
     this.resourceCatalog = new ResourceCatalogService({
       database: this.database,
@@ -240,7 +236,6 @@ export class SqliteContextEngineService implements ContextEngineService {
           "agent_streams",
           "checkpoints",
           "history",
-          "observations",
           "runs",
           "workstreams",
           "workstream_resolution",
@@ -298,7 +293,7 @@ export class SqliteContextEngineService implements ContextEngineService {
         if (!stream || !message || !run
           || message.streamId !== stream.streamId
           || run.streamId !== stream.streamId) {
-          throw new Error("Prepared agent-run receipt does not resolve to durable V7 records.");
+          throw new Error("Prepared agent-run receipt does not resolve to durable Context Engine records.");
         }
         this.runs.refresh(run.runId);
         const context = await this.agentContext.build({
@@ -798,7 +793,6 @@ export class SqliteContextEngineService implements ContextEngineService {
         now: input.at,
         execute: () => result,
       });
-      invalidateStaleReusableObservations(this.database, input.at);
       return persisted;
     });
   }
@@ -818,7 +812,6 @@ export class SqliteContextEngineService implements ContextEngineService {
       });
       try {
         const result = await this.runFinalization.finalize(input);
-        invalidateStaleReusableObservations(this.database, input.at);
         this.runs.remove(input.runId);
         this.observer.emit({
           level: "info",
@@ -852,6 +845,20 @@ export class SqliteContextEngineService implements ContextEngineService {
       await this.ensureStartupRecovery();
       this.requireActiveRun(input.runId);
       const response = this.runs.recordStep(input);
+      const context = await this.agentContext.build({
+        streamId: response.run.run.streamId,
+      });
+      return { ...response, context };
+    });
+  }
+
+  async checkpointRunWorkState(
+    input: CheckpointRunWorkStateRequest,
+  ): Promise<CheckpointRunWorkStateResponse> {
+    return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
+      this.requireActiveRun(input.runId);
+      const response = this.runs.checkpointWorkState(input);
       const context = await this.agentContext.build({
         streamId: response.run.run.streamId,
       });
@@ -929,7 +936,6 @@ export class SqliteContextEngineService implements ContextEngineService {
     await this.workstreamLifecycle.recoverInitializingState();
     this.resourceMutations.recoverInterrupted(this.now());
     await this.runFinalization.recover(this.now());
-    invalidateStaleReusableObservations(this.database, this.now());
     const interruptedResolutionActivityIds = interruptRunningWorkstreamResolutions(
       this.database,
       this.now(),

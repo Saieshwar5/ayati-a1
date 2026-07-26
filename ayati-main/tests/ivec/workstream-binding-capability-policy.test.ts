@@ -102,12 +102,15 @@ function state(
     inputKind: "user_message",
     userMessage,
     workState: {
-      status: "not_done",
-      summary: "",
-      openWork: [],
-      blockers: [],
-      verifiedFacts: [],
-      evidence: [],
+      status: "in_progress",
+      summary: "Run started.",
+      plan: [],
+      importantContext: [],
+    },
+    workStateRuntime: {
+      revision: 0,
+      afterStep: 0,
+      updateReason: "initial",
     },
     status: "running",
     finalOutput: "",
@@ -118,7 +121,6 @@ function state(
     runPath: "",
     failureHistory: [],
     harnessContext: {
-      personalMemorySnapshot: "",
       contextEngine: {
         ...contextEngine,
         current: {

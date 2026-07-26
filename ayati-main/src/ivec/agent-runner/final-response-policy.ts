@@ -1,10 +1,16 @@
-import { isAbsolute, resolve } from "node:path";
 import type { LoopState, StepSummary } from "../types.js";
 import type { AgentDecision } from "./decision.js";
-import { isObservationalTool } from "../../skills/tool-taxonomy.js";
+import {
+  isObservationalTool,
+  NATIVE_CONTROL_TOOL_NAMES,
+} from "../../skills/tool-taxonomy.js";
 import { isGitContextReadOnlyToolName } from "../../skills/builtins/git-context/tool-policy.js";
 import { isGitContextRoutingToolName } from "./workstream-binding-capability-policy.js";
-import { getWorkspaceRoot } from "../../skills/workspace-paths.js";
+import { latestActiveFailure } from "./failure-lifecycle.js";
+import {
+  workStateBlockers,
+  workStateOpenTasks,
+} from "./work-state/selectors.js";
 
 const FILE_MUTATION_TOOL_NAMES = new Set([
   "patch_files",
@@ -15,10 +21,10 @@ const FILE_MUTATION_TOOL_NAMES = new Set([
 ]);
 
 export function canMarkTerminalReplyDone(state: LoopState): boolean {
-  return state.workState.status === "not_done"
-    && (state.workState.openWork?.length ?? 0) === 0
-    && (state.workState.blockers?.length ?? 0) === 0
-    && !state.workState.userInputNeeded?.trim()
+  return state.workState.status === "in_progress"
+    && workStateOpenTasks(state.workState).length === 0
+    && workStateBlockers(state.workState).length === 0
+    && !latestActiveFailure(state.failureHistory)
     && !hasUnresolvedFileMutationFailure(state);
 }
 
@@ -52,33 +58,22 @@ export function isFileMutationRequest(message: string): boolean {
     && /\b(?:file|files|folder|directory|path|html|css|js|ts|tsx|jsx|json|md|txt|site|website|app|page|component|code)\b/i.test(message);
 }
 
-export function deriveUserInputNeededFromTerminalReply(message: string): string | undefined {
-  const sentences = message
-    .split(/(?<=[.!?])\s+/)
-    .map((sentence) => sentence.trim())
-    .filter((sentence) => sentence.length > 0);
-  const waitingSentence = sentences.find(isUserInputRequestSentence);
-  return waitingSentence ? normalizeTerminalReplyRequest(waitingSentence) : undefined;
-}
-
-export function canFinalizeFromWorkState(state: LoopState): boolean {
-  return state.workState.status === "done"
-    || state.workState.status === "needs_user_input";
-}
-
 export function isUsableFinalResponseMessage(message: string): boolean {
   const trimmed = message.trim();
   if (!trimmed) return false;
   if ([
-    "decision_transition_mode",
-    "decision_validate",
     "workstream_completion",
     "decision_load_tools",
     "ask_user_feedback",
-  ].includes(trimmed)) {
+  ].includes(trimmed) || NATIVE_CONTROL_TOOL_NAMES.includes(
+    trimmed as typeof NATIVE_CONTROL_TOOL_NAMES[number],
+  )) {
     return false;
   }
-  if (/\b(?:decision_transition_mode|decision_validate|workstream_completion|decision_load_tools|ask_user_feedback)\b/i.test(trimmed)) {
+  if (
+    NATIVE_CONTROL_TOOL_NAMES.some((name) => trimmed.includes(name))
+    || /\b(?:workstream_completion|decision_load_tools|ask_user_feedback)\b/i.test(trimmed)
+  ) {
     return false;
   }
   if (/<tool_call>|tool use displayed to the user as a native function call/i.test(trimmed)) {
@@ -96,7 +91,7 @@ export function isUsableFinalResponseMessage(message: string): boolean {
     return ![
       "act",
       "transition_mode",
-      "validate",
+      "stop",
       "load_tools",
       "workstream_completion",
       "ask_user",
@@ -107,37 +102,26 @@ export function isUsableFinalResponseMessage(message: string): boolean {
   }
 }
 
-export function buildBlockedWorkStateReply(state: LoopState): string {
-  const blocker = state.workState.blockers?.find((item) => item.trim().length > 0);
-  return blocker ? `I couldn't complete the workstream. ${blocker}` : "I couldn't complete the workstream.";
-}
-
-export function buildVerifiedCompletionReply(state: LoopState, step?: StepSummary): string {
-  const verifiedCompletionSummary = state.verifiedCompletionSummary?.trim();
-  if (verifiedCompletionSummary && !looksLikeInternalCompletionText(verifiedCompletionSummary)) {
-    return verifiedCompletionSummary;
-  }
-
-  const artifacts = normalizeList(step && stepHasGeneratedArtifactEvidence(step) ? step.artifacts : [])
-    .filter((artifact) => isDurableStepArtifact(artifact))
-    .map((artifact) => displayArtifactPath(artifact));
-  if (artifacts.length > 0) {
-    return `Done. I created or updated ${formatDisplayList(artifacts)}.`;
-  }
-
-  const summary = state.workState.summary?.trim();
-  if (summary && !looksLikeInternalCompletionText(summary)) {
-    return summary;
-  }
-  return "Done. I completed the workstream.";
-}
-
 export function buildFailureReply(state: LoopState): string {
-  const latest = state.failureHistory[state.failureHistory.length - 1];
+  const latest = latestActiveFailure(state.failureHistory);
+  const subject = isWorkstreamBound(state)
+    ? "the current workstream request"
+    : "this request";
   if (!latest) {
-    return "I couldn't complete the workstream.";
+    return `I couldn't complete ${subject}.`;
   }
-  return `I couldn't complete the workstream. Latest failure: ${latest.reason}`;
+  const reason = latest.failureType === "permission"
+    ? "The required access was unavailable."
+    : latest.failureType === "missing_path"
+      ? "A required path was unavailable."
+      : latest.failureType === "tool_error"
+        ? "A required action did not complete successfully."
+        : latest.failureType === "no_progress"
+          ? "I could not make further verified progress."
+          : latest.failureType === "verify_failed"
+            ? "The result could not be verified."
+            : "The request could not be completed safely.";
+  return `I couldn't complete ${subject}. ${reason}`;
 }
 
 export function isDurableStepArtifact(artifact: string): boolean {
@@ -169,52 +153,4 @@ export function latestFileMutationStep(steps: StepSummary[], outcome: "success" 
     .reverse()
     .find((step) => step.outcome === outcome
       && (step.toolsUsed ?? []).some((tool) => FILE_MUTATION_TOOL_NAMES.has(tool)));
-}
-
-function isUserInputRequestSentence(sentence: string): boolean {
-  return /\b(?:send|tell|provide|share|choose|confirm|pick|select|let me know|when you|once you|after you)\b/i.test(sentence)
-    && /\b(?:you|your|me|the|which|what|when|whether)\b/i.test(sentence);
-}
-
-function normalizeTerminalReplyRequest(sentence: string): string {
-  const trimmed = sentence.trim();
-  if (trimmed.endsWith(".") || trimmed.endsWith("?") || trimmed.endsWith("!")) {
-    return trimmed;
-  }
-  return `${trimmed}.`;
-}
-
-function displayArtifactPath(path: string): string {
-  const trimmed = path.trim();
-  if (!isAbsolute(trimmed)) {
-    return trimmed;
-  }
-  const workspaceRoot = resolve(getWorkspaceRoot());
-  const relative = trimmed.startsWith(`${workspaceRoot}/`)
-    ? trimmed.slice(workspaceRoot.length + 1)
-    : trimmed;
-  return relative || trimmed;
-}
-
-function formatDisplayList(values: string[]): string {
-  const display = values.slice(0, 4).map((value) => `\`${value}\``);
-  const remaining = Math.max(0, values.length - display.length);
-  if (remaining > 0) {
-    display.push(`${remaining} more`);
-  }
-  if (display.length === 1) {
-    return display[0]!;
-  }
-  if (display.length === 2) {
-    return `${display[0]} and ${display[1]}`;
-  }
-  return `${display.slice(0, -1).join(", ")}, and ${display[display.length - 1]}`;
-}
-
-function looksLikeInternalCompletionText(text: string): boolean {
-  return /\b(?:tool(?:\s+call)?|sha256|deterministic verification|evidence contract|assertion|reducer|work state|harness|completion candidate|batch write)\b/i.test(text);
-}
-
-function normalizeList(values: string[] | undefined): string[] {
-  return [...new Set((values ?? []).map((value) => value.trim()).filter((value) => value.length > 0))];
 }

@@ -9,6 +9,10 @@ import type {
 } from "../contracts.js";
 import { ContextEngineServiceError } from "../errors.js";
 import { runGit, runGitRaw } from "../git/git-process.js";
+import {
+  canonicalizeMissingFilesystemPath,
+  requireAbsoluteFilesystemPath,
+} from "./filesystem-paths.js";
 
 const MAX_DIRECTORY_ENTRIES = 20_000;
 
@@ -96,18 +100,19 @@ async function observeFilesystem(
   at: string,
   kindHint?: ResourceKind,
 ): Promise<ObservedResource> {
-  const path = resolve(inputPath);
+  const path = requireAbsoluteFilesystemPath(inputPath);
   const stat = await lstat(path).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return undefined;
     throw error;
   });
   if (!stat) {
+    const canonicalPath = await canonicalizeMissingFilesystemPath(path);
     const kind = kindHint ?? "file";
     return {
-      locator: { kind: "filesystem", path },
+      locator: { kind: "filesystem", path: canonicalPath },
       kind,
-      displayName: basename(path) || path,
-      version: unversioned(path, at, false),
+      displayName: basename(canonicalPath) || canonicalPath,
+      version: unversioned(canonicalPath, at, false),
       mutationEligible: kind !== "url" && kind !== "external_object",
       warnings: ["Filesystem resource does not currently exist."],
     };

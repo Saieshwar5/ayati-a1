@@ -1,7 +1,8 @@
-import type { ContextCheckpointPlan, StreamMessage } from "ayati-context-engine";
+import type { ContextCheckpointPlan } from "ayati-context-engine";
 import type { LlmCostEstimate, LlmTokenUsage } from "../../core/contracts/llm-protocol.js";
 import { estimateTextTokens } from "../../prompt/token-estimator.js";
-import type { AgentTemporalEvent } from "../agent-runner/agent-context-events.js";
+import { projectStreamMessageEvent } from "../agent-runner/agent-context-events.js";
+import { buildCoreCapsule } from "../agent-runner/core-capsule.js";
 import type { AgentPromptStateView } from "../agent-runner/prompt-context.js";
 import { canonicalHash } from "./canonical.js";
 import type {
@@ -22,7 +23,9 @@ export function previewDurableCheckpointCandidate(input: {
     ...input.stateView,
     context: {
       ...input.stateView.context,
-      temporal: {
+      core: buildCoreCapsule({
+        revision: input.stateView.context.core.revision,
+        runId: input.stateView.context.core.current.runId,
         checkpoint: {
           coveredFromSeq: plan.coveredFromSeq,
           coveredToSeq: plan.coveredToSeq,
@@ -30,11 +33,21 @@ export function previewDurableCheckpointCandidate(input: {
           exactAnchors: checkpointAnchors(summary),
           createdAt: input.candidate.updatedAt,
         },
-        recent: plan.exactTail.map((message) => streamMessageToEvent(
+        timeline: plan.exactTail.map((message) => projectStreamMessageEvent(
           message,
-          input.stateView.context.current.inputSeq,
+          message.sequence === input.stateView.context.core.current.input.seq,
         )),
-      },
+        ...(input.stateView.context.core.current.routing
+          ? { routing: input.stateView.context.core.current.routing }
+          : {}),
+        ...(input.stateView.context.core.current.activeDocuments
+          ? {
+              activeDocuments:
+                input.stateView.context.core.current.activeDocuments,
+            }
+          : {}),
+        continuityMaxTokens: input.stateView.context.core.budget.continuityMaxTokens,
+      }),
     },
   };
 }
@@ -128,33 +141,4 @@ function checkpointAnchors(
     ...summary.unresolvedQuestions,
     ...summary.references,
   ].map((statement) => statement.seq))].sort((left, right) => left - right);
-}
-
-function streamMessageToEvent(message: StreamMessage, currentSeq: number): AgentTemporalEvent {
-  const current = message.sequence === currentSeq;
-  if (message.role === "assistant") {
-    return {
-      kind: "assistant",
-      seq: message.sequence,
-      timestamp: message.at,
-      content: message.content,
-      ...(current ? { current: true } : {}),
-    };
-  }
-  if (message.role === "system_event") {
-    return {
-      kind: "system",
-      seq: message.sequence,
-      timestamp: message.at,
-      content: message.content,
-      ...(current ? { current: true } : {}),
-    };
-  }
-  return {
-    kind: "user",
-    seq: message.sequence,
-    timestamp: message.at,
-    content: message.content,
-    ...(current ? { current: true } : {}),
-  };
 }

@@ -31,6 +31,7 @@ describe("run finalization coordinator", () => {
       outcome: "done",
       stopReason: "completed",
       assistantResponse: "A direct answer.",
+      assistantResponseKind: "reply",
       validation: "not_applicable",
     }));
     expect(finalizeRun.mock.calls[0]?.[0]).not.toHaveProperty("workstreamCompletion");
@@ -65,6 +66,29 @@ describe("run finalization coordinator", () => {
     }));
   });
 
+  it("forwards deterministic completion receipts in the terminal WorkState", async () => {
+    const finalizeRun = vi.fn(async () => finalizationResponse("R-receipt"));
+    const result = directResult("R-receipt");
+    result.workState!.importantContext = [{
+      kind: "finding",
+      value: "Verified a complete read of /workspace/notes.txt.",
+      ref: "run:R-receipt:step:1:call:read-notes",
+    }];
+
+    await finalizeAgentRun({
+      runtime: runtime(finalizeRun),
+      turn: preparedTurn("R-receipt", false),
+      result,
+      at: "2026-07-19T10:01:00.000Z",
+    });
+
+    expect(finalizeRun).toHaveBeenCalledWith(expect.objectContaining({
+      workState: expect.objectContaining({
+        importantContext: result.workState.importantContext,
+      }),
+    }));
+  });
+
   it("preserves the assistant reply while compacting its durable finalization projection", async () => {
     const finalizeRun = vi.fn(async () => finalizationResponse("R-clarification", true));
     const question = "Which durable resource should own this output? " + "detail ".repeat(400);
@@ -80,10 +104,12 @@ describe("run finalization coordinator", () => {
     const request = finalizeRun.mock.calls[0]?.[0];
     expect(request).toBeDefined();
     expect(request?.assistantResponse).toBe(question);
+    expect(request?.assistantResponseKind).toBe("feedback");
+    expect(request?.assistantFeedbackKind).toBe("clarification");
     expect(request?.streamSummary.length).toBeLessThanOrEqual(2_000);
     expect(request?.summary.length).toBeLessThanOrEqual(2_000);
     expect(request?.next.length).toBeLessThanOrEqual(1_000);
-    expect(request?.workState.userInputNeeded.length).toBeLessThanOrEqual(500);
+    expect(request?.workState.nextAction.length).toBeLessThanOrEqual(320);
     expect(request?.workstreamCompletion.criteria[0]?.evidence?.length).toBeLessThanOrEqual(2_000);
   });
 
@@ -231,10 +257,8 @@ function directResult(runId: string): AgentLoopResult {
     workState: {
       status: "done",
       summary: "Answered directly.",
-      openWork: [],
-      blockers: [],
-      verifiedFacts: [],
-      evidence: [],
+      plan: [],
+      importantContext: [],
     },
   };
 }
@@ -259,7 +283,6 @@ function workstreamResult(runId: string): AgentLoopResult {
       locator: { kind: "filesystem", path: "/ayati/workspace/site/index.html" },
     }],
     harnessContext: {
-      personalMemorySnapshot: "",
       contextEngine: preparedTurn(runId, true).context,
     },
   };
@@ -269,6 +292,7 @@ function clarificationResult(runId: string, question: string): AgentLoopResult {
   const result = workstreamResult(runId);
   return {
     ...result,
+    type: "feedback",
     outcome: "needs_user_input",
     stopReason: "needs_user_input",
     content: question,
@@ -276,8 +300,7 @@ function clarificationResult(runId: string, question: string): AgentLoopResult {
       ...result.workState!,
       status: "needs_user_input",
       summary: question,
-      nextStep: question,
-      userInputNeeded: question,
+      nextAction: question,
     },
     workstreamSummary: {
       runId,
@@ -286,6 +309,8 @@ function clarificationResult(runId: string, question: string): AgentLoopResult {
       workstreamStatus: "needs_user_input",
       summary: question,
       assistantResponse: question,
+      assistantResponseKind: "feedback",
+      feedbackKind: "clarification",
     },
   };
 }
@@ -309,7 +334,6 @@ function finalizationResponse(runId: string, bound = false): FinalizeRunResponse
         },
       } : {}),
     },
-    observationRevision: "observations:empty",
     resourceEffects: { status: "none", events: [] },
     workstreamContextCommit: { status: "not_required" },
   };

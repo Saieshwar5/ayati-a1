@@ -53,7 +53,7 @@ export function reduceSimpleWorkstreamContext(input: {
     RUN_FINALIZATION_LIMITS.summaryChars,
   );
   const next = optionalBounded(
-    input.next ?? input.workState.nextStep,
+    input.next ?? input.workState.nextAction,
     "next action",
     RUN_FINALIZATION_LIMITS.nextChars,
   );
@@ -77,9 +77,8 @@ export function reduceSimpleWorkstreamContext(input: {
     case "needs_user_input": {
       validateWorkstreamRequestTransition({ from: workstreamRequest.status, to: "blocked" });
       const blockers = unique([
-        ...input.workState.blockers,
+        ...workStateBlockers(input.workState),
         ...input.completion.failures,
-        ...input.workState.userInputNeeded,
       ]);
       if (blockers.length === 0) {
         throw invalid("Blocked finalization requires a concrete blocker.");
@@ -100,7 +99,7 @@ export function reduceSimpleWorkstreamContext(input: {
         RUN_FINALIZATION_LIMITS.summaryChars,
       );
       workstreamCard.currentFocus = next ?? input.workstreamCard.currentFocus;
-      workstreamCard.blockers = unique(input.workState.blockers);
+      workstreamCard.blockers = unique(workStateBlockers(input.workState));
       break;
     case "failed":
       if (!input.hasVerifiedChanges) {
@@ -116,7 +115,7 @@ export function reduceSimpleWorkstreamContext(input: {
         RUN_FINALIZATION_LIMITS.summaryChars,
       );
       workstreamCard.currentFocus = next ?? "Review the failed run and continue the active request.";
-      workstreamCard.blockers = unique(input.workState.blockers);
+      workstreamCard.blockers = unique(workStateBlockers(input.workState));
       break;
   }
 
@@ -163,9 +162,23 @@ function unique(values: string[]): string[] {
     .map((value) => bounded(
       value,
       "workstream context item",
-      RUN_FINALIZATION_LIMITS.workState.contextItemChars,
+      RUN_FINALIZATION_LIMITS.workState.importantContextValueChars,
     ))
     .slice(0, RUN_FINALIZATION_LIMITS.workstreamContext.maximumBlockers);
+}
+
+function workStateBlockers(workState: RunWorkState): string[] {
+  return [
+    ...workState.plan
+      .filter((item) => item.status === "blocked")
+      .map((item) => item.task),
+    ...workState.importantContext
+      .filter((item) => item.kind === "constraint")
+      .map((item) => item.value),
+    ...(workState.status === "needs_user_input" && workState.nextAction
+      ? [workState.nextAction]
+      : []),
+  ];
 }
 
 function compactDerived(value: string, maximum: number): string {

@@ -1,4 +1,6 @@
 import type { LlmToolCall, LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
+import { modeTransitionControlCallFromRequest } from "../../src/ivec/agent-runner/mode-transition-controls.js";
+import { normalizeModeTransitionRequest } from "../../src/ivec/agent-runner/mode-transition-request.js";
 
 export function nativeDecisionFixture(response: unknown): LlmTurnOutput {
   const parsed = parseDecision(response);
@@ -17,18 +19,26 @@ export function nativeDecisionFixture(response: unknown): LlmTurnOutput {
       };
     case "transition_mode": {
       const request = objectRecord(parsed["request"]);
-      return toolTurn("decision_transition_mode", {
-        ...request,
+      const control = modeTransitionControlCallFromRequest(
+        normalizeModeTransitionRequest(request),
+      );
+      return toolTurn(control.name, {
+        ...control.input,
         ...(parsed["workingNotes"] ? { workingNotes: parsed["workingNotes"] } : {}),
       });
     }
-    case "validate": {
+    case "stop": {
       const request = objectRecord(parsed["request"]);
-      return toolTurn("decision_validate", {
+      return toolTurn("decision_stop", {
         outcome: request["outcome"],
-        summary: request["summary"],
         response: request["response"],
-        ...(request["resources"] ? { resources: request["resources"] } : {}),
+        ...(parsed["workingNotes"] ? { workingNotes: parsed["workingNotes"] } : {}),
+      });
+    }
+    case "checkpoint_work_state": {
+      const update = objectRecord(parsed["update"]);
+      return toolTurn("decision_checkpoint_workstate", {
+        ...update,
         ...(parsed["workingNotes"] ? { workingNotes: parsed["workingNotes"] } : {}),
       });
     }

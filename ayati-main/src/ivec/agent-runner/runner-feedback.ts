@@ -13,9 +13,10 @@ import { isObservationalTool } from "../../skills/tool-taxonomy.js";
 import type { ToolDefinition } from "../../skills/types.js";
 import type { AgentAction } from "./decision.js";
 import type { ExecuteActionStepResult } from "./step-lifecycle.js";
-import type { ToolLoadResult } from "./tool-working-set.js";
+import type { CapabilitySurfaceResult } from "./capabilities/contracts.js";
 import { repairSignalToFeedbackData } from "./repair-policy.js";
 import { createRepairSignalFromStepSummary } from "./repair-feedback.js";
+import type { FailureResolutionReceipt } from "./failure-lifecycle.js";
 import { type AgentStateView } from "./state-view.js";
 import {
   deriveWorkstreamBindingCapabilityPolicy,
@@ -25,12 +26,11 @@ import {
 import {
   summarizeStep,
   summarizeToolDefinitions,
-  summarizeToolLoadResult,
+  summarizeCapabilitySurfaceResult,
   summarizeVerification,
   summarizeWorkState,
 } from "./feedback-summary.js";
 import { auditToolPolicy } from "./tool-policy-audit.js";
-import { requiresOperationalMode } from "./turn-intent-policy.js";
 
 export function recordFeedback(
   deps: AgentLoopDeps,
@@ -51,14 +51,36 @@ export function recordFeedback(
   });
 }
 
-export function recordToolWorkingSetFeedback(input: {
+export function recordFailureResolutionFeedback(
+  deps: AgentLoopDeps,
+  inputHandle: SessionInputHandle,
+  runId: string,
+  receipt: FailureResolutionReceipt | undefined,
+): void {
+  if (!receipt) return;
+  recordFeedback(deps, inputHandle, runId, "guard", "repair_resolved", {
+    iteration: receipt.iteration,
+    resolutionKind: receipt.kind,
+    scopes: receipt.scopes,
+    resolvedCount: receipt.resolved.length,
+    repairs: receipt.resolved.map((failure) => ({
+      step: failure.step,
+      failureType: failure.failureType,
+      repairCode: failure.repairCode,
+      repairScope: failure.repairScope,
+      blockedTargets: failure.blockedTargets,
+    })),
+  });
+}
+
+export function recordCapabilitySurfaceFeedback(input: {
   deps: AgentLoopDeps;
   inputHandle: SessionInputHandle;
   runId: string | undefined;
   state: LoopState;
   iteration: number;
   toolContextRunId: string | undefined;
-  deterministicToolLoad: ToolLoadResult | undefined;
+  deterministicCapabilitySurface: CapabilitySurfaceResult | undefined;
   visibleTools: ToolDefinition[];
   selectedTools: ToolDefinition[];
   runHandle: AgentLoopDeps["runHandle"];
@@ -74,14 +96,14 @@ export function recordToolWorkingSetFeedback(input: {
     visibleTools: input.visibleTools,
     selectedTools: input.selectedTools,
   });
-  recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "working_set_prepared", {
+  recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "capability_surface_prepared", {
     iteration: input.iteration,
     toolContextRunId: input.toolContextRunId,
     runId: input.runHandle.runId,
     workstreamBound: policy.workstreamBound,
     pendingTurnStatus: input.state.harnessContext.contextEngine?.current.routing?.status,
     capabilities,
-    deterministicLoad: summarizeToolLoadResult(input.deterministicToolLoad),
+    deterministicSurface: summarizeCapabilitySurfaceResult(input.deterministicCapabilitySurface),
     visible: summarizeToolDefinitions(input.visibleTools),
     selected: summarizeToolDefinitions(input.selectedTools),
     toolPolicyAudit,
@@ -240,35 +262,34 @@ export function recordActionFeedback(
   }
 }
 
-export function summarizeDecisionInputState(stateView: AgentStateView): Record<string, unknown> {
-  const latestUser = [...stateView.context.temporal.recent].reverse().find((event) => event.kind === "user");
-  const latestAssistantQuestion = [...stateView.context.temporal.recent].reverse()
-    .find((event) => event.kind === "assistant" && event.expectsUserResponse);
+export function summarizeDecisionInputState(
+  stateView: AgentStateView,
+  state: LoopState,
+): Record<string, unknown> {
+  const currentInput = stateView.context.core.current.input;
+  const authoritative = state.harnessContext.contextEngine;
   const attachmentCount = Object.values(stateView.attachments ?? {})
     .reduce((count, value) => count + (Array.isArray(value) ? value.length : 0), 0);
 
   return {
-    temporalEventCount: stateView.context.temporal.recent.length,
-    latestUserInput: latestUser && "content" in latestUser ? latestUser.content : undefined,
-    pendingAssistantQuestion: latestAssistantQuestion && "content" in latestAssistantQuestion
-      ? latestAssistantQuestion.content
-      : undefined,
-    agentStreamScope: stateView.context.stream.scopeKey,
-    workstreamId: stateView.context.work.active?.workstreamId,
-    workstreamTitle: stateView.context.work.active?.title,
-    workstreamStatus: stateView.context.work.active?.workstreamStatus,
+    coreEventCount: stateView.context.core.continuity.recentExact.length + 1,
+    latestUserInput: currentInput.kind === "user" ? currentInput.content : undefined,
+    unloadedContextRangeCount: stateView.context.core.continuity.unloadedRanges.length,
+    workstreamId: authoritative?.workstream?.workstreamId,
+    workstreamTitle: authoritative?.workstream?.title,
+    workstreamStatus: authoritative?.workstream?.workstreamStatus,
+    workstreamCandidateCount: authoritative?.workstreamCandidates?.length ?? 0,
     workStatus: stateView.progress?.status,
-    blockerCount: stateView.progress?.blockers?.length ?? 0,
-    verifiedFactCount: stateView.progress?.verifiedFacts?.length ?? 0,
+    blockerCount: stateView.progress?.plan?.filter(
+      (item) => item.status === "blocked",
+    ).length ?? 0,
+    importantContextCount: stateView.progress?.importantContext?.length ?? 0,
     recentToolCallCount: stateView.toolCalls?.length ?? 0,
     recentObservationCount: stateView.observations?.latest.length ?? 0,
-    reusableObservationCount: stateView.context.observations.inventory.length
-      + stateView.context.observations.discovery.length
-      + stateView.context.observations.evidence.length,
     recentTraceStepCount: stateView.trace?.recentSteps?.length ?? 0,
     recentFailureCount: stateView.trace?.recentFailures?.length ?? 0,
     attachmentCount,
-    toolLoadStatus: stateView.toolLoad?.status,
+    capabilitySurfaceStatus: stateView.capabilitySurface?.status,
     systemEventName: stateView.systemEvent?.eventName,
   };
 }
@@ -283,14 +304,6 @@ export function buildFinalFeedbackWarnings(input: {
   const warnings: string[] = [];
   if (input.status !== "completed") {
     warnings.push("stuck_or_failed");
-  }
-  if (
-    input.status === "completed"
-    && input.totalToolCalls === 0
-    && input.state.workState.status !== "needs_user_input"
-    && requiresOperationalMode(input.state.userMessage)
-  ) {
-    warnings.push("completed_without_tool_calls");
   }
   if (input.modeTransitionCount > 5) {
     warnings.push("excessive_mode_transitions");

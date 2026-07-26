@@ -48,7 +48,6 @@ describe("pulse skill metadata", () => {
     expect(pulseSkill.version).toBe("1.0.0");
     expect(pulseSkill.tools).toHaveLength(1);
     expect(pulseSkill.tools[0]?.name).toBe("pulse");
-    expect(pulseSkill.promptBlock).toContain("The `pulse` tool is built in.");
   });
 });
 

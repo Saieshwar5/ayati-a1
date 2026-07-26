@@ -1,3 +1,8 @@
+import { isAbsolute } from "node:path";
+import {
+  canonicalizeAbsoluteFilesystemPath,
+  filesystemPathIsWithin,
+} from "../../shared/filesystem-paths.js";
 import { requiresWorkstreamBinding } from "../../skills/tool-taxonomy.js";
 import type { LoopState } from "../types.js";
 import type {
@@ -8,6 +13,9 @@ import type {
 import { deriveTurnMutationConstraints } from "./turn-intent-policy.js";
 import {
   createVirtualModeRepair,
+  modeTransitionMutationScopeValues,
+  modeTransitionReferenceValues,
+  modeTransitionTargetValues,
   type ModeTransitionRequest,
   type VirtualModeRepair,
 } from "./virtual-mode.js";
@@ -23,7 +31,7 @@ export type DeterministicResolveGateResult =
     }
   | {
       kind: "needs_user_input";
-      attempted: true;
+      attempted: false;
       toolNames: string[];
       outcome: Extract<DeterministicWorkstreamBindingOutcome, { status: "needs_user_input" }>;
     }
@@ -49,6 +57,7 @@ export async function dispatchDeterministicResolveGate(input: {
   onEvent?(event: string, data: Record<string, unknown>): void;
 }): Promise<DeterministicResolveGateResult> {
   const toolNames = bindingRequiredToolNames(input.toolNames);
+  const targets = modeTransitionTargetValues(input.request);
   if (toolNames.length === 0) {
     return rejected(
       toolNames,
@@ -68,8 +77,22 @@ export async function dispatchDeterministicResolveGate(input: {
       intent.mutationForbidden
         ? "The current request explicitly forbids mutation, so it cannot enter the resolve gate."
         : "The resolve gate requires explicit mutation-permitting user intent.",
-      input.request.targets ?? [],
+      targets,
       ["Stay in an observation mode, or validate a read-only outcome."],
+    );
+  }
+  const outOfScope = await mutationScopesOutsideUserBoundary(
+    input.state,
+    input.request,
+    intent.scopePolicy,
+  );
+  if (outOfScope.length > 0) {
+    return rejected(
+      toolNames,
+      "MODE_MUTATION_INTENT_REQUIRED",
+      `Mutation scopes exceed the user's explicit boundary: ${outOfScope.join(", ")}.`,
+      outOfScope,
+      ["Use only mutationScopes inside the absolute path explicitly authorized by the user."],
     );
   }
   if (input.alreadyAttempted) {
@@ -77,7 +100,7 @@ export async function dispatchDeterministicResolveGate(input: {
       toolNames,
       "MODE_RESOLUTION_UNAVAILABLE",
       "This run has already used its single deterministic binding attempt.",
-      input.request.targets ?? [],
+      targets,
       ["Validate a truthful failure or needs-input outcome; do not replay a mutation."],
     );
   }
@@ -86,7 +109,7 @@ export async function dispatchDeterministicResolveGate(input: {
       toolNames,
       "MODE_RESOLUTION_UNAVAILABLE",
       "The deterministic workstream binding coordinator is unavailable.",
-      input.request.targets ?? [],
+      targets,
       ["Validate a truthful failure without attempting mutation."],
     );
   }
@@ -95,7 +118,7 @@ export async function dispatchDeterministicResolveGate(input: {
       toolNames,
       "MODE_BINDING_PROPOSAL_REQUIRED",
       "An unbound resolve transition requires one typed activate-or-create binding proposal.",
-      input.request.targets ?? [],
+      targets,
       ["Observe workstream ownership, then retry resolve with an exact binding proposal."],
     );
   }
@@ -108,12 +131,14 @@ export async function dispatchDeterministicResolveGate(input: {
   input.onEvent?.("deterministic_binding_started", {
     tools: toolNames,
     purpose: input.request.purpose,
-    targets: input.request.targets ?? [],
+    referenceTargets: modeTransitionReferenceValues(input.request),
+    mutationScopes: modeTransitionMutationScopeValues(input.request),
     proposal: summarizeProposal(input.request.binding),
   });
   const outcome = await input.coordinator.bind({
     purpose: input.request.purpose,
-    targets: input.request.targets ?? [],
+    referenceTargets: modeTransitionReferenceValues(input.request),
+    mutationScopes: modeTransitionMutationScopeValues(input.request),
     proposal: input.request.binding,
     ...(input.state.harnessContext.contextEngine?.contextRevision
       ? { expectedContextRevision: input.state.harnessContext.contextEngine.contextRevision }
@@ -127,7 +152,7 @@ export async function dispatchDeterministicResolveGate(input: {
     return { kind: "resolved", attempted: true, toolNames, outcome };
   }
   if (outcome.status === "needs_user_input") {
-    return { kind: "needs_user_input", attempted: true, toolNames, outcome };
+    return { kind: "needs_user_input", attempted: false, toolNames, outcome };
   }
   return { kind: "failed", attempted: true, toolNames, outcome };
 }
@@ -306,4 +331,47 @@ function summarizeBindingOutcome(
 
 function isWorkstreamBound(state: LoopState): boolean {
   return state.harnessContext.contextEngine?.current.routing?.status === "bound";
+}
+
+async function mutationScopesOutsideUserBoundary(
+  state: LoopState,
+  request: ModeTransitionRequest,
+  policy: ReturnType<typeof deriveTurnMutationConstraints>["scopePolicy"],
+): Promise<string[]> {
+  if (!policy.denyOutsideAllowedScopes || policy.allowedScopes.length === 0) return [];
+  const allowedScopes = (await Promise.all(policy.allowedScopes
+    .filter(isAbsolute)
+    .map(async (allowed) => {
+      try {
+        return await canonicalizeAbsoluteFilesystemPath(allowed);
+      } catch {
+        return undefined;
+      }
+    }))).filter((allowed): allowed is Awaited<
+      ReturnType<typeof canonicalizeAbsoluteFilesystemPath>
+    > => allowed !== undefined);
+  const decisions = await Promise.all(modeTransitionMutationScopeValues(request).map(async (scope) => {
+    const path = isAbsolute(scope) ? scope : resourcePath(state, scope);
+    if (!path) return { scope, outside: true };
+    try {
+      const canonical = await canonicalizeAbsoluteFilesystemPath(path);
+      return {
+        scope,
+        outside: !allowedScopes.some((allowed) => filesystemPathIsWithin(allowed, canonical)),
+      };
+    } catch {
+      return { scope, outside: true };
+    }
+  }));
+  return decisions.filter((decision) => decision.outside).map((decision) => decision.scope);
+}
+
+function resourcePath(state: LoopState, resourceId: string): string | undefined {
+  const resources = [
+    ...(state.harnessContext.contextEngine?.ingressResources ?? []),
+    ...(state.harnessContext.contextEngine?.agentStream.resources ?? []),
+    ...(state.harnessContext.contextEngine?.workstream?.resources.map((binding) => binding.resource) ?? []),
+  ];
+  const resource = resources.find((candidate) => candidate.resourceId === resourceId);
+  return resource?.locator.kind === "filesystem" ? resource.locator.path : undefined;
 }

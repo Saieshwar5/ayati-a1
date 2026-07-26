@@ -18,14 +18,19 @@ afterEach(async () => {
   }));
 });
 
-describe("SQLite Context Engine V7 baseline", () => {
-  it("creates the clean V7 stream/run/checkpoint/observation/resolution schema", async () => {
+describe("SQLite Context Engine V8 baseline", () => {
+  it("rejects relative database paths instead of anchoring them to process.cwd()", async () => {
+    await expect(ContextDatabase.open({ path: "context.sqlite" }))
+      .rejects.toThrow("database path must be an absolute filesystem path");
+  });
+
+  it("creates the clean V8 stream/run/checkpoint/resolution schema", async () => {
     const fixture = await createFixture();
 
-    expect(latestSchemaVersion()).toBe(7);
+    expect(latestSchemaVersion()).toBe(8);
     expect(fixture.database.prepare(
       "SELECT version FROM schema_metadata WHERE singleton = 1",
-    ).get()).toEqual({ version: 7 });
+    ).get()).toEqual({ version: 8 });
     const tables = new Set((fixture.database.prepare([
       "SELECT name FROM sqlite_schema",
       "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
@@ -33,12 +38,11 @@ describe("SQLite Context Engine V7 baseline", () => {
     for (const table of [
       "agent_streams",
       "messages",
+      "message_response_metadata",
       "runs",
       "run_steps",
       "run_work_state",
       "context_checkpoints",
-      "reusable_observations",
-      "observation_resources",
       "workstreams",
       "workstream_resolution_activities",
       "workstream_resolution_steps",
@@ -48,13 +52,29 @@ describe("SQLite Context Engine V7 baseline", () => {
     }
     expect(tables.has("sessions")).toBe(false);
     expect(tables.has("conversation_segments")).toBe(false);
+    expect(tables.has("reusable_observations")).toBe(false);
+    expect(tables.has("observation_resources")).toBe(false);
     expect(fixture.database.prepare("PRAGMA journal_mode").all())
       .toEqual([{ journal_mode: "wal" }]);
     expect(fixture.database.prepare("PRAGMA foreign_keys").all())
       .toEqual([{ foreign_keys: 1 }]);
   });
 
-  it("refuses pre-V7 or unknown state without modifying it", async () => {
+  it("opens an existing V8 database with retired observation tables without using them", async () => {
+    const fixture = await createFixture();
+    await closeTracked(fixture.service);
+    const legacy = new DatabaseSync(fixture.databasePath);
+    legacy.exec("CREATE TABLE reusable_observations (legacy INTEGER)");
+    legacy.exec("CREATE TABLE observation_resources (legacy INTEGER)");
+    legacy.close();
+
+    const reopened = await ContextDatabase.open({ path: fixture.databasePath });
+
+    expect(reopened.schemaVersion()).toBe(8);
+    reopened.close();
+  });
+
+  it("refuses pre-V8 or unknown state without modifying it", async () => {
     const root = await mkdtemp(join(tmpdir(), "ayati-old-context-schema-"));
     roots.push(root);
     const databasePath = join(root, "context.sqlite");
@@ -64,7 +84,7 @@ describe("SQLite Context Engine V7 baseline", () => {
     old.close();
 
     await expect(ContextDatabase.open({ path: databasePath })).rejects.toThrow(
-      "The configured database uses a pre-V7 or unsupported schema and was not modified.",
+      "The configured database uses a pre-V8 or unsupported schema and was not modified.",
     );
     const unchanged = new DatabaseSync(databasePath);
     expect(unchanged.prepare("SELECT version FROM schema_metadata").get()).toEqual({ version: 5 });
@@ -95,7 +115,7 @@ describe("SQLite Context Engine V7 baseline", () => {
         stream: { recentMessages: [{ sequence: 1, role: "system_event" }] },
         run: {
           run: { status: "running", trigger: "system_event", stepCount: 0 },
-          workState: { revision: 0, afterStep: 0, status: "not_done" },
+          workState: { revision: 0, afterStep: 0, status: "in_progress" },
           steps: [],
         },
       },
@@ -137,11 +157,77 @@ describe("SQLite Context Engine V7 baseline", () => {
       .toEqual(["user", "assistant", "user"]);
   });
 
+  it("rebuilds assistant feedback semantics from durable messages after restart", async () => {
+    const fixture = await createFixture();
+    const prepared = await fixture.service.prepareAgentRun(
+      prepareRequest("REQ-feedback", "Should we continue?", AT),
+    );
+    await fixture.service.finalizeRun({
+      requestId: "REQ-feedback-finalize",
+      runId: prepared.run.runId,
+      outcome: "needs_user_input",
+      stopReason: "needs_user_input",
+      assistantResponse: "Should I continue with the migration?",
+      assistantResponseKind: "feedback",
+      assistantFeedbackKind: "confirmation",
+      streamSummary: "Waiting for confirmation.",
+      summary: "The next action requires confirmation.",
+      validation: "not_applicable",
+      workState: {
+        ...workState("Waiting for confirmation."),
+        status: "needs_user_input",
+        nextAction: "Continue after the user confirms.",
+      },
+      at: "2026-07-20T13:01:00+05:30",
+    });
+    const databasePath = fixture.databasePath;
+    const root = fixture.root;
+    await closeTracked(fixture.service);
+
+    const database = await ContextDatabase.open({ path: databasePath });
+    const restarted = new SqliteContextEngineService({
+      database,
+      rootDirectory: root,
+      now: () => "2026-07-20T13:02:00+05:30",
+    });
+    services.push(restarted);
+
+    const context = await restarted.getAgentContext({ streamId: prepared.stream.streamId });
+    expect(context.stream?.recentMessages.at(-1)).toMatchObject({
+      role: "assistant",
+      responseKind: "feedback",
+      feedbackKind: "confirmation",
+      content: "Should I continue with the migration?",
+    });
+  });
+
   it("recovers an orphaned running run as incomplete/interrupted", async () => {
     const fixture = await createFixture();
     const prepared = await fixture.service.prepareAgentRun(
       prepareRequest("REQ-interrupted", "This run will be interrupted.", AT),
     );
+    await fixture.service.recordRunStep({
+      requestId: "REQ-interrupted-step",
+      runId: prepared.run.runId,
+      record: {
+        version: 1,
+        step: 1,
+        status: "completed",
+        summary: "Read durable diagnostic evidence.",
+        toolCalls: [{
+          callId: "read-diagnostic",
+          tool: "workspace_get_state",
+          purpose: "Read the current workspace state.",
+          toolPurpose: "read",
+          toolEffect: "read_only",
+          status: "success",
+          input: {},
+          output: { windows: ["editor"] },
+        }],
+        verification: { passed: true },
+        createdAt: "2026-07-20T13:00:01+05:30",
+      },
+    });
     const databasePath = fixture.databasePath;
     const root = fixture.root;
     await closeTracked(fixture.service);
@@ -164,6 +250,12 @@ describe("SQLite Context Engine V7 baseline", () => {
       completed_at: "2026-07-20T13:05:00+05:30",
     });
     expect(context.stream?.recentMessages).toHaveLength(1);
+    expect("observations" in context).toBe(false);
+    expect(database.prepare([
+      "SELECT COUNT(*) AS count FROM sqlite_schema",
+      "WHERE type = 'table' AND name = 'reusable_observations'",
+    ].join(" ")).get())
+      .toEqual({ count: 0 });
   });
 });
 
@@ -183,13 +275,9 @@ function workState(summary: string) {
   return {
     status: "done" as const,
     summary,
-    openWork: [],
-    blockers: [],
-    facts: [],
-    evidence: [],
-    artifacts: [],
-    nextStep: null,
-    userInputNeeded: [],
+    plan: [],
+    importantContext: [],
+    nextAction: null,
   };
 }
 

@@ -44,6 +44,7 @@ describe("readFilesTool", () => {
         ok: true,
         filePath: file,
         mode: "auto",
+        coverage: "complete",
         lineCount: 2,
         lineCountKnown: true,
         observation: {
@@ -53,6 +54,35 @@ describe("readFilesTool", () => {
     });
     expect(result.rawOutput).toContain(`## ${file}`);
     expect(result.rawOutput).toContain("hello\nworld");
+  });
+
+  it("returns every line of a small automatic read without silent sampling", async () => {
+    const file = join(tmp, "requirements.md");
+    const content = Array.from({ length: 59 }, (_, index) => (
+      index === 29 ? "Northline Ferry — Passenger information redesign" : `requirement ${index + 1}`
+    )).join("\n");
+    await writeFile(file, content, "utf-8");
+
+    const result = await readFilesTool.execute({
+      files: [{ path: file }],
+    });
+    const structured = result.v2?.structuredContent as {
+      results: Array<{
+        content: string;
+        coverage: string;
+        truncated: boolean;
+        lineCount: number;
+      }>;
+    };
+
+    expect(result.ok).toBe(true);
+    expect(structured.results[0]).toMatchObject({
+      content,
+      coverage: "complete",
+      truncated: false,
+      lineCount: 59,
+    });
+    expect(result.output).toContain("Northline Ferry — Passenger information redesign");
   });
 
   it("reads multiple known files in one batch", async () => {
@@ -118,6 +148,7 @@ describe("readFilesTool", () => {
         ok: true,
         filePath: file,
         mode: "full",
+        coverage: "complete",
         truncated: false,
         lineCount: 2,
         sha256: sha256Text("complete\ncontent\n"),
@@ -162,6 +193,7 @@ describe("readFilesTool", () => {
         requestedPath: file,
         ok: true,
         mode: "slice",
+        coverage: "partial",
         startLine: 2,
         endLine: 3,
       }],
@@ -183,6 +215,7 @@ describe("readFilesTool", () => {
         requestedPath: file,
         ok: true,
         mode: "search",
+        coverage: "search_matches",
         query: "needle",
         matchCount: 1,
       }],
@@ -229,12 +262,13 @@ describe("readFilesTool", () => {
 
     expect(result.ok).toBe(true);
     const structured = result.v2?.structuredContent as {
-      results: Array<{ content: string; truncated: boolean }>;
+      results: Array<{ content: string; coverage: string; truncated: boolean }>;
       summary: { totalCharsReturned: number; truncated: number };
     };
     expect(structured.summary.totalCharsReturned).toBeLessThanOrEqual(35);
     expect(structured.summary.truncated).toBeGreaterThan(0);
     expect(structured.results[0]?.content.length).toBeLessThanOrEqual(20);
+    expect(structured.results[0]?.coverage).toBe("partial");
     expect(structured.results.some((entry) => entry.truncated)).toBe(true);
     expect(result.v2?.conditions).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "FILE_METADATA_RECOMMENDED", severity: "info" }),

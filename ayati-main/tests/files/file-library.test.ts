@@ -9,6 +9,17 @@ function makeTmpDir(): string {
 }
 
 describe("FileLibrary", () => {
+  it("rejects relative host paths instead of anchoring them to process.cwd()", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const library = new FileLibrary({ dataDir });
+      await expect(library.registerPath({ path: "notes.txt" }))
+        .rejects.toThrow("must be an absolute filesystem path");
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("registers uploaded text files, writes metadata, and extracts text", async () => {
     const dataDir = makeTmpDir();
     try {

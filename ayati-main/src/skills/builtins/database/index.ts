@@ -17,17 +17,6 @@ import {
 import type { DatabaseColumnInput, DatabaseToolMode } from "../../../database/sqlite-runtime.js";
 import { requireAbsolutePath } from "../../workspace-paths.js";
 
-const DATABASE_PROMPT_BLOCK = [
-  "SQLite database tools are built in.",
-  "Use them directly for local, structured database work.",
-  "Omit dbPath to use the managed default database. When dbPath is supplied, it must be a canonical absolute filesystem path.",
-  "Prefer structured tools for common tasks because they are easier and more reliable for the agent.",
-  "Use db_execute_sql when you need joins, aggregations, migrations, or any advanced SQLite feature not covered by the structured tools.",
-  "Inspect schema before mutating an unfamiliar table.",
-  "Keep result sets compact unless the user explicitly asks for a larger dump.",
-  "Tools: db_list_tables, db_describe_table, db_get_table_ddl, db_create_table, db_rename_table, db_drop_table, db_add_columns, db_insert_rows, db_update_rows, db_delete_rows, db_query, db_execute_sql.",
-].join("\n");
-
 const GENERIC_JSON_VALUE_SCHEMA: Record<string, unknown> = {};
 const STRING_ARRAY_ITEM_SCHEMA: Record<string, unknown> = {
   type: "string",
@@ -134,11 +123,24 @@ function withDatabaseContract(tool: ToolDefinition, mode: DatabaseContractMode):
       ],
       progressFacts: [{
         kind: readOnly ? "database_read" : "database_mutated",
-        path: "$.result.structuredContent.table",
+        path: databaseProgressSubjectPath(tool.name),
         message: readOnly ? "Database state read by database tool." : "Database state mutated by database tool.",
       }],
     }),
   };
+}
+
+function databaseProgressSubjectPath(toolName: string): string {
+  if (toolName === "db_list_tables") {
+    return "$.result.structuredContent.dbPath";
+  }
+  if (toolName === "db_execute_sql") {
+    return "$.result.structuredContent.statementType";
+  }
+  if (toolName === "db_rename_table") {
+    return "$.result.structuredContent.newName";
+  }
+  return "$.result.structuredContent.table";
 }
 
 function databaseContractAssertions(toolName: string): ToolContractAssertion[] {
@@ -204,13 +206,6 @@ function createListTablesTool(): ToolDefinition {
         dbPath: { type: "string", description: "Optional canonical absolute SQLite database path. Omit to use the managed default database." },
       },
     },
-    selectionHints: {
-      tags: ["database", "sqlite", "schema", "tables", "list"],
-      aliases: ["list_tables", "show_tables"],
-      examples: ["show database tables", "what tables exist"],
-      domain: "database",
-      priority: 5,
-    },
     async execute(input): Promise<ToolResult> {
       const payload = isPlainObject(input) ? input : {};
       const dbPath = readOptionalDatabasePath(payload);
@@ -235,13 +230,6 @@ function createDescribeTableTool(): ToolDefinition {
         table: { type: "string", description: "Table name to describe." },
         sampleLimit: { type: "number", description: "Optional sample row limit (default 50, max 200)." },
       },
-    },
-    selectionHints: {
-      tags: ["database", "sqlite", "schema", "table", "describe"],
-      aliases: ["describe_table", "show_schema", "inspect_table"],
-      examples: ["describe users table", "show table columns"],
-      domain: "database",
-      priority: 5,
     },
     async execute(input): Promise<ToolResult> {
       if (!isPlainObject(input)) return buildFailureResult("Invalid input: expected object.");
@@ -275,13 +263,6 @@ function createGetTableDdlTool(): ToolDefinition {
         table: { type: "string", description: "Table name." },
       },
     },
-    selectionHints: {
-      tags: ["database", "sqlite", "ddl", "schema"],
-      aliases: ["table_ddl", "show_create_table"],
-      examples: ["get create table sql", "show table ddl"],
-      domain: "database",
-      priority: 4,
-    },
     async execute(input): Promise<ToolResult> {
       if (!isPlainObject(input)) return buildFailureResult("Invalid input: expected object.");
       const table = readRequiredString(input, "table");
@@ -313,13 +294,6 @@ function createCreateTableTool(): ToolDefinition {
           items: DATABASE_COLUMN_SCHEMA,
         },
       },
-    },
-    selectionHints: {
-      tags: ["database", "sqlite", "create", "table"],
-      aliases: ["create_table", "new_table"],
-      examples: ["create a customers table", "make a table for CSV rows"],
-      domain: "database",
-      priority: 5,
     },
     async execute(input): Promise<ToolResult> {
       if (!isPlainObject(input)) return buildFailureResult("Invalid input: expected object.");
@@ -357,13 +331,6 @@ function createRenameTableTool(): ToolDefinition {
         newName: { type: "string", description: "New table name." },
       },
     },
-    selectionHints: {
-      tags: ["database", "sqlite", "rename", "table"],
-      aliases: ["rename_table"],
-      examples: ["rename the temp table", "change table name"],
-      domain: "database",
-      priority: 4,
-    },
     async execute(input): Promise<ToolResult> {
       if (!isPlainObject(input)) return buildFailureResult("Invalid input: expected object.");
       const table = readRequiredString(input, "table");
@@ -392,13 +359,6 @@ function createDropTableTool(): ToolDefinition {
         table: { type: "string", description: "Table name to drop." },
         ifExists: { type: "boolean", description: "Ignore missing tables when true." },
       },
-    },
-    selectionHints: {
-      tags: ["database", "sqlite", "drop", "delete", "table"],
-      aliases: ["delete_table"],
-      examples: ["drop the staging table", "remove old table"],
-      domain: "database",
-      priority: 4,
     },
     async execute(input): Promise<ToolResult> {
       if (!isPlainObject(input)) return buildFailureResult("Invalid input: expected object.");
@@ -437,13 +397,6 @@ function createAddColumnsTool(): ToolDefinition {
         },
       },
     },
-    selectionHints: {
-      tags: ["database", "sqlite", "alter", "columns", "schema"],
-      aliases: ["alter_table_add_columns", "add_columns"],
-      examples: ["add email column", "extend schema"],
-      domain: "database",
-      priority: 5,
-    },
     async execute(input): Promise<ToolResult> {
       if (!isPlainObject(input)) return buildFailureResult("Invalid input: expected object.");
       const table = readRequiredString(input, "table");
@@ -476,13 +429,6 @@ function createInsertRowsTool(): ToolDefinition {
           items: DATABASE_ROW_OBJECT_SCHEMA,
         },
       },
-    },
-    selectionHints: {
-      tags: ["database", "sqlite", "insert", "rows"],
-      aliases: ["insert_rows", "add_rows"],
-      examples: ["insert these records", "save rows into table"],
-      domain: "database",
-      priority: 5,
     },
     async execute(input): Promise<ToolResult> {
       if (!isPlainObject(input)) return buildFailureResult("Invalid input: expected object.");
@@ -518,13 +464,6 @@ function createUpdateRowsTool(): ToolDefinition {
           items: GENERIC_JSON_VALUE_SCHEMA,
         },
       },
-    },
-    selectionHints: {
-      tags: ["database", "sqlite", "update", "rows"],
-      aliases: ["update_rows", "edit_rows"],
-      examples: ["update matching rows", "set status to done"],
-      domain: "database",
-      priority: 5,
     },
     async execute(input): Promise<ToolResult> {
       if (!isPlainObject(input)) return buildFailureResult("Invalid input: expected object.");
@@ -568,13 +507,6 @@ function createDeleteRowsTool(): ToolDefinition {
           items: GENERIC_JSON_VALUE_SCHEMA,
         },
       },
-    },
-    selectionHints: {
-      tags: ["database", "sqlite", "delete", "rows"],
-      aliases: ["remove_rows", "delete_rows"],
-      examples: ["delete matching rows", "remove old records"],
-      domain: "database",
-      priority: 5,
     },
     async execute(input): Promise<ToolResult> {
       if (!isPlainObject(input)) return buildFailureResult("Invalid input: expected object.");
@@ -627,13 +559,6 @@ function createQueryTool(): ToolDefinition {
         limit: { type: "number", description: "Optional row limit (default 50, max 200)." },
         offset: { type: "number", description: "Optional row offset." },
       },
-    },
-    selectionHints: {
-      tags: ["database", "sqlite", "query", "select", "rows"],
-      aliases: ["select_rows", "read_rows"],
-      examples: ["query the latest rows", "show rows with status open"],
-      domain: "database",
-      priority: 5,
     },
     async execute(input): Promise<ToolResult> {
       if (!isPlainObject(input)) return buildFailureResult("Invalid input: expected object.");
@@ -688,13 +613,6 @@ function createExecuteSqlTool(): ToolDefinition {
         mode: { type: "string", description: "auto, query, or execute." },
         maxRows: { type: "number", description: "Optional row cap for query mode (default 50, max 200)." },
       },
-    },
-    selectionHints: {
-      tags: ["database", "sqlite", "sql", "ddl", "dml", "query"],
-      aliases: ["execute_sql", "run_sql", "raw_sql"],
-      examples: ["run this SQL", "execute an ALTER TABLE", "perform a join query"],
-      domain: "database",
-      priority: 5,
     },
     async execute(input): Promise<ToolResult> {
       if (!isPlainObject(input)) return buildFailureResult("Invalid input: expected object.");
@@ -822,7 +740,6 @@ const databaseSkill: SkillDefinition = {
   id: "database",
   version: "1.0.0",
   description: "SQLite database operations — inspect schema, create/alter tables, insert/update/delete rows, query data, and execute raw SQL.",
-  promptBlock: DATABASE_PROMPT_BLOCK,
   tools: [
     withDatabaseContract(createListTablesTool(), "read"),
     withDatabaseContract(createDescribeTableTool(), "read"),

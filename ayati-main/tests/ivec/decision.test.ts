@@ -12,6 +12,9 @@ import {
 import { callAgentDecision } from "../../src/ivec/agent-runner/decision.js";
 import type { AgentFeedbackEventInput, AgentFeedbackLedger } from "../../src/ivec/feedback-ledger.js";
 import type { AgentStateView } from "../../src/ivec/agent-runner/state-view.js";
+import { buildCoreCapsule } from "../../src/ivec/agent-runner/core-capsule.js";
+import type { AgentTemporalEvent } from "../../src/ivec/agent-runner/agent-context-events.js";
+import { MODE_TRANSITION_CONTROL_TOOL_NAMES } from "../../src/ivec/agent-runner/mode-transition-controls.js";
 import { createRunMetrics } from "../../src/ivec/metrics.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
 import { nativeDecisionFixture } from "./native-decision-fixture.js";
@@ -47,23 +50,45 @@ describe("callAgentDecision", () => {
     expect(traceOutput).toContain("raw_response=Hi!");
   });
 
-  it("sends slow agent-stream work references to the provider for a follow-up", async () => {
+  it("sends recent workstream metadata only after its Hot Context entry is loaded", async () => {
     const { provider, generateTurn } = createProvider([
       "I created index.html and styles.css.",
     ]);
-    const recentWork = {
-      workstreamId: "W-20260714-0001",
-      requestId: "R-0001",
-      outcome: "done",
-      resourceIds: ["RES-0123456789ABCDEF01234567"],
-      completedAt: "2026-07-14T10:30:00.000Z",
-    };
+    const content = JSON.stringify({
+      schemaVersion: 1,
+      workstreams: [{
+        workstreamId: "W-20260714-0001",
+        title: "Website implementation",
+        lifecycleStatus: "active",
+        repositoryHealth: "ready",
+        lastActivity: {
+          kind: "bound",
+          at: "2026-07-14T10:30:00.000Z",
+        },
+      }],
+    });
 
     await callAgentDecision({
       provider,
       stateView: createStateView({
         context: {
-          stream: { agentId: "local", scopeKey: "default", recentWork: [recentWork] },
+          hot: {
+            available: [],
+            loaded: [{
+              key: "workstreams.recent",
+              description: "Recently used workstreams.",
+              version: "sha256:test",
+              estimatedTokens: 40,
+              freshness: "current",
+              sourceRefs: ["workstream-catalog:recent"],
+              content,
+              mountedAtStep: 1,
+            }],
+            budget: {
+              maxMountedTokens: 8_000,
+              mountedTokens: 40,
+            },
+          },
         },
       }),
       toolDefinitions: [],
@@ -71,9 +96,14 @@ describe("callAgentDecision", () => {
 
     const sentState = promptStateFromTurn(generateTurn.mock.calls[0]![0]);
     const sentContext = sentState["context"] as {
-      stream: { recentWork: unknown[] };
+      hot: { loaded: Array<{ key: string; content: string }> };
     };
-    expect(sentContext.stream.recentWork).toEqual([recentWork]);
+    expect(sentContext).not.toHaveProperty("work");
+    expect(sentContext).not.toHaveProperty("resources");
+    expect(sentContext).not.toHaveProperty("observations");
+    expect(sentContext.hot.loaded).toEqual([
+      expect.objectContaining({ key: "workstreams.recent", content }),
+    ]);
   });
 
   it("does not log decision traces by default", async () => {
@@ -108,12 +138,15 @@ describe("callAgentDecision", () => {
     expect(systemPrompt).toContain("Every run starts at ENTRY");
     expect(systemPrompt).toContain("Use observe.locate to discover an uncertain target");
     expect(systemPrompt).toContain("Use observe.investigate to read or inspect an exact evidence-backed target");
-    expect(systemPrompt).toContain("Use resolve only for explicit mutation-permitting intent");
+    expect(systemPrompt).toContain(
+      "Use decision_resolve_activate or decision_resolve_create only for explicit mutation-permitting intent",
+    );
     expect(systemPrompt).toContain("The deterministic gate rechecks the proposal");
     expect(systemPrompt).toContain("It makes no model request");
     expect(systemPrompt).toContain("Old-mode tools do not remain available");
-    expect(systemPrompt).toContain("Call decision_validate for completed, needs_user_input, blocked, or failed outcomes");
-    expect(systemPrompt).toContain("Accepted validation finalizes that response without another model call");
+    expect(systemPrompt).toContain("enter task:validation");
+    expect(systemPrompt).toContain("A passed validation mode unlocks the direct final response");
+    expect(systemPrompt).toContain("decision_stop is only for a current needs_user_input, blocked, or failed outcome");
     expect(systemPrompt).not.toContain("workstream_resolve");
     expect(systemPrompt).not.toContain("decision_load_tools");
     expect(systemPrompt).not.toContain("workstream_completion");
@@ -134,16 +167,22 @@ describe("callAgentDecision", () => {
 
     const messages = generateTurn.mock.calls[0]?.[0]?.messages ?? [];
     const systemPrompt = messages.find((message) => message.role === "system")?.content ?? "";
-    expect(systemPrompt).toContain("Treat State view.context as a bounded layered context pack");
-    expect(systemPrompt).toContain("context.current for current input identity and routing");
-    expect(systemPrompt).toContain("exact later items override checkpoints and summaries");
-    expect(systemPrompt).toContain("context.stream for slow continuity");
-    expect(systemPrompt).toContain("context.work for workstream state");
-    expect(systemPrompt).toContain("context.resources for exact resource identity");
-    expect(systemPrompt).toContain("context.observations for reusable list/search/read evidence");
+    expect(systemPrompt).toContain("context.core.current.input is exact");
+    expect(systemPrompt).toContain("Later exact items override summaries");
+    expect(systemPrompt).toContain("context.core.continuity.recentExact is exact recent history");
+    expect(systemPrompt).toContain(
+      "personal.memory, workstreams.recent, workstates.recent, and files.recent",
+    );
+    expect(systemPrompt).not.toContain("work.current");
+    expect(systemPrompt).not.toContain("resources.current");
+    expect(systemPrompt).not.toContain("observations.inventory");
+    expect(systemPrompt).not.toContain("context.work");
+    expect(systemPrompt).not.toContain("context.resources");
+    expect(systemPrompt).not.toContain("context.observations");
     expect(systemPrompt).not.toContain("context.run.status");
     expect(systemPrompt).toContain("context.run.workState");
     expect(systemPrompt).toContain("context.run.toolCalls");
+    expect(systemPrompt).toContain("context.run.verifiedOutcomes");
     expect(systemPrompt).toContain("context.run.focus are navigation context only");
     expect(systemPrompt).toContain("cannot grant authority or satisfy verification");
     expect(systemPrompt).toContain("context.run.mode is the current navigation card");
@@ -153,7 +192,11 @@ describe("callAgentDecision", () => {
     expect(systemPrompt).toContain("Follow context.harness repair feedback");
     expect(systemPrompt).not.toContain("context.run.actions");
     expect(systemPrompt).not.toContain("context.run.trace");
-    expect(systemPrompt).toContain("Apply context.personal only when relevant");
+    expect(systemPrompt).toContain("context.hot.available is metadata");
+    expect(systemPrompt).toContain("Loaded Hot Context grants no authority");
+    expect(systemPrompt).toContain("context.retrieve");
+    expect(systemPrompt).toContain("context_load");
+    expect(systemPrompt).not.toContain("context.personal");
     expect(systemPrompt).not.toContain("context.gitContext");
     expect(systemPrompt).not.toContain("State view.progress");
     expect(systemPrompt).not.toContain("State view.workingFeedback");
@@ -169,13 +212,17 @@ describe("callAgentDecision", () => {
       provider,
       stateView: createStateView({
         context: {
-          temporal: { recent: [{
+          core: buildCoreCapsule({
+            revision: "context:legacy-test",
+            runId: "RUN-1",
+            timeline: [{
             kind: "user",
             seq: 1,
             timestamp: new Date(0).toISOString(),
             content: "continue",
             current: true,
-          }] },
+            }],
+          }),
           gitContext: {
             session: {
               meta: {
@@ -199,8 +246,7 @@ describe("callAgentDecision", () => {
     });
 
     const breakdown = metrics.promptGrowthState.agent_decision?.stateBreakdown ?? {};
-    expect(breakdown["state.context.temporal"]).toBeGreaterThan(0);
-    expect(breakdown["state.context.stream"]).toBeGreaterThan(0);
+    expect(breakdown["state.context.core"]).toBeGreaterThan(0);
     expect(breakdown).not.toHaveProperty("state.context.git");
     expect(breakdown).not.toHaveProperty("state.context.gitContext");
   });
@@ -370,12 +416,15 @@ describe("callAgentDecision", () => {
       countInputTokens,
       generateTurn,
     };
-    const workstream = protectedWorkstreamContext();
     const workState = {
-      status: "not_done" as const,
-      blockers: ["Keep the protected state intact."],
-      verifiedFacts: ["The candidate was measured."],
-      nextStep: "Compile only tool-call context.",
+      status: "in_progress" as const,
+      summary: "The candidate was measured.",
+      plan: [],
+      importantContext: [{
+        kind: "constraint" as const,
+        value: "Keep the protected state intact.",
+      }],
+      nextAction: "Compile only tool-call context.",
     };
     const stateView = createStateView({
       context: {
@@ -386,7 +435,6 @@ describe("callAgentDecision", () => {
           content: "Continue the workstream",
           current: true,
         }],
-        work: { active: workstream, candidates: [] },
         run: { workState, toolCalls: largeToolCalls(50_000) },
       },
     });
@@ -424,10 +472,11 @@ describe("callAgentDecision", () => {
     if (typeof sentUserPrompt !== "string") throw new Error("Expected a user prompt.");
     const sentState = parsePromptStateView(sentUserPrompt);
     const sentContext = sentState["context"] as {
-      work: { active: unknown };
       run: { workState: unknown; toolCalls: Array<{ mode: string }> };
     };
-    expect(sentContext.work.active).toEqual(workstream);
+    expect(sentContext).not.toHaveProperty("work");
+    expect(sentContext).not.toHaveProperty("resources");
+    expect(sentContext).not.toHaveProperty("observations");
     expect(sentContext.run.workState).toEqual(workState);
     expect(sentContext.run.toolCalls.slice(0, 4).some((call) => call.mode !== "full")).toBe(true);
     expect(sentContext.run.toolCalls.slice(-6).every((call) => call.mode === "full")).toBe(true);
@@ -619,7 +668,7 @@ describe("callAgentDecision", () => {
     }));
   });
 
-  it("sends a deduplicated state view to the model prompt", async () => {
+  it("sends only the model-facing context lanes to the prompt", async () => {
     const { provider, generateTurn } = createProvider([
       JSON.stringify({ kind: "reply", status: "completed", message: "Hi!" }),
     ]);
@@ -665,15 +714,36 @@ describe("callAgentDecision", () => {
             },
           },
           run: {
-            status: "not_done",
+            workState: {
+              status: "in_progress",
+              summary: "Work in progress.",
+              plan: [],
+              importantContext: [],
+            },
           },
-          personal: {
-            memorySnapshot: "Prefer concise answers.",
+          hot: {
+            available: [],
+            loaded: [{
+              key: "personal.memory",
+              description: "Stable personal facts and preferences learned about the user.",
+              version: "test",
+              estimatedTokens: 4,
+              freshness: "current",
+              sourceRefs: ["personal-memory:snapshot"],
+              content: "Prefer concise answers.",
+              mountedAtStep: 1,
+            }],
+            budget: {
+              maxMountedTokens: 8_000,
+              mountedTokens: 4,
+            },
           },
         },
         progress: {
-          status: "not_done",
+          status: "in_progress",
           summary: "Work in progress.",
+          plan: [],
+          importantContext: [],
         },
         workingFeedback: {
           latest: [{
@@ -682,13 +752,9 @@ describe("callAgentDecision", () => {
             message: "Fix the next call.",
           }],
         },
-        toolLoad: {
-          status: "success",
-          requested: {
-            query: "files",
-            toolNames: ["read_files"],
-            groups: ["filesystem"],
-          },
+        capabilitySurface: {
+          status: "partial",
+          requested: ["file:read"],
           loaded: ["read_files"],
           alreadyActive: [],
           evicted: [],
@@ -709,17 +775,16 @@ describe("callAgentDecision", () => {
     const userPrompt = messages.find((message) => message.role === "user")?.content ?? "";
     const promptStateView = parsePromptStateView(userPrompt);
     expect(promptStateView.context).toMatchObject({
-      temporal: { recent: [{
-          kind: "user",
-          seq: 1,
-          timestamp: new Date(0).toISOString(),
-          content: "continue",
-          current: true,
-      }] },
-      stream: { agentId: "local", scopeKey: "default", recentWork: [] },
-      work: { candidates: [] },
-      resources: { stream: [], ingress: [], activeWorkstream: [] },
-      observations: { revision: "observations:empty", inventory: [], discovery: [], evidence: [] },
+      core: expect.objectContaining({
+        current: expect.objectContaining({
+          input: expect.objectContaining({
+            kind: "user",
+            seq: 1,
+            content: "continue",
+            current: true,
+          }),
+        }),
+      }),
       tools: { active: ["read_files"] },
       harness: {
         feedback: {
@@ -730,11 +795,19 @@ describe("callAgentDecision", () => {
           }],
         },
       },
-      personal: { memorySnapshot: "Prefer concise answers." },
+      hot: {
+        loaded: [expect.objectContaining({
+          key: "personal.memory",
+          content: "Prefer concise answers.",
+        })],
+      },
     });
+    expect(promptStateView.context).not.toHaveProperty("work");
+    expect(promptStateView.context).not.toHaveProperty("resources");
+    expect(promptStateView.context).not.toHaveProperty("observations");
     expect(promptStateView).not.toHaveProperty("progress");
     expect(promptStateView).not.toHaveProperty("workingFeedback");
-    expect(promptStateView).not.toHaveProperty("toolLoad");
+    expect(promptStateView).not.toHaveProperty("capabilitySurface");
     expect(promptStateView).not.toHaveProperty("observations");
     expect(promptStateView).not.toHaveProperty("trace");
     expect(promptStateView.context).not.toHaveProperty("git");
@@ -757,21 +830,25 @@ describe("callAgentDecision", () => {
           },
           {
             id: "call_2",
-            tool: "load_tools",
-            input: { groups: ["skill:process"] },
+            tool: "decision_enter_observe_investigate",
+            input: {
+              purpose: "Inspect the project.",
+              capabilities: ["file:read"],
+              references: [{ kind: "filesystem", value: "/tmp/project" }],
+            },
             dependsOn: [],
           },
         ],
-        allowedTools: ["process_run", "load_tools"],
+        allowedTools: ["process_run", "decision_enter_observe_investigate"],
       },
     };
     const repaired = {
       kind: "transition_mode",
       request: {
-        to: "resolve",
-        purpose: "Bind the project before running its command.",
-        capabilities: ["process:command"],
-        targets: ["/tmp/project"],
+        to: "observe.investigate",
+        purpose: "Inspect the project before continuing.",
+        capabilities: ["file:read"],
+        references: [{ kind: "filesystem", path: "/tmp/project" }],
       },
     };
     const { provider, generateTurn } = createProvider([
@@ -802,6 +879,43 @@ describe("callAgentDecision", () => {
         code: "R_MULTIPLE_NATIVE_TOOL_CALLS",
       },
     });
+  });
+
+  it("returns a clean failed decision when native decision repair also fails", async () => {
+    const invalid = JSON.stringify({
+      kind: "act",
+      action: {
+        mode: "sequential",
+        calls: [
+          { id: "call_1", tool: "process_run", input: { command: "pwd" }, dependsOn: [] },
+          { id: "call_2", tool: "read_files", input: { files: [] }, dependsOn: [] },
+        ],
+        allowedTools: ["process_run", "read_files"],
+      },
+    });
+    const feedback = createFeedbackLedger();
+    const { provider, generateTurn } = createProvider([invalid, invalid]);
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+      feedbackLedger: feedback.ledger,
+      feedbackContext: {
+        clientId: "local",
+        sessionId: "S-test",
+        seq: 1,
+      },
+    });
+
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+    expect(decision).toEqual({
+      kind: "reply",
+      status: "failed",
+      message: "I could not form a valid tool call for this request.",
+    });
+    expect(feedback.events.filter((event) => event.event === "parse_failed")).toHaveLength(2);
+    expect(feedback.events.at(-1)?.event).toBe("failed_fallback");
   });
 
   it("repairs tool-call JSON returned as assistant text", async () => {
@@ -1013,11 +1127,25 @@ describe("callAgentDecision", () => {
           tool: "process_run",
           input: { command: "pwd" },
           dependsOn: [],
+          purpose: "Inspect the selected project directory.",
         }],
         allowedTools: ["process_run"],
       },
     };
     const feedback = createFeedbackLedger();
+    const binding = {
+      kind: "create",
+      title: "Project command",
+      objective: "Bind the project before executing its command.",
+      initialRequest: {
+        title: "Run project command",
+        request: "Run the requested command in the project.",
+        acceptance: ["The requested command completes."],
+        constraints: [],
+      },
+      resources: [],
+      evidence: ["run:RUN-1:step:1:call:find-owner"],
+    };
     const { provider, generateTurn } = createProvider([
       JSON.stringify(badAction),
       JSON.stringify({
@@ -1027,6 +1155,7 @@ describe("callAgentDecision", () => {
           purpose: "Bind the project before executing a command.",
           capabilities: ["process:command"],
           targets: ["/tmp/project"],
+          binding,
         },
       }),
     ]);
@@ -1050,12 +1179,75 @@ describe("callAgentDecision", () => {
         to: "resolve",
         purpose: "Bind the project before executing a command.",
         capabilities: ["process:command"],
-        targets: ["/tmp/project"],
+        mutationScopes: [{ kind: "filesystem", path: "/tmp/project" }],
+        binding,
       },
       workingNotes: undefined,
     });
     expect(feedback.events.find((event) => event.event === "protocol_violation")?.data)
-      .toMatchObject({ invalidTools: ["process_run"] });
+      .toMatchObject({
+        invalidTools: ["process_run"],
+        repair: { code: "R_TOOL_NOT_SELECTED" },
+      });
+  });
+
+  it("reports an invalid tool purpose as a purpose repair", async () => {
+    const withoutPurpose = {
+      kind: "act",
+      action: {
+        mode: "single",
+        calls: [{
+          id: "call_1",
+          tool: "process_run",
+          input: { command: "pwd" },
+          dependsOn: [],
+        }],
+        allowedTools: ["process_run"],
+      },
+    };
+    const withPurpose = {
+      ...withoutPurpose,
+      action: {
+        ...withoutPurpose.action,
+        calls: [{
+          ...withoutPurpose.action.calls[0],
+          purpose: "Inspect the selected project directory.",
+        }],
+      },
+    };
+    const feedback = createFeedbackLedger();
+    const { provider, generateTurn } = createProvider([
+      JSON.stringify(withoutPurpose),
+      JSON.stringify(withPurpose),
+    ]);
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [createTool("process_run")],
+      feedbackLedger: feedback.ledger,
+      feedbackContext: {
+        clientId: "local",
+        sessionId: "S-test",
+        seq: 1,
+      },
+    });
+
+    expect(decision).toMatchObject({
+      kind: "act",
+      action: {
+        calls: [{
+          tool: "process_run",
+          purpose: "Inspect the selected project directory.",
+        }],
+      },
+    });
+    expect(generateTurn.mock.calls[1]?.[0]?.messages.at(-1)?.content)
+      .toContain("Repair code: R_TOOL_PURPOSE_INVALID");
+    expect(feedback.events.find((event) => event.event === "protocol_violation")?.data)
+      .toMatchObject({
+        repair: { code: "R_TOOL_PURPOSE_INVALID" },
+      });
   });
 
   it("allows act decisions that use selected tools", async () => {
@@ -1132,21 +1324,38 @@ describe("callAgentDecision", () => {
     });
 
     expect(generateTurn.mock.calls[0]?.[0]?.tools.map((tool: { name: string }) => tool.name)).toEqual([
-      "decision_transition_mode",
+      ...MODE_TRANSITION_CONTROL_TOOL_NAMES,
     ]);
-    const transitionSchema = generateTurn.mock.calls[0]?.[0]?.tools[0]?.inputSchema;
-    expect(transitionSchema).toMatchObject({
-      required: ["to", "purpose", "capabilities"],
-      properties: {
-        to: { enum: ["observe.locate", "observe.investigate", "resolve", "execute"] },
-        capabilities: { type: "array", minItems: 1, maxItems: 8 },
-        binding: {
-          oneOf: [
-            expect.objectContaining({ properties: expect.objectContaining({ kind: { const: "activate" } }) }),
-            expect.objectContaining({ properties: expect.objectContaining({ kind: { const: "create" } }) }),
-          ],
-        },
-      },
+    const tools = generateTurn.mock.calls[0]?.[0]?.tools ?? [];
+    expect(tools.every((tool) => (
+      tool.inputSchema["type"] === "object"
+      && tool.inputSchema["oneOf"] === undefined
+      && tool.inputSchema["additionalProperties"] === false
+    ))).toBe(true);
+    const contextProperties = tools
+      .find((tool) => tool.name === "decision_enter_context_retrieve")
+      ?.inputSchema["properties"] as Record<string, Record<string, unknown>>;
+    expect(contextProperties["capabilities"]?.["items"]).toMatchObject({
+      enum: ["context:load"],
+    });
+    const resolveCreateSchema = tools
+      .find((tool) => tool.name === "decision_resolve_create")
+      ?.inputSchema;
+    const resolveProperties = resolveCreateSchema?.["properties"] as Record<string, Record<string, unknown>>;
+    expect(resolveCreateSchema?.["required"]).toEqual([
+      "purpose",
+      "capabilities",
+      "mutationScopes",
+      "binding",
+    ]);
+    expect(resolveProperties["mutationScopes"]).toMatchObject({
+      type: "array",
+      minItems: 1,
+      maxItems: 8,
+    });
+    expect(resolveProperties["binding"]).toMatchObject({
+      type: "object",
+      properties: expect.objectContaining({ kind: { const: "create" } }),
     });
     expect(generateTurn.mock.calls[0]?.[0]?.toolChoice).toBe("auto");
     expect(generateTurn.mock.calls[0]?.[0]?.parallelToolCalls).toBe(false);
@@ -1170,12 +1379,11 @@ describe("callAgentDecision", () => {
       type: "tool_calls",
       calls: [{
         id: "transition-1",
-        name: "decision_transition_mode",
+        name: "decision_resolve_create",
         input: {
-          to: "resolve",
           purpose: "Bind notes.md before creating it.",
           capabilities: ["file:write"],
-          targets: ["notes.md"],
+          mutationScopes: [{ kind: "filesystem", value: "/tmp/notes.md" }],
           binding,
         },
       }],
@@ -1188,6 +1396,51 @@ describe("callAgentDecision", () => {
     })).resolves.toMatchObject({
       kind: "transition_mode",
       request: { to: "resolve", binding },
+    });
+  });
+
+  it("repairs an empty destination-specific mode call before it reaches the graph", async () => {
+    const { provider, generateTurn } = createNativeToolProvider([
+      {
+        type: "tool_calls",
+        calls: [{
+          id: "transition-empty",
+          name: "decision_enter_observe_investigate",
+          input: {},
+        }],
+      },
+      {
+        type: "tool_calls",
+        calls: [{
+          id: "transition-repaired",
+          name: "decision_enter_observe_investigate",
+          input: {
+            purpose: "Read the exact requested file.",
+            capabilities: ["file:read"],
+            references: [{ kind: "filesystem", value: "/tmp/notes.md" }],
+          },
+        }],
+      },
+    ]);
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+    });
+
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+    expect(generateTurn.mock.calls[1]?.[0]?.messages.at(-1)?.content).toContain(
+      "missing required field",
+    );
+    expect(decision).toMatchObject({
+      kind: "transition_mode",
+      request: {
+        to: "observe.investigate",
+        purpose: "Read the exact requested file.",
+        capabilities: ["file:read"],
+        references: [{ kind: "filesystem", path: "/tmp/notes.md" }],
+      },
     });
   });
 
@@ -1211,7 +1464,6 @@ describe("callAgentDecision", () => {
         },
       },
       annotations: { domain: "database" },
-      selectionHints: { tags: ["UNIQUE_SELECTION_HINT_MARKER"] },
       async execute() {
         return { ok: true, output: "" };
       },
@@ -1229,11 +1481,9 @@ describe("callAgentDecision", () => {
     expect(userPrompt).toContain("Selected tools:\n- read: read_files");
     expect(userPrompt).not.toContain("UNIQUE_INPUT_SCHEMA_MARKER");
     expect(userPrompt).not.toContain("UNIQUE_OUTPUT_SCHEMA_MARKER");
-    expect(userPrompt).not.toContain("UNIQUE_SELECTION_HINT_MARKER");
     expect(userPrompt).not.toContain("annotations=");
     expect(userPrompt).not.toContain("inputSchema=");
     expect(userPrompt).not.toContain("outputSchema=");
-    expect(userPrompt).not.toContain("hints=");
 
     const nativeTool = turnInput?.tools?.find((tool) => tool.name === "read_files");
     expect(nativeTool?.description).toBe(selectedTool.description);
@@ -1287,7 +1537,7 @@ describe("callAgentDecision", () => {
       choiceCount: 0,
       responseKeys: ["id", "choices"],
       toolChoice: "auto",
-      nativeToolCount: 1,
+      nativeToolCount: MODE_TRANSITION_CONTROL_TOOL_NAMES.length,
       requestMode: "tools",
       willRetry: true,
       retryDelayMs: 400,
@@ -1346,7 +1596,7 @@ describe("callAgentDecision", () => {
       errorName: "SyntaxError",
       errorMessage: "Unexpected end of JSON input",
       toolChoice: "auto",
-      nativeToolCount: 1,
+      nativeToolCount: MODE_TRANSITION_CONTROL_TOOL_NAMES.length,
       requestMode: "tools",
       willRetry: true,
       retryDelayMs: 400,
@@ -1408,13 +1658,12 @@ describe("callAgentDecision", () => {
     });
   });
 
-  it("exposes and parses validation only when the graph is active", async () => {
+  it("exposes and parses terminal stop only when the graph is active", async () => {
     const { provider, generateTurn } = createProvider([
       JSON.stringify({
-        kind: "validate",
+        kind: "stop",
         request: {
           outcome: "needs_user_input",
-          summary: "An exact path is required.",
           response: "Which path should I inspect?",
         },
       }),
@@ -1424,20 +1673,59 @@ describe("callAgentDecision", () => {
       provider,
       stateView: createStateView(),
       toolDefinitions: [],
-      validationAvailable: true,
+      terminalStopAvailable: true,
     });
 
     expect(generateTurn.mock.calls[0]?.[0]?.tools.map((tool: { name: string }) => tool.name)).toEqual([
-      "decision_transition_mode",
-      "decision_validate",
+      ...MODE_TRANSITION_CONTROL_TOOL_NAMES,
+      "decision_stop",
     ]);
     expect(decision).toMatchObject({
-      kind: "validate",
+      kind: "stop",
       request: {
         outcome: "needs_user_input",
-        summary: "An exact path is required.",
         response: "Which path should I inspect?",
       },
+    });
+  });
+
+  it("exposes and parses the WorkState checkpoint only when the graph is active", async () => {
+    const update = {
+      reason: "plan",
+      summary: "The contract is complete and runtime wiring remains.",
+      plan: [
+        { id: "contract", task: "Implement the contract.", status: "done" },
+        { id: "runtime", task: "Wire the runtime.", status: "active" },
+      ],
+      importantContext: [{
+        kind: "artifact",
+        value: "WorkState contract",
+        ref: "/workspace/src/work-state/contracts.ts",
+      }],
+      nextAction: "Wire the runtime.",
+    };
+    const { provider, generateTurn } = createNativeToolProvider([{
+      type: "tool_calls",
+      calls: [{
+        id: "checkpoint-1",
+        name: "decision_checkpoint_workstate",
+        input: update,
+      }],
+    }]);
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+      workStateCheckpointAvailable: true,
+    });
+
+    expect(generateTurn.mock.calls[0]?.[0]?.tools.map((tool: { name: string }) => tool.name))
+      .toContain("decision_checkpoint_workstate");
+    expect(decision).toEqual({
+      kind: "checkpoint_work_state",
+      update,
+      workingNotes: undefined,
     });
   });
 
@@ -1461,7 +1749,7 @@ describe("callAgentDecision", () => {
 
     const tools = generateTurn.mock.calls[0]?.[0]?.tools ?? [];
     expect(tools.map((tool: { name: string }) => tool.name)).toEqual([
-      "decision_transition_mode",
+      ...MODE_TRANSITION_CONTROL_TOOL_NAMES,
       "write_files",
     ]);
     expect(tools.find((tool: { name: string }) => tool.name === "write_files")?.inputSchema).toMatchObject({
@@ -1523,22 +1811,19 @@ describe("callAgentDecision", () => {
     });
   });
 
-  it("exposes the exact validation schema and parses completion resources", async () => {
+  it("exposes the exact validation-mode schema and parses typed task outcomes", async () => {
     const { provider, generateTurn } = createNativeToolProvider([{
       type: "tool_calls",
       calls: [{
-        id: "complete_1",
-        name: "decision_validate",
+        id: "validate_1",
+        name: "decision_enter_validation",
         input: {
-          outcome: "completed",
-          summary: "Created the requested website files.",
-          response: "Created the requested website files.",
-          resources: [{
-            resourceId: `RES-${"A".repeat(24)}`,
-            path: "index.html",
-            kind: "file",
-            description: "Main website page",
-            aliases: ["homepage"],
+          purpose: "Freshly verify the important website file.",
+          capabilities: ["task:validation"],
+          validationChecks: [{
+            kind: "path.exists",
+            subject: "/tmp/site/index.html",
+            expectedKind: "file",
           }],
         },
       }],
@@ -1548,36 +1833,31 @@ describe("callAgentDecision", () => {
       provider,
       stateView: createStateView(),
       toolDefinitions: [],
-      validationAvailable: true,
     });
 
-    const validationTool = generateTurn.mock.calls[0]?.[0]?.tools
-      ?.find((tool) => tool.name === "decision_validate");
-    expect(validationTool).toBeDefined();
-    expect(validationTool?.inputSchema).toMatchObject({
-      required: ["outcome", "summary", "response"],
-      properties: {
-        outcome: { enum: ["completed", "needs_user_input", "blocked", "failed"] },
-      },
+    const transitionTool = generateTurn.mock.calls[0]?.[0]?.tools
+      ?.find((tool) => tool.name === "decision_enter_validation");
+    expect(transitionTool?.inputSchema).toMatchObject({
+      type: "object",
+      required: ["purpose", "capabilities", "validationChecks"],
+      additionalProperties: false,
     });
-    expect(JSON.stringify(validationTool?.inputSchema)).toContain(
-      "Portable path relative to that resource's filesystem root.",
-    );
-    expect(JSON.stringify(validationTool?.inputSchema)).not.toContain(
-      "Canonical absolute path of the completed file or directory.",
-    );
+    expect(JSON.stringify(transitionTool?.inputSchema)).toContain("Typed deterministic outcome");
+    expect(JSON.stringify(transitionTool?.inputSchema)).toContain("process.exit_success");
+    expect(JSON.stringify(transitionTool?.inputSchema)).toContain("file.search_no_match");
+    expect(JSON.stringify(transitionTool?.inputSchema)).toContain("searchScope");
+    expect(JSON.stringify(transitionTool?.inputSchema)).toContain("file.read_scope_satisfied");
+    expect(JSON.stringify(transitionTool?.inputSchema)).toContain("readScope");
     expect(decision).toEqual({
-      kind: "validate",
+      kind: "transition_mode",
       request: {
-        outcome: "completed",
-        summary: "Created the requested website files.",
-        response: "Created the requested website files.",
-        resources: [{
-          resourceId: `RES-${"A".repeat(24)}`,
-          path: "index.html",
-          kind: "file",
-          description: "Main website page",
-          aliases: ["homepage"],
+        to: "validation",
+        purpose: "Freshly verify the important website file.",
+        capabilities: ["task:validation"],
+        validationChecks: [{
+          kind: "path.exists",
+          subject: "/tmp/site/index.html",
+          expectedKind: "file",
         }],
       },
       workingNotes: undefined,
@@ -1887,31 +2167,6 @@ function checkpointRecommendedState(timeline: ReturnType<typeof pressureTimeline
   });
 }
 
-
-function protectedWorkstreamContext() {
-  return {
-    ref: "refs/heads/main",
-    workstreamId: "W-1",
-    title: "Protected workstream",
-    objective: "Preserve workstream context during tool projection.",
-    summary: "The context candidate was measured.",
-    workstreamStatus: "in_progress" as const,
-    lifecycleStatus: "active" as const,
-    repositoryHealth: "ready" as const,
-    blockers: [],
-    next: "Measure the final request.",
-    currentRequest: {
-      id: "R-0001",
-      title: "Enforce tool projection",
-      status: "active" as const,
-      request: "Enforce the tool projection.",
-      acceptance: ["The final request fits."],
-      constraints: [],
-    },
-    resources: [],
-  };
-}
-
 function createStateView(overrides: Partial<AgentStateView> = {}): AgentStateView {
   const currentEvent = {
     kind: "user" as const,
@@ -1922,10 +2177,22 @@ function createStateView(overrides: Partial<AgentStateView> = {}): AgentStateVie
   };
   const legacyContext = overrides.context as unknown as Record<string, unknown> | undefined;
   const legacyTimeline = Array.isArray(legacyContext?.["timeline"])
-    ? legacyContext["timeline"] as AgentStateView["context"]["temporal"]["recent"]
+    ? legacyContext["timeline"] as AgentTemporalEvent[]
     : undefined;
+  const legacyTemporal = legacyContext?.["temporal"] as { recent?: AgentTemporalEvent[] } | undefined;
+  const timeline = legacyTimeline ?? legacyTemporal?.recent ?? [currentEvent];
+  const legacyCurrent = legacyContext?.["current"] as {
+    runId?: string;
+    routing?: AgentStateView["context"]["core"]["current"]["routing"];
+  } | undefined;
   const {
     timeline: _timeline,
+    temporal: _temporal,
+    current: _current,
+    stream: _stream,
+    work: _work,
+    resources: _resources,
+    observations: _observations,
     git: _git,
     gitContext: _gitContext,
     ...contextOverrides
@@ -1933,18 +2200,22 @@ function createStateView(overrides: Partial<AgentStateView> = {}): AgentStateVie
   return {
     ...overrides,
     context: {
-      temporal: legacyContext?.["temporal"] as AgentStateView["context"]["temporal"]
-        ?? { recent: legacyTimeline ?? [currentEvent] },
-      current: legacyContext?.["current"] as AgentStateView["context"]["current"]
-        ?? { input: (legacyTimeline ?? [currentEvent]).find((event) => event.current) },
-      stream: legacyContext?.["stream"] as AgentStateView["context"]["stream"]
-        ?? { agentId: "local", scopeKey: "default", recentWork: [] },
-      work: legacyContext?.["work"] as AgentStateView["context"]["work"]
-        ?? { candidates: [] },
-      resources: legacyContext?.["resources"] as AgentStateView["context"]["resources"]
-        ?? { stream: [], ingress: [], activeWorkstream: [] },
-      observations: legacyContext?.["observations"] as AgentStateView["context"]["observations"]
-        ?? { revision: "observations:empty", inventory: [], discovery: [], evidence: [] },
+      core: legacyContext?.["core"] as AgentStateView["context"]["core"]
+        ?? buildCoreCapsule({
+          revision: "context:test",
+          runId: legacyCurrent?.runId ?? "RUN-1",
+          timeline,
+          ...(legacyCurrent?.routing ? { routing: legacyCurrent.routing } : {}),
+        }),
+      hot: legacyContext?.["hot"] as AgentStateView["context"]["hot"]
+        ?? {
+          available: [],
+          loaded: [],
+          budget: {
+            maxMountedTokens: 8_000,
+            mountedTokens: 0,
+          },
+        },
       ...contextOverrides,
     },
   };

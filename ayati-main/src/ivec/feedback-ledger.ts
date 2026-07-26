@@ -17,6 +17,7 @@ import {
 import {
   buildExecutionOutcomeFindings,
   isHealthyConversationOutcome,
+  isHealthyVerifiedObservationOutcome,
   type FeedbackExecutionTriageInput,
 } from "./execution-outcome-triage.js";
 import {
@@ -99,13 +100,6 @@ export interface AgentFeedbackContextEngineSummary {
   headAfter?: string;
   workStateRevision?: number;
   lastPersistedStep?: number;
-  observationRevision?: string;
-  observationCounts?: {
-    inventory: number;
-    discovery: number;
-    evidence: number;
-    total: number;
-  };
   workstreamLifecycle?: FeedbackWorkstreamLifecycle;
   warningCodes?: string[];
 }
@@ -546,6 +540,8 @@ function executionTriageInput(
   return {
     execution: summary.execution,
     actionSteps: summary.actionSteps,
+    toolCalls: summary.toolCalls,
+    modeTransitions: summary.modeTransitions,
     workstreamBound: context?.workstreamBound === true
       || lifecycle?.run?.workstreamBound === true
       || Boolean(context?.workstreamId && context.runId),
@@ -608,15 +604,6 @@ export function buildContextEngineFeedbackSummary(input: {
     } : undefined,
   }) : undefined;
   const workstreamLifecycle = mergeFeedbackWorkstreamLifecycle(contextWorkstreamLifecycle, input.workstreamLifecycle);
-  const observations = context?.observations;
-  const observationCounts = observations ? {
-    inventory: observations.inventory.length,
-    discovery: observations.discovery.length,
-    evidence: observations.evidence.length,
-    total: observations.inventory.length
-      + observations.discovery.length
-      + observations.evidence.length,
-  } : undefined;
 
   return compactContextEngineFeedbackSummary({
     ...(input.pendingTurnStatus ?? pendingTurn?.status ? { pendingTurnStatus: input.pendingTurnStatus ?? pendingTurn?.status } : {}),
@@ -646,8 +633,6 @@ export function buildContextEngineFeedbackSummary(input: {
     ...(workstream ? {
       resourceCount: workstream.resources.length,
     } : {}),
-    ...(observations ? { observationRevision: observations.revision } : {}),
-    ...(observationCounts ? { observationCounts } : {}),
     ...(input.warningCodes && input.warningCodes.length > 0 ? { warningCodes: uniqueStrings(input.warningCodes) } : {}),
     ...(workstreamLifecycle ? { workstreamLifecycle } : {}),
   });
@@ -743,8 +728,8 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
       code: "tool_protocol_violation",
       severity: "warning",
       title: "Decision violated the native tool protocol",
-      details: "The model selected an unavailable tool, used tool loading as executable work, or produced an invalid action shape.",
-      recommendation: "Tighten the decision prompt or add a benchmark case for the failed tool-loading pattern.",
+      details: "The model selected an unavailable tool, used a harness control as executable work, or produced an invalid action shape.",
+      recommendation: "Tighten the decision prompt or add a benchmark case for the failed capability-surface pattern.",
     });
   }
 
@@ -797,7 +782,7 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
       severity: "warning",
       title: "Excessive mode transitions",
       details: `The run made ${summary.modeTransitions ?? 0} mode transitions.`,
-      recommendation: "Inspect whether the capability groups were too broad or the mode purpose changed without useful evidence.",
+      recommendation: "Inspect whether the capability ids were too broad or the mode purpose changed without useful evidence.",
     });
   }
 
@@ -857,7 +842,7 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
       severity: "error",
       title: "Workstream tools were selected without a binding",
       details: "The model saw workstream-scoped executable tools even though the current run was unbound.",
-      recommendation: "Inspect tools.working_set_prepared and decision.selected. Ensure binding state is represented before workstream-scoped tools are exposed.",
+      recommendation: "Inspect tools.capability_surface_prepared and decision.selected. Ensure binding state is represented before workstream-scoped tools are exposed.",
     });
   }
 
@@ -887,7 +872,7 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
       severity: "error",
       title: "Routing state and tool surface disagreed",
       details: "Feedback saw pending routing while the selected executable tool surface included normal workstream tools.",
-      recommendation: "Inspect context.current.routing and tool selector filtering for the same decision iteration.",
+      recommendation: "Inspect context.core.current.routing and capability-surface filtering for the same decision iteration.",
     });
   }
 
@@ -938,21 +923,31 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
   }
 
   if (findings.length === 0) {
-    findings.push(isHealthyConversationOutcome(executionTriage)
-      ? {
-          code: "healthy_conversation",
-          severity: "info",
-          title: "Healthy direct conversation",
-          details: "Messages were saved and no executable verification, workstream finalization, or workstream commit was required.",
-          recommendation: "No action is required for this turn.",
-        }
-      : {
-          code: "healthy_run",
-          severity: "info",
-          title: "No triage findings",
-          details: "The latest run completed without recorded warning signals.",
-          recommendation: "Use benchmark and live feedback aggregates to find broader recurring issues.",
-        });
+    if (isHealthyConversationOutcome(executionTriage)) {
+      findings.push({
+        code: "healthy_conversation",
+        severity: "info",
+        title: "Healthy direct conversation",
+        details: "Messages were saved and no executable verification, workstream finalization, or workstream commit was required.",
+        recommendation: "No action is required for this turn.",
+      });
+    } else if (isHealthyVerifiedObservationOutcome(executionTriage)) {
+      findings.push({
+        code: "healthy_verified_observation",
+        severity: "info",
+        title: "Healthy verified observation",
+        details: `${summary.actionSteps ?? 0} durable action step${summary.actionSteps === 1 ? "" : "s"} completed with passed deterministic verification; no workstream commit was required.`,
+        recommendation: "No action is required for this observational run.",
+      });
+    } else {
+      findings.push({
+        code: "healthy_run",
+        severity: "info",
+        title: "No triage findings",
+        details: "The latest run completed without recorded warning signals.",
+        recommendation: "Use benchmark and live feedback aggregates to find broader recurring issues.",
+      });
+    }
   }
 
   const outcome = findings.some((finding) => finding.severity === "error")
@@ -998,21 +993,14 @@ const REPAIR_TRIAGE_FINDINGS: ReadonlyArray<[string, AgentFeedbackTriageFinding]
     severity: "warning",
     title: "Decision used an unselected tool",
     details: "The model tried to call a tool that was not in the selected native tool surface.",
-    recommendation: "Use decision_transition_mode to replace the capability surface, or call only selected tools.",
+    recommendation: "Use the matching available destination-specific mode control to replace the capability surface, or call only selected tools.",
   }],
-  ["R_LOAD_TOOLS_USED_AS_ACTION", {
-    code: "R_LOAD_TOOLS_USED_AS_ACTION",
+  ["R_CONTROL_TOOL_USED_AS_ACTION", {
+    code: "R_CONTROL_TOOL_USED_AS_ACTION",
     severity: "warning",
-    title: "Tool loading was used as executable work",
-    details: "The model attempted to use tool loading inside an executable action.",
-    recommendation: "Use decision_transition_mode with exact capability groups instead of wrapping navigation as action work.",
-  }],
-  ["R_EMPTY_TOOL_LOAD_SELECTOR", {
-    code: "R_EMPTY_TOOL_LOAD_SELECTOR",
-    severity: "warning",
-    title: "Tool-load request had no selector",
-    details: "The model requested tool loading without an exact tool name, group, or query.",
-    recommendation: "Retry decision_transition_mode with at least one exact capability group.",
+    title: "Harness control was used as executable work",
+    details: "The model attempted to use a navigation control inside an executable action.",
+    recommendation: "Call the matching mode control directly with exact capability ids instead of wrapping navigation as action work.",
   }],
   ["R_TOOL_INPUT_INVALID", {
     code: "R_TOOL_INPUT_INVALID",
@@ -1033,7 +1021,7 @@ const REPAIR_TRIAGE_FINDINGS: ReadonlyArray<[string, AgentFeedbackTriageFinding]
     severity: "warning",
     title: "Workstream feedback tool was unavailable",
     details: "The model attempted to ask workstream-bound feedback when the feedback tool was not exposed.",
-    recommendation: "Use direct assistant text only for a tool-free ENTRY reply; after activation, validate needs_user_input.",
+    recommendation: "At ENTRY, use direct assistant text for conversation or a focused clarification; after activation, use a supported needs_user_input stop.",
   }],
   ["R_MULTIPLE_NATIVE_TOOL_CALLS", {
     code: "R_MULTIPLE_NATIVE_TOOL_CALLS",
@@ -1262,12 +1250,6 @@ function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFe
       ...(readStringValue(data["contextRevision"])
         ? { contextRevision: readStringValue(data["contextRevision"]) }
         : {}),
-      ...(readStringValue(data["observationRevision"])
-        ? { observationRevision: readStringValue(data["observationRevision"]) }
-        : {}),
-      ...(readObservationCounts(data["observationCounts"])
-        ? { observationCounts: readObservationCounts(data["observationCounts"]) }
-        : {}),
       ...(event.runId ? { runId: event.runId } : {}),
     });
   }
@@ -1356,8 +1338,6 @@ function readContextEngineFeedbackSummary(value: unknown): AgentFeedbackContextE
     ...(readStringValue(record["headAfter"]) ? { headAfter: readStringValue(record["headAfter"]) } : {}),
     ...(readNumberValue(record["workStateRevision"]) !== undefined ? { workStateRevision: readNumberValue(record["workStateRevision"]) } : {}),
     ...(readNumberValue(record["lastPersistedStep"]) !== undefined ? { lastPersistedStep: readNumberValue(record["lastPersistedStep"]) } : {}),
-    ...(readStringValue(record["observationRevision"]) ? { observationRevision: readStringValue(record["observationRevision"]) } : {}),
-    ...(readObservationCounts(record["observationCounts"]) ? { observationCounts: readObservationCounts(record["observationCounts"]) } : {}),
     ...(readFeedbackWorkstreamLifecycle(record["workstreamLifecycle"])
       ? { workstreamLifecycle: readFeedbackWorkstreamLifecycle(record["workstreamLifecycle"]) }
       : {}),
@@ -1417,8 +1397,6 @@ function compactContextEngineFeedbackSummary(
   if (value.headAfter) output.headAfter = value.headAfter;
   if (value.workStateRevision !== undefined) output.workStateRevision = value.workStateRevision;
   if (value.lastPersistedStep !== undefined) output.lastPersistedStep = value.lastPersistedStep;
-  if (value.observationRevision) output.observationRevision = value.observationRevision;
-  if (value.observationCounts) output.observationCounts = value.observationCounts;
   const workstreamLifecycle = compactFeedbackWorkstreamLifecycle(value.workstreamLifecycle);
   if (workstreamLifecycle) output.workstreamLifecycle = workstreamLifecycle;
   if (value.warningCodes && value.warningCodes.length > 0) output.warningCodes = uniqueStrings(value.warningCodes);
@@ -1498,26 +1476,6 @@ function readWorkstreamRequestStatus(
 
 function readNumberValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function readObservationCounts(
-  value: unknown,
-): AgentFeedbackContextEngineSummary["observationCounts"] {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const record = value as Record<string, unknown>;
-  const inventory = readNumberValue(record["inventory"]);
-  const discovery = readNumberValue(record["discovery"]);
-  const evidence = readNumberValue(record["evidence"]);
-  const total = readNumberValue(record["total"]);
-  if (
-    inventory === undefined
-    || discovery === undefined
-    || evidence === undefined
-    || total === undefined
-  ) {
-    return undefined;
-  }
-  return { inventory, discovery, evidence, total };
 }
 
 function readStringArray(value: unknown): string[] {

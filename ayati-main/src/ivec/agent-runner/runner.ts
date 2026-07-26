@@ -34,24 +34,21 @@ import {
   measureJson,
 } from "../state-compaction.js";
 import { buildAgentStateView } from "./state-view.js";
-import {
-  isContextPressureActive,
-  resolveSelectedToolLimit,
-  selectToolsForDecision,
-} from "./tool-selector.js";
 import { callAgentDecision } from "./decision.js";
 import type { AgentDecision } from "./decision.js";
+import { modeTransitionControlNames } from "./mode-transition-controls.js";
+import type { VirtualModeTransitionTarget } from "./virtual-mode.js";
 import {
   evaluateReadProgressGuard,
   updateReadProgressAfterActOutput,
 } from "./read-progress-policy.js";
-import type { ToolLoadResult } from "./tool-working-set.js";
+import type { CapabilitySurfaceResult } from "./capabilities/contracts.js";
 import type { RepairCode } from "./repair-policy.js";
 import {
-  createToolLoadNoProgressFailure,
-  createToolLoadProgressState,
-  evaluateToolLoadProgress,
-} from "./tool-load-progress-policy.js";
+  createCapabilitySurfaceNoProgressFailure,
+  createCapabilitySurfaceProgressState,
+  evaluateCapabilitySurfaceProgress,
+} from "./capability-surface-progress-policy.js";
 import { recordRunStep } from "./step-lifecycle.js";
 import { buildContextEngineFeedbackSummary } from "../feedback-ledger.js";
 import {
@@ -65,21 +62,28 @@ import {
 import {
   buildFailureReply,
   canMarkTerminalReplyDone,
-  deriveUserInputNeededFromTerminalReply,
 } from "./final-response-policy.js";
+import {
+  appendActiveFailure,
+  latestActiveFailure,
+  resolveActiveFailures,
+} from "./failure-lifecycle.js";
 import {
   buildRunResources,
   buildVerifiedCompletionResources,
   buildWorkstreamSummaryRecord,
 } from "./run-result.js";
+import { mergeValidationCompletionReceipts } from "./work-state/completion-receipts.js";
+import { workStateFindings } from "./work-state/selectors.js";
 import {
   buildFinalFeedbackWarnings,
   buildToolExposureWarningCodes,
   recordActionFeedback,
   recordFeedback,
+  recordFailureResolutionFeedback,
   recordReducerFeedback,
   recordStepFeedback,
-  recordToolWorkingSetFeedback,
+  recordCapabilitySurfaceFeedback,
   summarizeDecisionInputState,
   summarizeWorkstreamSummary,
 } from "./runner-feedback.js";
@@ -110,11 +114,19 @@ import {
   buildVirtualCapabilitySummary,
   directResponseRepair,
   dispatchVirtualModeTransition,
-  dispatchVirtualValidation,
   filterToolDefinitionsForVirtualMode,
   type VirtualModeRepair,
 } from "./virtual-mode-runtime.js";
-import { isVirtualGraphActive } from "./virtual-mode.js";
+import {
+  isVirtualGraphActive,
+  modeTransitionTargetValues,
+} from "./virtual-mode.js";
+import { validationModePassed } from "./validation-mode.js";
+import { dispatchTerminalStop } from "./terminal-stop.js";
+import {
+  completeContextRetrieval,
+  isContextRetrievalAction,
+} from "./context-retrieval.js";
 
 export async function runAgentLoop(
   deps: AgentLoopDeps,
@@ -132,12 +144,16 @@ export async function runAgentLoop(
   let validationAttemptCount = 0;
   let validationAcceptedCount = 0;
   let validationRejectedCount = 0;
+  let terminalStopAttemptCount = 0;
+  let terminalStopAcceptedCount = 0;
+  let terminalStopRejectedCount = 0;
   let bindingAttemptCount = 0;
   let bindingStatus: "not_started" | "started" | "resolved" | "needs_user_input" | "failed" = "not_started";
-  let actionStepCount = 0;
+  let durableStepCount = 0;
+  let transientContextActionCount = 0;
   let failedVerificationCount = 0;
   let lastVerificationPassed: boolean | undefined;
-  let toolLoadProgress = createToolLoadProgressState();
+  let capabilitySurfaceProgress = createCapabilitySurfaceProgressState();
   const state = buildInitialState(deps, config, inputHandle, runHandle);
   let bindingAttempted = false;
   recordFeedback(deps, inputHandle, runHandle.runId, "loop", "started", {
@@ -154,19 +170,29 @@ export async function runAgentLoop(
     completion?: CompletionDirective;
     responseKind?: AgentLoopResult["type"];
   }): Promise<AgentLoopResult> => {
+    if (
+      input.status === "failed"
+      && state.workState.status === "in_progress"
+    ) {
+      const failure = latestFailureReason(state);
+      state.workState = {
+        ...state.workState,
+        summary: state.workState.summary === "Run started."
+          ? input.content || failure || "The run failed before completion."
+          : state.workState.summary,
+        importantContext: failure
+          ? appendWorkStateConstraint(state.workState, failure)
+          : state.workState.importantContext,
+        nextAction: state.workState.nextAction
+          || "Retry from the latest verified state when a safe recovery is available.",
+      };
+    }
     state.workState = compactWorkState(state.workState);
     syncPreparedAttachmentsFromRegistry(state, deps);
     syncHarnessContext(state, deps, inputHandle);
     recordStateSnapshotMetric("final");
     const cleanupRunId = runHandle.runId;
-    deps.skillActivationManager?.deactivateRun({
-      clientId: deps.clientId,
-      runId: cleanupRunId,
-      sessionId: inputHandle.sessionId,
-      stepNumber: state.iteration,
-      ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
-    });
-    deps.toolWorkingSetManager?.resetRun({
+    deps.capabilitySurfaceManager?.resetRun({
       clientId: deps.clientId,
       runId: cleanupRunId,
       sessionId: inputHandle.sessionId,
@@ -197,6 +223,9 @@ export async function runAgentLoop(
       validationAttempts: validationAttemptCount,
       validationAccepted: validationAcceptedCount,
       validationRejected: validationRejectedCount,
+      terminalStopAttempts: terminalStopAttemptCount,
+      terminalStopAccepted: terminalStopAcceptedCount,
+      terminalStopRejected: terminalStopRejectedCount,
     };
     recordFeedback(deps, inputHandle, runHandle.runId, "harness", "result", {
       status: input.status,
@@ -206,7 +235,8 @@ export async function runAgentLoop(
       totalToolCalls,
       modeTransitions: modeTransitionCount,
       navigation,
-      actionStepCount,
+      actionStepCount: durableStepCount,
+      transientContextActionCount,
       failedVerificationCount,
       verificationPassed: lastVerificationPassed,
       finalContentPreview: finalContent,
@@ -222,10 +252,12 @@ export async function runAgentLoop(
       totalIterations: state.iteration,
       totalToolCalls,
       modeTransitions: modeTransitionCount,
-      actionStepCount,
+      actionStepCount: durableStepCount,
+      transientContextActionCount,
       failedVerificationCount,
       verificationPassed: lastVerificationPassed,
-      basedOnVerifiedFacts: state.workState.verifiedFacts.length > 0 || lastVerificationPassed === true,
+      basedOnVerifiedFacts: workStateFindings(state.workState).length > 0
+        || lastVerificationPassed === true,
       warnings: warningFlags,
       workstreamSummary: summarizeWorkstreamSummary(workstreamSummary),
       feedbackSummary: {
@@ -235,9 +267,11 @@ export async function runAgentLoop(
         toolCalls: totalToolCalls,
         modeTransitions: modeTransitionCount,
         navigation,
-        actionSteps: actionStepCount,
+        actionSteps: durableStepCount,
+        transientContextActions: transientContextActionCount,
         verificationPassed: lastVerificationPassed ?? false,
-        basedOnVerifiedFacts: state.workState.verifiedFacts.length > 0 || lastVerificationPassed === true,
+        basedOnVerifiedFacts: workStateFindings(state.workState).length > 0
+          || lastVerificationPassed === true,
         contextEngine: buildContextEngineFeedbackSummary({
           context: state.harnessContext.contextEngine,
           finalizationStatus: "not_started",
@@ -297,31 +331,27 @@ export async function runAgentLoop(
       stepNumber: state.iteration,
       ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
     };
-    let deterministicToolLoad: ToolLoadResult | undefined;
-    if (deps.toolWorkingSetManager) {
-      deterministicToolLoad = deps.toolWorkingSetManager.prepareForDecision(state, toolContext);
-    } else {
-      await deps.skillActivationManager?.prepareForDecision(state, toolContext);
-    }
-    const modeVisibleTools = deps.toolWorkingSetManager
-      ? deps.toolWorkingSetManager.visibleToolDefinitions(toolContext)
+    const deterministicCapabilitySurface: CapabilitySurfaceResult | undefined = deps.capabilitySurfaceManager
+      ?.prepareForDecision(state, toolContext);
+    const modeVisibleTools = deps.capabilitySurfaceManager
+      ? deps.capabilitySurfaceManager.visibleToolDefinitions(toolContext)
       : deps.toolExecutor?.definitions({
         ...toolContext,
       }) ?? deps.toolDefinitions;
     const visibleTools = filterToolDefinitionsForVirtualMode(state, modeVisibleTools);
-    const pressureToolSurface = isContextPressureActive(state);
-    const selectedToolLimit = resolveSelectedToolLimit(state, config.maxSelectedTools);
-    const toolRoutingSummary = deps.toolWorkingSetManager?.getCapabilitySummary()
+    const pressureToolSurface = Boolean(state.contextPressure && state.contextPressure.mode !== "full");
+    const selectedToolLimit = Math.min(config.maxCapabilitySurfaceTools, 8);
+    const toolRoutingSummary = deps.capabilitySurfaceManager?.getCapabilitySummary(state, toolContext)
       ?? buildVirtualCapabilitySummary(deps.toolDefinitions);
-    const selectedTools = selectToolsForDecision(state, visibleTools, config.maxSelectedTools);
-    recordToolWorkingSetFeedback({
+    const selectedTools = visibleTools;
+    recordCapabilitySurfaceFeedback({
       deps,
       inputHandle,
       runId: runHandle.runId,
       state,
       iteration: state.iteration,
       toolContextRunId: toolContext.runId,
-      deterministicToolLoad,
+      deterministicCapabilitySurface,
       visibleTools,
       selectedTools,
       runHandle,
@@ -330,9 +360,24 @@ export async function runAgentLoop(
       activeTools: selectedTools.map((tool) => tool.name),
     });
     const capabilityPolicy = deriveWorkstreamBindingCapabilityPolicy(state);
+    const graphActive = isVirtualGraphActive(state.virtualMode);
+    const workStateCheckpointAvailable = graphActive
+      && deps.checkpointWorkState !== undefined;
+    const allowedModeDestinations = stateView.context.run?.mode?.allowedNext
+      .filter((value): value is VirtualModeTransitionTarget => (
+        value === "context.retrieve"
+        || value === "observe.locate"
+        || value === "observe.investigate"
+        || value === "resolve"
+        || value === "execute"
+        || value === "validation"
+      )) ?? [];
     const nativeControlTools = [
-      "decision_transition_mode",
-      ...(isVirtualGraphActive(state.virtualMode) ? ["decision_validate"] : []),
+      ...modeTransitionControlNames(allowedModeDestinations),
+      ...(workStateCheckpointAvailable
+        ? ["decision_checkpoint_workstate"]
+        : []),
+      ...(graphActive ? ["decision_stop"] : []),
     ];
     const decisionToolPolicyAudit = auditToolPolicy({
       policy: capabilityPolicy,
@@ -360,7 +405,7 @@ export async function runAgentLoop(
       }),
       warningCodes: buildToolExposureWarningCodes(state, selectedTools),
       toolPolicyAudit: decisionToolPolicyAudit,
-      inputState: summarizeDecisionInputState(stateView),
+      inputState: summarizeDecisionInputState(stateView, state),
     });
     let decision: AgentDecision;
     try {
@@ -369,8 +414,10 @@ export async function runAgentLoop(
         stateView,
         toolDefinitions: selectedTools,
         toolRoutingSummary,
+        modeCapabilityOptions: deps.capabilitySurfaceManager?.getModeCapabilityOptions(state),
         modeTransitionAvailable: true,
-        validationAvailable: isVirtualGraphActive(state.virtualMode),
+        terminalStopAvailable: graphActive,
+        workStateCheckpointAvailable,
         toolContextProjectionPolicy: config.toolContextProjectionPolicy,
         contextCheckpoint: deps.contextCheckpoint,
         contextPreparation: deps.contextPreparation,
@@ -426,6 +473,91 @@ export async function runAgentLoop(
       }),
     });
 
+    if (
+      requiresContextPressureCheckpoint(state)
+      && decision.kind !== "checkpoint_work_state"
+      && decision.kind !== "reply"
+      && decision.kind !== "stop"
+    ) {
+      const repair: VirtualModeRepair = {
+        code: "MODE_NO_PROGRESS",
+        message: "Context pressure is active. Checkpoint the small durable WorkState before continuing graph work.",
+        blockedTargets: [],
+        allowedNextActions: [
+          "Call decision_checkpoint_workstate with reason context_pressure, a concise summary, the current plan if one exists, only important continuation context, and one next action.",
+        ],
+      };
+      recordVirtualModeRepair(state, repair, "validation_error");
+      recordFeedback(deps, inputHandle, runHandle.runId, "work_state", "checkpoint_required", {
+        pressureMode: state.contextPressure?.mode,
+        workStateRevision: state.workStateRuntime.revision,
+        workStateReason: state.workStateRuntime.updateReason,
+      });
+      continue;
+    }
+
+    if (decision.kind === "checkpoint_work_state") {
+      const nextWorkState = compactWorkState({
+        status: "in_progress",
+        summary: decision.update.summary,
+        plan: decision.update.plan,
+        importantContext: decision.update.importantContext,
+        ...(decision.update.nextAction
+          ? { nextAction: decision.update.nextAction }
+          : {}),
+      });
+      if (
+        decision.update.reason === "context_pressure"
+        && state.contextPressure?.mode === "full"
+      ) {
+        recordVirtualModeRepair(state, {
+          code: "MODE_NO_PROGRESS",
+          message: "A context-pressure WorkState checkpoint is valid only while context pressure is active.",
+          blockedTargets: [],
+          allowedNextActions: [
+            "Continue the current graph work, or use a plan checkpoint only if a material implementation plan is needed.",
+          ],
+        }, "validation_error");
+        continue;
+      }
+      if (
+        decision.update.reason === "plan"
+        && JSON.stringify(nextWorkState) === JSON.stringify(state.workState)
+      ) {
+        recordVirtualModeRepair(state, {
+          code: "MODE_NO_PROGRESS",
+          message: "The proposed WorkState plan checkpoint does not change the current handoff.",
+          blockedTargets: [],
+          allowedNextActions: ["Continue the current graph work without another checkpoint."],
+        }, "validation_error");
+        continue;
+      }
+      if (!deps.checkpointWorkState) {
+        throw new Error("WorkState checkpoint persistence is unavailable for this run.");
+      }
+      const checkpoint = await deps.checkpointWorkState({
+        reason: decision.update.reason,
+        workState: nextWorkState,
+        runtime: state.workStateRuntime,
+        afterStep: durableStepCount,
+        at: new Date().toISOString(),
+      });
+      state.workState = nextWorkState;
+      state.workStateRuntime = checkpoint.runtime;
+      if (checkpoint.context) {
+        applyPersistedStepContext(deps, state, inputHandle, checkpoint.context);
+      }
+      recordFeedback(deps, inputHandle, runHandle.runId, "work_state", "checkpointed", {
+        reason: decision.update.reason,
+        revision: state.workStateRuntime.revision,
+        afterStep: state.workStateRuntime.afterStep,
+        planItemCount: state.workState.plan.length,
+        importantContextCount: state.workState.importantContext.length,
+      });
+      recordStateSnapshotMetric("after_work_state_checkpoint");
+      continue;
+    }
+
     if (decision.kind === "reply") {
       const rejection = directResponseRepair(state);
       if (rejection) {
@@ -444,22 +576,21 @@ export async function runAgentLoop(
       }
       state.status = decision.status === "failed" ? "failed" : "completed";
       state.finalOutput = decision.message;
-      const userInputNeeded = state.status === "completed" && decision.status === "completed"
-        ? deriveUserInputNeededFromTerminalReply(decision.message)
-        : undefined;
-      if (userInputNeeded) {
-        state.workState = {
-          ...state.workState,
-          status: "needs_user_input",
-          userInputNeeded,
-          nextStep: userInputNeeded,
-          summary: state.workState.summary || decision.message,
-        };
-      } else if (decision.status === "completed" && canMarkTerminalReplyDone(state)) {
+      if (decision.status === "completed" && canMarkTerminalReplyDone(state)) {
         state.workState = {
           ...state.workState,
           status: "done",
-          summary: state.workState.summary || decision.message,
+          summary: decision.message,
+          plan: state.workState.plan.map((item) => ({
+            ...item,
+            status: "done",
+          })),
+          importantContext: mergeValidationCompletionReceipts({
+            runId: state.runId,
+            importantContext: state.workState.importantContext,
+            checks: state.virtualMode.validation?.checks ?? [],
+          }),
+          nextAction: undefined,
         };
       }
       const responseKind = state.preferredResponseKind ?? "reply";
@@ -476,29 +607,29 @@ export async function runAgentLoop(
       });
     }
 
-    if (decision.kind === "validate") {
-      validationAttemptCount++;
-      const validation = await dispatchVirtualValidation(state, decision.request);
-      if (validation.accepted) validationAcceptedCount++;
-      else validationRejectedCount++;
+    if (decision.kind === "stop") {
+      terminalStopAttemptCount++;
+      const stop = dispatchTerminalStop(state, decision.request);
+      if (stop.accepted) terminalStopAcceptedCount++;
+      else terminalStopRejectedCount++;
       recordFeedback(
         deps,
         inputHandle,
         runHandle.runId,
         "virtual_mode",
-        validation.accepted ? "validation_accepted" : "validation_rejected",
+        stop.accepted ? "terminal_stop_accepted" : "terminal_stop_rejected",
         {
           iteration: state.iteration,
           request: decision.request,
           mode: state.virtualMode,
-          ...(validation.accepted
-            ? { outcome: validation.outcome, nextWorkState: validation.nextWorkState }
-            : { repair: validation.repair }),
+          ...(stop.accepted
+            ? { outcome: stop.outcome, nextWorkState: stop.nextWorkState }
+            : { repair: stop.repair }),
         },
       );
-      if (!validation.accepted) {
-        recordVirtualModeRepair(state, validation.repair, "verify_failed");
-        recordStateSnapshotMetric("after_validation_rejected");
+      if (!stop.accepted) {
+        recordVirtualModeRepair(state, stop.repair, "verify_failed");
+        recordStateSnapshotMetric("after_terminal_stop_rejected");
         if (hasRepeatedRepairFailure(state.failureHistory) || state.consecutiveFailures >= config.maxConsecutiveFailures) {
           state.status = "failed";
           state.finalOutput = buildFailureReply(state);
@@ -507,40 +638,41 @@ export async function runAgentLoop(
         continue;
       }
 
-      state.workState = compactWorkState(validation.nextWorkState);
-      state.finalOutput = validation.response;
+      recordFailureResolutionFeedback(
+        deps,
+        inputHandle,
+        runHandle.runId,
+        resolveActiveFailures(state, {
+          scopes: ["navigation", "binding", "action", "validation"],
+          iteration: state.iteration,
+          kind: "validation_accepted",
+        }),
+      );
+      state.workState = compactWorkState(stop.nextWorkState);
+      state.finalOutput = stop.response;
       state.consecutiveFailures = 0;
-      if (validation.completionSummary) {
-        state.verifiedCompletionSummary = validation.completionSummary;
-      }
-      if (validation.completionResources) {
-        state.completionResources = validation.completionResources;
-      }
-      recordRunMetric(metrics, "verified_completion", { kind: "local" });
-      recordStateSnapshotMetric("after_validation_accepted");
-      const responseKind = validation.outcome === "needs_user_input"
+      recordStateSnapshotMetric("after_terminal_stop_accepted");
+      const responseKind = stop.outcome === "needs_user_input"
         ? "feedback"
         : state.preferredResponseKind ?? "reply";
-      const loopStatus = validation.outcome === "failed"
+      const loopStatus = stop.outcome === "failed"
         ? "failed"
-        : validation.outcome === "blocked"
+        : stop.outcome === "blocked"
           ? "stuck"
           : "completed";
       state.status = loopStatus;
       return finalize({
         status: loopStatus,
-        content: validation.response,
+        content: stop.response,
         responseKind,
-        ...(validation.outcome === "completed" || validation.outcome === "needs_user_input"
+        ...(stop.outcome === "needs_user_input"
           ? {
               completion: {
                 done: true as const,
-                summary: validation.response,
+                summary: stop.response,
                 status: "completed" as const,
                 response_kind: responseKind,
-                ...(validation.outcome === "needs_user_input"
-                  ? { feedback_kind: "clarification" as const }
-                  : {}),
+                feedback_kind: "clarification" as const,
               },
             }
           : {}),
@@ -559,7 +691,7 @@ export async function runAgentLoop(
         request: decision.request,
         iteration: state.iteration,
         toolDefinitions: deps.toolDefinitions,
-        toolWorkingSetManager: deps.toolWorkingSetManager,
+        capabilitySurfaceManager: deps.capabilitySurfaceManager,
         toolContext,
         workstreamBinding: deps.workstreamBinding,
         bindingAlreadyAttempted: bindingAttempted,
@@ -591,6 +723,17 @@ export async function runAgentLoop(
 
       if (transition.kind === "applied" || transition.kind === "resolved") {
         acceptedModeTransitionCount++;
+        if (
+          transition.kind === "applied"
+          && state.virtualMode.active === "validation"
+        ) {
+          validationAttemptCount++;
+          if (validationModePassed(state.virtualMode)) {
+            validationAcceptedCount++;
+          } else {
+            validationRejectedCount++;
+          }
+        }
       } else {
         rejectedModeTransitionCount++;
       }
@@ -603,7 +746,29 @@ export async function runAgentLoop(
       });
 
       if (transition.kind === "applied" || transition.kind === "resolved") {
-        toolLoadProgress = createToolLoadProgressState();
+        const validationAccepted = transition.kind === "applied"
+          && validationModePassed(state.virtualMode);
+        const resolutionKind = transition.kind === "resolved"
+          ? "authoritative_binding"
+          : validationAccepted
+            ? "validation_accepted"
+            : "accepted_mode_transition";
+        recordFailureResolutionFeedback(
+          deps,
+          inputHandle,
+          runHandle.runId,
+          resolveActiveFailures(state, {
+            scopes: transition.kind === "resolved"
+              ? ["navigation", "binding"]
+              : validationAccepted
+                ? ["navigation", "validation"]
+                : ["navigation"],
+            iteration: state.iteration,
+            kind: resolutionKind,
+          }),
+        );
+        state.consecutiveFailures = 0;
+        capabilitySurfaceProgress = createCapabilitySurfaceProgressState();
         recordRunMetric(metrics, "mode_transition", {
           kind: "local",
           status: "success",
@@ -627,7 +792,7 @@ export async function runAgentLoop(
         recordVirtualModeRepair(state, {
           code: "MODE_RESOLUTION_UNAVAILABLE",
           message: transition.message,
-          blockedTargets: decision.request.targets ?? [],
+          blockedTargets: modeTransitionTargetValues(decision.request),
           allowedNextActions: ["Validate a truthful failed or needs-input outcome without replaying mutation."],
         }, "validation_error");
         continue;
@@ -635,11 +800,14 @@ export async function runAgentLoop(
 
       recordVirtualModeRepair(state, transition.repair, "validation_error");
       if (transition.noProgressResult) {
-        const progressEvaluation = evaluateToolLoadProgress(toolLoadProgress, transition.noProgressResult);
-        toolLoadProgress = progressEvaluation.state;
+        const progressEvaluation = evaluateCapabilitySurfaceProgress(
+          capabilitySurfaceProgress,
+          transition.noProgressResult,
+        );
+        capabilitySurfaceProgress = progressEvaluation.state;
         if (progressEvaluation.shouldStop) {
-          const failure = createToolLoadNoProgressFailure(progressEvaluation, state.iteration);
-          state.failureHistory.push(failure);
+          const failure = createCapabilitySurfaceNoProgressFailure(progressEvaluation, state.iteration);
+          appendActiveFailure(state, failure);
           recordFeedback(deps, inputHandle, runHandle.runId, "guard", "mode_transition_no_progress", {
             iteration: state.iteration,
             repeatedTargets: progressEvaluation.repeatedTargets,
@@ -687,7 +855,7 @@ export async function runAgentLoop(
       continue;
     }
 
-    const activeToolsForRun = deps.toolWorkingSetManager?.listActive(toolContext) ?? [];
+    const activeToolsForRun = deps.capabilitySurfaceManager?.listActive(toolContext) ?? [];
     recordFeedback(deps, inputHandle, runHandle.runId, "tools", "run_tools_enabled", {
       iteration: state.iteration,
       toolContextRunId: toolContext.runId,
@@ -696,7 +864,16 @@ export async function runAgentLoop(
       normalTools: activeToolsForRun,
       routingTools: [],
     });
-    const readProgressViolation = evaluateReadProgressGuard(state.readProgress, decision.action);
+    const isContextAction = isContextRetrievalAction(state, decision.action);
+    const stepNumber = isContextAction
+      ? transientContextActionCount + 1
+      : durableStepCount + 1;
+    const stepKind = isContextAction
+      ? "transient_context" as const
+      : "durable" as const;
+    const readProgressViolation = isContextAction
+      ? undefined
+      : evaluateReadProgressGuard(state.readProgress, decision.action);
     if (readProgressViolation) {
       recordReadProgressRepair({
         deps,
@@ -728,6 +905,8 @@ export async function runAgentLoop(
     }
     recordFeedback(deps, inputHandle, runHandle.runId, "action", "started", {
       iteration: state.iteration,
+      step: stepNumber,
+      stepKind,
       mode: decision.action.mode,
       action: summarizeAgentAction(decision.action),
       plannedCallCount: decision.action.calls.length,
@@ -743,7 +922,6 @@ export async function runAgentLoop(
       allowedTools: decision.action.allowedTools,
     });
     const stepStartedAt = new Date().toISOString();
-    const stepNumber = actionStepCount + 1;
     const stepResult = await executeActionStep({
       deps,
       state,
@@ -752,25 +930,46 @@ export async function runAgentLoop(
       selectedTools,
       decision,
       stepNumber,
+      preserveWorkState: isContextAction,
     });
     const stepCompletedAt = new Date().toISOString();
-    actionStepCount++;
-    lastVerificationPassed = stepResult.execution.verifyOutput.passed;
-    if (!stepResult.execution.verifyOutput.passed) {
-      failedVerificationCount++;
+    if (isContextAction) {
+      transientContextActionCount++;
+    } else {
+      lastVerificationPassed = stepResult.execution.verifyOutput.passed;
+      if (!stepResult.execution.verifyOutput.passed) {
+        failedVerificationCount++;
+      }
     }
     totalToolCalls += stepResult.stepSummary.toolSuccessCount + stepResult.stepSummary.toolFailureCount;
-    state.readProgress = updateReadProgressAfterActOutput(state.readProgress, stepResult.execution.actOutput);
+    if (!isContextAction) {
+      state.readProgress = updateReadProgressAfterActOutput(state.readProgress, stepResult.execution.actOutput);
+    }
     recordActionFeedback(deps, inputHandle, runHandle.runId, decision.action, stepResult);
     recordStepFeedback(deps, inputHandle, runHandle.runId, state.iteration, stepResult);
 
     const reducerStarted = process.hrtime.bigint();
     const beforeWorkStateChars = measureJson(stepResult.execution.nextWorkState);
     const compactedWorkState = compactWorkState(stepResult.execution.nextWorkState);
-    recordCompactionMetric(metrics, "workState", beforeWorkStateChars, measureJson(compactedWorkState), { step: stepNumber });
+    recordCompactionMetric(metrics, "workState", beforeWorkStateChars, measureJson(compactedWorkState), {
+      step: stepNumber,
+      stepKind,
+    });
     state.workState = compactedWorkState;
-    state.toolContext = buildUpdatedToolContext(state, stepResult.execution, stepNumber);
+    state.toolContext = buildUpdatedToolContext(
+      state,
+      stepResult.execution,
+      stepNumber,
+      isContextAction ? { stepKind: "transient_context" } : {},
+    );
     stepResult.stepSummary.workState = compactedWorkState;
+    if (isContextAction) {
+      completeContextRetrieval({
+        state,
+        capabilitySurfaceManager: deps.capabilitySurfaceManager,
+        toolContext,
+      });
+    }
     recordReducerFeedback(deps, inputHandle, runHandle.runId, state.iteration, {
       beforeWorkStateChars,
       compactedWorkState,
@@ -779,48 +978,53 @@ export async function runAgentLoop(
     });
 
     const compactedStep = compactStepSummaryForState(stepResult.stepSummary);
-    recordCompactionMetric(metrics, "completedStepSummary", measureJson(stepResult.stepSummary), measureJson(compactedStep), { step: stepNumber });
-    state.completedSteps.push(compactedStep);
-    const persistedContext = await recordRunStep(deps, state, decision.action, stepResult, {
-      startedAt: stepStartedAt,
-      completedAt: stepCompletedAt,
-    });
-    applyPersistedStepContext(deps, state, inputHandle, persistedContext);
+    recordCompactionMetric(
+      metrics,
+      "completedStepSummary",
+      measureJson(stepResult.stepSummary),
+      measureJson(compactedStep),
+      { step: stepNumber, stepKind },
+    );
+    if (!isContextAction) {
+      const persistedContext = await recordRunStep(deps, state, decision.action, stepResult, {
+        startedAt: stepStartedAt,
+        completedAt: stepCompletedAt,
+      });
+      durableStepCount++;
+      state.completedSteps.push(compactedStep);
+      applyPersistedStepContext(deps, state, inputHandle, persistedContext);
+    }
 
     recordPlanModeMetric(metrics, decision.action.mode, {
       step: stepNumber,
+      stepKind,
       tools: decision.action.calls.map((call) => call.tool).join(","),
     });
     recordVerificationMetric(metrics, stepResult.stepSummary.verificationMethod, {
       step: stepNumber,
+      stepKind,
       executionStatus: stepResult.stepSummary.executionStatus,
       validationStatus: stepResult.stepSummary.validationStatus,
     });
-    deps.skillActivationManager?.cleanupAfterStep(stepResult.stepSummary.toolsUsed ?? [], {
-      clientId: deps.clientId,
-      runId: runHandle.runId,
-      sessionId: inputHandle.sessionId,
-      stepNumber,
-      ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
-    });
-    if (deps.toolWorkingSetManager) {
-      const cleanupContext = {
-        clientId: deps.clientId,
-        runId: runHandle.runId,
-        sessionId: inputHandle.sessionId,
-        stepNumber,
-        ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
-      };
-      deps.toolWorkingSetManager.cleanupAfterStep(cleanupContext);
+    if (deps.capabilitySurfaceManager) {
       recordFeedback(deps, inputHandle, runHandle.runId, "tools", "after_execution", {
         iteration: state.iteration,
-        activeTools: deps.toolWorkingSetManager.listActive(cleanupContext),
+        activeTools: deps.capabilitySurfaceManager.listActive({
+          clientId: deps.clientId,
+          runId: runHandle.runId,
+          sessionId: inputHandle.sessionId,
+          stepNumber,
+          ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
+        }),
       });
     }
 
     if (stepResult.stepSummary.outcome === "failed") {
       state.consecutiveFailures++;
-      state.failureHistory.push(createFailureRecordFromStepSummary(stepResult.stepSummary, state.failureHistory));
+      appendActiveFailure(
+        state,
+        createFailureRecordFromStepSummary(stepResult.stepSummary, state.failureHistory),
+      );
       if (hasRepeatedRepairFailure(state.failureHistory) || hasRepeatedToolInputValidationFailure(state.failureHistory)) {
         recordRepeatedRepairFailure({
           deps,
@@ -839,11 +1043,25 @@ export async function runAgentLoop(
       }
     } else {
       state.consecutiveFailures = 0;
+      if (!isContextAction) {
+        recordFailureResolutionFeedback(
+          deps,
+          inputHandle,
+          runHandle.runId,
+          resolveActiveFailures(state, {
+            scopes: ["action"],
+            iteration: state.iteration,
+            kind: "verified_action",
+          }),
+        );
+      }
     }
 
     recordStateSnapshotMetric("after_step");
     deps.onProgress?.(
-      `Step ${stepNumber}: ${stepResult.stepSummary.executionContract} -> ${stepResult.stepSummary.outcome}`,
+      isContextAction
+        ? `Context load ${stepNumber}: ${stepResult.stepSummary.executionContract} -> ${stepResult.stepSummary.outcome}`
+        : `Step ${stepNumber}: ${stepResult.stepSummary.executionContract} -> ${stepResult.stepSummary.outcome}`,
       state.runPath,
     );
 
@@ -853,14 +1071,41 @@ export async function runAgentLoop(
   state.status = "stuck";
   state.workState = compactWorkState({
     ...state.workState,
-    status: state.workState.status === "done" ? "done" : "not_done",
-    openWork: normalizeList(state.workState.openWork).length > 0
-      ? state.workState.openWork
-      : ["Continue the requested workstream from the latest verified state."],
-    nextStep: state.workState.nextStep || "Continue the requested workstream from the latest verified state.",
+    status: state.workState.status === "done" ? "done" : "in_progress",
+    summary: state.workState.summary === "Run started."
+      ? "The run reached its step limit before the responsibility was complete."
+      : state.workState.summary,
+    nextAction: state.workState.nextAction
+      || "Continue the requested workstream from the latest verified state.",
   });
   state.finalOutput = `I reached the ${config.maxIterations}-step limit before finishing the workstream.`;
   return finalize({ status: "stuck", content: state.finalOutput });
+}
+
+function requiresContextPressureCheckpoint(state: LoopState): boolean {
+  return isVirtualGraphActive(state.virtualMode)
+    && state.contextPressure?.mode !== undefined
+    && state.contextPressure.mode !== "full"
+    && state.workStateRuntime.updateReason !== "context_pressure";
+}
+
+function latestFailureReason(state: LoopState): string | undefined {
+  return latestActiveFailure(state.failureHistory)?.reason.trim();
+}
+
+function appendWorkStateConstraint(
+  workState: WorkState,
+  value: string,
+): WorkState["importantContext"] {
+  const normalized = value.trim();
+  if (!normalized || workState.importantContext.some((item) =>
+    item.kind === "constraint" && item.value === normalized)) {
+    return workState.importantContext;
+  }
+  return [
+    ...workState.importantContext,
+    { kind: "constraint" as const, value: normalized },
+  ].slice(-12);
 }
 
 async function prepareAttachmentsForRun(
@@ -903,14 +1148,13 @@ function recordVirtualModeRepair(
 ): void {
   const repairCode: RepairCode = repair.code === "MODE_NO_PROGRESS"
     ? "R_NO_PROGRESS"
-    : repair.code === "DIRECT_RESPONSE_REQUIRES_MODE"
-      || repair.code === "TERMINAL_REQUIRES_VALIDATION"
+    : repair.code === "TERMINAL_REQUIRES_VALIDATION"
       ? "R_DIRECT_RESPONSE_REQUIRES_MODE"
       : repair.code.startsWith("VALIDATION_")
         ? "R_VALIDATION_REJECTED"
         : "R_MODE_TRANSITION_INVALID";
   state.consecutiveFailures++;
-  state.failureHistory.push({
+  appendActiveFailure(state, {
     step: state.iteration,
     failureType,
     reason: `${repair.code}: ${repair.message}`,
@@ -922,7 +1166,29 @@ function recordVirtualModeRepair(
       ...(repair.blockedTargets.length > 0 ? { blockedTargets: repair.blockedTargets } : {}),
       allowedNextActions: repair.allowedNextActions,
     },
+    repairScope: virtualModeRepairScope(repair),
   });
+}
+
+function virtualModeRepairScope(
+  repair: VirtualModeRepair,
+): LoopState["failureHistory"][number]["repairScope"] {
+  if (
+    repair.code === "MODE_RESOLUTION_AMBIGUOUS"
+    || repair.code === "MODE_RESOLUTION_UNAVAILABLE"
+    || repair.code === "MODE_BINDING_REQUIRED"
+    || repair.code === "MODE_BINDING_PROPOSAL_REQUIRED"
+    || repair.code === "MODE_BINDING_PROPOSAL_UNVERIFIED"
+  ) {
+    return "binding";
+  }
+  if (
+    repair.code.startsWith("VALIDATION_")
+    || repair.code === "TERMINAL_REQUIRES_VALIDATION"
+  ) {
+    return "validation";
+  }
+  return "navigation";
 }
 
 function summarizeActionInput(input: Record<string, unknown>): Record<string, unknown> {
@@ -1040,31 +1306,15 @@ function deriveRunTerminal(
   return { outcome: "done", stopReason: "completed" };
 }
 
-function normalizeList(values: string[] | undefined): string[] {
-  return [...new Set((values ?? []).map((value) => value.trim()).filter((value) => value.length > 0))];
-}
-
 function preserveWorkStateForContextLimit(state: LoopState): WorkState {
   const workstream = state.harnessContext.contextEngine?.workstream;
-  const openWork = normalizeList(state.workState.openWork);
-  const durableOpenWork = normalizeList([
-    workstream?.currentRequest?.request,
-    workstream?.next,
-  ].filter((value): value is string => Boolean(value)));
-  const blockers = normalizeList(state.workState.blockers);
-  const verifiedFacts = normalizeList(state.workState.verifiedFacts);
   return compactWorkState({
     ...state.workState,
-    status: "not_done",
-    summary: state.workState.summary || "The workstream request remains in progress.",
-    openWork: openWork.length > 0
-      ? openWork
-      : durableOpenWork.length > 0
-        ? durableOpenWork
-        : ["Continue the active workstream request in a new run."],
-    blockers: blockers.length > 0 ? blockers : workstream?.blockers ?? [],
-    verifiedFacts,
-    nextStep: state.workState.nextStep
+    status: "in_progress",
+    summary: state.workState.summary === "Run started."
+      ? "The workstream request remains in progress."
+      : state.workState.summary,
+    nextAction: state.workState.nextAction
       || workstream?.next
       || "Continue the active workstream request in a new run.",
   });

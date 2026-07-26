@@ -52,13 +52,6 @@ export const deleteTool: ToolDefinition = {
       message: "Path deleted by delete.",
     }],
   }),
-  selectionHints: {
-    tags: ["filesystem", "delete", "remove"],
-    aliases: ["remove_file", "rm_file", "delete_path"],
-    examples: ["delete this file", "remove directory recursively"],
-    domain: "filesystem",
-    priority: 1,
-  },
   async execute(input, context): Promise<ToolResult> {
     const parsed = validateDeleteInput(input);
     if ("ok" in parsed) return parsed;

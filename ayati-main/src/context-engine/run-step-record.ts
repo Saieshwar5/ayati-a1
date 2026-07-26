@@ -1,3 +1,5 @@
+import type { ToolCallVerificationRecord } from "../ivec/agent-runner/tool-call-verification-contracts.js";
+
 export type ContextStepStatus = "completed" | "failed" | "skipped";
 
 export interface ContextStepToolCallRecord {
@@ -8,6 +10,7 @@ export interface ContextStepToolCallRecord {
   input: unknown;
   output?: string;
   error?: string;
+  verification?: ToolCallVerificationRecord;
   [key: string]: unknown;
 }
 
@@ -33,7 +36,6 @@ export interface ContextRunStepRecord {
   action?: Record<string, unknown>;
   toolCalls: ContextStepToolCallRecord[];
   verification: ContextStepVerificationRecord;
-  workStateAfter?: unknown;
   facts: string[];
   artifacts: string[];
   outputSize?: number;

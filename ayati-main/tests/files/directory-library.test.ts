@@ -9,6 +9,17 @@ function makeTmpDir(): string {
 }
 
 describe("DirectoryLibrary", () => {
+  it("rejects relative host paths instead of anchoring them to process.cwd()", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const library = new DirectoryLibrary({ dataDir });
+      await expect(library.registerPath({ path: "project" }))
+        .rejects.toThrow("must be an absolute filesystem path");
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("registers a directory manifest with limits, defaults, and run references", async () => {
     const dataDir = makeTmpDir();
     const projectDir = join(dataDir, "project");

@@ -379,7 +379,12 @@ export function parseChatInboundMessage(data: unknown): ChatInboundMessage | nul
       continue;
     }
 
-    const attachmentType = typeof value["type"] === "string" ? value["type"].trim().toLowerCase() : undefined;
+    const rawAttachmentType = typeof value["type"] === "string"
+      ? value["type"]
+      : typeof value["kind"] === "string"
+        ? value["kind"]
+        : undefined;
+    const attachmentType = rawAttachmentType?.trim().toLowerCase();
     const source = typeof value["source"] === "string" ? value["source"].trim().toLowerCase() : undefined;
     if (attachmentType === "directory") {
       if (source !== undefined && source !== "cli") {

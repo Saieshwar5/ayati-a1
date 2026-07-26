@@ -178,7 +178,7 @@ describe("workstream-bound run finalization", () => {
     });
     const prefix = "Which durable output resource should Ayati use? ";
     const question = prefix + "x".repeat(
-      RUN_FINALIZATION_LIMITS.workState.contextItemChars - prefix.length,
+      RUN_FINALIZATION_LIMITS.workState.nextActionChars - prefix.length,
     );
     const assistantResponse = question
       + " The complete user-facing reply may contain additional explanation.";
@@ -187,7 +187,7 @@ describe("workstream-bound run finalization", () => {
       needsUserInputFinalization(fixture, question, assistantResponse),
     );
 
-    expect(question).toHaveLength(RUN_FINALIZATION_LIMITS.workState.contextItemChars);
+    expect(question).toHaveLength(RUN_FINALIZATION_LIMITS.workState.nextActionChars);
     expect(result).toMatchObject({
       run: { status: "needs_user_input", stopReason: "needs_user_input" },
       workstreamContextCommit: { status: "committed" },
@@ -272,13 +272,13 @@ describe("workstream-bound run finalization", () => {
           output: { written: [outputPath] },
         }],
         verification: { passed: true, resources: [primary.resourceId] },
-        workStateAfter: workState({
-          summary: "Created the verified website entry point.",
-          artifacts: [outputPath],
-        }),
         createdAt: "2026-07-19T10:03:01+05:30",
       },
     });
+    const contextAfterMutation = await fixture.service.getAgentContext({
+      streamId: fixture.prepared.stream.streamId,
+    });
+    expect("observations" in contextAfterMutation).toBe(false);
     const input = doneFinalization(fixture, [{
       locator: { kind: "filesystem", path: outputPath },
       kind: "file",
@@ -381,8 +381,80 @@ describe("workstream-bound run finalization", () => {
     expect(await git(created.workstream.contextRepositoryPath, ["rev-parse", "HEAD"]))
       .toBe(headBefore);
     expect(firstRunId).not.toBe(fixture.prepared.run.runId);
-    expect(context.observations).toMatchObject({
-      evidence: [],
+    expect("observations" in context).toBe(false);
+  });
+
+  it("restores a material WorkState when the next run continues the same request", async () => {
+    const fixture = await createFixture("work-state-continuation");
+    const created = await createBoundWorkstream(fixture, {
+      title: "Long-running implementation",
+      objective: "Continue one complex implementation across run boundaries.",
+    });
+    const handoff = workState({
+      summary: "The data contract is implemented; runtime wiring and tests remain.",
+      plan: [
+        { id: "contract", task: "Implement the data contract.", status: "done" },
+        { id: "runtime", task: "Wire the runtime checkpoint.", status: "active" },
+        { id: "tests", task: "Add continuation coverage.", status: "pending" },
+      ],
+      importantContext: [{
+        kind: "artifact",
+        value: "WorkState contract",
+        ref: "/workspace/src/work-state/contracts.ts",
+      }],
+      nextAction: "Wire the runtime checkpoint.",
+    });
+    await fixture.service.checkpointRunWorkState({
+      requestId: "REQ-checkpoint-material-handoff",
+      runId: fixture.prepared.run.runId,
+      expectedRevision: 0,
+      afterStep: 0,
+      reason: "plan",
+      workState: handoff,
+      at: "2026-07-19T10:02:00+05:30",
+    });
+    const finalization = incompleteFinalization(fixture);
+    finalization.workState = handoff;
+    finalization.summary = handoff.summary;
+    finalization.next = "Wire the runtime checkpoint.";
+    const first = await fixture.service.finalizeRun(finalization);
+    if (first.workstreamContextCommit.status === "not_required") {
+      throw new Error("Expected the incomplete run to commit its workstream handoff.");
+    }
+
+    fixture.prepared = await fixture.service.prepareAgentRun({
+      requestId: "REQ-prepare-continuation",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      role: "user",
+      content: "Continue the runtime work.",
+      at: "2026-07-19T10:04:00+05:30",
+    });
+    await fixture.service.activateWorkstreamForRun({
+      requestId: "REQ-activate-continuation",
+      runId: fixture.prepared.run.runId,
+      workstreamId: created.workstream.workstreamId,
+      expectedWorkstreamHead: first.workstreamContextCommit.headAfter,
+      route: {
+        kind: "continue_active_request",
+        requestId: "R-0001",
+        reason: "Continue the same unfinished implementation request.",
+      },
+      at: "2026-07-19T10:05:00+05:30",
+    });
+
+    const context = await fixture.service.getAgentContext({
+      streamId: fixture.prepared.stream.streamId,
+    });
+    expect(context.run?.workState).toMatchObject({
+      revision: 1,
+      afterStep: 0,
+      status: "in_progress",
+      updateReason: "continuation",
+      summary: handoff.summary,
+      plan: handoff.plan,
+      importantContext: handoff.importantContext,
+      nextAction: handoff.nextAction,
     });
   });
 
@@ -444,8 +516,14 @@ function doneFinalization(
     workState: workState({
       status: "done",
       summary: "The requested work is complete.",
-      artifacts: resources.flatMap((resource) =>
-        resource.locator?.kind === "filesystem" ? [resource.locator.path] : []),
+      importantContext: resources.flatMap((resource) =>
+        resource.locator?.kind === "filesystem"
+          ? [{
+              kind: "artifact" as const,
+              value: resource.description,
+              ref: resource.locator.path,
+            }]
+          : []),
     }),
     workstream: {
       completion: {
@@ -501,8 +579,7 @@ function needsUserInputFinalization(
     workState: workState({
       status: "needs_user_input",
       summary: "Waiting for the user to select the durable output resource.",
-      nextStep: question,
-      userInputNeeded: [question],
+      nextAction: question,
     }),
     workstream: {
       completion: {
@@ -562,7 +639,6 @@ function readStep() {
       error: { code: "ENOENT" },
     }],
     verification: { passed: false },
-    workStateAfter: workState({ summary: "The read failed." }),
     createdAt: "2026-07-19T10:04:01+05:30",
   };
 }

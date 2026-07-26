@@ -1,10 +1,29 @@
 import { RUN_FINALIZATION_LIMITS } from "./run-finalization-limits.js";
+import type {
+  RunWorkState,
+  RunWorkStateInput,
+  RunWorkStateUpdateReason,
+} from "./run-work-state-contracts.js";
+export type {
+  RunImportantContextItem,
+  RunImportantContextKind,
+  RunWorkPlanItem,
+  RunWorkPlanItemStatus,
+  RunWorkState,
+  RunWorkStateInput,
+  RunWorkStateUpdateReason,
+  RunWorkStatus,
+} from "./run-work-state-contracts.js";
 
 export type AgentStreamId = string;
 export type WorkstreamId = string;
 export type RunId = string;
 
 export type MessageRole = "user" | "assistant" | "system_event";
+
+export type AssistantResponseKind = "reply" | "feedback" | "notification";
+
+export type AssistantFeedbackKind = "approval" | "confirmation" | "clarification";
 
 export type RunOutcome =
   | "done"
@@ -30,7 +49,6 @@ export type ContextEngineCapability =
   | "agent_streams"
   | "checkpoints"
   | "history"
-  | "observations"
   | "runs"
   | "workstreams"
   | "workstream_resolution"
@@ -194,6 +212,12 @@ export interface AgentRunHandle {
   triggerSeq: number;
 }
 
+export interface MessageAttachmentRef {
+  resourceId: ResourceId;
+  kind: ResourceKind;
+  displayName: string;
+}
+
 export interface StreamMessage {
   messageId: string;
   streamId: AgentStreamId;
@@ -203,6 +227,9 @@ export interface StreamMessage {
   content: string;
   contentHash: string;
   at: string;
+  responseKind?: AssistantResponseKind;
+  feedbackKind?: AssistantFeedbackKind;
+  attachmentRefs?: MessageAttachmentRef[];
 }
 
 export interface CommitSummary {
@@ -239,6 +266,36 @@ export type ToolEffect =
   | "external_mutation"
   | "destructive";
 
+export interface RunStepToolCallVerificationCheck {
+  id: string;
+  kind: string;
+  status: "passed" | "failed" | "skipped";
+  severity: "required" | "warning" | "info";
+  code?: string;
+}
+
+export interface RunStepToolCallVerifiedFact {
+  id?: string;
+  kind: string;
+  message: string;
+  subject?: string;
+  data?: Record<string, unknown>;
+}
+
+export interface RunStepToolCallVerification {
+  version: 1;
+  status: "passed" | "failed" | "not_available";
+  method: "tool_contract" | "runtime_check" | "execution_only";
+  contract?: "tool_result_v2" | "deterministic_success_gate_v1";
+  summary: string;
+  checks: RunStepToolCallVerificationCheck[];
+  facts: RunStepToolCallVerifiedFact[];
+  failure?: {
+    code: string;
+    message: string;
+  };
+}
+
 export interface RunStepToolCall {
   callId?: string;
   tool: string;
@@ -250,28 +307,55 @@ export interface RunStepToolCall {
   output?: unknown;
   outputHash?: string;
   error?: unknown;
+  verification?: RunStepToolCallVerification;
+  /** Compatibility projection for records created before per-call verification. */
+  verificationPassed?: boolean;
+  completionEvidence?: RunStepFilesystemCompletionEvidence[];
 }
 
-export type RunWorkStatus = "not_done" | "done" | "blocked" | "needs_user_input";
-
-export interface RunWorkStateInput {
-  status: RunWorkStatus;
-  summary: string;
-  openWork: string[];
-  blockers: string[];
-  facts: string[];
-  evidence: string[];
-  artifacts: string[];
-  nextStep: string | null;
-  userInputNeeded: string[];
-}
-
-export interface RunWorkState extends RunWorkStateInput {
-  runId: RunId;
-  revision: number;
-  afterStep: number;
-  updatedAt: string;
-}
+export type RunStepFilesystemCompletionEvidence =
+  | {
+      kind: "file_read";
+      path: string;
+      requestedPath: string;
+      coverage: "complete" | "partial" | "search_matches" | "profile" | "sampled";
+      contentAvailable: boolean;
+      change: "observed";
+      tool: "read_files";
+      step: number;
+      callId?: string;
+      sizeBytes?: number;
+      lineCount?: number;
+      sha256?: string;
+    }
+  | {
+      kind: "file_search";
+      query: string;
+      roots: string[];
+      matchCount: number;
+      maxDepth: number;
+      includeHidden: boolean;
+      capped: boolean;
+      errorCount: number;
+      depthLimitedDirectoryCount: number;
+      complete: boolean;
+      change: "observed";
+      tool: "find_files";
+      step: number;
+      callId?: string;
+    }
+  | {
+      kind: "path_state";
+      path: string;
+      requestedPath?: string;
+      exists: boolean;
+      actualKind?: "file" | "directory";
+      change: "observed" | "mutated";
+      operation: "inspect" | "find" | "read" | "list" | "write" | "patch" | "create" | "move" | "delete";
+      tool: string;
+      step: number;
+      callId?: string;
+    };
 
 export interface RunStepRecord {
   version: 1;
@@ -282,11 +366,10 @@ export interface RunStepRecord {
   action?: unknown;
   toolCalls: RunStepToolCall[];
   verification: unknown;
-  workStateAfter: RunWorkStateInput;
   createdAt: string;
 }
 
-export type RunStepContext = Omit<RunStepRecord, "workStateAfter">;
+export type RunStepContext = RunStepRecord;
 
 export interface RunContextRecord extends RunRef {
   status: RunStatus;
@@ -330,19 +413,72 @@ export interface ContextCheckpointRecord {
   createdAt: string;
 }
 
-export interface RecentWorkReference {
+export type RecentWorkstreamActivityKind = "created" | "opened" | "bound";
+
+export interface RecentWorkstreamMetadata {
   workstreamId: WorkstreamId;
-  requestId: string;
-  outcome: RunOutcome;
-  resourceIds: ResourceId[];
+  title: string;
+  lifecycleStatus: "active" | "paused" | "archived";
+  repositoryHealth: "ready" | "dirty_external" | "unavailable";
+  currentRequest?: {
+    id: string;
+    title: string;
+    status: "queued" | "active" | "blocked" | "done" | "dropped";
+  };
+  lastActivity: {
+    kind: RecentWorkstreamActivityKind;
+    at: string;
+  };
+}
+
+export interface RecentFileMetadata {
+  name: string;
+  path: string;
+  lastReadAt: string;
+  evidenceRef: string;
+  coverage: "complete";
+  status: "navigation_only";
+  requestSeq?: number;
+  responseSeq?: number;
+  sizeBytes?: number;
+  lineCount?: number;
+  sha256?: string;
+}
+
+export const RECENT_DOCUMENT_REGISTRY_MAX_FILES = 32;
+
+export interface RecentWorkStateHandoff {
+  runId: RunId;
+  sourceRef: string;
+  requestSeq?: number;
+  responseSeq?: number;
   completedAt: string;
+  runStatus: RunOutcome;
+  stopReason: RunStopReason;
+  workState: {
+    status: RunWorkState["status"];
+    summary: string;
+    plan: RunWorkState["plan"];
+    importantContext: RunWorkState["importantContext"];
+    nextAction?: string;
+    updateReason: RunWorkStateUpdateReason;
+    updatedAt: string;
+  };
+  workstream?: {
+    workstreamId: WorkstreamId;
+    title: string;
+    requestId: string;
+    requestTitle?: string;
+  };
 }
 
 export interface AgentStreamContextProjection {
   stream: AgentStreamRef;
   checkpoint?: ContextCheckpointRecord;
   recentMessages: StreamMessage[];
-  recentWork: RecentWorkReference[];
+  recentWorkstreams: RecentWorkstreamMetadata[];
+  recentFiles: RecentFileMetadata[];
+  recentWorkStates: RecentWorkStateHandoff[];
   resources?: AgentStreamResourcesProjection;
 }
 
@@ -540,46 +676,16 @@ export interface RunContextProjection {
   steps: RunStepContext[];
 }
 
-export type ReusableObservationKind = "inventory" | "discovery" | "evidence";
-
-export interface ReusableObservation {
-  observationId: string;
-  streamId: AgentStreamId;
-  sourceRunId: RunId;
-  sourceStep: number;
-  sourceCallId?: string;
-  kind: ReusableObservationKind;
-  queryKey: string;
-  purpose: string;
-  preview: string;
-  outputHash?: string;
-  evidenceRef?: string;
-  retention: "while_relevant" | "evidence_only";
-  workstreamId?: WorkstreamId;
-  requestId?: string;
-  resources: Array<{ resourceId: ResourceId; versionKey: string }>;
-  createdAt: string;
-}
-
-export interface ReusableObservationProjection {
-  revision: string;
-  inventory: ReusableObservation[];
-  discovery: ReusableObservation[];
-  evidence: ReusableObservation[];
-}
-
 export interface AgentContextProjection {
   contextRevision: string;
   streamRevision: string;
   runRevision?: string;
-  observationRevision: string;
   stream: AgentStreamContextProjection | null;
   activeWorkstream?: WorkstreamContextProjection;
   workstreamCandidates?: WorkstreamCandidate[];
   workstreamResolution?: WorkstreamResolutionProjection;
   ingressResources?: ResourceRef[];
   run?: RunContextProjection;
-  observations: ReusableObservationProjection;
   warnings: string[];
 }
 
@@ -994,6 +1100,8 @@ export interface FinalizeRunRequest extends ContextEngineRequestEnvelope {
   outcome: RunOutcome;
   stopReason: RunStopReason;
   assistantResponse: string;
+  assistantResponseKind?: AssistantResponseKind;
+  assistantFeedbackKind?: AssistantFeedbackKind;
   streamSummary: string;
   summary: string;
   validation: "passed" | "failed" | "not_applicable";
@@ -1008,7 +1116,6 @@ export interface FinalizeRunRequest extends ContextEngineRequestEnvelope {
 export interface FinalizeRunResponse {
   run: RunContextRecord;
   assistantMessage?: StreamMessage;
-  observationRevision: string;
   resourceEffects: {
     status: "none" | "verified";
     events: Array<Pick<ResourceEvent, "eventId" | "resourceId" | "type"> & {
@@ -1033,6 +1140,20 @@ export interface RecordRunStepRequest extends ContextEngineRequestEnvelope {
 }
 
 export interface RecordRunStepResponse {
+  run: RunContextProjection;
+  context: AgentContextProjection;
+}
+
+export interface CheckpointRunWorkStateRequest extends ContextEngineRequestEnvelope {
+  runId: RunId;
+  expectedRevision: number;
+  afterStep: number;
+  reason: Extract<RunWorkStateUpdateReason, "plan" | "context_pressure">;
+  workState: RunWorkStateInput;
+  at: string;
+}
+
+export interface CheckpointRunWorkStateResponse {
   run: RunContextProjection;
   context: AgentContextProjection;
 }
@@ -1289,6 +1410,17 @@ export function isFinalizeRunRequest(value: unknown): value is FinalizeRunReques
     || (isRecord(workstream)
       && isWorkstreamCompletionRecord(workstream["completion"])
       && (value["outcome"] !== "done" || workstream["completion"].accepted));
+  const responseKind = value["assistantResponseKind"];
+  const feedbackKind = value["assistantFeedbackKind"];
+  const responseMetadataValid = (responseKind === undefined
+      || isAssistantResponseKind(responseKind))
+    && (feedbackKind === undefined || isAssistantFeedbackKind(feedbackKind))
+    && (feedbackKind === undefined || responseKind === "feedback")
+    && (value["assistantResponse"] !== ""
+      || (responseKind === undefined && feedbackKind === undefined))
+    && (value["outcome"] !== "needs_user_input"
+      || responseKind === undefined
+      || responseKind === "feedback");
   return isNonEmptyString(value["runId"])
     && isRunOutcome(value["outcome"])
     && isRunStopReason(value["stopReason"])
@@ -1305,6 +1437,7 @@ export function isFinalizeRunRequest(value: unknown): value is FinalizeRunReques
     && optionalBoundedString(value["next"], RUN_FINALIZATION_LIMITS.nextChars)
     && isRunWorkStateInput(value["workState"])
     && workstreamValid
+    && responseMetadataValid
     && isNonEmptyString(value["at"]);
 }
 
@@ -1314,6 +1447,21 @@ export function isRecordRunStepRequest(value: unknown): value is RecordRunStepRe
   }
   return isNonEmptyString(value["runId"])
     && isRunStepRecord(value["record"]);
+}
+
+export function isCheckpointRunWorkStateRequest(
+  value: unknown,
+): value is CheckpointRunWorkStateRequest {
+  if (!isRequestEnvelope(value)) {
+    return false;
+  }
+  return isNonEmptyString(value["runId"])
+    && isNonNegativeSafeInteger(value["expectedRevision"])
+    && isNonNegativeSafeInteger(value["afterStep"])
+    && (value["reason"] === "plan"
+      || value["reason"] === "context_pressure")
+    && isRunWorkStateInput(value["workState"])
+    && isNonEmptyString(value["at"]);
 }
 
 export function isPlanContextCheckpointRequest(
@@ -1580,12 +1728,28 @@ function isPositiveSafeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
 function isRunOutcome(value: unknown): value is RunOutcome {
   return value === "done"
     || value === "incomplete"
     || value === "failed"
     || value === "blocked"
     || value === "needs_user_input";
+}
+
+function isAssistantResponseKind(value: unknown): value is AssistantResponseKind {
+  return value === "reply"
+    || value === "feedback"
+    || value === "notification";
+}
+
+function isAssistantFeedbackKind(value: unknown): value is AssistantFeedbackKind {
+  return value === "approval"
+    || value === "confirmation"
+    || value === "clarification";
 }
 
 function isRunStopReason(value: unknown): value is RunStopReason {
@@ -1623,7 +1787,6 @@ function isRunStepRecord(value: unknown): value is RunStepRecord {
     || value["toolCalls"].length > 64
     || !value["toolCalls"].every(isRunStepToolCall)
     || !("verification" in value)
-    || !isRunWorkStateInput(value["workStateAfter"])
     || !isNonEmptyString(value["createdAt"])) {
     return false;
   }
@@ -1639,7 +1802,13 @@ function isRunStepToolCall(value: unknown): value is RunStepToolCall {
     || (value["status"] !== "success" && value["status"] !== "failed")
     || !("input" in value)
     || !optionalNonEmptyString(value["callId"])
-    || !optionalNonEmptyString(value["outputHash"])) {
+    || !optionalNonEmptyString(value["outputHash"])
+    || (value["verification"] !== undefined
+      && !isRunStepToolCallVerification(value["verification"]))
+    || (value["verificationPassed"] !== undefined && typeof value["verificationPassed"] !== "boolean")
+    || (value["completionEvidence"] !== undefined
+      && (!Array.isArray(value["completionEvidence"])
+        || !value["completionEvidence"].every(isRunStepFilesystemCompletionEvidence)))) {
     return false;
   }
   const observational = value["toolPurpose"] === "list"
@@ -1648,6 +1817,66 @@ function isRunStepToolCall(value: unknown): value is RunStepToolCall {
   if (observational) return value["toolEffect"] === "read_only";
   if (value["toolPurpose"] === "control") return value["toolEffect"] === "context_mutation";
   return value["toolEffect"] !== "read_only";
+}
+
+function isRunStepFilesystemCompletionEvidence(
+  value: unknown,
+): value is RunStepFilesystemCompletionEvidence {
+  if (!isRecord(value)
+    || (
+      value["kind"] !== "file_read"
+      && value["kind"] !== "file_search"
+      && value["kind"] !== "path_state"
+    )
+    || !isNonEmptyString(value["tool"])
+    || !Number.isSafeInteger(value["step"])
+    || (value["step"] as number) < 1
+    || !optionalNonEmptyString(value["callId"])) {
+    return false;
+  }
+  if (value["kind"] === "file_search") {
+    return isNonEmptyString(value["query"])
+      && Array.isArray(value["roots"])
+      && value["roots"].length > 0
+      && value["roots"].every(isNonEmptyString)
+      && isNonNegativeSafeInteger(value["matchCount"])
+      && isPositiveSafeInteger(value["maxDepth"])
+      && typeof value["includeHidden"] === "boolean"
+      && typeof value["capped"] === "boolean"
+      && isNonNegativeSafeInteger(value["errorCount"])
+      && isNonNegativeSafeInteger(value["depthLimitedDirectoryCount"])
+      && typeof value["complete"] === "boolean"
+      && value["change"] === "observed"
+      && value["tool"] === "find_files";
+  }
+  if (!isNonEmptyString(value["path"])) {
+    return false;
+  }
+  if (value["kind"] === "file_read") {
+    return isNonEmptyString(value["requestedPath"])
+      && (value["coverage"] === "complete"
+        || value["coverage"] === "partial"
+        || value["coverage"] === "search_matches"
+        || value["coverage"] === "profile"
+        || value["coverage"] === "sampled")
+      && typeof value["contentAvailable"] === "boolean"
+      && value["change"] === "observed"
+      && value["tool"] === "read_files";
+  }
+  return typeof value["exists"] === "boolean"
+    && (value["actualKind"] === undefined
+      || value["actualKind"] === "file"
+      || value["actualKind"] === "directory")
+    && (value["change"] === "observed" || value["change"] === "mutated")
+    && (value["operation"] === "inspect"
+      || value["operation"] === "find"
+      || value["operation"] === "read"
+      || value["operation"] === "list"
+      || value["operation"] === "write"
+      || value["operation"] === "patch"
+      || value["operation"] === "create"
+      || value["operation"] === "move"
+      || value["operation"] === "delete");
 }
 
 function isToolPurpose(value: unknown): value is ToolPurpose {
@@ -1668,46 +1897,111 @@ function isToolEffect(value: unknown): value is ToolEffect {
 
 function isRunWorkStateInput(value: unknown): value is RunWorkStateInput {
   if (!isRecord(value)
-    || (value["status"] !== "not_done"
+    || (value["status"] !== "in_progress"
       && value["status"] !== "done"
       && value["status"] !== "blocked"
       && value["status"] !== "needs_user_input")
     || !isBoundedString(value["summary"], RUN_FINALIZATION_LIMITS.workState.summaryChars)
-    || !isBoundedStringArray(
-      value["openWork"],
-      RUN_FINALIZATION_LIMITS.workState.maximumItems,
-      RUN_FINALIZATION_LIMITS.workState.contextItemChars,
-    )
-    || !isBoundedStringArray(
-      value["blockers"],
-      RUN_FINALIZATION_LIMITS.workState.maximumItems,
-      RUN_FINALIZATION_LIMITS.workState.contextItemChars,
-    )
-    || !isBoundedStringArray(
-      value["facts"],
-      RUN_FINALIZATION_LIMITS.workState.maximumItems,
-      RUN_FINALIZATION_LIMITS.workState.factChars,
-    )
-    || !isBoundedStringArray(
-      value["evidence"],
-      RUN_FINALIZATION_LIMITS.workState.maximumItems,
-      RUN_FINALIZATION_LIMITS.workState.evidenceChars,
-    )
-    || !isBoundedStringArray(
-      value["artifacts"],
-      RUN_FINALIZATION_LIMITS.workState.maximumItems,
-      RUN_FINALIZATION_LIMITS.workState.artifactChars,
-    )
-    || (value["nextStep"] !== null
-      && !isBoundedString(value["nextStep"], RUN_FINALIZATION_LIMITS.workState.nextStepChars))
-    || !isBoundedStringArray(
-      value["userInputNeeded"],
-      RUN_FINALIZATION_LIMITS.workState.maximumItems,
-      RUN_FINALIZATION_LIMITS.workState.contextItemChars,
-    )) {
+    || !Array.isArray(value["plan"])
+    || value["plan"].length > RUN_FINALIZATION_LIMITS.workState.maximumPlanItems
+    || !value["plan"].every(isRunWorkPlanItem)
+    || !hasUniquePlanItemIds(value["plan"])
+    || value["plan"].filter((item) => isRecord(item) && item["status"] === "active").length > 1
+    || !Array.isArray(value["importantContext"])
+    || value["importantContext"].length > RUN_FINALIZATION_LIMITS.workState.maximumImportantContextItems
+    || !value["importantContext"].every(isRunImportantContextItem)
+    || (value["nextAction"] !== null
+      && !isBoundedString(value["nextAction"], RUN_FINALIZATION_LIMITS.workState.nextActionChars))) {
     return false;
   }
   return true;
+}
+
+function isRunWorkPlanItem(value: unknown): boolean {
+  return isRecord(value)
+    && isBoundedString(value["id"], RUN_FINALIZATION_LIMITS.workState.planIdChars)
+    && isBoundedString(value["task"], RUN_FINALIZATION_LIMITS.workState.planTaskChars)
+    && (value["status"] === "pending"
+      || value["status"] === "active"
+      || value["status"] === "done"
+      || value["status"] === "blocked");
+}
+
+function hasUniquePlanItemIds(items: unknown[]): boolean {
+  const ids = items
+    .filter(isRecord)
+    .map((item) => String(item["id"]));
+  return ids.length === items.length && new Set(ids).size === ids.length;
+}
+
+function isRunImportantContextItem(value: unknown): boolean {
+  return isRecord(value)
+    && (value["kind"] === "artifact"
+      || value["kind"] === "decision"
+      || value["kind"] === "finding"
+      || value["kind"] === "constraint")
+    && isBoundedString(
+      value["value"],
+      RUN_FINALIZATION_LIMITS.workState.importantContextValueChars,
+    )
+    && (value["ref"] === undefined
+      || isBoundedString(
+        value["ref"],
+        RUN_FINALIZATION_LIMITS.workState.importantContextRefChars,
+      ));
+}
+
+function isRunStepToolCallVerification(value: unknown): value is RunStepToolCallVerification {
+  if (!isRecord(value)
+    || value["version"] !== 1
+    || (value["status"] !== "passed"
+      && value["status"] !== "failed"
+      && value["status"] !== "not_available")
+    || (value["method"] !== "tool_contract"
+      && value["method"] !== "runtime_check"
+      && value["method"] !== "execution_only")
+    || (value["contract"] !== undefined
+      && value["contract"] !== "tool_result_v2"
+      && value["contract"] !== "deterministic_success_gate_v1")
+    || !isBoundedString(value["summary"], 2_000)
+    || !Array.isArray(value["checks"])
+    || value["checks"].length > 64
+    || !value["checks"].every(isRunStepToolCallVerificationCheck)
+    || !Array.isArray(value["facts"])
+    || value["facts"].length > 64
+    || !value["facts"].every(isRunStepToolCallVerifiedFact)
+    || (value["failure"] !== undefined && !isRunStepToolCallVerificationFailure(value["failure"]))) {
+    return false;
+  }
+  return true;
+}
+
+function isRunStepToolCallVerificationCheck(value: unknown): boolean {
+  return isRecord(value)
+    && isBoundedString(value["id"], 240)
+    && isBoundedString(value["kind"], 240)
+    && (value["status"] === "passed"
+      || value["status"] === "failed"
+      || value["status"] === "skipped")
+    && (value["severity"] === "required"
+      || value["severity"] === "warning"
+      || value["severity"] === "info")
+    && optionalNonEmptyString(value["code"]);
+}
+
+function isRunStepToolCallVerifiedFact(value: unknown): boolean {
+  return isRecord(value)
+    && optionalNonEmptyString(value["id"])
+    && isBoundedString(value["kind"], 240)
+    && isBoundedString(value["message"], 2_000)
+    && optionalNonEmptyString(value["subject"])
+    && (value["data"] === undefined || isRecord(value["data"]));
+}
+
+function isRunStepToolCallVerificationFailure(value: unknown): boolean {
+  return isRecord(value)
+    && isBoundedString(value["code"], 240)
+    && isBoundedString(value["message"], 2_000);
 }
 
 function isWorkstreamCompletionRecord(value: unknown): value is WorkstreamCompletionRecord {

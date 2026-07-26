@@ -1,38 +1,75 @@
 import { isAbsolute, resolve } from "node:path";
+import {
+  canonicalizeAbsoluteFilesystemPath,
+  filesystemPathIsWithin,
+} from "../../shared/filesystem-paths.js";
 import { getToolTaxonomy } from "../../skills/tool-taxonomy.js";
 import { getWorkspaceRoot } from "../../skills/workspace-paths.js";
+import {
+  FILES_RECENT_HOT_CONTEXT_KEY,
+  readRecentFilesHotContextContent,
+} from "../hot-context/index.js";
+import { activeDocumentPointers } from "../recent-document-registry.js";
 import type { LoopState } from "../types.js";
 
+type TargetEvidence =
+  | {
+      kind: "exact";
+      value: string;
+    }
+  | {
+      kind: "filesystem";
+      value: string;
+      authorityKind: "file" | "directory";
+    };
+
 export function collectVirtualModeTargetEvidence(state: LoopState): string[] {
-  const evidence = new Set<string>();
+  return collectStructuredTargetEvidence(state, {}).map((entry) => entry.value);
+}
+
+export async function findUnverifiedVirtualModeTargets(
+  state: LoopState,
+  targets: string[],
+  options: {
+    includeRecentFileNavigation?: boolean;
+  } = {},
+): Promise<string[]> {
+  const evidence = collectStructuredTargetEvidence(state, options);
+  const verification = await Promise.all(targets.map(async (target) => ({
+    target,
+    backed: await targetIsBacked(target, evidence),
+  })));
+  return verification.filter((item) => !item.backed).map((item) => item.target);
+}
+
+function collectStructuredTargetEvidence(
+  state: LoopState,
+  options: {
+    includeRecentFileNavigation?: boolean;
+  },
+): TargetEvidence[] {
+  const evidence: TargetEvidence[] = [];
   addExtractedTargets(evidence, state.userMessage);
   if (/\bdefault workspace\b|\bayati(?:['’]s)? workspace\b/i.test(state.userMessage)) {
-    evidence.add(resolve(getWorkspaceRoot()));
+    addFilesystemEvidence(evidence, resolve(getWorkspaceRoot()), "directory");
   }
-  for (const target of state.virtualMode.targets) evidence.add(target);
+  for (const target of state.virtualMode.targets) addExactEvidence(evidence, target);
   for (const resource of state.harnessContext.contextEngine?.ingressResources ?? []) {
-    addResourceTargets(evidence, resource);
+    addResourceTargets(evidence, resource, true);
   }
   for (const binding of state.harnessContext.contextEngine?.workstream?.resources ?? []) {
-    addResourceTargets(evidence, binding.resource);
+    addResourceTargets(evidence, binding.resource, true);
   }
   for (const resource of state.harnessContext.contextEngine?.agentStream.resources ?? []) {
-    addResourceTargets(evidence, resource);
+    addResourceTargets(evidence, resource, false);
   }
-  for (const value of [
-    ...state.workState.verifiedFacts,
-    ...state.workState.evidence,
-    ...(state.workState.artifacts ?? []),
-  ]) {
+  if (options.includeRecentFileNavigation) {
+    addRecentFileNavigationTargets(evidence, state);
+  }
+  for (const item of state.workState.importantContext) {
+    const value = item.ref ?? item.value;
     addExtractedTargets(evidence, value);
-    if (looksLikeTarget(value)) evidence.add(value.trim());
-  }
-  for (const observation of [
-    ...(state.harnessContext.contextEngine?.observations.inventory ?? []),
-    ...(state.harnessContext.contextEngine?.observations.discovery ?? []),
-    ...(state.harnessContext.contextEngine?.observations.evidence ?? []),
-  ]) {
-    addExtractedTargets(evidence, observation.preview);
+    if (looksLikeTarget(value)) addExactEvidence(evidence, value.trim());
   }
   for (const call of state.toolContext?.toolCalls ?? []) {
     if (call.status !== "success") continue;
@@ -43,59 +80,99 @@ export function collectVirtualModeTargetEvidence(state: LoopState): string[] {
     if (!canEstablishTarget) continue;
     addExtractedTargets(evidence, call.output);
     for (const artifact of call.artifacts ?? []) {
-      for (const value of [artifact.id, artifact.path, artifact.uri]) {
-        if (value?.trim()) evidence.add(value.trim());
+      if (artifact.path?.trim()) {
+        if (artifact.kind === "directory") {
+          addFilesystemEvidence(evidence, artifact.path, "directory");
+        } else if (artifact.kind === "file") {
+          addFilesystemEvidence(evidence, artifact.path, "file");
+        } else {
+          addExactEvidence(evidence, artifact.path);
+        }
+      }
+      for (const value of [artifact.id, artifact.uri]) {
+        if (value?.trim()) addExactEvidence(evidence, value);
       }
     }
   }
-  return [...evidence].map((value) => value.trim()).filter(Boolean).slice(0, 80);
+  return uniqueEvidence(evidence).slice(0, 80);
 }
 
-export function findUnverifiedVirtualModeTargets(
+function addRecentFileNavigationTargets(
+  evidence: TargetEvidence[],
   state: LoopState,
-  targets: string[],
-): string[] {
-  const evidence = collectVirtualModeTargetEvidence(state);
-  return targets.filter((target) => !targetIsBacked(target, evidence));
+): void {
+  for (const file of activeDocumentPointers(
+    state.harnessContext.contextEngine?.agentStream.recentFiles ?? [],
+  )) {
+    addFilesystemEvidence(evidence, file.path, "file");
+  }
+  const loaded = state.hotContext.loaded.find(
+    (entry) => entry.key === FILES_RECENT_HOT_CONTEXT_KEY,
+  );
+  if (!loaded) return;
+  for (const file of readRecentFilesHotContextContent(loaded.content)) {
+    addFilesystemEvidence(evidence, file.path, "file");
+  }
 }
 
 function addResourceTargets(
-  evidence: Set<string>,
+  evidence: TargetEvidence[],
   resource: {
     resourceId: string;
+    kind: string;
     displayName: string;
     aliases: string[];
-    locator: { kind: string; path?: string; url?: string; resourceId?: string; externalId?: string; uri?: string };
+    locator: {
+      kind: string;
+      path?: string;
+      url?: string;
+      resourceId?: string;
+      externalId?: string;
+      uri?: string;
+    };
   },
+  filesystemAuthority: boolean,
 ): void {
-  evidence.add(resource.resourceId);
-  evidence.add(resource.displayName);
-  for (const alias of resource.aliases) evidence.add(alias);
+  addExactEvidence(evidence, resource.resourceId);
+  addExactEvidence(evidence, resource.displayName);
+  for (const alias of resource.aliases) addExactEvidence(evidence, alias);
+  if (
+    filesystemAuthority
+    && resource.locator.kind === "filesystem"
+    && resource.locator.path?.trim()
+  ) {
+    addFilesystemEvidence(
+      evidence,
+      resource.locator.path,
+      resource.kind === "directory" || resource.kind === "git_repository"
+        ? "directory"
+        : "file",
+    );
+  }
   for (const value of [
-    resource.locator.path,
     resource.locator.url,
     resource.locator.resourceId,
     resource.locator.externalId,
     resource.locator.uri,
   ]) {
-    if (value?.trim()) evidence.add(value.trim());
+    if (value?.trim()) addExactEvidence(evidence, value);
   }
 }
 
-function addExtractedTargets(targets: Set<string>, value: string): void {
+function addExtractedTargets(targets: TargetEvidence[], value: string): void {
   for (const match of value.matchAll(/https?:\/\/[^\s<>{}\[\]"']+/g)) {
-    targets.add(match[0].replace(/[),.;!?]+$/, ""));
+    addExactEvidence(targets, match[0].replace(/[),.;!?]+$/, ""));
   }
   for (const match of value.matchAll(/\b(?:RES-[0-9A-F]{24}|W-\d{8}-\d{4})\b/g)) {
-    targets.add(match[0]);
+    addExactEvidence(targets, match[0]);
   }
   for (const match of value.matchAll(/(?:^|[\s"'`])(\/[A-Za-z0-9_@+.,:=~-][^\s"'`,;]*)/g)) {
     const path = match[1]?.replace(/[).!?]+$/, "");
-    if (path && isAbsolute(path)) targets.add(resolve(path));
+    if (path && isAbsolute(path)) addFilesystemEvidence(targets, resolve(path), "file");
   }
   for (const match of value.matchAll(/(?:^|[\s"'`])((?:\.?\.?\/)?[A-Za-z0-9_@+~-][A-Za-z0-9_@+.,/~-]*\.[A-Za-z0-9]{1,12})\b/g)) {
     const path = match[1]?.replace(/[).!?]+$/, "");
-    if (path) targets.add(path);
+    if (path) addExactEvidence(targets, path);
   }
 }
 
@@ -107,9 +184,56 @@ function looksLikeTarget(value: string): boolean {
     || /[A-Za-z0-9_-]\.[A-Za-z0-9]{1,12}$/.test(trimmed);
 }
 
-function targetIsBacked(target: string, evidence: string[]): boolean {
+async function targetIsBacked(target: string, evidence: TargetEvidence[]): Promise<boolean> {
   const normalized = normalizeTarget(target);
-  return evidence.some((candidate) => normalizeTarget(candidate) === normalized);
+  for (const candidate of evidence) {
+    if (normalizeTarget(candidate.value) === normalized) return true;
+    if (
+      !isAbsolute(target)
+      || candidate.kind !== "filesystem"
+      || candidate.authorityKind !== "directory"
+      || !isAbsolute(candidate.value)
+    ) {
+      continue;
+    }
+    const [canonicalRoot, canonicalTarget] = await Promise.all([
+      canonicalizeAbsoluteFilesystemPath(candidate.value),
+      canonicalizeAbsoluteFilesystemPath(target),
+    ]);
+    if (filesystemPathIsWithin(canonicalRoot, canonicalTarget)) return true;
+  }
+  return false;
+}
+
+function addExactEvidence(evidence: TargetEvidence[], value: string): void {
+  const trimmed = value.trim();
+  if (trimmed) evidence.push({ kind: "exact", value: trimmed });
+}
+
+function addFilesystemEvidence(
+  evidence: TargetEvidence[],
+  value: string,
+  authorityKind: "file" | "directory",
+): void {
+  const trimmed = value.trim();
+  if (!trimmed) return;
+  evidence.push({
+    kind: "filesystem",
+    value: isAbsolute(trimmed) ? resolve(trimmed) : trimmed,
+    authorityKind,
+  });
+}
+
+function uniqueEvidence(evidence: TargetEvidence[]): TargetEvidence[] {
+  const seen = new Set<string>();
+  return evidence.filter((entry) => {
+    const key = entry.kind === "filesystem"
+      ? `${entry.kind}:${entry.authorityKind}:${entry.value}`
+      : `${entry.kind}:${entry.value}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function normalizeTarget(value: string): string {

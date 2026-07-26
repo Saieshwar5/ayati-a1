@@ -3,6 +3,8 @@ import type {
   AgentContextProjection,
   BindResourcesForRunRequest,
   BindResourcesForRunResponse,
+  CheckpointRunWorkStateRequest,
+  CheckpointRunWorkStateResponse,
   CommitContextCheckpointRequest,
   CommitContextCheckpointResponse,
   CommitWorkstreamResolutionRequest,
@@ -99,4 +101,7 @@ export interface ContextEngineService {
   ): Promise<VerifyResourceMutationResponse>;
   finalizeRun(input: FinalizeRunRequest): Promise<FinalizeRunResponse>;
   recordRunStep(input: RecordRunStepRequest): Promise<RecordRunStepResponse>;
+  checkpointRunWorkState(
+    input: CheckpointRunWorkStateRequest,
+  ): Promise<CheckpointRunWorkStateResponse>;
 }

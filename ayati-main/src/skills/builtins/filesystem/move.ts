@@ -76,13 +76,6 @@ export const moveTool: ToolDefinition = {
       message: "Path moved by move.",
     }],
   }),
-  selectionHints: {
-    tags: ["filesystem", "move", "rename"],
-    aliases: ["mv", "rename_path"],
-    examples: ["move file", "rename directory"],
-    domain: "filesystem",
-    priority: 2,
-  },
   async execute(input, context): Promise<ToolResult> {
     const parsed = validateMoveInput(input);
     if ("ok" in parsed) return parsed;

@@ -58,7 +58,8 @@ export type WorkstreamBindingProposal =
 
 export interface DeterministicWorkstreamBindingRequest {
   purpose: string;
-  targets: string[];
+  referenceTargets: string[];
+  mutationScopes: string[];
   proposal: WorkstreamBindingProposal;
   expectedContextRevision?: string;
 }

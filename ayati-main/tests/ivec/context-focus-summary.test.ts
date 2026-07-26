@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTokenUsage, LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
 import type { AgentPromptStateView } from "../../src/ivec/agent-runner/prompt-context.js";
+import { buildCoreCapsule } from "../../src/ivec/agent-runner/core-capsule.js";
 import {
   applyMainFocusOverlay,
   createMainPreparationJob,
@@ -98,7 +99,7 @@ describe("anchored run-focus preparation", () => {
 
   it("keeps an oversized exact message out of the disposable summary source", () => {
     const state = promptState();
-    const first = state.context.temporal.recent[0];
+    const first = state.context.core.continuity.recentExact[0];
     if (!first || !("content" in first)) throw new Error("Expected prior exact input.");
     first.content = "x".repeat(250_000);
     state.context.run!.toolCalls = [];
@@ -114,7 +115,8 @@ describe("anchored run-focus preparation", () => {
       modelProfileVersion: "profile:1",
       synchronous: true,
     })).toBeUndefined();
-    expect((state.context.temporal.recent[0] as { content: string }).content).toHaveLength(250_000);
+    expect((state.context.core.continuity.recentExact[0] as { content: string }).content)
+      .toHaveLength(250_000);
   });
 
   it("accepts append-only tail growth and rejects a changed covered source", async () => {
@@ -148,7 +150,7 @@ describe("anchored run-focus preparation", () => {
     })).toEqual({ valid: true, reason: "source_hash_and_tail_valid" });
 
     const changed = structuredClone(appended);
-    const first = changed.context.temporal.recent[0];
+    const first = changed.context.core.continuity.recentExact[0];
     if (first && "content" in first) first.content = "Changed after preparation";
     expect(validateMainCandidate({
       candidate,
@@ -182,7 +184,7 @@ describe("anchored run-focus preparation", () => {
       modelProfileVersion: "profile:1",
     })).toMatchObject({ valid: false, reason: "missing_required_ref:evidence:missing" });
     const wrongRun = structuredClone(appended);
-    wrongRun.context.current.runId = "RUN-OTHER";
+    wrongRun.context.core.current.runId = "RUN-OTHER";
     expect(validateMainCandidate({
       candidate,
       laneId: manager.laneId,
@@ -204,8 +206,8 @@ describe("anchored run-focus preparation", () => {
     };
 
     const projected = applyMainFocusOverlay(state, overlay);
-    expect(projected.context.temporal.recent.map((event) => event.seq)).toEqual([3]);
-    expect(projected.context.temporal.recent.filter((event) => event.current)).toHaveLength(1);
+    expect(projected.context.core.continuity.recentExact.map((event) => event.seq)).toEqual([]);
+    expect(projected.context.core.current.input).toMatchObject({ seq: 3, current: true });
     expect(projected.context.run?.workState).toEqual(state.context.run?.workState);
     expect(projected.context.run?.focus).toEqual(summary);
     expect(projected.context.run?.toolCalls?.map((call) => call.step)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
@@ -217,31 +219,37 @@ describe("anchored run-focus preparation", () => {
 });
 
 function promptState(): AgentPromptStateView {
+  const timeline = [
+    { kind: "user" as const, seq: 1, timestamp: "2026-07-20T00:00:00.000Z", content: "Earlier request" },
+    { kind: "assistant" as const, seq: 2, timestamp: "2026-07-20T00:00:01.000Z", content: "Earlier response" },
+    { kind: "user" as const, seq: 3, timestamp: "2026-07-20T00:00:02.000Z", content: "CURRENT", current: true as const },
+  ];
   return {
     context: {
-      temporal: {
-        recent: [
-          { kind: "user", seq: 1, timestamp: "2026-07-20T00:00:00.000Z", content: "Earlier request" },
-          { kind: "assistant", seq: 2, timestamp: "2026-07-20T00:00:01.000Z", content: "Earlier response" },
-          { kind: "user", seq: 3, timestamp: "2026-07-20T00:00:02.000Z", content: "CURRENT", current: true },
-        ],
-      },
-      current: {
-        inputSeq: 3,
+      core: buildCoreCapsule({
+        revision: "core:1",
         runId: "RUN-1",
+        timeline,
         routing: { status: "bound", workstreamId: "W-1", requestId: "R-1" },
+      }),
+      hot: {
+        available: [],
+        loaded: [],
+        budget: { maxMountedTokens: 8_000, mountedTokens: 0 },
       },
-      stream: { agentId: "local", scopeKey: "default", recentWork: [] },
-      work: { candidates: [] },
-      resources: { stream: [], ingress: [], activeWorkstream: [] },
-      observations: { revision: "obs:1", inventory: [], discovery: [], evidence: [] },
       run: {
         workState: {
-          status: "not_done",
+          status: "in_progress",
           summary: "Continue safely.",
-          blockers: ["Exact blocker"],
-          evidence: ["evidence:authoritative"],
-          artifacts: ["artifact.txt"],
+          plan: [],
+          importantContext: [
+            { kind: "constraint", value: "Exact blocker" },
+            {
+              kind: "artifact",
+              value: "artifact.txt",
+              ref: "evidence:authoritative",
+            },
+          ],
         },
         toolCalls: Array.from({ length: 8 }, (_, index) => toolCall(index + 1)),
       },

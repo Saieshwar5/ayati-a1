@@ -21,8 +21,6 @@ export interface WorkstreamBindingCapabilityPolicy {
   pendingTurnStatus?: string;
   routingSuppressed: boolean;
   routingAvailable: boolean;
-  routingFailureLimitReached: boolean;
-  allowToolLoading: boolean;
 }
 
 export interface CapabilityToolSummary {
@@ -59,8 +57,6 @@ export function deriveWorkstreamBindingCapabilityPolicy(
     ...(pendingTurnStatus ? { pendingTurnStatus } : {}),
     routingSuppressed,
     routingAvailable,
-    routingFailureLimitReached: false,
-    allowToolLoading: pendingTurnStatus !== "clarifying",
   };
 }
 
@@ -126,7 +122,7 @@ export function isDecisionAllowedByWorkstreamBinding(
   decision: AgentDecision,
 ): boolean {
   if (decision.kind === "reply") return true;
-  if (decision.kind === "transition_mode" || decision.kind === "validate") return true;
+  if (decision.kind === "transition_mode" || decision.kind === "stop") return true;
   if (decision.kind !== "act" || decision.action.calls.length === 0) return false;
   return decision.action.calls.every((call) => isToolAllowedByWorkstreamBinding(policy, call.tool))
     && decision.action.allowedTools.every((tool) => isToolAllowedByWorkstreamBinding(policy, tool));

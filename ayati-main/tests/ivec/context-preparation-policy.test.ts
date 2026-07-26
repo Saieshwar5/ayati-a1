@@ -8,8 +8,9 @@ import {
   planFlexibleLaneAllocation,
 } from "../../src/ivec/context-preparation/policy.js";
 import { buildPromptContextManifest } from "../../src/ivec/context-preparation/prompt-manifest.js";
-import { removeDuplicateAndInvalidContext } from "../../src/ivec/context-preparation/deterministic-reduction.js";
 import { estimateTurnInputTokens } from "../../src/prompt/token-estimator.js";
+import { buildCoreCapsule } from "../../src/ivec/agent-runner/core-capsule.js";
+import { emptyHotContextProjection } from "../../src/ivec/hot-context/index.js";
 
 describe("parallel context preparation policy", () => {
   it("uses flexible 15/25/60 lane targets without overriding total admission", () => {
@@ -92,71 +93,74 @@ describe("parallel context preparation policy", () => {
       lane: "system",
       retention: "exact",
     });
-    expect(first.parts.find((part) => part.id === "session.temporal.seq.1")).toMatchObject({
+    expect(first.parts.find((part) => part.id === "session.core.seq.1")).toMatchObject({
       retention: "summarizable",
       sourceRefs: ["seq:1"],
     });
-    expect(first.parts.find((part) => part.id === "session.temporal.seq.3")).toMatchObject({
+    expect(first.parts.find((part) => part.id === "session.core.metadata")).toMatchObject({
+      lane: "session",
+      retention: "referenceable",
+    });
+    expect(first.parts.find((part) => part.id === "session.hot.available")).toMatchObject({
+      lane: "session",
+      retention: "referenceable",
+    });
+    expect(first.parts.find((part) => part.id === "work.core.current")).toMatchObject({
       retention: "exact",
-      sourceRefs: ["seq:3"],
     });
     expect(first.parts.find((part) => part.id === "work.run.work_state")).toMatchObject({
       retention: "exact",
     });
-    expect(first.parts.find((part) => part.id === "work.current")?.sourceRefs).toContain("seq:3");
-  });
-
-  it("removes duplicate identities and expired or malformed observations deterministically", () => {
-    const state = promptState();
-    state.context.temporal.recent.unshift({
-      kind: "user",
-      seq: 1,
-      timestamp: "2026-07-19T00:00:00.000Z",
-      content: "Duplicate sequence",
+    expect(first.parts.find((part) => part.id === "work.run.verified_outcomes")).toMatchObject({
+      lane: "work",
+      retention: "exact",
+      sourceRefs: ["call:write-config", "step:2"],
     });
-    state.context.observations.inventory = [
-      { observationId: "OBS-1", preview: "valid", expiresAt: "2026-07-22T00:00:00.000Z" },
-      { observationId: "OBS-1", preview: "duplicate", expiresAt: "2026-07-22T00:00:00.000Z" },
-      { observationId: "OBS-2", preview: "expired", expiresAt: "2026-07-20T00:00:00.000Z" },
-      { observationId: "OBS-3" },
-    ] as never;
-
-    const reduced = removeDuplicateAndInvalidContext(
-      state,
-      new Date("2026-07-21T00:00:00.000Z"),
-    );
-
-    expect(reduced.stateView.context.temporal.recent.map((event) => event.seq)).toEqual([1, 2, 3]);
-    expect(reduced.stateView.context.observations.inventory).toEqual([
-      expect.objectContaining({ observationId: "OBS-1", preview: "valid" }),
-    ]);
-    expect(reduced.removedDuplicateCount).toBe(2);
-    expect(reduced.removedInvalidObservationCount).toBe(2);
+    expect(first.parts.find((part) => part.id === "work.core.current")?.sourceRefs).toContain("seq:3");
+    expect(first.parts.find((part) => part.id === "work.core.current")?.sourceRefs)
+      .toContain("run:RUN-OLD:step:1:call:read-document");
   });
+
 });
 
 function promptState(): AgentPromptStateView {
   return {
     context: {
-      temporal: {
-        recent: [
+      core: buildCoreCapsule({
+        revision: "context:test",
+        runId: "RUN-1",
+        timeline: [
           { kind: "user", seq: 1, timestamp: "2026-07-20T00:00:00.000Z", content: "Earlier request" },
           { kind: "assistant", seq: 2, timestamp: "2026-07-20T00:00:01.000Z", content: "Earlier reply" },
           { kind: "user", seq: 3, timestamp: "2026-07-20T00:00:02.000Z", content: "CURRENT", current: true },
         ],
-      },
-      current: { inputSeq: 3, runId: "RUN-1", routing: { status: "unbound" } },
-      stream: { agentId: "local", scopeKey: "default", recentWork: [] },
-      work: { candidates: [] },
-      resources: { stream: [], ingress: [], activeWorkstream: [] },
-      observations: { revision: "obs:1", inventory: [], discovery: [], evidence: [] },
+        routing: { status: "unbound" },
+        activeDocuments: [{
+          name: "document.txt",
+          path: "/workspace/document.txt",
+          lastReadAt: "2026-07-19T23:59:00.000Z",
+          evidenceRef: "run:RUN-OLD:step:1:call:read-document",
+          freshness: "unchecked",
+        }],
+      }),
+      hot: emptyHotContextProjection(),
       run: {
         workState: {
-          status: "not_done",
+          status: "in_progress",
           summary: "Continue safely.",
-          verifiedFacts: [],
-          evidence: [],
+          plan: [],
+          importantContext: [],
         },
+        verifiedOutcomes: [{
+          kind: "file.written",
+          subject: "/workspace/config.ts",
+          actualKind: "file",
+          source: {
+            step: 2,
+            callId: "write-config",
+            tool: "write_files",
+          },
+        }],
       },
     },
   };

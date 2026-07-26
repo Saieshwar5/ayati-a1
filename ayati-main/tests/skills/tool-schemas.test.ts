@@ -7,6 +7,7 @@ import { createGitContextSkill } from "../../src/skills/builtins/git-context/ind
 import { createPythonSkill } from "../../src/skills/builtins/python/index.js";
 import { createRecallSkill } from "../../src/skills/builtins/recall/index.js";
 import { createUiSkill } from "../../src/skills/builtins/ui/index.js";
+import { createSystemSkill } from "../../src/skills/builtins/system/index.js";
 import type { PreparedAttachmentService } from "../../src/documents/prepared-attachment-service.js";
 import type { SessionAttachmentService } from "../../src/documents/session-attachment-service.js";
 import type { RecallRetriever } from "../../src/skills/builtins/recall/index.js";
@@ -77,11 +78,16 @@ function findFilesystemPathDescriptionIssues(schema: unknown, path = "inputSchem
 }
 
 async function buildRuntimeTools(): Promise<ToolDefinition[]> {
-  const builtInTools = await builtInSkillsProvider.getAllTools();
+  const builtInTools = (await builtInSkillsProvider.getAllSkills())
+    .flatMap((skill) => skill.tools);
   const preparedAttachmentService = {} as unknown as PreparedAttachmentService;
 
   return [
     ...builtInTools,
+    ...createSystemSkill({
+      defaultTimezone: "UTC",
+      healthRoot: "/tmp",
+    }).tools,
     ...createRecallSkill({
       retriever: { recall: async () => [] } satisfies RecallRetriever,
     }).tools,

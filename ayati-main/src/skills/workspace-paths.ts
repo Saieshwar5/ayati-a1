@@ -1,8 +1,12 @@
 import { mkdirSync } from "node:fs";
-import { mkdir, realpath } from "node:fs/promises";
-import { homedir } from "node:os";
+import { mkdir } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DEFAULT_WORKSPACE_DIR, resolveAyatiRootDir } from "../config/runtime-config.js";
+import {
+  canonicalizeAbsoluteFilesystemPath,
+  requireAbsoluteFilesystemPath,
+  type AbsoluteFilesystemPathResult,
+} from "../shared/filesystem-paths.js";
 
 export const workspaceRoot = DEFAULT_WORKSPACE_DIR;
 
@@ -24,47 +28,10 @@ export interface WorkspaceMutationPathRejected {
 
 export type WorkspaceMutationPathResult = WorkspaceMutationPathAllowed | WorkspaceMutationPathRejected;
 
-export interface AbsolutePathAllowed {
-  ok: true;
-  absolutePath: string;
-}
-
-export interface AbsolutePathRejected {
-  ok: false;
-  code: "ABSOLUTE_PATH_REQUIRED";
-  requestedPath: string;
-  message: string;
-}
-
-export type AbsolutePathResult = AbsolutePathAllowed | AbsolutePathRejected;
-
-function normalizeSpecialPath(pathValue: string): string {
-  const trimmed = pathValue.trim();
-  if (trimmed === "~") return homedir();
-  if (trimmed.startsWith("~/")) return join(homedir(), trimmed.slice(2));
-  return trimmed;
-}
+export type AbsolutePathResult = AbsoluteFilesystemPathResult;
 
 export function requireAbsolutePath(pathValue: string, field = "path"): AbsolutePathResult {
-  const trimmed = pathValue.trim();
-  if (trimmed === "~" || trimmed.startsWith("~/")) {
-    return {
-      ok: false,
-      code: "ABSOLUTE_PATH_REQUIRED",
-      requestedPath: pathValue,
-      message: `${field} must be an absolute filesystem path. Relative paths, workspace aliases, and ~ paths are not accepted in agent tool calls.`,
-    };
-  }
-  const normalized = normalizeSpecialPath(pathValue);
-  if (!isAbsolute(normalized)) {
-    return {
-      ok: false,
-      code: "ABSOLUTE_PATH_REQUIRED",
-      requestedPath: pathValue,
-      message: `${field} must be an absolute filesystem path. Relative paths, workspace aliases, and ~ paths are not accepted in agent tool calls.`,
-    };
-  }
-  return { ok: true, absolutePath: resolve(normalized) };
+  return requireAbsoluteFilesystemPath(pathValue, field);
 }
 
 /**
@@ -72,24 +39,7 @@ export function requireAbsolutePath(pathValue: string, field = "path"): Absolute
  * handles new targets by resolving their nearest existing parent first.
  */
 export async function canonicalizeAbsolutePath(pathValue: string): Promise<string> {
-  const required = requireAbsolutePath(pathValue);
-  if (!required.ok) {
-    throw new Error(required.message);
-  }
-  const suffix: string[] = [];
-  let current = required.absolutePath;
-  while (true) {
-    try {
-      const existing = await realpath(current);
-      return resolve(existing, ...suffix);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      const parent = dirname(current);
-      if (parent === current) return required.absolutePath;
-      suffix.unshift(basename(current));
-      current = parent;
-    }
-  }
+  return await canonicalizeAbsoluteFilesystemPath(pathValue);
 }
 
 export function getWorkspaceRoot(): string {
@@ -135,7 +85,7 @@ function stripWorkspaceAliasPrefix(pathValue: string, root: string): string {
 }
 
 export function resolveWorkspacePath(pathValue: string, rootOverride?: string): string {
-  const normalized = normalizeSpecialPath(pathValue);
+  const normalized = pathValue.trim();
   const root = ensureWorkspaceRootSync(rootOverride);
 
   if (isAbsolute(normalized)) {
@@ -158,7 +108,7 @@ export function resolveWorkspaceMutationPath(
     root?: string;
   } = {},
 ): WorkspaceMutationPathResult {
-  const normalized = normalizeSpecialPath(pathValue);
+  const normalized = pathValue.trim();
   const root = ensureWorkspaceRootSync(options.root);
   const resolvedPath = isAbsolute(normalized)
     ? resolve(normalized)

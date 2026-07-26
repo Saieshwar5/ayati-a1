@@ -19,29 +19,11 @@ export interface GitContextSkillDeps {
   service: ContextEngineService;
 }
 
-const PROMPT = [
-  "A workstream is durable context for a long-lived subject, goal, or maintained body of work. It is not the project directory.",
-  "A request is one bounded outcome inside a workstream. A run is only the current compute, audit, and recovery boundary.",
-  "Real files, directories, URLs, repositories, media, databases, and external objects are resources linked to workstreams.",
-  "The workstream context repository contains only Ayati-maintained context. Never write deliverables into it.",
-  "When the user gives no destination, creating a workstream also creates one user-visible primary output directory under the Ayati workspace.",
-  "When the user names an existing path or resource, inspect it and bind that exact resource instead of moving it or initializing Git inside it.",
-  "Continue the active request only for the same unfinished outcome. Create a new request in the same workstream for a materially separate outcome on the same durable subject or resources.",
-  "Use workstream and resource discovery only for explicit read-only inspection; discovery results never grant mutation authority.",
-  "Use agent_history_search for older discussion, run summaries, or evidence omitted from the bounded stream projection. Use agent_history_read with the exact returned ref or sequence range.",
-  "The main agent never activates or creates workstreams directly. The runtime resolves ownership automatically when a binding-required capability is requested.",
-  "Casual conversation and isolated list, search, or read work may remain unbound. Persistent mutation requires one immutable workstream/request binding.",
-  "Never choose by recency alone. Exact workstream identity, exact resource identity, and explicit continuation are strongest; ask one focused question if mutation ownership remains ambiguous.",
-  "Stars are user-controlled and may change only when the current user message explicitly requests it.",
-  "After binding, use the returned resource locators. Mutation authority is granted only for exact mutable resources and exact targets.",
-].join("\n");
-
 export function createGitContextSkill(deps: GitContextSkillDeps): SkillDefinition {
   return {
     id: "git-context",
     version: "5.0.0",
     description: "Inspect agent-stream history and discover, create, or continue durable workstreams linked to real resources.",
-    promptBlock: PROMPT,
     tools: [
       createWorkstreamTool(deps.service),
       activateWorkstreamTool(deps.service),
@@ -74,12 +56,6 @@ function createWorkstreamTool(service: ContextEngineService): ToolDefinition {
     outputSchema: routingOutputSchema(),
     annotations: routingAnnotations(),
     resultContract: succeededContract(),
-    selectionHints: {
-      tags: ["git-context", "workstream", "create", "routing"],
-      aliases: ["create workstream", "start durable work"],
-      domain: "git_context",
-      priority: 10,
-    },
     async execute(input, context): Promise<ToolResult> {
       const parsed = parseCreateInput(input, context);
       if ("ok" in parsed) return parsed;
@@ -134,12 +110,6 @@ function activateWorkstreamTool(service: ContextEngineService): ToolDefinition {
     outputSchema: routingOutputSchema(),
     annotations: routingAnnotations(),
     resultContract: succeededContract(),
-    selectionHints: {
-      tags: ["git-context", "workstream", "activate", "continue", "routing"],
-      aliases: ["activate workstream", "continue durable work"],
-      domain: "git_context",
-      priority: 10,
-    },
     async execute(input, context): Promise<ToolResult> {
       const parsed = parseActivateInput(input, context);
       if ("ok" in parsed) return parsed;

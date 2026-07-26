@@ -1,6 +1,5 @@
 import type {
   AgentContextProjection,
-  ReusableObservationProjection,
   RunContextProjection,
   StreamMessage,
 } from "ayati-context-engine";
@@ -16,7 +15,6 @@ export interface AgentContextFixtureOptions {
   streamId?: string;
   runId?: string;
   message?: string;
-  observations?: ReusableObservationProjection;
   includeRun?: boolean;
 }
 
@@ -42,7 +40,6 @@ export function agentContextFixture(
     contextRevision: options.contextRevision ?? "revision-1",
     streamRevision: "stream-revision-1",
     ...(includeRun ? { runRevision: "run-revision-1" } : {}),
-    observationRevision: options.observations?.revision ?? "observations:empty",
     stream: {
       stream: {
         streamId,
@@ -54,11 +51,12 @@ export function agentContextFixture(
         updatedAt: AT,
       },
       recentMessages: messages,
-      recentWork: [],
+      recentWorkstreams: [],
+      recentFiles: [],
+      recentWorkStates: [],
       resources: { count: 0, recent: [] },
     },
     ...(includeRun ? { run: runFixture(runId, streamId) } : {}),
-    observations: options.observations ?? emptyObservations(),
     warnings: [],
   };
 }
@@ -67,15 +65,6 @@ export function contextEngineFixture(
   options: AgentContextFixtureOptions = {},
 ): ContextEngineMachineContext {
   return buildContextEngineProjection(agentContextFixture(options));
-}
-
-export function emptyObservations(): ReusableObservationProjection {
-  return {
-    revision: "observations:empty",
-    inventory: [],
-    discovery: [],
-    evidence: [],
-  };
 }
 
 function runFixture(runId: string, streamId: string): RunContextProjection {
@@ -92,15 +81,12 @@ function runFixture(runId: string, streamId: string): RunContextProjection {
       runId,
       revision: 0,
       afterStep: 0,
-      status: "not_done",
-      summary: "",
-      openWork: [],
-      blockers: [],
-      facts: [],
-      evidence: [],
-      artifacts: [],
-      nextStep: null,
-      userInputNeeded: [],
+      status: "in_progress",
+      summary: "Run started.",
+      plan: [],
+      importantContext: [],
+      nextAction: null,
+      updateReason: "initial",
       updatedAt: AT,
     },
     steps: [],

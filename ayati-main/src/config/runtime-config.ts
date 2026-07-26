@@ -12,7 +12,7 @@ export const DEFAULT_HTTP_ALLOW_ORIGIN = "*";
 export const DEFAULT_UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
 export const DEFAULT_DOCUMENT_EMBED_BATCH_SIZE = 32;
 export const DEFAULT_DOCUMENT_VECTOR_MIN_CHUNKS = 40;
-export const DEFAULT_AGENT_MAX_SELECTED_TOOLS = 15;
+export const DEFAULT_AGENT_MAX_CAPABILITY_SURFACE_TOOLS = 8;
 export const DEFAULT_AYATI_ROOT_DIR = resolve(projectRoot, "ayati");
 export const DEFAULT_WORKSPACE_DIR = join(DEFAULT_AYATI_ROOT_DIR, "workspace");
 export const DEFAULT_CONTEXT_ENGINE_TIMEZONE = "Asia/Kolkata";
@@ -108,14 +108,14 @@ function loadPythonRuntimeConfig(env: NodeJS.ProcessEnv): PythonRuntimeConfig {
 }
 
 function loadAgentRuntimeConfig(env: NodeJS.ProcessEnv): AgentRuntimeConfig {
-  const maxSelectedTools = parsePositiveInt(
-    env["AYATI_AGENT_MAX_SELECTED_TOOLS"],
-    DEFAULT_AGENT_MAX_SELECTED_TOOLS,
+  const maxCapabilitySurfaceTools = parsePositiveInt(
+    env["AYATI_AGENT_MAX_CAPABILITY_SURFACE_TOOLS"],
+    DEFAULT_AGENT_MAX_CAPABILITY_SURFACE_TOOLS,
   );
 
   return {
     loopConfig: {
-      maxSelectedTools,
+      maxCapabilitySurfaceTools,
     },
   };
 }

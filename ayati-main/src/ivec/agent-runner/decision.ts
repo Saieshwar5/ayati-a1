@@ -47,11 +47,22 @@ import {
   summarizePromptStateView,
   summarizeToolDefinitions,
 } from "./feedback-summary.js";
+import type {
+  ModeTransitionRequest,
+  TerminalStopRequest,
+  VirtualModeTransitionTarget,
+} from "./virtual-mode.js";
 import {
-  normalizeWorkstreamBindingProposal,
-  workstreamBindingProposalSchema,
-} from "../workstream-binding/proposal.js";
-import type { ModeTransitionRequest, ValidationRequest } from "./virtual-mode.js";
+  buildModeTransitionControlTools,
+  isModeTransitionControlToolName,
+  MODE_TRANSITION_CONTROL_TOOL_NAMES,
+  modeTransitionRequestFromControlCall,
+} from "./mode-transition-controls.js";
+import { CapabilityCatalog } from "./capabilities/catalog.js";
+import type { ModeCapabilityOptions } from "./capabilities/contracts.js";
+import type { WorkStateUpdateInput } from "./work-state/contracts.js";
+import { WORK_STATE_LIMITS } from "./work-state/contracts.js";
+import { normalizeWorkStateUpdateInput } from "./work-state/checkpoint.js";
 
 export type AgentDecisionStatus = "completed" | "failed";
 export type AgentActionMode = "single" | "sequential" | "parallel";
@@ -70,19 +81,6 @@ export interface AgentAction {
   calls: AgentToolCallSpec[];
   allowedTools: string[];
   assertions: ToolContractAssertion[];
-}
-
-export interface WorkstreamCompletionResourceInput {
-  resourceId: string;
-  path: string;
-  kind: "file" | "directory";
-  description: string;
-  aliases: string[];
-}
-
-export interface AgentWorkstreamCompletionRequest {
-  summary: string;
-  resources: WorkstreamCompletionResourceInput[];
 }
 
 export type DecisionFailureKind =
@@ -110,8 +108,13 @@ export type AgentDecision =
       workingNotes?: string[];
     }
   | {
-      kind: "validate";
-      request: ValidationRequest;
+      kind: "stop";
+      request: TerminalStopRequest;
+      workingNotes?: string[];
+    }
+  | {
+      kind: "checkpoint_work_state";
+      update: WorkStateUpdateInput;
       workingNotes?: string[];
     };
 
@@ -120,8 +123,10 @@ interface CallAgentDecisionInput {
   stateView: AgentStateView;
   toolDefinitions: ToolDefinition[];
   toolRoutingSummary?: string;
+  modeCapabilityOptions?: ModeCapabilityOptions;
   modeTransitionAvailable?: boolean;
-  validationAvailable?: boolean;
+  terminalStopAvailable?: boolean;
+  workStateCheckpointAvailable?: boolean;
   systemContext?: string;
   metrics?: RunMetrics;
   feedbackLedger?: AgentFeedbackLedger;
@@ -141,7 +146,7 @@ interface ToolProtocolViolation {
   reason: string;
   invalidTools: string[];
   selectedTools: string[];
-  loadToolsUsedAsAction: boolean;
+  controlToolUsedAsAction: boolean;
   mutationRequiresWorkstreamBinding: boolean;
 }
 
@@ -177,8 +182,9 @@ const MAX_DECISION_ATTEMPTS = 3;
 const MAX_PROVIDER_EMPTY_RESPONSE_RETRIES = 1;
 const PROVIDER_EMPTY_RESPONSE_RETRY_DELAY_MS = 400;
 const TOOL_PROTOCOL_FAILURE_REPLY = "I could not form a valid tool call for this request.";
-const MODE_TRANSITION_TOOL_NAME = "decision_transition_mode";
-const VALIDATION_TOOL_NAME = "decision_validate";
+const TERMINAL_STOP_TOOL_NAME = "decision_stop";
+const WORK_STATE_CHECKPOINT_TOOL_NAME = "decision_checkpoint_workstate";
+const DEFAULT_MODE_CAPABILITY_OPTIONS = new CapabilityCatalog().modeOptions();
 
 export async function callAgentDecision(input: CallAgentDecisionInput): Promise<AgentDecision> {
   const contextLimits = resolveModelContextLimits(input.provider);
@@ -210,15 +216,18 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
     const metricStage = attempt === 0 ? "agent_decision" : "agent_decision_repair";
     const startedAt = Date.now();
     let turn: LlmTurnOutput;
+    const decisionTools = buildNativeDecisionTools(input.toolDefinitions, {
+      modeTransitionAvailable: input.modeTransitionAvailable !== false,
+      terminalStopAvailable: input.terminalStopAvailable === true,
+      workStateCheckpointAvailable: input.workStateCheckpointAvailable === true,
+      modeCapabilityOptions: input.modeCapabilityOptions ?? DEFAULT_MODE_CAPABILITY_OPTIONS,
+      allowedModeDestinations: allowedModeDestinations(input.stateView),
+    });
     traceDecisionProviderRequest(input.provider, messages, attempt);
     try {
       if (!input.provider.capabilities.nativeToolCalling) {
         throw new Error(`Provider ${input.provider.name} does not support native decision tools.`);
       }
-      const decisionTools = buildNativeDecisionTools(input.toolDefinitions, {
-        modeTransitionAvailable: input.modeTransitionAvailable !== false,
-        validationAvailable: input.validationAvailable === true,
-      });
       recordDecisionFeedback(input, "native_tool_surface", {
         attempt: attempt + 1,
         controlTools: decisionTools
@@ -330,7 +339,8 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
       });
       const violation = validateToolProtocol(decision, input.toolDefinitions, {
         modeTransitionAvailable: input.modeTransitionAvailable !== false,
-        validationAvailable: input.validationAvailable === true,
+        terminalStopAvailable: input.terminalStopAvailable === true,
+        workStateCheckpointAvailable: input.workStateCheckpointAvailable === true,
       });
       if (violation) {
         const repair = createToolProtocolRepairSignal(violation, attempt + 1);
@@ -371,7 +381,9 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         continue;
       }
 
-      const inputViolation = validateToolInputSchemas(decision, input.toolDefinitions);
+      const inputViolation = turn.type === "tool_calls"
+        ? validateNativeToolInputSchemas(turn.calls, decisionTools)
+        : null;
       if (!inputViolation) {
         return decision;
       }
@@ -420,7 +432,16 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         ...repairSignalToFeedbackData(repair),
       });
       if (attempt >= 1) {
-        throw error;
+        recordDecisionFeedback(input, "failed_fallback", {
+          attempt: attempt + 1,
+          reason: error instanceof Error ? error.message : String(error),
+          ...repairSignalToFeedbackData(repair),
+        });
+        return {
+          kind: "reply",
+          status: "failed",
+          message: TOOL_PROTOCOL_FAILURE_REPLY,
+        };
       }
       agentTrace("agent_decision", `attempt=${attempt + 1} repair_request reason=parse_failed`);
       recordDecisionFeedback(input, "repair_requested", {
@@ -714,10 +735,19 @@ function summarizeDecisionForFeedback(decision: AgentDecision): Record<string, u
       request: decision.request,
     };
   }
-  if (decision.kind === "validate") {
+  if (decision.kind === "stop") {
     return {
       kind: decision.kind,
       request: decision.request,
+    };
+  }
+  if (decision.kind === "checkpoint_work_state") {
+    return {
+      kind: decision.kind,
+      reason: decision.update.reason,
+      planItemCount: decision.update.plan.length,
+      importantContextCount: decision.update.importantContext.length,
+      summary: decision.update.summary,
     };
   }
   return {
@@ -775,7 +805,7 @@ function createToolProtocolRepairSignal(violation: ToolProtocolViolation, attemp
       reason: violation.reason,
       invalidTools: violation.invalidTools,
       selectedTools: violation.selectedTools,
-      loadToolsUsedAsAction: violation.loadToolsUsedAsAction,
+      controlToolUsedAsAction: violation.controlToolUsedAsAction,
       mutationRequiresWorkstreamBinding: violation.mutationRequiresWorkstreamBinding,
     },
   });
@@ -785,11 +815,14 @@ function toolProtocolRepairCode(violation: ToolProtocolViolation): RepairCode {
   if (violation.reason.includes("no tool calls")) {
     return "R_NO_PROGRESS";
   }
-  if (violation.loadToolsUsedAsAction) {
-    return "R_LOAD_TOOLS_USED_AS_ACTION";
+  if (violation.controlToolUsedAsAction) {
+    return "R_CONTROL_TOOL_USED_AS_ACTION";
   }
   if (violation.mutationRequiresWorkstreamBinding) {
     return "R_MUTATION_REQUIRES_WORKSTREAM_BINDING";
+  }
+  if (violation.reason.startsWith("Every executable tool call requires a specific purpose")) {
+    return "R_TOOL_PURPOSE_INVALID";
   }
   if (violation.invalidTools.length > 0) {
     return "R_TOOL_NOT_SELECTED";
@@ -845,7 +878,8 @@ function validateToolProtocol(
   selectedToolDefinitions: ToolDefinition[],
   options: {
     modeTransitionAvailable: boolean;
-    validationAvailable: boolean;
+    terminalStopAvailable: boolean;
+    workStateCheckpointAvailable: boolean;
   },
 ): ToolProtocolViolation | null {
   const selectedTools = selectedToolDefinitions.map((tool) => tool.name);
@@ -853,24 +887,38 @@ function validateToolProtocol(
     if (!options.modeTransitionAvailable) {
       return {
         kind: "tool_protocol_violation",
-        reason: "decision_transition_mode is not available in the current runtime phase",
-        invalidTools: [MODE_TRANSITION_TOOL_NAME],
+        reason: "Mode-transition controls are not available in the current runtime phase",
+        invalidTools: [...MODE_TRANSITION_CONTROL_TOOL_NAMES],
         selectedTools,
-        loadToolsUsedAsAction: false,
+        controlToolUsedAsAction: false,
         mutationRequiresWorkstreamBinding: false,
       };
     }
     return null;
   }
 
-  if (decision.kind === "validate") {
-    if (!options.validationAvailable) {
+  if (decision.kind === "stop") {
+    if (!options.terminalStopAvailable) {
       return {
         kind: "tool_protocol_violation",
-        reason: "decision_validate is available only after the virtual graph is active",
-        invalidTools: [VALIDATION_TOOL_NAME],
+        reason: "decision_stop is available only after the virtual graph is active",
+        invalidTools: [TERMINAL_STOP_TOOL_NAME],
         selectedTools,
-        loadToolsUsedAsAction: false,
+        controlToolUsedAsAction: false,
+        mutationRequiresWorkstreamBinding: false,
+      };
+    }
+    return null;
+  }
+
+  if (decision.kind === "checkpoint_work_state") {
+    if (!options.workStateCheckpointAvailable) {
+      return {
+        kind: "tool_protocol_violation",
+        reason: "WorkState checkpoints are available only during active graph work",
+        invalidTools: [WORK_STATE_CHECKPOINT_TOOL_NAME],
+        selectedTools,
+        controlToolUsedAsAction: false,
         mutationRequiresWorkstreamBinding: false,
       };
     }
@@ -887,7 +935,7 @@ function validateToolProtocol(
     .filter((tool) => isNativeControlToolName(tool) || !selectedToolSet.has(tool));
   const invalidAllowedTools = decision.action.allowedTools.filter((tool) => isNativeControlToolName(tool) || !selectedToolSet.has(tool));
   const invalidTools = uniqueStrings([...invalidCallTools, ...invalidAllowedTools]);
-  const loadToolsUsedAsAction = decision.action.calls.some((call) => isNativeControlToolName(call.tool));
+  const controlToolUsedAsAction = decision.action.calls.some((call) => isNativeControlToolName(call.tool));
   const mutationRequiresWorkstreamBinding = false;
 
   if (decision.action.calls.length === 0) {
@@ -896,7 +944,7 @@ function validateToolProtocol(
       reason: "act decision contained no tool calls",
       invalidTools,
       selectedTools,
-      loadToolsUsedAsAction,
+      controlToolUsedAsAction,
       mutationRequiresWorkstreamBinding,
     };
   }
@@ -911,51 +959,52 @@ function validateToolProtocol(
       reason: `Every executable tool call requires a specific purpose between 1 and ${TOOL_CALL_PURPOSE_MAX_CHARS} characters. Invalid calls: ${invalidPurposeCalls.map((call) => call.id).join(", ")}`,
       invalidTools: uniqueStrings(invalidPurposeCalls.map((call) => call.tool)),
       selectedTools,
-      loadToolsUsedAsAction,
+      controlToolUsedAsAction,
       mutationRequiresWorkstreamBinding,
     };
   }
 
-  if (invalidTools.length === 0 && !loadToolsUsedAsAction) {
+  if (invalidTools.length === 0 && !controlToolUsedAsAction) {
     return null;
   }
 
   return {
     kind: "tool_protocol_violation",
-    reason: loadToolsUsedAsAction
-      ? "A tool-loading control was used as an action tool"
+    reason: controlToolUsedAsAction
+      ? "A harness control was used as an action tool"
       : "act decision referenced tools not listed in Selected tools",
     invalidTools,
     selectedTools,
-    loadToolsUsedAsAction,
+    controlToolUsedAsAction,
     mutationRequiresWorkstreamBinding,
   };
 }
 
-function validateToolInputSchemas(
-  decision: AgentDecision,
-  selectedToolDefinitions: ToolDefinition[],
+function validateNativeToolInputSchemas(
+  calls: LlmToolCall[],
+  nativeTools: LlmToolSchema[],
 ): ToolInputSchemaViolation | null {
-  if (decision.kind !== "act") {
-    return null;
-  }
-
-  const selectedTools = selectedToolDefinitions.map((tool) => tool.name);
-  const byName = new Map(selectedToolDefinitions.map((tool) => [tool.name, tool]));
+  const selectedTools = nativeTools.map((tool) => tool.name);
+  const byName = new Map(nativeTools.map((tool) => [tool.name, tool]));
   const failures: ToolInputSchemaViolation["failures"] = [];
 
-  for (const call of decision.action.calls) {
-    const tool = byName.get(call.tool);
-    if (!tool?.inputSchema) {
+  for (const call of calls) {
+    const tool = byName.get(call.name);
+    if (!tool) {
       continue;
     }
-    const validationError = validateInputAgainstSchema(call.tool, call.input, tool.inputSchema);
+    const callInput = isPlainObject(call.input) ? call.input : {};
+    const validationError = validateInputAgainstSchema(
+      call.name,
+      callInput,
+      tool.inputSchema,
+    );
     if (validationError) {
       failures.push({
         callId: call.id,
-        tool: call.tool,
+        tool: call.name,
         error: validationError,
-        inputKeys: Object.keys(call.input),
+        inputKeys: Object.keys(callInput),
         schema: tool.inputSchema,
       });
     }
@@ -994,6 +1043,34 @@ function validateInputAgainstSchema(
     const expectedType = typeof property?.["type"] === "string" ? property["type"] : undefined;
     if (expectedType && !matchesJsonSchemaType(value, expectedType)) {
       return `Invalid input for '${toolName}': field '${field}' expected type '${expectedType}', got '${describeJsonType(value)}'`;
+    }
+    if (
+      typeof value === "string"
+      && typeof property?.["minLength"] === "number"
+      && value.length < property["minLength"]
+    ) {
+      return `Invalid input for '${toolName}': field '${field}' must contain at least ${property["minLength"]} characters`;
+    }
+    if (
+      typeof value === "string"
+      && typeof property?.["maxLength"] === "number"
+      && value.length > property["maxLength"]
+    ) {
+      return `Invalid input for '${toolName}': field '${field}' must contain at most ${property["maxLength"]} characters`;
+    }
+    if (
+      Array.isArray(value)
+      && typeof property?.["minItems"] === "number"
+      && value.length < property["minItems"]
+    ) {
+      return `Invalid input for '${toolName}': field '${field}' must contain at least ${property["minItems"]} items`;
+    }
+    if (
+      Array.isArray(value)
+      && typeof property?.["maxItems"] === "number"
+      && value.length > property["maxItems"]
+    ) {
+      return `Invalid input for '${toolName}': field '${field}' must contain at most ${property["maxItems"]} items`;
     }
   }
 
@@ -1170,7 +1247,7 @@ function buildDecisionPromptSections(
   return {
     "user.tools": `Selected tools:\n${formatSelectedToolNames(toolDefinitions)}`,
     "user.toolRouting": toolRoutingSummary?.trim()
-      ? `Capability catalog (use exact groups in decision_transition_mode.capabilities):\n${toolRoutingSummary.trim()}`
+      ? `Capability catalog (use exact ids in the selected mode control's capabilities field):\n${toolRoutingSummary.trim()}`
       : "",
     "user.state": `State view:\n${JSON.stringify(stateView, null, 2)}`,
   };
@@ -1181,15 +1258,10 @@ function buildStateViewPromptBreakdown(
 ): Record<string, string | undefined> {
   return {
     "state.context": stringifySection(stateView.context),
-    "state.context.temporal": stringifySection(stateView.context.temporal),
-    "state.context.current": stringifySection(stateView.context.current),
-    "state.context.stream": stringifySection(stateView.context.stream),
-    "state.context.work": stringifySection(stateView.context.work),
-    "state.context.resources": stringifySection(stateView.context.resources),
-    "state.context.observations": stringifySection(stateView.context.observations),
+    "state.context.core": stringifySection(stateView.context.core),
+    "state.context.hot": stringifySection(stateView.context.hot),
     "state.context.tools": stringifySection(stateView.context.tools),
     "state.context.harness": stringifySection(stateView.context.harness),
-    "state.context.personal": stringifySection(stateView.context.personal),
     "state.context.run": stringifySection(stateView.context.run),
   };
 }
@@ -1225,46 +1297,15 @@ function formatSelectedToolNames(toolDefinitions: ToolDefinition[]): string {
     .join("\n");
 }
 
-function normalizeModeTransitionRequest(value: unknown): ModeTransitionRequest {
-  const record = isPlainObject(value) ? value : {};
-  const binding = normalizeWorkstreamBindingProposal(record["binding"]);
-  return {
-    to: normalizeModeTransitionTarget(record["to"]),
-    purpose: typeof record["purpose"] === "string" ? record["purpose"].trim() : "",
-    capabilities: normalizeStringArray(record["capabilities"]),
-    ...(Array.isArray(record["targets"])
-      ? { targets: normalizeStringArray(record["targets"]) }
-      : {}),
-    ...(binding ? { binding } : {}),
-  };
-}
-
-function normalizeModeTransitionTarget(value: unknown): ModeTransitionRequest["to"] {
-  if (
-    value === "observe.locate"
-    || value === "observe.investigate"
-    || value === "resolve"
-    || value === "execute"
-  ) {
-    return value;
-  }
-  return "observe.locate";
-}
-
-function normalizeValidationRequest(input: unknown): ValidationRequest {
+function normalizeTerminalStopRequest(input: unknown): TerminalStopRequest {
   const record = isPlainObject(input) ? input : {};
   const outcome = record["outcome"] === "needs_user_input"
     || record["outcome"] === "blocked"
-    || record["outcome"] === "failed"
     ? record["outcome"]
-    : "completed";
+    : "failed";
   return {
     outcome,
-    summary: typeof record["summary"] === "string" ? record["summary"].trim() : "",
     response: typeof record["response"] === "string" ? record["response"].trim() : "",
-    ...(Array.isArray(record["resources"])
-      ? { resources: normalizeWorkstreamCompletionRequest(record).resources }
-      : {}),
   };
 }
 
@@ -1277,12 +1318,6 @@ function normalizeWorkingNotes(value: unknown): string[] | undefined {
     .filter((note) => note.length > 0)
     .slice(0, 12);
   return notes.length > 0 ? notes : [];
-}
-
-function normalizeStringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.map(String).map((item) => item.trim()).filter((item) => item.length > 0)
-    : [];
 }
 
 function uniqueStrings(values: string[]): string[] {
@@ -1302,94 +1337,139 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function allowedModeDestinations(stateView: AgentStateView): VirtualModeTransitionTarget[] {
+  const allowed = stateView.context.run?.mode?.allowedNext
+    .filter((destination): destination is VirtualModeTransitionTarget => (
+      destination === "context.retrieve"
+      || destination === "observe.locate"
+      || destination === "observe.investigate"
+      || destination === "resolve"
+      || destination === "execute"
+      || destination === "validation"
+    ));
+  return allowed
+    ?? ["context.retrieve", "observe.locate", "observe.investigate", "resolve", "execute", "validation"];
+}
+
 function buildNativeDecisionTools(
   selectedTools: ToolDefinition[],
   options: {
     modeTransitionAvailable: boolean;
-    validationAvailable: boolean;
+    terminalStopAvailable: boolean;
+    workStateCheckpointAvailable: boolean;
+    modeCapabilityOptions: ModeCapabilityOptions;
+    allowedModeDestinations: VirtualModeTransitionTarget[];
   },
 ): LlmToolSchema[] {
   const controlTools: LlmToolSchema[] = [];
   if (options.modeTransitionAvailable) {
-    controlTools.push({
-      name: MODE_TRANSITION_TOOL_NAME,
-      description: "Enter or change one run-scoped operational mode. Choose the responsibility and exact capability groups; the harness validates targets and selects eligible concrete tools. Unbound resolve also requires one typed proposal using exact current-run routing evidenceRef values.",
-      inputSchema: objectSchema({
-        to: {
-          type: "string",
-          enum: ["observe.locate", "observe.investigate", "resolve", "execute"],
-        },
-        purpose: {
-          type: "string",
-          minLength: 1,
-          maxLength: 500,
-        },
-        capabilities: {
-          type: "array",
-          minItems: 1,
-          maxItems: 8,
-          items: { type: "string", minLength: 1 },
-        },
-        targets: {
-          type: "array",
-          maxItems: 12,
-          items: { type: "string", minLength: 1 },
-        },
-        binding: workstreamBindingProposalSchema(),
-        workingNotes: workingNotesSchema(),
-      }, ["to", "purpose", "capabilities"]),
-    });
+    controlTools.push(...buildModeTransitionControlTools(
+      options.modeCapabilityOptions,
+      options.allowedModeDestinations,
+    ));
   }
-  if (options.validationAvailable) {
+  if (options.terminalStopAvailable) {
     controlTools.push({
-      name: VALIDATION_TOOL_NAME,
-      description: "Request deterministic whole-task validation and provide the complete terminal user response. Accepted validation finalizes without another model request; rejected validation keeps the current mode active with repair feedback.",
+      name: TERMINAL_STOP_TOOL_NAME,
+      description: "Stop active graph work only when current state proves that user input is required, progress is blocked, or an unrecovered failure occurred. Completed work must pass validation mode and then reply directly.",
       inputSchema: objectSchema({
         outcome: {
           type: "string",
-          enum: ["completed", "needs_user_input", "blocked", "failed"],
-        },
-        summary: {
-          type: "string",
-          minLength: 1,
-          maxLength: 1000,
+          enum: ["needs_user_input", "blocked", "failed"],
         },
         response: {
           type: "string",
           minLength: 1,
           description: "Complete user-facing terminal response to send after validation is accepted.",
         },
-        resources: {
-          type: "array",
-          maxItems: 20,
-          items: objectSchema({
-            resourceId: {
-              type: "string",
-              pattern: "^RES-[0-9A-F]{24}$",
-              description: "Exact bound resource id that contains this output.",
-            },
-            path: {
-              type: "string",
-              minLength: 1,
-              description: "Portable path relative to that resource's filesystem root. Use '.' for the resource itself.",
-            },
-            kind: { type: "string", enum: ["file", "directory"] },
-            description: { type: "string", minLength: 1, maxLength: 300 },
-            aliases: {
-              type: "array",
-              maxItems: 12,
-              items: { type: "string", minLength: 1, maxLength: 120 },
-            },
-          }, ["resourceId", "path", "kind", "description", "aliases"]),
-        },
         workingNotes: workingNotesSchema(),
-      }, ["outcome", "summary", "response"]),
+      }, ["outcome", "response"]),
     });
+  }
+  if (options.workStateCheckpointAvailable) {
+    controlTools.push(workStateCheckpointTool());
   }
   const executableTools = selectedTools
     .filter((tool) => !isNativeControlToolName(tool.name))
     .map(toNativeExecutableToolSchema);
   return [...controlTools, ...executableTools];
+}
+
+function workStateCheckpointTool(): LlmToolSchema {
+  return {
+    name: WORK_STATE_CHECKPOINT_TOOL_NAME,
+    description: "Checkpoint the small durable run handoff only when implementation needs a real plan or before context-pressure reduction. Do not copy routine tool output or verification details.",
+    inputSchema: objectSchema({
+      reason: {
+        type: "string",
+        enum: ["plan", "context_pressure"],
+      },
+      summary: {
+        type: "string",
+        minLength: 1,
+        maxLength: WORK_STATE_LIMITS.summaryChars,
+        description: "Concise description of what has actually been done and the current responsibility.",
+      },
+      plan: {
+        type: "array",
+        maxItems: WORK_STATE_LIMITS.planItems,
+        description: "Flat implementation plan. Keep empty unless work is genuinely complex.",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            id: {
+              type: "string",
+              minLength: 1,
+              maxLength: WORK_STATE_LIMITS.planIdChars,
+            },
+            task: {
+              type: "string",
+              minLength: 1,
+              maxLength: WORK_STATE_LIMITS.planTaskChars,
+            },
+            status: {
+              type: "string",
+              enum: ["pending", "active", "done", "blocked"],
+            },
+          },
+          required: ["id", "task", "status"],
+        },
+      },
+      importantContext: {
+        type: "array",
+        maxItems: WORK_STATE_LIMITS.importantContextItems,
+        description: "Only artifacts, decisions, findings, or constraints needed to continue.",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            kind: {
+              type: "string",
+              enum: ["artifact", "decision", "finding", "constraint"],
+            },
+            value: {
+              type: "string",
+              minLength: 1,
+              maxLength: WORK_STATE_LIMITS.importantContextValueChars,
+            },
+            ref: {
+              type: "string",
+              minLength: 1,
+              maxLength: WORK_STATE_LIMITS.importantContextRefChars,
+            },
+          },
+          required: ["kind", "value"],
+        },
+      },
+      nextAction: {
+        type: "string",
+        minLength: 1,
+        maxLength: WORK_STATE_LIMITS.nextActionChars,
+      },
+      workingNotes: workingNotesSchema(),
+    }, ["reason", "summary", "plan", "importantContext"]),
+  };
 }
 
 function toNativeExecutableToolSchema(tool: ToolDefinition): LlmToolSchema {
@@ -1454,7 +1534,7 @@ function serializeNativeDecisionToolCalls(calls: LlmToolCall[], selectedTools: T
 
   const selected = selectedTools.find((tool) => tool.name === call.name);
   if (!selected) {
-    return `native_decision_error: unknown or unselected native tool '${call.name}'. Change modes with decision_transition_mode before executable work.`;
+    return `native_decision_error: unknown or unselected native tool '${call.name}'. Use one available destination-specific mode control before executable work.`;
   }
 
   return JSON.stringify(nativeExecutableToolCallToPayload(call, input));
@@ -1480,27 +1560,26 @@ function nativeDecisionFromToolCalls(calls: LlmToolCall[], selectedTools: ToolDe
 }
 
 function nativeDecisionToolCallToPayload(toolName: string, input: Record<string, unknown>): Record<string, unknown> {
+  if (isModeTransitionControlToolName(toolName)) {
+    return {
+      kind: "transition_mode",
+      request: modeTransitionRequestFromControlCall(toolName, input),
+      ...(input["workingNotes"] ? { workingNotes: input["workingNotes"] } : {}),
+    };
+  }
   switch (toolName) {
-    case MODE_TRANSITION_TOOL_NAME:
+    case WORK_STATE_CHECKPOINT_TOOL_NAME:
       return {
-        kind: "transition_mode",
-        request: {
-          to: input["to"],
-          purpose: input["purpose"],
-          capabilities: input["capabilities"],
-          ...(input["targets"] ? { targets: input["targets"] } : {}),
-          ...(input["binding"] ? { binding: input["binding"] } : {}),
-        },
+        kind: "checkpoint_work_state",
+        update: normalizeWorkStateUpdateInput(input),
         ...(input["workingNotes"] ? { workingNotes: input["workingNotes"] } : {}),
       };
-    case VALIDATION_TOOL_NAME:
+    case TERMINAL_STOP_TOOL_NAME:
       return {
-        kind: "validate",
+        kind: "stop",
         request: {
           outcome: input["outcome"],
-          summary: input["summary"],
           response: input["response"],
-          ...(input["resources"] ? { resources: input["resources"] } : {}),
         },
         ...(input["workingNotes"] ? { workingNotes: input["workingNotes"] } : {}),
       };
@@ -1514,17 +1593,24 @@ function nativeDecisionToolCallToPayload(toolName: string, input: Record<string,
 }
 
 function nativeDecisionToolCallToDecision(toolName: string, input: Record<string, unknown>): AgentDecision {
+  if (isModeTransitionControlToolName(toolName)) {
+    return {
+      kind: "transition_mode",
+      request: modeTransitionRequestFromControlCall(toolName, input),
+      workingNotes: normalizeWorkingNotes(input["workingNotes"]),
+    };
+  }
   switch (toolName) {
-    case MODE_TRANSITION_TOOL_NAME:
+    case WORK_STATE_CHECKPOINT_TOOL_NAME:
       return {
-        kind: "transition_mode",
-        request: normalizeModeTransitionRequest(input),
+        kind: "checkpoint_work_state",
+        update: normalizeWorkStateUpdateInput(input),
         workingNotes: normalizeWorkingNotes(input["workingNotes"]),
       };
-    case VALIDATION_TOOL_NAME:
+    case TERMINAL_STOP_TOOL_NAME:
       return {
-        kind: "validate",
-        request: normalizeValidationRequest(input),
+        kind: "stop",
+        request: normalizeTerminalStopRequest(input),
         workingNotes: normalizeWorkingNotes(input["workingNotes"]),
       };
     default:
@@ -1535,35 +1621,6 @@ function nativeDecisionToolCallToDecision(toolName: string, input: Record<string
       };
   }
 }
-
-function normalizeWorkstreamCompletionRequest(input: unknown): AgentWorkstreamCompletionRequest {
-  const record = isPlainObject(input) && isPlainObject(input["request"])
-    ? input["request"]
-    : isPlainObject(input)
-      ? input
-      : {};
-  const resources = Array.isArray(record["resources"])
-    ? record["resources"].flatMap((item): WorkstreamCompletionResourceInput[] => {
-        if (!isPlainObject(item)) return [];
-        const resourceId = typeof item["resourceId"] === "string" ? item["resourceId"].trim() : "";
-        const path = typeof item["path"] === "string" ? item["path"].trim() : "";
-        const description = typeof item["description"] === "string" ? item["description"].trim() : "";
-        const kind = item["kind"] === "directory" ? "directory" : "file";
-        const aliases = Array.isArray(item["aliases"])
-          ? item["aliases"].filter((alias): alias is string => typeof alias === "string")
-            .map((alias) => alias.trim()).filter(Boolean)
-          : [];
-        return resourceId && path && description
-          ? [{ resourceId, path, kind, description, aliases }]
-          : [];
-      })
-    : [];
-  return {
-    summary: typeof record["summary"] === "string" ? record["summary"].trim() : "",
-    resources,
-  };
-}
-
 
 function nativeExecutableToolCallToPayload(call: LlmToolCall, input: Record<string, unknown>): Record<string, unknown> {
   const { purpose, toolInput } = extractNativeToolCallPurpose(input);

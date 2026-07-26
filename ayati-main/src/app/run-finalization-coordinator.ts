@@ -24,19 +24,25 @@ export async function finalizeAgentRun(input: {
   let finalized: FinalizeRunResponse | null;
   try {
     finalized = await input.runtime.finalizeRun({
-    turn: input.turn,
-    outcome: input.result.outcome,
-    stopReason: input.result.stopReason,
-    assistantResponse: projection.assistantResponse,
-    streamSummary: projection.streamSummary,
-    summary: projection.summary,
-    validation: finalizationValidation(input.result, workstreamBound),
-    ...(projection.next ? { next: projection.next } : {}),
-    workState: projection.workState,
-    ...(projection.workstreamCompletion
-      ? { workstreamCompletion: projection.workstreamCompletion }
-      : {}),
-    at: input.at,
+      turn: input.turn,
+      outcome: input.result.outcome,
+      stopReason: input.result.stopReason,
+      assistantResponse: projection.assistantResponse,
+      ...(input.result.type !== "none"
+        ? { assistantResponseKind: input.result.type }
+        : {}),
+      ...(input.result.type === "feedback" && input.result.workstreamSummary?.feedbackKind
+        ? { assistantFeedbackKind: input.result.workstreamSummary.feedbackKind }
+        : {}),
+      streamSummary: projection.streamSummary,
+      summary: projection.summary,
+      validation: finalizationValidation(input.result, workstreamBound),
+      ...(projection.next ? { next: projection.next } : {}),
+      workState: projection.workState,
+      ...(projection.workstreamCompletion
+        ? { workstreamCompletion: projection.workstreamCompletion }
+        : {}),
+      at: input.at,
     });
   } catch (error) {
     getActiveEvaluationRecorder()?.record({

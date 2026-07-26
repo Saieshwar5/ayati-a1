@@ -1,6 +1,7 @@
 import type {
   ContextEngineService,
   ResourcePublicLocator,
+  StreamMessage,
   WorkstreamCandidate,
   WorkstreamRequestRoute,
 } from "ayati-context-engine";
@@ -62,7 +63,11 @@ async function bindWorkstream(
 
     return request.proposal.kind === "activate"
       ? await activateExistingWorkstream(options, request)
-      : await createWorkstream(options, request);
+      : await createWorkstream(
+          options,
+          request,
+          choosesIndependentWorkstream(options.currentInput, current.stream?.recentMessages ?? []),
+        );
   } catch (error) {
     return bindingFailure(error);
   }
@@ -133,19 +138,21 @@ async function activateExistingWorkstream(
 async function createWorkstream(
   options: WorkstreamBindingCoordinatorOptions,
   request: DeterministicWorkstreamBindingRequest,
+  createNewSelected: boolean,
 ): Promise<DeterministicWorkstreamBindingOutcome> {
   if (request.proposal.kind !== "create") {
     return failed("WORKSTREAM_BINDING_PROPOSAL_INVALID", "Expected a creation proposal.", false);
   }
-  const candidates = await options.service.findWorkstreams({
-    query: options.currentInput,
-    paths: request.targets.filter(isAbsolute),
-    streamId: options.streamId,
-    currentText: options.currentInput,
-    includeArchived: false,
-    limit: 12,
-  });
-  const strong = candidates.workstreams.filter(isStrongCandidate).slice(0, 3);
+  const strong = createNewSelected
+    ? []
+    : (await options.service.findWorkstreams({
+        query: options.currentInput,
+        paths: request.mutationScopes.filter(isAbsolute),
+        streamId: options.streamId,
+        currentText: options.currentInput,
+        includeArchived: false,
+        limit: 12,
+      })).workstreams.filter(isStrongCandidate).slice(0, 3);
   if (strong.length > 0) {
     return {
       status: "needs_user_input",
@@ -201,7 +208,39 @@ async function resolveCreationResources(
   const bindings = new Map<string, WorkstreamResourceBindingProposal>();
   for (const resource of request.proposal.resources) bindings.set(resource.resourceId, resource);
 
-  const locators = request.targets.flatMap(targetLocator).slice(0, 8);
+  const resourceIds = request.mutationScopes
+    .map((target) => target.trim())
+    .filter((target) => /^RES-[0-9A-F]{24}$/.test(target));
+  if (resourceIds.length > 0) {
+    const found = await options.service.findResources({
+      resourceIds,
+      includeMissing: true,
+      limit: resourceIds.length,
+    });
+    const resources = new Map(found.resources.map((entry) => [
+      entry.resource.resourceId,
+      entry.resource,
+    ]));
+    for (const resourceId of resourceIds) {
+      const resource = resources.get(resourceId);
+      if (!resource || resource.availability === "missing" || resource.availability === "deleted") {
+        return failed(
+          "WORKSTREAM_BINDING_RESOURCE_MISSING",
+          `The requested mutation resource is unavailable: ${resourceId}.`,
+          false,
+        );
+      }
+      const prior = bindings.get(resourceId);
+      bindings.set(resourceId, {
+        resourceId,
+        role: prior?.role ?? "primary",
+        access: "mutate",
+        primary: prior?.primary ?? bindings.size === 0,
+      });
+    }
+  }
+
+  const locators = request.mutationScopes.flatMap(targetLocator).slice(0, 8);
   for (const [index, locator] of locators.entries()) {
     const inspected = await options.service.inspectResourceForRun({
       requestId: `${options.runId}:deterministic-bind:inspect:${index + 1}`,
@@ -293,9 +332,28 @@ function isStrongCandidate(candidate: WorkstreamCandidate): boolean {
   return candidate.discovery.tier === "probable" || candidate.discovery.tier === "definite";
 }
 
+function explicitlyRequestsIndependentWorkstream(input: string): boolean {
+  return /\b(?:create|start|open|make|use)\s+(?:a\s+|the\s+)?(?:(?:brand[- ]new|new|independent|separate)(?:\s+|,\s*)){1,3}workstream\b/i.test(input)
+    || /\b(?:new|independent|separate)\s+workstream\b[\s\S]{0,80}\b(?:instead|not\s+(?:the\s+)?existing|do\s+not\s+reuse|don't\s+reuse)\b/i.test(input)
+    || /\b(?:do\s+not|don't)\s+reuse\b[\s\S]{0,80}\b(?:create|start|use)\s+(?:a\s+|the\s+)?new\b/i.test(input);
+}
+
+function choosesIndependentWorkstream(
+  input: string,
+  messages: StreamMessage[],
+): boolean {
+  if (explicitlyRequestsIndependentWorkstream(input)) return true;
+  const selectsNewOption = /^(?:please\s+)?(?:(?:create|start|use|choose|select)\s+)?(?:the\s+|a\s+)?new\s+(?:one|option)[.!]?$/i
+    .test(input.trim());
+  if (!selectsNewOption) return false;
+  const priorAssistant = [...messages].reverse().find((message) => message.role === "assistant");
+  return priorAssistant?.responseKind === "feedback"
+    && priorAssistant.content.includes("create a new independent workstream");
+}
+
 function bindingAmbiguityQuestion(candidates: WorkstreamCandidate[]): string {
-  const choices = candidates.map((candidate) => `${candidate.workstreamId} (${candidate.title})`).join(", ");
-  return `Existing workstream ownership may match this request: ${choices}. Which workstream should own the change?`;
+  const choices = candidates.map((candidate) => `“${candidate.title}”`).join(", ");
+  return `Should I create a new independent workstream, or use one of these existing matches: ${choices}?`;
 }
 
 function bindingFailure(error: unknown): DeterministicWorkstreamBindingOutcome {

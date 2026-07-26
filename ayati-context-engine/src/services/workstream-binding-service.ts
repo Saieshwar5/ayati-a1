@@ -8,6 +8,11 @@ import type {
 import type { ContextDatabase } from "../database/database.js";
 import { ContextEngineServiceError } from "../errors.js";
 import { readRunEvidence } from "../repositories/run-records.js";
+import {
+  readLatestContinuationWorkState,
+  readRunWorkState,
+  replaceRunWorkState,
+} from "../repositories/run-work-state-records.js";
 import { readWorkstreamRequestRoutePlan } from "../repositories/workstream-request-route-plan-records.js";
 import { ContextEngineObserver } from "../observability.js";
 import type { WorkstreamLifecycleService } from "./workstream-lifecycle-service.js";
@@ -102,6 +107,14 @@ export class WorkstreamBindingService {
     if (!status) {
       throw new Error("Selected workstream context is missing its active request status.");
     }
+    if (workstreamRequestDecision === "continue") {
+      this.restoreContinuationWorkState({
+        runId: input.runId,
+        workstreamId: workstream.workstreamId,
+        boundRequestId: planned.run.workstreamBinding!.requestId,
+        at: input.at,
+      });
+    }
     return {
       workstream,
       run: planned.run,
@@ -113,6 +126,36 @@ export class WorkstreamBindingService {
       headBeforeSelection,
       resourceBindings: context.resources ?? [],
     };
+  }
+
+  private restoreContinuationWorkState(input: {
+    runId: string;
+    workstreamId: string;
+    boundRequestId: string;
+    at: string;
+  }): void {
+    const previous = readLatestContinuationWorkState(this.database, {
+      excludeRunId: input.runId,
+      workstreamId: input.workstreamId,
+      boundRequestId: input.boundRequestId,
+    });
+    if (!previous || !isMaterialContinuation(previous)) return;
+    const current = readRunWorkState(this.database, input.runId);
+    if (!current || current.revision !== 0 || current.afterStep !== 0) return;
+    replaceRunWorkState(this.database, {
+      runId: input.runId,
+      afterStep: 0,
+      expectedRevision: 0,
+      reason: "continuation",
+      state: {
+        status: "in_progress",
+        summary: previous.summary,
+        plan: previous.plan,
+        importantContext: previous.importantContext,
+        nextAction: previous.nextAction,
+      },
+      at: input.at,
+    });
   }
 
   private assertBindableRun(
@@ -177,6 +220,15 @@ export class WorkstreamBindingService {
       },
     });
   }
+}
+
+function isMaterialContinuation(
+  state: NonNullable<ReturnType<typeof readLatestContinuationWorkState>>,
+): boolean {
+  return state.summary.trim() !== "Run started."
+    || state.plan.length > 0
+    || state.importantContext.length > 0
+    || Boolean(state.nextAction?.trim());
 }
 
 function invalid(

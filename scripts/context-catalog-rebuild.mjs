@@ -31,7 +31,7 @@ if (confirm) {
   await refuseLiveRuntime(paths);
   if (!await exists(paths.databasePath)) {
     throw new Error(
-      "Catalog rebuild requires an initialized V7 database; start and stop Ayati once first.",
+      "Catalog rebuild requires an initialized current-schema database; start and stop Ayati once first.",
     );
   }
 }

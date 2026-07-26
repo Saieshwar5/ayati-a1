@@ -4,7 +4,6 @@ import type {
   AgentLoopDeps,
   LoopConfig,
   LoopState,
-  WorkState,
 } from "../types.js";
 import {
   applyHarnessContextToState,
@@ -13,7 +12,12 @@ import {
   type HarnessContextInput,
 } from "../harness-context.js";
 import { createInitialContextPressureState } from "../context-pressure-state.js";
+import {
+  buildRunHotContextEntries,
+  emptyHotContextProjection,
+} from "../hot-context/index.js";
 import { createEntryVirtualModeState } from "./virtual-mode.js";
+import { emptyWorkState } from "./work-state/contracts.js";
 
 export function buildInitialState(
   deps: AgentLoopDeps,
@@ -39,6 +43,11 @@ export function buildInitialState(
     contextVisibility: deps.systemEventContextVisibility,
     preferredResponseKind: deps.preferredResponseKind,
     workState: emptyWorkState(),
+    workStateRuntime: {
+      revision: 0,
+      afterStep: 0,
+      updateReason: "initial",
+    },
     status: "running",
     finalOutput: "",
     iteration: 0,
@@ -48,6 +57,8 @@ export function buildInitialState(
     runPath: "",
     failureHistory: [],
     virtualMode: createEntryVirtualModeState(),
+    hotContext: deps.hotContextRuntime?.project(deps.clientId, runHandle.runId)
+      ?? emptyHotContextProjection(),
     contextPressure: createInitialContextPressureState(),
     attachedDocuments: deps.attachedDocuments ?? [],
     attachmentWarnings: deps.attachmentWarnings ?? [],
@@ -81,6 +92,8 @@ export function syncHarnessContext(state: LoopState, deps: AgentLoopDeps, _input
   applyHarnessContextToState(state, buildHarnessContextFromSources({
     input: harnessContextInputFromDeps(deps),
   }));
+  syncPersistedWorkState(state);
+  syncRunHotContext(state, deps);
 }
 
 export function getPrimaryUserMessage(deps: AgentLoopDeps): string {
@@ -103,13 +116,33 @@ function harnessContextInputFromDeps(deps: AgentLoopDeps): HarnessContextInput {
   return deps.harnessContext ?? {};
 }
 
-function emptyWorkState(): WorkState {
-  return {
-    status: "not_done",
-    openWork: [],
-    blockers: [],
-    summary: "",
-    verifiedFacts: [],
-    evidence: [],
+function syncRunHotContext(state: LoopState, deps: AgentLoopDeps): void {
+  if (!deps.hotContextRuntime) return;
+  const supportedKeys = new Set(deps.hotContextRuntime.keys());
+  deps.hotContextRuntime.syncRun({
+    clientId: deps.clientId,
+    runId: state.runId,
+    entries: buildRunHotContextEntries({
+      context: state.harnessContext.contextEngine,
+    }).filter((entry) => supportedKeys.has(entry.key)),
+  });
+  state.hotContext = deps.hotContextRuntime.project(deps.clientId, state.runId);
+}
+
+function syncPersistedWorkState(state: LoopState): void {
+  const persisted = state.harnessContext.contextEngine?.run?.workState;
+  if (!persisted || persisted.revision <= state.workStateRuntime.revision) return;
+  state.workState = {
+    status: persisted.status,
+    summary: persisted.summary,
+    plan: persisted.plan,
+    importantContext: persisted.importantContext,
+    ...(persisted.nextAction ? { nextAction: persisted.nextAction } : {}),
+  };
+  state.workStateRuntime = {
+    revision: persisted.revision,
+    afterStep: persisted.afterStep,
+    updateReason: persisted.updateReason,
+    updatedAt: persisted.updatedAt,
   };
 }

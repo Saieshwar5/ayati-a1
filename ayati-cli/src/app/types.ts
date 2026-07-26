@@ -19,10 +19,24 @@ export interface ChatAttachment {
   entryCount?: number;
 }
 
+export type ChatRequestAttachment =
+  | {
+    type?: "file";
+    source: "cli";
+    path: string;
+    name?: string;
+  }
+  | {
+    type: "directory";
+    source: "cli";
+    path: string;
+    name?: string;
+  };
+
 export interface ChatRequestMessage {
   type: "chat";
   content: string;
-  attachments?: ChatAttachment[];
+  attachments?: ChatRequestAttachment[];
   uiContext?: AgentUiContext;
 }
 

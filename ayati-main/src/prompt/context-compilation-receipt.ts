@@ -3,7 +3,6 @@ import type { ContextBudgetReport } from "./context-budget.js";
 export type ContextCompilationMode =
   | "full"
   | "tool_compact"
-  | "stream_project"
   | "stream_checkpoint"
   | "step_ledger";
 
@@ -46,14 +45,6 @@ export interface ContextCompilationReceipt {
     cacheStatus: "generated" | "success_hit";
     generationAttempts: number;
   };
-  streamProjection?: {
-    removedCandidateCount: number;
-    removedRecentWorkCount: number;
-    removedResourceCount: number;
-    removedObservationCount: number;
-    tokensBefore: number;
-    tokensAfter: number;
-  };
   recoveryExhausted?: boolean;
   forcedRecovery?: boolean;
   candidate?: {
@@ -92,43 +83,6 @@ export interface ContextCompilationReceipt {
   }>;
 }
 
-export function buildStreamProjectionCompilationReceipt(input: {
-  candidate: ContextBudgetReport;
-  intermediate: ContextBudgetReport;
-  final: ContextBudgetReport;
-  decisionAttempt: number;
-  transformations: ContextCompilationReceipt["transformations"];
-  projection: NonNullable<ContextCompilationReceipt["streamProjection"]>;
-}): ContextCompilationReceipt {
-  return {
-    schemaVersion: 2,
-    decisionAttempt: input.decisionAttempt,
-    mode: "stream_project",
-    provider: input.final.provider,
-    model: input.final.model,
-    candidateInputTokens: input.candidate.measuredInputTokens,
-    intermediateInputTokens: input.intermediate.measuredInputTokens,
-    finalInputTokens: input.final.measuredInputTokens,
-    preparationInputTokens: input.final.preparationInputTokens,
-    recoveryTargetTokens: input.final.recoveryTargetTokens,
-    softInputTokens: input.final.softInputTokens,
-    hardInputTokens: input.final.hardInputTokens,
-    admissionLimitTokens: input.final.admissionLimitTokens,
-    ...forcedBarrierReceiptFields(input.final),
-    softLimitExceeded: input.candidate.softLimitExceeded,
-    candidateHardLimitExceeded: input.candidate.hardLimitExceeded,
-    hardLimitExceeded: input.final.hardLimitExceeded,
-    admitted: !input.final.admissionLimitExceeded,
-    countSource: input.final.countSource,
-    candidateCountSource: input.candidate.countSource,
-    toolProjectionPolicy: "enforce",
-    targetReached: input.final.measuredInputTokens <= input.final.recoveryTargetTokens,
-    needsEscalation: input.final.softLimitExceeded,
-    streamProjection: input.projection,
-    transformations: input.transformations,
-  };
-}
-
 export function buildStreamCheckpointCompilationReceipt(input: {
   candidate: ContextBudgetReport;
   intermediate: ContextBudgetReport;
@@ -136,7 +90,6 @@ export function buildStreamCheckpointCompilationReceipt(input: {
   decisionAttempt: number;
   transformations: ContextCompilationReceipt["transformations"];
   checkpoint: NonNullable<ContextCompilationReceipt["streamCheckpoint"]>;
-  streamProjection?: NonNullable<ContextCompilationReceipt["streamProjection"]>;
   recoveryExhausted?: boolean;
 }): ContextCompilationReceipt {
   return {
@@ -164,7 +117,6 @@ export function buildStreamCheckpointCompilationReceipt(input: {
     targetReached: input.final.measuredInputTokens <= input.final.recoveryTargetTokens,
     needsEscalation: input.final.softLimitExceeded,
     streamCheckpoint: input.checkpoint,
-    ...(input.streamProjection ? { streamProjection: input.streamProjection } : {}),
     ...(input.recoveryExhausted ? { recoveryExhausted: true } : {}),
     transformations: input.transformations,
   };

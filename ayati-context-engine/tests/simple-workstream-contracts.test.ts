@@ -101,6 +101,19 @@ describe("workstream context contracts", () => {
     })).toThrow("duplicate resource");
   });
 
+  it("rejects relative filesystem locators in the durable resource ledger", () => {
+    const resource = manifestResource("primary", true);
+    expect(() => renderWorkstreamResourceManifest({
+      schema: "ayati.workstream-resources/v1",
+      workstreamId: "W-20260719-0001",
+      updatedAt: "2026-07-19T10:05:00+05:30",
+      resources: [{
+        ...resource,
+        locator: { kind: "filesystem", path: "rust-examples" },
+      }],
+    })).toThrow("invalid resource entry");
+  });
+
   it("stores a compact per-run summary in finalization commit metadata", () => {
     const message = renderWorkstreamCommit({
       subject: "finalize r-0001 run",

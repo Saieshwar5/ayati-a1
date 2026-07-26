@@ -110,6 +110,9 @@ export function contextCheckpointSourceHash(input: {
     contentHash: message.contentHash,
     content: message.content,
     at: message.at,
+    responseKind: message.responseKind,
+    feedbackKind: message.feedbackKind,
+    attachmentRefs: message.attachmentRefs,
   }));
   return createHash("sha256")
     .update(canonicalJson({ previous, messages }))

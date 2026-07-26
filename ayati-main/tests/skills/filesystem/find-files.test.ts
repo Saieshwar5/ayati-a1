@@ -1,102 +1,65 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { homedir, tmpdir } from "node:os";
 import { findFilesTool } from "../../../src/skills/builtins/filesystem/find-files.js";
-import { workspaceRoot } from "../../../src/skills/workspace-paths.js";
 
 describe("findFilesTool", () => {
-  let tmp: string;
-  let workspaceArtifacts: string[];
+  let root: string;
 
   beforeEach(async () => {
-    tmp = await mkdtemp(join(tmpdir(), "fs-find-test-"));
-    workspaceArtifacts = [];
+    root = await mkdtemp(join(tmpdir(), "find-files-test-"));
   });
 
   afterEach(async () => {
-    await rm(tmp, { recursive: true, force: true });
-    await Promise.all(workspaceArtifacts.map((path) => rm(path, { recursive: true, force: true })));
+    await rm(root, { recursive: true, force: true });
   });
 
-  it("finds files by name fragment", async () => {
-    await mkdir(join(tmp, "src"));
-    await writeFile(join(tmp, "src", "learn1.go"), "package main", "utf-8");
-    await writeFile(join(tmp, "src", "other.txt"), "x", "utf-8");
+  it("reports a conclusive zero-match traversal", async () => {
+    await writeFile(join(root, "present.txt"), "present\n", "utf8");
 
     const result = await findFilesTool.execute({
-      query: "learn1.go",
-      roots: [tmp],
-      maxDepth: 4,
-      maxResults: 10,
+      query: "missing-report.txt",
+      roots: [root],
     });
 
     expect(result.ok).toBe(true);
-    expect(result.output).toContain("learn1.go");
-  });
-
-  it("respects maxResults cap", async () => {
-    await writeFile(join(tmp, "a.log"), "x", "utf-8");
-    await writeFile(join(tmp, "b.log"), "x", "utf-8");
-    await writeFile(join(tmp, "c.log"), "x", "utf-8");
-
-    const result = await findFilesTool.execute({
-      query: ".log",
-      roots: [tmp],
-      maxResults: 2,
+    expect(result.v2?.structuredContent).toMatchObject({
+      query: "missing-report.txt",
+      roots: [root],
+      matches: [],
+      matchCount: 0,
+      maxDepth: 10,
+      maxResults: 500,
+      includeHidden: false,
+      capped: false,
+      errors: [],
+      errorCount: 0,
+      depthLimitedDirectoryCount: 0,
+      traversalComplete: true,
     });
-
-    expect(result.ok).toBe(true);
-    const output = String(result.output ?? "");
-    const lines = output.split("\n").filter((line) => line.trim().length > 0);
-    expect(lines.length).toBeLessThanOrEqual(2);
   });
 
-  it("continues searching valid roots when one root is missing", async () => {
-    await mkdir(join(tmp, "src"));
-    await writeFile(join(tmp, "src", "learn1.go"), "package main", "utf-8");
+  it("marks a zero-match search inconclusive when the depth limit skips directories", async () => {
+    const levelOne = join(root, "level-one");
+    const levelTwo = join(levelOne, "level-two");
+    await mkdir(levelTwo, { recursive: true });
+    await writeFile(join(levelTwo, "missing-report.txt"), "too deep\n", "utf8");
 
     const result = await findFilesTool.execute({
-      query: "learn1.go",
-      roots: [join(tmp, "missing-root"), tmp],
-      maxDepth: 4,
-      maxResults: 10,
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.output).toContain("learn1.go");
-    const meta = result.meta as { errorCount?: number } | undefined;
-    expect(meta?.errorCount).toBeGreaterThan(0);
-  });
-
-  it("rejects tilde root aliases", async () => {
-    const result = await findFilesTool.execute({
-      query: "definitely-not-present-file-name-ayati",
-      roots: ["~"],
+      query: "missing-report.txt",
+      roots: [root],
       maxDepth: 1,
-      maxResults: 5,
     });
 
-    expect(result.ok).toBe(false);
-    expect(result.v2?.code).toBe("ABSOLUTE_PATH_REQUIRED");
-  });
-
-  it("returns an error when query uses wildcard syntax", async () => {
-    const result = await findFilesTool.execute({ query: "*learn1.go*" });
-    expect(result.ok).toBe(false);
-    expect(result.error).toContain("wildcard");
-  });
-
-  it("searches work_space by default when roots are omitted", async () => {
-    const relativeDir = `vitest-find-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const expectedDir = join(workspaceRoot, relativeDir);
-    const filePath = join(expectedDir, "needle.txt");
-    workspaceArtifacts.push(expectedDir);
-    await mkdir(expectedDir, { recursive: true });
-    await writeFile(filePath, "x", "utf-8");
-
-    const result = await findFilesTool.execute({ query: "needle.txt" });
     expect(result.ok).toBe(true);
-    expect(result.output).toContain(filePath);
+    expect(result.v2?.structuredContent).toMatchObject({
+      matches: [],
+      matchCount: 0,
+      capped: false,
+      errorCount: 0,
+      depthLimitedDirectoryCount: 1,
+      traversalComplete: false,
+    });
   });
 });

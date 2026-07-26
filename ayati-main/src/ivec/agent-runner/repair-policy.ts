@@ -1,8 +1,8 @@
 export type RepairCode =
   | "R_ASSISTANT_TEXT_TOOL_CALL"
   | "R_TOOL_NOT_SELECTED"
-  | "R_LOAD_TOOLS_USED_AS_ACTION"
-  | "R_EMPTY_TOOL_LOAD_SELECTOR"
+  | "R_TOOL_PURPOSE_INVALID"
+  | "R_CONTROL_TOOL_USED_AS_ACTION"
   | "R_TOOL_INPUT_INVALID"
   | "R_TOOL_INPUT_MISSING_REQUIRED_FIELD"
   | "R_MUTATION_REQUIRES_WORKSTREAM_BINDING"
@@ -89,8 +89,8 @@ export interface RepairFeedbackData {
 export const REPAIR_CODES: readonly RepairCode[] = [
   "R_ASSISTANT_TEXT_TOOL_CALL",
   "R_TOOL_NOT_SELECTED",
-  "R_LOAD_TOOLS_USED_AS_ACTION",
-  "R_EMPTY_TOOL_LOAD_SELECTOR",
+  "R_TOOL_PURPOSE_INVALID",
+  "R_CONTROL_TOOL_USED_AS_ACTION",
   "R_TOOL_INPUT_INVALID",
   "R_TOOL_INPUT_MISSING_REQUIRED_FIELD",
   "R_MUTATION_REQUIRES_WORKSTREAM_BINDING",
@@ -135,28 +135,29 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     message: "The decision referenced a tool that is not selected for this step.",
     allowedNextActions: [
       "Call only tools listed in Selected tools.",
-      "Use decision_transition_mode to replace the active capability surface when a different tool responsibility is needed.",
+      "Use the matching available destination-specific mode control when a different tool responsibility is needed.",
     ],
     modelFacing: true,
   },
-  R_LOAD_TOOLS_USED_AS_ACTION: {
-    code: "R_LOAD_TOOLS_USED_AS_ACTION",
+  R_TOOL_PURPOSE_INVALID: {
+    code: "R_TOOL_PURPOSE_INVALID",
     severity: "repairable",
     source: "decision.tool_protocol",
-    message: "Tool loading was used as executable work.",
+    message: "An executable tool call has a missing or overly long purpose.",
     allowedNextActions: [
-      "Use decision_transition_mode with exact capability groups.",
+      "Give every executable call one specific purpose between 1 and 240 characters.",
+      "Describe only why this call is needed now; do not restate the whole task.",
+    ],
+    modelFacing: true,
+  },
+  R_CONTROL_TOOL_USED_AS_ACTION: {
+    code: "R_CONTROL_TOOL_USED_AS_ACTION",
+    severity: "repairable",
+    source: "decision.tool_protocol",
+    message: "A harness navigation control was used as executable work.",
+    allowedNextActions: [
+      "Call the matching available mode control directly with exact capability ids.",
       "Do not put navigation controls in executable action calls.",
-    ],
-    modelFacing: true,
-  },
-  R_EMPTY_TOOL_LOAD_SELECTOR: {
-    code: "R_EMPTY_TOOL_LOAD_SELECTOR",
-    severity: "repairable",
-    source: "decision.tool_protocol",
-    message: "The tool-load request did not include a usable selector.",
-    allowedNextActions: [
-      "Call decision_transition_mode with at least one exact capability group from the catalog.",
     ],
     modelFacing: true,
   },
@@ -245,8 +246,8 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     source: "decision.tool_protocol",
     message: "The workstream feedback tool is not available outside an active workstream-bound run.",
     allowedNextActions: [
-      "Use direct assistant text only at ENTRY for a genuinely tool-free reply.",
-      "After graph activation, use decision_validate for needs_user_input and all other terminal outcomes.",
+      "At ENTRY, use direct assistant text for conversation or a focused clarification.",
+      "After graph activation, use decision_stop only for a supported needs_user_input, blocked, or failed outcome.",
     ],
     modelFacing: true,
   },
@@ -371,7 +372,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     message: "The requested virtual-mode transition did not satisfy graph, capability, or target prerequisites.",
     allowedNextActions: [
       "Use an allowed next mode from context.run.mode.",
-      "Choose exact capability groups and evidence-backed targets.",
+      "Choose exact capability ids and evidence-backed typed references or mutation scopes.",
     ],
     modelFacing: true,
   },
@@ -379,9 +380,9 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     code: "R_DIRECT_RESPONSE_REQUIRES_MODE",
     severity: "repairable",
     source: "runner.direct_response",
-    message: "The request requires unperformed observation or mutation, so a direct terminal response is not truthful.",
+    message: "The virtual graph is active and final validation has not passed, so a direct terminal response is unavailable.",
     allowedNextActions: [
-      "Enter an observation mode, or use the resolve gate for mutation-capable work.",
+      "Finish the required work and pass final validation before returning a direct terminal response.",
     ],
     modelFacing: true,
   },
@@ -389,9 +390,9 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     code: "R_VALIDATION_REJECTED",
     severity: "repairable",
     source: "runner.validation",
-    message: "Whole-task validation rejected the proposed terminal outcome.",
+    message: "Final filesystem validation or WorkState readiness did not pass.",
     allowedNextActions: [
-      "Keep the current mode active, repair the stated deterministic condition, and validate again.",
+      "Repair the failed check or unfinished work in the appropriate mode, then validate again.",
     ],
     modelFacing: true,
   },

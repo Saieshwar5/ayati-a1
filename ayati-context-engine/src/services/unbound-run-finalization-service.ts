@@ -13,7 +13,6 @@ import {
   appendStreamMessage,
   readStreamMessage,
 } from "../repositories/message-records.js";
-import { readReusableObservationProjection } from "../repositories/reusable-observation-records.js";
 import {
   finalizeRunRecord,
   markRunRecoveryRequired,
@@ -27,6 +26,7 @@ import {
   updateUnboundRunFinalization,
   type UnboundRunFinalizationRecord,
 } from "../repositories/unbound-run-finalization-records.js";
+import { resolveAssistantResponseMetadata } from "./assistant-response-metadata.js";
 
 export class UnboundRunFinalizationService {
   constructor(private readonly database: ContextDatabase) {}
@@ -57,12 +57,14 @@ export class UnboundRunFinalizationService {
       now: input.at,
       execute: () => {
         if (!existing) {
+          const responseMetadata = resolveAssistantResponseMetadata(input);
           const assistantMessage = input.assistantResponse
             ? appendStreamMessage(this.database, {
                 streamId: run.streamId,
                 runId: run.runId,
                 role: "assistant",
                 content: input.assistantResponse,
+                ...responseMetadata,
                 at: input.at,
               })
             : undefined;
@@ -70,6 +72,7 @@ export class UnboundRunFinalizationService {
             runId: run.runId,
             afterStep: run.stepCount,
             state: input.workState,
+            reason: input.outcome === "done" ? "run_completed" : "run_paused",
             at: input.at,
           });
           insertUnboundRunFinalization(this.database, {
@@ -171,7 +174,6 @@ function response(
   return {
     run,
     ...(assistantMessage ? { assistantMessage } : {}),
-    observationRevision: readReusableObservationProjection(database, record.streamId).revision,
     resourceEffects: { status: "none", events: [] },
     workstreamContextCommit: { status: "not_required" },
   };

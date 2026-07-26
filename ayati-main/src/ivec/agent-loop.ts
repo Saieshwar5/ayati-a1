@@ -35,6 +35,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
       return await runAgentLoop({ ...deps, contextPreparation }, config);
     } finally {
       contextPreparation.close();
+      deps.hotContextRuntime?.clearRun(deps.clientId, deps.runHandle.runId);
     }
   });
 }
@@ -61,8 +62,8 @@ function validateLoopConfig(config: LoopConfig): void {
   if (config.maxVerifyArtifactChars <= 0) {
     throw new Error("maxVerifyArtifactChars must be positive");
   }
-  if (config.maxSelectedTools <= 0) {
-    throw new Error("maxSelectedTools must be positive");
+  if (config.maxCapabilitySurfaceTools <= 0) {
+    throw new Error("maxCapabilitySurfaceTools must be positive");
   }
   if (config.strategyReviewFailureThreshold <= 0) {
     throw new Error("strategyReviewFailureThreshold must be positive");

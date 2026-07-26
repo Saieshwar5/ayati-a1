@@ -209,13 +209,6 @@ export const patchFilesTool: ToolDefinition = {
       },
     },
   },
-  selectionHints: {
-    tags: ["filesystem", "patch", "edit", "replace", "insert", "batch", "refactor"],
-    aliases: ["apply_patches", "patch_in_files", "stable_patch_files", "modify_files"],
-    examples: ["replace background: white with background: #f6f1e7", "patch two files with small stable targets"],
-    domain: "filesystem",
-    priority: 6,
-  },
   async execute(input, context): Promise<ToolResult> {
     const parsed = validatePatchFilesInput(input);
     if ("ok" in parsed) return parsed;

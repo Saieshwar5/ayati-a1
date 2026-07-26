@@ -8,8 +8,13 @@ import { createMemorySkill } from "../../src/skills/builtins/memory/index.js";
 import { createPythonSkill } from "../../src/skills/builtins/python/index.js";
 import { createRecallSkill } from "../../src/skills/builtins/recall/index.js";
 import { createUiSkill } from "../../src/skills/builtins/ui/index.js";
+import { createContextSkill } from "../../src/skills/builtins/context/index.js";
+import { createSystemSkill } from "../../src/skills/builtins/system/index.js";
 import { builtInSkillsProvider } from "../../src/skills/provider.js";
 import type { SkillDefinition } from "../../src/skills/types.js";
+import { CapabilityCatalog } from "../../src/ivec/agent-runner/capabilities/catalog.js";
+import { ToolRegistry } from "../../src/ivec/agent-runner/capabilities/registry.js";
+import { createEmptyHotContextRuntime } from "../../src/ivec/hot-context/index.js";
 import {
   canRunBeforeWorkstream,
   getToolTaxonomy,
@@ -19,7 +24,6 @@ import {
   isNativeControlToolName,
   isRoutingTool,
   isToolAllowedInPhase,
-  getToolLoadGroups,
   missingToolTaxonomy,
   requiresWorkstreamBinding,
   summarizeToolTaxonomy,
@@ -34,12 +38,19 @@ describe("tool taxonomy", () => {
     const tools = skills.flatMap((skill) => skill.tools);
 
     expect(missingToolTaxonomy(tools)).toEqual([]);
+    expect(() => ToolRegistry.fromSkills(skills).assertCapabilityCoverage(
+      new CapabilityCatalog(),
+    )).not.toThrow();
   });
 
   it("classifies list, read, search, control, mutation, and long-running tools", () => {
     expect(getToolTaxonomy("read_file")).toBeUndefined();
     expect(isObservationalTool("read_files")).toBe(true);
     expect(getToolPurpose("read_files")).toBe("read");
+    expect(getToolPurpose("system_time")).toBe("read");
+    expect(getToolPurpose("system_health")).toBe("read");
+    expect(canRunBeforeWorkstream("system_time")).toBe(true);
+    expect(requiresWorkstreamBinding("system_health")).toBe(false);
     expect(getToolPurpose("search_in_files")).toBe("search");
     expect(getToolPurpose("list_directory")).toBe("list");
     expect(isObservationalTool("list_directory")).toBe(true);
@@ -47,8 +58,6 @@ describe("tool taxonomy", () => {
     expect(requiresWorkstreamBinding("read_files")).toBe(false);
     expect(getToolTaxonomy("read_files")).toMatchObject({ lifetime: "run" });
     expect(getToolTaxonomy("write_files")).toMatchObject({ lifetime: "run" });
-    expect(getToolLoadGroups("write_files")).toEqual(expect.arrayContaining(["file:write", "file:create"]));
-
     expect(isRoutingTool("git_context_create_workstream")).toBe(true);
     expect(getToolPurpose("git_context_create_workstream")).toBe("control");
     expect(hasMutationEffect("git_context_create_workstream")).toBe(true);
@@ -76,10 +85,12 @@ describe("tool taxonomy", () => {
     expect(isObservationalTool("process_poll")).toBe(false);
     expect(getToolPurpose("process_stop")).toBe("control");
     expect(getToolPurpose("attachment_restore")).toBe("control");
-    expect(isNativeControlToolName("decision_transition_mode")).toBe(true);
-    expect(isNativeControlToolName("decision_validate")).toBe(true);
+    expect(isNativeControlToolName("decision_enter_observe_investigate")).toBe(true);
+    expect(isNativeControlToolName("decision_resolve_create")).toBe(true);
+    expect(isNativeControlToolName("decision_transition_mode")).toBe(false);
+    expect(isNativeControlToolName("decision_stop")).toBe(true);
     expect(isNativeControlToolName("decision_load_tools")).toBe(false);
-    expect(getToolPurpose("decision_validate")).toBe("control");
+    expect(getToolPurpose("decision_stop")).toBe("control");
   });
 
   it("summarizes selected tool classes for feedback", () => {
@@ -129,6 +140,11 @@ describe("tool taxonomy", () => {
 function runtimeSkills(): SkillDefinition[] {
   const stub = {} as any;
   return [
+    createContextSkill({ hotContextRuntime: createEmptyHotContextRuntime() }),
+    createSystemSkill({
+      defaultTimezone: "UTC",
+      healthRoot: "/tmp",
+    }),
     createRecallSkill({ retriever: stub, controls: stub }),
     createMemorySkill({ store: stub, defaultUserId: "taxonomy-test" }),
     createPythonSkill({ dataDir: "/tmp/ayati-tool-taxonomy" }),

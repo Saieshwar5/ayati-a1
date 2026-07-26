@@ -6,7 +6,7 @@ import type { HarnessContext, HarnessContextInput } from "../harness-context.js"
 import type { StepSummary, VerifyOutput, WorkState } from "../types.js";
 import type { AgentDecision, AgentAction } from "./decision.js";
 import type { AgentPromptStateView } from "./prompt-context.js";
-import type { ToolLoadResult } from "./tool-working-set.js";
+import type { CapabilitySurfaceResult } from "./capabilities/contracts.js";
 import type { VirtualModeTransitionResult } from "./virtual-mode-runtime.js";
 
 export interface FeedbackPayloadFingerprint {
@@ -74,7 +74,6 @@ export function summarizeHarnessContext(
   const contextEngine = context?.contextEngine;
   return {
     fingerprint: fingerprintPayload(context ?? {}),
-    personalMemoryChars: context?.personalMemorySnapshot?.length ?? 0,
     contextEngine: summarizeContextEngine(contextEngine),
   };
 }
@@ -88,42 +87,27 @@ export function summarizePromptStateView(
   return {
     fingerprint: fingerprintPayload(stateView),
     contextKeys: Object.keys(context),
-    temporal: {
-      count: context.temporal.recent.length,
-      currentCount: context.temporal.recent.filter((event) => "current" in event && event.current === true).length,
-      hasCheckpoint: Boolean(context.temporal.checkpoint),
+    core: {
+      recentExactCount: context.core.continuity.recentExact.length,
+      hasCheckpoint: Boolean(context.core.continuity.checkpoint),
+      unloadedRangeCount: context.core.continuity.unloadedRanges.length,
+      maintenanceRequired: context.core.continuity.maintenanceRequired,
       latestUserPreview: previewString(
-        [...context.temporal.recent].reverse().find((event) => event.kind === "user" && "content" in event)?.content,
+        context.core.current.input.kind === "user"
+          ? context.core.current.input.content
+          : undefined,
         180,
       ),
     },
-    stream: {
-      agentId: context.stream.agentId,
-      scopeKey: context.stream.scopeKey,
-      recentWorkCount: context.stream.recentWork.length,
-      routingStatus: context.current.routing?.status,
-    },
-    work: context.work.active ? {
-      workstreamId: context.work.active.workstreamId,
-      title: context.work.active.title,
-      status: context.work.active.workstreamStatus,
-      blockerCount: context.work.active.blockers.length,
-      candidateCount: context.work.candidates.length,
-    } : { candidateCount: context.work.candidates.length },
-    resources: {
-      streamCount: context.resources.stream.length,
-      ingressCount: context.resources.ingress.length,
-      activeWorkstreamCount: context.resources.activeWorkstream.length,
-    },
-    observations: {
-      inventory: context.observations.inventory.length,
-      discovery: context.observations.discovery.length,
-      evidence: context.observations.evidence.length,
+    continuity: {
+      availableHotContextCount: context.hot.available.length,
+      loadedHotContextCount: context.hot.loaded.length,
+      routingStatus: context.core.current.routing?.status,
     },
     tools: context.tools ? {
       activeCount: context.tools.active.length,
       active: context.tools.active,
-      lastLoadStatus: readRecord(context.tools.lastLoad)?.["status"],
+      lastSurfaceStatus: readRecord(context.tools.lastSurface)?.["status"],
     } : undefined,
     harness: harness ? {
       feedbackCount: readArray(readRecord(harness.feedback)?.["latest"]).length,
@@ -132,10 +116,14 @@ export function summarizePromptStateView(
       keys: Object.keys(run),
       workStatus: run.workState?.status,
       toolCallCount: readArray(run.toolCalls).length,
+      verifiedOutcomeCount: readArray(run.verifiedOutcomes).length,
     } : undefined,
-    personal: context.personal ? {
-      memoryChars: context.personal.memorySnapshot.length,
-    } : undefined,
+    hot: {
+      availableCount: context.hot.available.length,
+      loadedKeys: context.hot.loaded.map((entry) => entry.key),
+      mountedTokens: context.hot.budget.mountedTokens,
+      maxMountedTokens: context.hot.budget.maxMountedTokens,
+    },
   };
 }
 
@@ -153,7 +141,9 @@ export function summarizeToolDefinitions(tools: ToolDefinition[]): Record<string
   };
 }
 
-export function summarizeToolLoadResult(result: ToolLoadResult | undefined): Record<string, unknown> | undefined {
+export function summarizeCapabilitySurfaceResult(
+  result: CapabilitySurfaceResult | undefined,
+): Record<string, unknown> | undefined {
   if (!result) {
     return undefined;
   }
@@ -165,6 +155,9 @@ export function summarizeToolLoadResult(result: ToolLoadResult | undefined): Rec
     evicted: result.evicted,
     missing: result.missing,
     unavailable: result.unavailable,
+    unavailableCapabilities: result.unavailableCapabilities,
+    omittedOptionalTools: result.omittedOptionalTools,
+    coverage: result.coverage,
     taxonomy: {
       loaded: summarizeToolTaxonomy(result.loaded),
       alreadyActive: summarizeToolTaxonomy(result.alreadyActive),
@@ -190,12 +183,20 @@ export function summarizeDecision(decision: AgentDecision): Record<string, unkno
       request: decision.request,
     };
   }
-  if (decision.kind === "validate") {
+  if (decision.kind === "stop") {
     return {
-      kind: "validate",
-      summaryPreview: previewString(decision.request.summary, 240),
+      kind: "stop",
+      responsePreview: previewString(decision.request.response, 240),
       outcome: decision.request.outcome,
-      resourceCount: decision.request.resources?.length ?? 0,
+    };
+  }
+  if (decision.kind === "checkpoint_work_state") {
+    return {
+      kind: "checkpoint_work_state",
+      reason: decision.update.reason,
+      planItemCount: decision.update.plan.length,
+      importantContextCount: decision.update.importantContext.length,
+      summaryPreview: previewString(decision.update.summary, 240),
     };
   }
   return {
@@ -225,13 +226,12 @@ export function summarizeWorkState(workState: WorkState): Record<string, unknown
   return {
     status: workState.status,
     summaryPreview: previewString(workState.summary, 240),
-    openWorkCount: workState.openWork?.length ?? 0,
-    blockerCount: workState.blockers?.length ?? 0,
-    verifiedFactCount: workState.verifiedFacts.length,
-    evidenceCount: workState.evidence.length,
-    artifactCount: workState.artifacts?.length ?? 0,
-    nextStepPreview: previewString(workState.nextStep, 180),
-    userInputNeededPreview: previewString(workState.userInputNeeded, 180),
+    planItemCount: workState.plan.length,
+    activePlanItemCount: workState.plan.filter((item) => item.status === "active").length,
+    blockedPlanItemCount: workState.plan.filter((item) => item.status === "blocked").length,
+    importantContextCount: workState.importantContext.length,
+    artifactCount: workState.importantContext.filter((item) => item.kind === "artifact").length,
+    nextActionPreview: previewString(workState.nextAction, 180),
   };
 }
 
@@ -277,7 +277,7 @@ export function summarizeContextEngine(
     streamId: context.agentStream.meta.streamId,
     exactMessageCount: context.agentStream.recentMessages.length,
     hasCheckpoint: Boolean(context.agentStream.checkpoint),
-    recentWorkCount: context.agentStream.recentWork.length,
+    recentWorkstreamMetadataCount: context.agentStream.recentWorkstreams.length,
     resourceCount: context.agentStream.meta.resourceCount,
     routingStatus: context.current.routing?.status,
     currentSequence: context.current.inputSeq,
@@ -285,7 +285,6 @@ export function summarizeContextEngine(
       context: context.contextRevision,
       stream: context.streamRevision,
       run: context.runRevision,
-      observations: context.observationRevision,
     },
     focusStatus: context.focus.status,
     activeWorkstreamId: context.focus.status === "active" ? context.focus.workstreamId : undefined,
@@ -296,11 +295,6 @@ export function summarizeContextEngine(
       blockerCount: context.workstream.blockers.length,
       resourceCount: context.workstream.resources.length,
     } : undefined,
-    observationCounts: {
-      inventory: context.observations.inventory.length,
-      discovery: context.observations.discovery.length,
-      evidence: context.observations.evidence.length,
-    },
   };
 }
 

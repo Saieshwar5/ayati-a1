@@ -12,7 +12,7 @@ Default services:
 Runtime data:
 
 - Stored under `ayati-main/data/`.
-- Context Engine stores its V7 SQLite database and managed resources under
+- Context Engine stores its V8 SQLite database and managed resources under
   `<AYATI_ROOT_DIR>/.ayati/`; context-only workstream repositories live under
   `<AYATI_ROOT_DIR>/workstreams/`.
 - Should not be committed.

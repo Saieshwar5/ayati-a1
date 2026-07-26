@@ -1,5 +1,5 @@
 import { mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { initializeSchema, latestSchemaVersion } from "./schema.js";
 
@@ -19,24 +19,28 @@ export class ContextDatabase {
   }
 
   static async open(options: ContextDatabaseOptions): Promise<ContextDatabase> {
-    if (options.path !== ":memory:") {
-      await mkdir(dirname(options.path), { recursive: true });
+    if (options.path !== ":memory:" && !isAbsolute(options.path)) {
+      throw new Error("Context Engine database path must be an absolute filesystem path.");
     }
-    const database = new DatabaseSync(options.path);
+    const databasePath = options.path === ":memory:" ? options.path : resolve(options.path);
+    if (databasePath !== ":memory:") {
+      await mkdir(dirname(databasePath), { recursive: true });
+    }
+    const database = new DatabaseSync(databasePath);
     try {
       initializeSchema(database, options.now ?? (() => new Date().toISOString()));
       database.exec("PRAGMA foreign_keys = ON");
       database.exec("PRAGMA busy_timeout = 5000");
-      if (options.path !== ":memory:") {
+      if (databasePath !== ":memory:") {
         database.exec("PRAGMA journal_mode = WAL");
         database.exec("PRAGMA synchronous = FULL");
       }
     } catch (error) {
       database.close();
       const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`${message} Database: ${options.path}`);
+      throw new Error(`${message} Database: ${databasePath}`);
     }
-    return new ContextDatabase(options.path, database);
+    return new ContextDatabase(databasePath, database);
   }
 
   prepare(sql: string): StatementSync {

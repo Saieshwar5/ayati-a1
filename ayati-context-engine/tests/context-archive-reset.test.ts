@@ -10,6 +10,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -32,6 +33,8 @@ describe("context archive reset", () => {
     const result = await runArchiveReset(fixture.env);
 
     expect(result).toMatchObject({ code: 0, stderr: "" });
+    expect(result.stdout).toContain("database-schema: 7");
+    expect(result.stdout).toContain("target-schema: 8");
     await expect(access(fixture.databasePath)).resolves.toBeUndefined();
     await expect(access(join(fixture.resourceRoot, "blob"))).resolves.toBeUndefined();
     await expect(access(join(fixture.workstreamRoot, "workstream.json"))).resolves.toBeUndefined();
@@ -40,7 +43,7 @@ describe("context archive reset", () => {
       .toEqual([]);
   });
 
-  it("archives the V5 database, resources, and workstreams with a V7 reset manifest", async () => {
+  it("archives the detected V7 database with an accurate V8 reset manifest", async () => {
     const fixture = await createFixture();
     await createRuntimeState(fixture);
 
@@ -63,8 +66,8 @@ describe("context archive reset", () => {
     expect(JSON.parse(await readFile(join(archiveRoot, "manifest.json"), "utf8")))
       .toMatchObject({
         version: 3,
-        archivedSchemaVersion: 5,
-        nextSchemaVersion: 6,
+        archivedSchemaVersion: 7,
+        nextSchemaVersion: 8,
         operation: "context_archive_reset",
         status: "completed",
         preservedPaths: [fixture.workspaceRoot],
@@ -159,8 +162,18 @@ async function createRuntimeState(fixture: ArchiveFixture): Promise<void> {
   await mkdir(fixture.resourceRoot, { recursive: true });
   await mkdir(fixture.workstreamRoot, { recursive: true });
   await mkdir(fixture.workspaceRoot, { recursive: true });
+  const database = new DatabaseSync(fixture.databasePath);
+  database.exec([
+    "CREATE TABLE schema_metadata (",
+    "  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),",
+    "  version INTEGER NOT NULL,",
+    "  created_at TEXT NOT NULL",
+    ");",
+    "INSERT INTO schema_metadata(singleton, version, created_at)",
+    "VALUES (1, 7, '2026-07-25T00:00:00.000Z');",
+  ].join(" "));
+  database.close();
   await Promise.all([
-    writeFile(fixture.databasePath, "database", "utf8"),
     writeFile(fixture.databasePath + "-wal", "wal", "utf8"),
     writeFile(fixture.databasePath + "-shm", "shm", "utf8"),
     writeFile(join(fixture.resourceRoot, "blob"), "resource", "utf8"),

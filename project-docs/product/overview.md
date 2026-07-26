@@ -66,5 +66,5 @@ Current packages:
   and HTTP APIs.
 - `ayati-cli`: Ink/React terminal client.
 - `ayati-context-engine`: local SQLite-and-Git service that owns agent streams,
-  immutable messages, runs, checkpoints, history, reusable observations,
-  workstream context, resources, mutation journals, and finalization.
+  immutable messages, runs, checkpoints, history, workstream context,
+  resources, mutation journals, and finalization.

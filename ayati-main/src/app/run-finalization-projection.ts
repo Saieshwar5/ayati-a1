@@ -8,6 +8,7 @@ import {
   compactText,
   compactWorkState,
 } from "../ivec/state-compaction.js";
+import { workStateBlockers } from "../ivec/agent-runner/work-state/selectors.js";
 import type { AgentLoopResult, AgentResourceRecord, WorkState } from "../ivec/types.js";
 
 export interface AgentRunFinalizationProjection {
@@ -40,7 +41,7 @@ export function buildAgentRunFinalizationProjection(input: {
     RUN_FINALIZATION_LIMITS.summaryChars,
   );
   const next = compactOptionalText(
-    workState?.nextStep,
+    workState?.nextAction,
     RUN_FINALIZATION_LIMITS.nextChars,
   );
   return {
@@ -95,7 +96,7 @@ function buildWorkstreamCompletion(
       ? ["Accepted deterministic workstream-completion evidence"]
       : [],
     failures: uniqueText([
-      ...(workState?.blockers ?? []),
+      ...(workState ? workStateBlockers(workState) : []),
       result.workstreamSummary?.failureSummary?.error,
     ], limits.failureChars, limits.maximumItems),
     criteria: [{

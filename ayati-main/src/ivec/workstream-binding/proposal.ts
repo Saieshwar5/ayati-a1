@@ -10,13 +10,6 @@ const WORKSTREAM_ID_PATTERN = "^W-[0-9]{8}-[0-9]{4}$";
 const REQUEST_ID_PATTERN = "^R-[0-9]{4}$";
 const RESOURCE_ID_PATTERN = "^RES-[0-9A-F]{24}$";
 
-export function workstreamBindingProposalSchema(): Record<string, unknown> {
-  return {
-    oneOf: [activateProposalSchema(), createProposalSchema()],
-    description: "Required only when entering resolve on an unbound run. Propose one exact evidence-backed binding; the harness verifies and commits it deterministically.",
-  };
-}
-
 export function normalizeWorkstreamBindingProposal(
   value: unknown,
 ): WorkstreamBindingProposal | undefined {
@@ -117,7 +110,7 @@ function normalizeResourceBindings(
   return resources;
 }
 
-function activateProposalSchema(): Record<string, unknown> {
+export function workstreamActivateProposalSchema(): Record<string, unknown> {
   return objectSchema({
     kind: { const: "activate" },
     workstreamId: { type: "string", pattern: WORKSTREAM_ID_PATTERN },
@@ -129,7 +122,7 @@ function activateProposalSchema(): Record<string, unknown> {
   }, ["kind", "workstreamId", "expectedWorkstreamHead", "requestDecision", "evidence"]);
 }
 
-function createProposalSchema(): Record<string, unknown> {
+export function workstreamCreateProposalSchema(): Record<string, unknown> {
   return objectSchema({
     kind: { const: "create" },
     title: { type: "string", minLength: 1, maxLength: 120 },

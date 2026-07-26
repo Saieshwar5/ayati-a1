@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AgentRunHandle } from "ayati-context-engine";
@@ -11,10 +11,19 @@ import type { HarnessContextInput } from "../../src/ivec/harness-context.js";
 import type { AgentFeedbackEventInput, AgentFeedbackLedger } from "../../src/ivec/feedback-ledger.js";
 import { noopRunRecorder } from "../../src/ivec/noop-run-recorder.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
+import { inspectPathsTool } from "../../src/skills/builtins/filesystem/inspect-paths.js";
+import { findFilesTool } from "../../src/skills/builtins/filesystem/find-files.js";
+import { readFilesTool } from "../../src/skills/builtins/filesystem/read-files.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
-import type { SkillDefinition, ToolDefinition } from "../../src/skills/types.js";
-import { ToolCatalog } from "../../src/ivec/agent-runner/tool-catalog.js";
-import { ToolWorkingSetManager } from "../../src/ivec/agent-runner/tool-working-set.js";
+import type { ToolDefinition } from "../../src/skills/types.js";
+import { CapabilitySurfaceManager } from "../../src/ivec/agent-runner/capabilities/surface-manager.js";
+import { ToolRegistry } from "../../src/ivec/agent-runner/capabilities/registry.js";
+import {
+  createPersonalMemoryHotContextSource,
+  HotContextRuntime,
+  WORKSTREAMS_RECENT_HOT_CONTEXT_KEY,
+} from "../../src/ivec/hot-context/index.js";
+import { createContextSkill } from "../../src/skills/builtins/context/index.js";
 import { contextEngineFixture } from "../fixtures/agent-context.js";
 import { nativeDecisionFixture } from "./native-decision-fixture.js";
 
@@ -157,9 +166,15 @@ function createProvider(responses: unknown[]): LlmProvider {
     },
     start: vi.fn(),
     stop: vi.fn(),
-    generateTurn: vi.fn(async (): Promise<LlmTurnOutput> => {
+    generateTurn: vi.fn(async (input): Promise<LlmTurnOutput> => {
       const response = queue.shift();
-      if (!response) throw new Error("No queued provider response");
+      if (!response) {
+        const prompt = input.messages.find((message) => message.role === "user")?.content;
+        const mode = typeof prompt === "string"
+          ? extractStateView(prompt).context?.run?.mode
+          : undefined;
+        throw new Error(`No queued provider response; current mode=${JSON.stringify(mode)}`);
+      }
       return response;
     }),
   };
@@ -226,10 +241,61 @@ function readTool(): ToolDefinition {
       required: ["path"],
       properties: { path: { type: "string" } },
     },
-    async execute() {
-      return { ok: true, output: "upload handling lives in src/upload.ts" };
+    async execute(input) {
+      const path = typeof input["path"] === "string" ? input["path"] : "";
+      return {
+        ok: true,
+        output: "upload handling lives in src/upload.ts",
+        v2: {
+          transportOk: true,
+          operationStatus: "succeeded",
+          code: "FILES_READ",
+          message: "Read file.",
+          structuredContent: {
+            results: [{
+              requestedPath: path,
+              filePath: path,
+              ok: true,
+              content: "upload handling lives in src/upload.ts",
+              coverage: "complete",
+              truncated: false,
+            }],
+          },
+        },
+      };
     },
   };
+}
+
+function validationDecisions(input: {
+  path: string;
+  response: string;
+  id: string;
+  check?: "exists" | "read_complete";
+}): unknown[] {
+  const kind = input.check === "read_complete"
+    ? "file.read_complete"
+    : "path.exists";
+  return [
+    {
+      kind: "transition_mode",
+      request: {
+        to: "validation",
+        purpose: "Check current-run completion proof before responding.",
+        capabilities: ["task:validation"],
+        validationChecks: [{
+          kind,
+          subject: input.path,
+          expectedKind: "file",
+        }],
+      },
+    },
+    {
+      kind: "reply",
+      status: "completed",
+      message: input.response,
+    },
+  ];
 }
 
 function fixtureTool(name: string): ToolDefinition {
@@ -239,6 +305,26 @@ function fixtureTool(name: string): ToolDefinition {
     inputSchema: { type: "object", properties: {} },
     async execute() {
       return { ok: true, output: `${name} completed` };
+    },
+  };
+}
+
+function foundFileResult(path: string) {
+  return {
+    ok: true,
+    output: path,
+    v2: {
+      transportOk: true as const,
+      operationStatus: "succeeded" as const,
+      code: "FILES_FOUND",
+      message: "Found one file.",
+      structuredContent: {
+        query: path.split("/").at(-1) ?? path,
+        roots: [],
+        matches: [{ absolutePath: path, kind: "file" as const }],
+        capped: false,
+        errors: [],
+      },
     },
   };
 }
@@ -274,16 +360,6 @@ function createBindingProposal(runId: string, callId: string) {
     },
     resources: [],
     evidence: [`run:${runId}:step:1:call:${callId}`],
-  };
-}
-
-function fixtureSkill(id: string, tools: ToolDefinition[]): SkillDefinition {
-  return {
-    id,
-    version: "1.0.0",
-    description: `${id} fixture skill`,
-    promptBlock: "",
-    tools,
   };
 }
 
@@ -324,14 +400,194 @@ describe("agentLoop one-run lifecycle", () => {
     }
   });
 
+  it("persists a named WorkState checkpoint without creating an action step", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const checkpointWorkState = vi.fn(async (input) => ({
+        runtime: {
+          revision: input.runtime.revision + 1,
+          afterStep: input.afterStep,
+          updateReason: input.reason,
+          updatedAt: input.at,
+        },
+      }));
+      const recordRunStep = vi.fn();
+      const provider = createProvider([
+        {
+          kind: "transition_mode",
+          request: {
+            to: "observe.locate",
+            purpose: "Identify which file the user means.",
+            capabilities: ["file:search"],
+            subjects: ["that file"],
+          },
+        },
+        {
+          kind: "checkpoint_work_state",
+          update: {
+            reason: "plan",
+            summary: "The target must be identified before inspection.",
+            plan: [{
+              id: "locate",
+              task: "Identify the requested file.",
+              status: "active",
+            }],
+            importantContext: [{
+              kind: "decision",
+              value: "Do not guess the file identity.",
+            }],
+            nextAction: "Ask the user for the filename.",
+          },
+        },
+        {
+          kind: "stop",
+          request: {
+            outcome: "needs_user_input",
+            response: "Which file would you like me to find?",
+          },
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [fixtureTool("find_files")],
+        runRecorder: noopRunRecorder,
+        runHandle: runHandle("R-work-state-checkpoint"),
+        recordRunStep,
+        checkpointWorkState,
+        clientId: "c1",
+        initialUserMessage: "Find that file for me.",
+        dataDir,
+        systemContext: "test system context",
+        harnessContext: unboundContext(
+          "R-work-state-checkpoint",
+          "Find that file for me.",
+        ),
+      });
+
+      expect(checkpointWorkState).toHaveBeenCalledOnce();
+      expect(checkpointWorkState).toHaveBeenCalledWith(expect.objectContaining({
+        reason: "plan",
+        afterStep: 0,
+        runtime: {
+          revision: 0,
+          afterStep: 0,
+          updateReason: "initial",
+        },
+        workState: expect.objectContaining({
+          status: "in_progress",
+          summary: "The target must be identified before inspection.",
+          plan: [expect.objectContaining({ id: "locate", status: "active" })],
+        }),
+      }));
+      expect(recordRunStep).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        outcome: "needs_user_input",
+        workState: {
+          status: "needs_user_input",
+          plan: [expect.objectContaining({ id: "locate", status: "active" })],
+        },
+      });
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("keeps request-like direct response text completed", async () => {
+    const dataDir = makeTmpDir();
+    const response = "Could you please send me the report whenever you have a chance?";
+    try {
+      const provider = createProvider([
+        { kind: "reply", status: "completed", message: response },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        runRecorder: noopRunRecorder,
+        runHandle: runHandle("R-direct-rewrite"),
+        clientId: "c1",
+        initialUserMessage: "Rewrite this politely: Send me the report now.",
+        dataDir,
+        systemContext: "test system context",
+      });
+
+      expect(result).toMatchObject({
+        runId: "R-direct-rewrite",
+        outcome: "done",
+        stopReason: "completed",
+        status: "completed",
+        totalIterations: 1,
+        totalToolCalls: 0,
+        content: response,
+        workState: {
+          status: "done",
+        },
+      });
+      expect(result.workState?.nextAction).toBeUndefined();
+      expect(provider.generateTurn).toHaveBeenCalledTimes(1);
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("allows an operational request to receive a direct clarification at ENTRY", async () => {
+    const dataDir = makeTmpDir();
+    const response = "Which release-notes.txt should I read: North or South?";
+    try {
+      const provider = createProvider([
+        { kind: "reply", status: "completed", message: response },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        runRecorder: noopRunRecorder,
+        runHandle: runHandle("R-direct-clarification"),
+        clientId: "c1",
+        initialUserMessage: "Read exactly one of the two release-notes.txt files and tell me its coordinator.",
+        dataDir,
+        systemContext: "test system context",
+      });
+
+      expect(result).toMatchObject({
+        runId: "R-direct-clarification",
+        outcome: "done",
+        stopReason: "completed",
+        status: "completed",
+        totalIterations: 1,
+        totalToolCalls: 0,
+        content: response,
+      });
+      expect(provider.generateTurn).toHaveBeenCalledTimes(1);
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
   it("starts at ENTRY and mounts read-only tools only after an observation transition", async () => {
     const dataDir = makeTmpDir();
     try {
-      const observationTools = [fixtureTool("inspect_paths"), fixtureTool("find_files")];
+      const notesPath = join(dataDir, "harbor-sensor-notes.md");
+      writeFileSync(notesPath, "harbor sensor notes\n", "utf8");
+      const findTool: ToolDefinition = {
+        ...fixtureTool("find_files"),
+        async execute() {
+          return foundFileResult(notesPath);
+        },
+      };
+      const observationTools = [
+        inspectPathsTool,
+        readTool(),
+        findTool,
+        fixtureTool("list_directory"),
+        fixtureTool("search_in_files"),
+      ];
       const toolExecutor = createToolExecutor([]);
-      const toolWorkingSetManager = new ToolWorkingSetManager({
-        catalog: new ToolCatalog([fixtureSkill("filesystem", observationTools)]),
+      const capabilitySurfaceManager = new CapabilitySurfaceManager({
+        registry: new ToolRegistry(observationTools),
         toolExecutor,
+        validateCoverage: false,
       });
       const provider = createProvider([
         {
@@ -357,14 +613,11 @@ describe("agentLoop one-run lifecycle", () => {
             assertions: [],
           },
         },
-        {
-          kind: "validate",
-          request: {
-            outcome: "completed",
-            summary: "Searched for the requested notes file without mutation.",
-            response: "I searched for harbor-sensor-notes.md without changing anything.",
-          },
-        },
+        ...validationDecisions({
+          path: notesPath,
+          response: `Found ${notesPath}.`,
+          id: "harbor-notes",
+        }),
       ]);
       const workstreamBinding = { bind: vi.fn() };
       const recordRunStep = vi.fn();
@@ -372,7 +625,7 @@ describe("agentLoop one-run lifecycle", () => {
       const result = await agentLoop({
         provider,
         toolExecutor,
-        toolWorkingSetManager,
+        capabilitySurfaceManager,
         toolDefinitions: observationTools,
         workstreamBinding,
         runRecorder: noopRunRecorder,
@@ -388,19 +641,542 @@ describe("agentLoop one-run lifecycle", () => {
         ),
       });
 
-      expect(result).toMatchObject({ outcome: "done", totalIterations: 3, totalToolCalls: 1 });
+      expect(result).toMatchObject({ outcome: "done", totalIterations: 4, totalToolCalls: 1 });
       const firstInput = vi.mocked(provider.generateTurn).mock.calls[0]?.[0];
-      expect(firstInput.tools.map((tool) => tool.name)).toEqual(["decision_transition_mode"]);
+      expect(firstInput.tools.map((tool) => tool.name)).toEqual([
+        "decision_enter_observe_locate",
+        "decision_enter_observe_investigate",
+        "decision_resolve_activate",
+        "decision_resolve_create",
+      ]);
       const secondInput = vi.mocked(provider.generateTurn).mock.calls[1]?.[0];
       expect(secondInput.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
-        "decision_transition_mode",
-        "decision_validate",
-        "inspect_paths",
+        "decision_enter_observe_locate",
+        "decision_enter_observe_investigate",
+        "decision_stop",
         "find_files",
+        "list_directory",
+        "search_in_files",
       ]));
       expect(secondInput.tools.map((tool) => tool.name)).not.toContain("write_files");
       expect(workstreamBinding.bind).not.toHaveBeenCalled();
-      expect(recordRunStep).toHaveBeenCalledOnce();
+      expect(recordRunStep).toHaveBeenCalledTimes(1);
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("mounts Hot Context through a transient mode without changing WorkState or durable work steps", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const personalMemory = "The user prefers concise implementation explanations.";
+      const hotContextRuntime = new HotContextRuntime({
+        sources: [
+          createPersonalMemoryHotContextSource({
+            getSnapshot: () => personalMemory,
+          }),
+        ],
+      });
+      const contextTool = createContextSkill({ hotContextRuntime }).tools[0]!;
+      const toolExecutor = createToolExecutor([]);
+      const capabilitySurfaceManager = new CapabilitySurfaceManager({
+        registry: new ToolRegistry([contextTool]),
+        toolExecutor,
+        validateCoverage: false,
+      });
+      const provider = createProvider([
+        {
+          kind: "transition_mode",
+          request: {
+            to: "context.retrieve",
+            purpose: "Load the relevant personal preference.",
+            capabilities: ["context:load"],
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "load-personal-memory",
+              tool: "context_load",
+              input: { keys: ["personal.memory"] },
+              dependsOn: [],
+              purpose: "Load the relevant personal preference",
+            }],
+            allowedTools: ["context_load"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: "You usually prefer concise implementation explanations.",
+        },
+      ]);
+      const recordRunStep = vi.fn();
+      const run = runHandle("R-hot-context");
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        capabilitySurfaceManager,
+        hotContextRuntime,
+        toolDefinitions: [contextTool],
+        runRecorder: noopRunRecorder,
+        runHandle: run,
+        recordRunStep,
+        clientId: "c1",
+        initialUserMessage: "What response style do I usually prefer?",
+        dataDir,
+        systemContext: "test system context",
+        harnessContext: unboundContext(
+          run.runId,
+          "What response style do I usually prefer?",
+        ),
+      });
+
+      expect(result).toMatchObject({
+        outcome: "done",
+        totalIterations: 3,
+        totalToolCalls: 1,
+        completedSteps: [],
+      });
+      expect(recordRunStep).not.toHaveBeenCalled();
+
+      const calls = vi.mocked(provider.generateTurn).mock.calls;
+      const firstPrompt = extractStateView(
+        calls[0]?.[0].messages.find((message) => message.role === "user")?.content ?? "",
+      );
+      expect(firstPrompt.context.hot).toMatchObject({
+        available: [{ key: "personal.memory" }],
+        loaded: [],
+      });
+      expect(JSON.stringify(firstPrompt)).not.toContain(personalMemory);
+
+      const secondInput = calls[1]?.[0];
+      expect(secondInput?.tools.map((tool) => tool.name)).toEqual([
+        "context_load",
+      ]);
+
+      const finalPromptText = calls[2]?.[0].messages
+        .find((message) => message.role === "user")?.content ?? "";
+      const finalPrompt = extractStateView(finalPromptText);
+      expect(finalPrompt.context.run.mode).toMatchObject({
+        active: "ENTRY",
+      });
+      expect(finalPrompt.context.hot).toMatchObject({
+        available: [],
+        loaded: [{
+          key: "personal.memory",
+          content: personalMemory,
+        }],
+      });
+      expect(finalPromptText.match(new RegExp(personalMemory, "g"))).toHaveLength(1);
+      expect(hotContextRuntime.project("c1", run.runId).loaded).toEqual([]);
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("persists the first durable tool as step one after a transient Hot Context load", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const target = join(dataDir, "archive", "field-brief.txt");
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, "Lead botanist: Dr. Nila Voss.\n", "utf8");
+
+      const hotContextRuntime = new HotContextRuntime({
+        sources: [
+          createPersonalMemoryHotContextSource({
+            getSnapshot: () => "The user prefers concise answers.",
+          }),
+        ],
+      });
+      const contextTool = createContextSkill({ hotContextRuntime }).tools[0]!;
+      const toolExecutor = createToolExecutor([]);
+      const capabilitySurfaceManager = new CapabilitySurfaceManager({
+        registry: new ToolRegistry([contextTool, readFilesTool, inspectPathsTool]),
+        toolExecutor,
+        validateCoverage: false,
+      });
+      const provider = createProvider([
+        {
+          kind: "transition_mode",
+          request: {
+            to: "context.retrieve",
+            purpose: "Load the user's response preference.",
+            capabilities: ["context:load"],
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "load-personal-memory",
+              tool: "context_load",
+              input: { keys: ["personal.memory"] },
+              dependsOn: [],
+              purpose: "Load the user's response preference",
+            }],
+            allowedTools: ["context_load"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "transition_mode",
+          request: {
+            to: "observe.investigate",
+            purpose: "Read the exact file requested by the user.",
+            capabilities: ["file:read"],
+            references: [{ kind: "filesystem", path: target }],
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "read-field-brief",
+              tool: "read_files",
+              input: {
+                files: [{
+                  path: target,
+                  mode: "full",
+                }],
+              },
+              dependsOn: [],
+              purpose: "Read the field brief",
+            }],
+            allowedTools: ["read_files"],
+            assertions: [],
+          },
+        },
+        ...validationDecisions({
+          path: target,
+          response: "The lead botanist is Dr. Nila Voss.",
+          id: "field-brief",
+          check: "read_complete",
+        }),
+      ]);
+      const records: ContextRunStepRecord[] = [];
+      const run = runHandle("R-hot-context-then-read");
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        capabilitySurfaceManager,
+        hotContextRuntime,
+        toolDefinitions: [contextTool, readFilesTool, inspectPathsTool],
+        runRecorder: noopRunRecorder,
+        runHandle: run,
+        recordRunStep(record) {
+          const expectedStep = records.length + 1;
+          if (record.step !== expectedStep) {
+            throw new Error(
+              `RUN_STEP_NOT_CONTIGUOUS: expected ${expectedStep}, received ${record.step}`,
+            );
+          }
+          records.push(record);
+        },
+        clientId: "c1",
+        initialUserMessage: `Read ${target} and tell me who the lead botanist is.`,
+        dataDir,
+        systemContext: "test system context",
+        harnessContext: unboundContext(
+          run.runId,
+          `Read ${target} and tell me who the lead botanist is.`,
+        ),
+      });
+
+      expect(result).toMatchObject({
+        outcome: "done",
+        totalIterations: 6,
+        totalToolCalls: 2,
+        completedSteps: [{
+          step: 1,
+        }],
+      });
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+        runId: run.runId,
+        step: 1,
+        status: "completed",
+        toolCalls: [{
+          callId: "read-field-brief",
+          tool: "read_files",
+          verificationPassed: true,
+        }],
+      });
+
+      const validationInput = vi.mocked(provider.generateTurn).mock.calls[4]?.[0];
+      const validationPrompt = extractStateView(
+        validationInput.messages.find((message) => message.role === "user")?.content ?? "",
+      );
+      expect(validationPrompt.context.run.toolCalls).toEqual([
+        expect.objectContaining({
+          step: 1,
+          stepKind: "transient_context",
+          callId: "load-personal-memory",
+          tool: "context_load",
+        }),
+        expect.objectContaining({
+          step: 1,
+          callId: "read-field-brief",
+          tool: "read_files",
+        }),
+      ]);
+      expect(validationPrompt.context.run.toolCalls[1]).not.toHaveProperty("stepKind");
+      expect(validationPrompt.context.run.verifiedOutcomes).toContainEqual({
+        kind: "file.read_complete",
+        subject: target,
+        actualKind: "file",
+        source: {
+          step: 1,
+          callId: "read-field-brief",
+          tool: "read_files",
+        },
+      });
+      expect(JSON.stringify(validationPrompt.context.run.verifiedOutcomes))
+        .not.toContain("context_load");
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("keeps recent workstreams metadata-only until the agent loads its Hot Context entry", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const hotContextRuntime = new HotContextRuntime({
+        sources: [],
+        runScopedKeys: [WORKSTREAMS_RECENT_HOT_CONTEXT_KEY],
+      });
+      const contextTool = createContextSkill({ hotContextRuntime }).tools[0]!;
+      const toolExecutor = createToolExecutor([]);
+      const capabilitySurfaceManager = new CapabilitySurfaceManager({
+        registry: new ToolRegistry([contextTool]),
+        toolExecutor,
+        validateCoverage: false,
+      });
+      const provider = createProvider([
+        {
+          kind: "transition_mode",
+          request: {
+            to: "context.retrieve",
+            purpose: "Load recent workstream navigation metadata.",
+            capabilities: ["context:load"],
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "load-recent-workstreams",
+              tool: "context_load",
+              input: { keys: [WORKSTREAMS_RECENT_HOT_CONTEXT_KEY] },
+              dependsOn: [],
+              purpose: "Load recent workstream navigation metadata",
+            }],
+            allowedTools: ["context_load"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: "The Hot Context implementation is the recent workstream.",
+        },
+      ]);
+      const run = runHandle("R-recent-workstreams");
+      const harnessContext = unboundContext(
+        run.runId,
+        "Which workstream did we use recently?",
+      );
+      harnessContext.contextEngine!.agentStream.recentWorkstreams = [{
+        workstreamId: "W-20260724-0001",
+        title: "Hot Context implementation",
+        lifecycleStatus: "active",
+        repositoryHealth: "ready",
+        currentRequest: {
+          id: "R-0002",
+          title: "Add recent workstreams",
+          status: "active",
+        },
+        lastActivity: {
+          kind: "bound",
+          at: "2026-07-24T10:00:00.000Z",
+        },
+      }];
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        capabilitySurfaceManager,
+        hotContextRuntime,
+        toolDefinitions: [contextTool],
+        runRecorder: noopRunRecorder,
+        runHandle: run,
+        clientId: "c1",
+        initialUserMessage: "Which workstream did we use recently?",
+        dataDir,
+        systemContext: "test system context",
+        harnessContext,
+      });
+
+      expect(result).toMatchObject({
+        outcome: "done",
+        totalIterations: 3,
+        totalToolCalls: 1,
+        completedSteps: [],
+      });
+      const calls = vi.mocked(provider.generateTurn).mock.calls;
+      const initialPromptText = calls[0]?.[0].messages
+        .find((message) => message.role === "user")?.content ?? "";
+      const initialPrompt = extractStateView(initialPromptText);
+      expect(initialPrompt.context.hot).toMatchObject({
+        available: [{ key: WORKSTREAMS_RECENT_HOT_CONTEXT_KEY }],
+        loaded: [],
+      });
+      expect(initialPromptText).not.toContain("W-20260724-0001");
+      expect(initialPrompt.context).not.toHaveProperty("work");
+      expect(initialPrompt.context).not.toHaveProperty("resources");
+      expect(initialPrompt.context).not.toHaveProperty("observations");
+
+      const loadedPromptText = calls[2]?.[0].messages
+        .find((message) => message.role === "user")?.content ?? "";
+      const loadedPrompt = extractStateView(loadedPromptText);
+      expect(loadedPrompt.context.hot.loaded).toEqual([
+        expect.objectContaining({
+          key: WORKSTREAMS_RECENT_HOT_CONTEXT_KEY,
+          content: expect.stringContaining("W-20260724-0001"),
+        }),
+      ]);
+      expect(loadedPromptText.match(/W-20260724-0001/g)).toHaveLength(1);
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("removes recovered transition repairs from later model prompts while retaining audit feedback", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const notesPath = join(dataDir, "requested-notes.md");
+      writeFileSync(notesPath, "requested notes\n", "utf8");
+      const findTool: ToolDefinition = {
+        ...fixtureTool("find_files"),
+        async execute() {
+          return foundFileResult(notesPath);
+        },
+      };
+      const read = readTool();
+      const feedback = createMemoryFeedbackLedger();
+      const provider = createProvider([
+        {
+          kind: "transition_mode",
+          request: {
+            to: "observe.investigate",
+            purpose: "Read an assumed notes path.",
+            capabilities: ["file:read"],
+            targets: ["/tmp/invented-notes.md"],
+          },
+        },
+        {
+          kind: "transition_mode",
+          request: {
+            to: "observe.locate",
+            purpose: "Locate the requested notes file.",
+            capabilities: ["domain:filesystem"],
+          },
+        },
+        {
+          kind: "transition_mode",
+          request: {
+            to: "observe.locate",
+            purpose: "Locate the requested notes file.",
+            capabilities: ["file:search"],
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "find-requested-notes",
+              tool: "find_files",
+              input: {},
+              dependsOn: [],
+              purpose: "Find the requested notes file",
+            }],
+            allowedTools: ["find_files"],
+            assertions: [],
+          },
+        },
+        ...validationDecisions({
+          path: notesPath,
+          response: `Found ${notesPath}.`,
+          id: "requested-notes",
+        }),
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor: createToolExecutor([findTool, read, inspectPathsTool]),
+        toolDefinitions: [findTool, read, inspectPathsTool],
+        feedbackLedger: feedback.ledger,
+        runRecorder: noopRunRecorder,
+        runHandle: runHandle("R-recovered-transition-repairs"),
+        clientId: "c1",
+        initialUserMessage: "Find the requested notes file without modifying anything.",
+        dataDir,
+        systemContext: "test system context",
+        harnessContext: unboundContext(
+          "R-recovered-transition-repairs",
+          "Find the requested notes file without modifying anything.",
+        ),
+      });
+
+      expect(result).toMatchObject({
+        outcome: "done",
+        totalIterations: 6,
+        totalToolCalls: 1,
+      });
+      expect(provider.generateTurn).toHaveBeenCalledTimes(6);
+
+      const decisionView = (index: number): Record<string, any> => {
+        const input = vi.mocked(provider.generateTurn).mock.calls[index]?.[0];
+        const prompt = input.messages.find((message) => message.role === "user")?.content;
+        expect(typeof prompt).toBe("string");
+        return extractStateView(prompt as string);
+      };
+      const afterTargetRepair = decisionView(1);
+      const afterCapabilityRepair = decisionView(2);
+      const afterAcceptedTransition = decisionView(3);
+      const afterVerifiedAction = decisionView(4);
+
+      expect(JSON.stringify(afterTargetRepair)).toContain("/tmp/invented-notes.md");
+      expect(JSON.stringify(afterCapabilityRepair)).toContain("/tmp/invented-notes.md");
+      expect(JSON.stringify(afterCapabilityRepair)).toContain("Unknown capability ids");
+      expect(JSON.stringify(afterCapabilityRepair)).toContain("domain:filesystem");
+      expect(JSON.stringify(afterAcceptedTransition)).not.toContain("/tmp/invented-notes.md");
+      expect(JSON.stringify(afterAcceptedTransition)).not.toContain("Unknown capability ids");
+      expect(JSON.stringify(afterAcceptedTransition)).not.toContain("domain:filesystem");
+      expect(afterAcceptedTransition.context.harness).toBeUndefined();
+      expect(afterAcceptedTransition.trace?.recentFailures).toBeUndefined();
+      expect(JSON.stringify(afterVerifiedAction)).not.toContain("/tmp/invented-notes.md");
+      expect(JSON.stringify(afterVerifiedAction)).not.toContain("Unknown capability ids");
+      expect(JSON.stringify(afterVerifiedAction)).not.toContain("domain:filesystem");
+
+      expect(feedback.events).toContainEqual(expect.objectContaining({
+        stage: "guard",
+        event: "repair_resolved",
+        data: expect.objectContaining({
+          resolutionKind: "accepted_mode_transition",
+          scopes: ["navigation"],
+          resolvedCount: 2,
+        }),
+      }));
     } finally {
       cleanup(dataDir);
     }
@@ -409,11 +1185,12 @@ describe("agentLoop one-run lifecycle", () => {
   it("locates a vague read target before investigating it in five decisions", async () => {
     const dataDir = makeTmpDir();
     const target = join(dataDir, "project-notes.md");
+    writeFileSync(target, "upload handling lives in src/upload.ts\n", "utf8");
     try {
       const findTool: ToolDefinition = {
         ...fixtureTool("find_files"),
         async execute() {
-          return { ok: true, output: target };
+          return foundFileResult(target);
         },
       };
       const read = readTool();
@@ -446,7 +1223,7 @@ describe("agentLoop one-run lifecycle", () => {
           request: {
             to: "observe.investigate",
             purpose: "Read the exact notes file established by locate evidence.",
-            capabilities: ["file:verify"],
+            capabilities: ["file:read"],
             targets: [target],
           },
         },
@@ -465,14 +1242,12 @@ describe("agentLoop one-run lifecycle", () => {
             assertions: [],
           },
         },
-        {
-          kind: "validate",
-          request: {
-            outcome: "completed",
-            summary: "Located and read the project notes.",
-            response: "The project notes describe upload handling in src/upload.ts.",
-          },
-        },
+        ...validationDecisions({
+          path: target,
+          response: "The project notes describe upload handling in src/upload.ts.",
+          id: "project-notes",
+          check: "read_complete",
+        }),
       ]);
 
       const result = await agentLoop({
@@ -494,10 +1269,10 @@ describe("agentLoop one-run lifecycle", () => {
       expect(result).toMatchObject({
         outcome: "done",
         stopReason: "completed",
-        totalIterations: 5,
+        totalIterations: 6,
         totalToolCalls: 2,
       });
-      expect(provider.generateTurn).toHaveBeenCalledTimes(5);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(6);
       const investigateInput = vi.mocked(provider.generateTurn).mock.calls[3]?.[0];
       expect(investigateInput.tools.map((tool) => tool.name)).toContain("read_files");
       expect(investigateInput.tools.map((tool) => tool.name)).not.toContain("find_files");
@@ -506,9 +1281,96 @@ describe("agentLoop one-run lifecycle", () => {
     }
   });
 
+  it("enters proof-only validation and then replies without a second filesystem call", async () => {
+    const dataDir = makeTmpDir();
+    const target = join(dataDir, "validated-notes.md");
+    writeFileSync(target, "validation mode works\n", "utf8");
+    try {
+      const read = readTool();
+      const provider = createProvider([
+        {
+          kind: "transition_mode",
+          request: {
+            to: "observe.investigate",
+            purpose: "Read the exact notes file requested by the user.",
+            capabilities: ["file:read"],
+            references: [{ kind: "filesystem", path: target }],
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "read-validated-notes",
+              tool: "read_files",
+              input: { path: target },
+              dependsOn: [],
+              purpose: "Read the requested notes",
+            }],
+            allowedTools: ["read_files"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "transition_mode",
+          request: {
+            to: "validation",
+            purpose: "Check current-run proof for the important notes file before responding.",
+            capabilities: ["task:validation"],
+            validationChecks: [{
+              kind: "path.exists",
+              subject: target,
+              expectedKind: "file",
+            }],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: `The verified notes file is at ${target}.`,
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor: createToolExecutor([read]),
+        toolDefinitions: [read],
+        runRecorder: noopRunRecorder,
+        runHandle: runHandle("R-validation-mode"),
+        clientId: "c1",
+        initialUserMessage: `Read ${target} and report its location.`,
+        dataDir,
+        systemContext: "test system context",
+        harnessContext: unboundContext(
+          "R-validation-mode",
+          `Read ${target} and report its location.`,
+        ),
+      });
+
+      expect(result).toMatchObject({
+        outcome: "done",
+        stopReason: "completed",
+        content: `The verified notes file is at ${target}.`,
+        totalIterations: 4,
+        totalToolCalls: 1,
+      });
+      const finalInput = vi.mocked(provider.generateTurn).mock.calls[3]?.[0];
+      const finalPrompt = finalInput.messages.find((message) => message.role === "user")?.content ?? "";
+      expect(finalPrompt).toContain("\"active\": \"validation\"");
+      expect(finalPrompt).toContain("\"status\": \"passed\"");
+      expect(finalInput.tools.map((tool) => tool.name)).toContain("decision_stop");
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
   it("records an observational step on the same unbound run", async () => {
     const dataDir = makeTmpDir();
     try {
+      const target = join(dataDir, "src", "upload.ts");
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, "export const upload = true;\n", "utf8");
       const tool = readTool();
       const toolExecutor = createToolExecutor([tool]);
       const provider = createProvider([
@@ -518,7 +1380,7 @@ describe("agentLoop one-run lifecycle", () => {
             to: "observe.investigate",
             purpose: "Read the exact source file named by the user.",
             capabilities: ["file:read"],
-            targets: ["src/upload.ts"],
+            references: [{ kind: "filesystem", path: target }],
           },
         },
         {
@@ -528,7 +1390,7 @@ describe("agentLoop one-run lifecycle", () => {
             calls: [{
               id: "read-upload",
               tool: "read_files",
-              input: { path: "src/upload.ts" },
+              input: { path: target },
               dependsOn: [],
               purpose: "Locate upload handling",
             }],
@@ -536,14 +1398,12 @@ describe("agentLoop one-run lifecycle", () => {
             assertions: [],
           },
         },
-        {
-          kind: "validate",
-          request: {
-            outcome: "completed",
-            summary: "Verified upload handling in src/upload.ts.",
-            response: "Upload handling is in src/upload.ts.",
-          },
-        },
+        ...validationDecisions({
+          path: target,
+          response: `Upload handling is in ${target}.`,
+          id: "upload",
+          check: "read_complete",
+        }),
       ]);
       const records: ContextRunStepRecord[] = [];
 
@@ -557,10 +1417,10 @@ describe("agentLoop one-run lifecycle", () => {
           records.push(record);
         },
         clientId: "c1",
-        initialUserMessage: "Read src/upload.ts and tell me where upload handling lives.",
+        initialUserMessage: `Read ${target} and tell me where upload handling lives.`,
         dataDir,
         systemContext: "test system context",
-        harnessContext: unboundContext("R-read", "Read src/upload.ts and tell me where upload handling lives."),
+        harnessContext: unboundContext("R-read", `Read ${target} and tell me where upload handling lives.`),
       });
 
       expect(result).toMatchObject({
@@ -568,20 +1428,53 @@ describe("agentLoop one-run lifecycle", () => {
         outcome: "done",
         stopReason: "completed",
         totalToolCalls: 1,
+        workState: {
+          status: "done",
+          summary: `Upload handling is in ${target}.`,
+          plan: [],
+          importantContext: [{
+            kind: "finding",
+            value: `Verified a complete read of ${target}.`,
+            ref: "run:R-read:step:1:call:read-upload",
+          }],
+        },
       });
       expect(records).toHaveLength(1);
       expect(records[0]).toMatchObject({
         runId: "R-read",
         step: 1,
         status: "completed",
-        toolCalls: [{ tool: "read_files", callId: "read-upload", status: "success" }],
+        toolCalls: [{
+          tool: "read_files",
+          callId: "read-upload",
+          status: "success",
+          verification: {
+            version: 1,
+            status: "passed",
+            method: "runtime_check",
+            contract: "deterministic_success_gate_v1",
+          },
+          verificationPassed: true,
+          completionEvidence: expect.arrayContaining([
+            expect.objectContaining({
+              kind: "file_read",
+              path: target,
+              coverage: "complete",
+              contentAvailable: true,
+            }),
+          ]),
+        }],
       });
 
       const thirdInput = vi.mocked(provider.generateTurn).mock.calls[2]?.[0];
       const prompt = thirdInput.messages.find((message) => message.role === "user")?.content;
       expect(typeof prompt).toBe("string");
       const stateView = extractStateView(prompt as string);
-      expect(Object.keys(stateView.context.run).sort()).toEqual(["mode", "toolCalls", "workState"]);
+      expect(Object.keys(stateView.context.run).sort()).toEqual([
+        "mode",
+        "toolCalls",
+        "verifiedOutcomes",
+      ]);
       expect(stateView.context.run).not.toHaveProperty("runId");
       expect(stateView.context.run).not.toHaveProperty("status");
       expect(stateView.context.run).not.toHaveProperty("routing");
@@ -589,7 +1482,152 @@ describe("agentLoop one-run lifecycle", () => {
         tool: "read_files",
         purpose: "Locate upload handling",
         status: "success",
+        verificationStatus: "passed",
       });
+      expect(stateView.context.run.toolCalls[0]).not.toHaveProperty("verification");
+      expect(stateView.context.run.toolCalls[0]).not.toHaveProperty("verificationPassed");
+      expect(stateView.context.run.toolCalls[0]).not.toHaveProperty("completionEvidence");
+      expect(stateView.context.run.verifiedOutcomes).toContainEqual({
+        kind: "file.read_complete",
+        subject: target,
+        actualKind: "file",
+        source: {
+          step: 1,
+          callId: "read-upload",
+          tool: "read_files",
+        },
+      });
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("validates a requested line slice without reading the file again", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const target = join(dataDir, "src", "parser.ts");
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(
+        target,
+        Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n"),
+        "utf8",
+      );
+      const provider = createProvider([
+        {
+          kind: "transition_mode",
+          request: {
+            to: "observe.investigate",
+            purpose: "Read only the exact source lines requested by the user.",
+            capabilities: ["file:read"],
+            references: [{ kind: "filesystem", path: target }],
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "read-parser-slice",
+              tool: "read_files",
+              input: {
+                files: [{
+                  path: target,
+                  mode: "slice",
+                  startLine: 10,
+                  lineCount: 5,
+                }],
+              },
+              dependsOn: [],
+              purpose: "Read lines 10 through 14",
+            }],
+            allowedTools: ["read_files"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "transition_mode",
+          request: {
+            to: "validation",
+            purpose: "Validate that the requested line range was returned.",
+            capabilities: ["task:validation"],
+            validationChecks: [{
+              kind: "file.read_scope_satisfied",
+              subject: target,
+              expectedKind: "file",
+              readScope: {
+                mode: "slice",
+                startLine: 10,
+                endLine: 14,
+              },
+            }],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: "Lines 10 through 14 contain line 10, line 11, line 12, line 13, and line 14.",
+        },
+      ]);
+      const records: ContextRunStepRecord[] = [];
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor: createToolExecutor([readFilesTool]),
+        toolDefinitions: [readFilesTool],
+        runRecorder: noopRunRecorder,
+        runHandle: runHandle("R-slice-read"),
+        recordRunStep(record) {
+          records.push(record);
+        },
+        clientId: "c1",
+        initialUserMessage: `Read only lines 10 through 14 from ${target}.`,
+        dataDir,
+        systemContext: "test system context",
+        harnessContext: unboundContext(
+          "R-slice-read",
+          `Read only lines 10 through 14 from ${target}.`,
+        ),
+      });
+
+      expect(result).toMatchObject({
+        runId: "R-slice-read",
+        outcome: "done",
+        stopReason: "completed",
+        totalToolCalls: 1,
+        workState: {
+          status: "done",
+          importantContext: [{
+            kind: "finding",
+            value: `Verified a read of lines 10-14 from ${target}.`,
+            ref: "run:R-slice-read:step:1:call:read-parser-slice",
+          }],
+        },
+      });
+      expect(records).toHaveLength(1);
+      expect(records[0]?.toolCalls).toEqual([
+        expect.objectContaining({
+          tool: "read_files",
+          callId: "read-parser-slice",
+          verification: expect.objectContaining({
+            status: "passed",
+          }),
+          completionEvidence: expect.arrayContaining([
+            expect.objectContaining({
+              kind: "file_read",
+              path: target,
+              mode: "slice",
+              coverage: "partial",
+              truncated: false,
+              startLine: 10,
+              endLine: 14,
+            }),
+          ]),
+        }),
+      ]);
+      const finalInput = vi.mocked(provider.generateTurn).mock.calls[3]?.[0];
+      const finalPrompt = finalInput.messages.find((message) => message.role === "user")?.content ?? "";
+      expect(finalPrompt).toContain("\"status\": \"passed\"");
+      expect(finalPrompt).toContain("\"file.read_scope_satisfied\"");
     } finally {
       cleanup(dataDir);
     }
@@ -602,7 +1640,7 @@ describe("agentLoop one-run lifecycle", () => {
     const routingCallId = "find-binding-candidates";
     try {
       const routingTool = workstreamSearchTool();
-      const toolExecutor = createToolExecutor([writeFilesTool, routingTool]);
+      const toolExecutor = createToolExecutor([writeFilesTool, routingTool, inspectPathsTool]);
       const feedback = createMemoryFeedbackLedger();
       const provider = createProvider([
         {
@@ -640,7 +1678,7 @@ describe("agentLoop one-run lifecycle", () => {
           },
         },
         {
-          kind: "validate",
+          kind: "stop",
           request: {
             outcome: "failed",
             summary: "Deterministic workstream binding was unavailable before mutation.",
@@ -690,6 +1728,7 @@ describe("agentLoop one-run lifecycle", () => {
   it("never resolves or executes mutation that contradicts an explicit read-only request", async () => {
     const dataDir = makeTmpDir();
     const outputPath = join(dataDir, "must-stay-absent.txt");
+    const runId = "R-read-only-mutation";
     try {
       const mutationAttempt = {
         kind: "transition_mode",
@@ -698,6 +1737,7 @@ describe("agentLoop one-run lifecycle", () => {
           purpose: "Attempt mutation despite the read-only request.",
           capabilities: ["file:write"],
           targets: [outputPath],
+          binding: createBindingProposal(runId, "unreachable-routing-evidence"),
         },
       };
       const provider = createProvider([mutationAttempt, mutationAttempt, mutationAttempt]);
@@ -709,21 +1749,22 @@ describe("agentLoop one-run lifecycle", () => {
         toolDefinitions: [writeFilesTool],
         workstreamBinding,
         runRecorder: noopRunRecorder,
-        runHandle: runHandle("R-read-only-mutation"),
+        runHandle: runHandle(runId),
         config: { maxConsecutiveFailures: 3 },
         clientId: "c1",
         initialUserMessage: `Inspect ${outputPath} only; do not modify anything.`,
         dataDir,
         systemContext: "test system context",
-        harnessContext: unboundContext("R-read-only-mutation", `Inspect ${outputPath} only; do not modify anything.`),
+        harnessContext: unboundContext(runId, `Inspect ${outputPath} only; do not modify anything.`),
       });
 
       expect(result).toMatchObject({
         outcome: "failed",
         totalIterations: 3,
         totalToolCalls: 0,
-        content: expect.stringContaining("MODE_MUTATION_INTENT_REQUIRED"),
+        content: "I couldn't complete this request. The request could not be completed safely.",
       });
+      expect(result.content).not.toContain("MODE_MUTATION_INTENT_REQUIRED");
       expect(provider.generateTurn).toHaveBeenCalledTimes(3);
       expect(workstreamBinding.bind).not.toHaveBeenCalled();
       expect(existsSync(outputPath)).toBe(false);
@@ -745,12 +1786,15 @@ describe("agentLoop one-run lifecycle", () => {
         fixtureTool("git_context_create_workstream"),
       ];
       const toolExecutor = createToolExecutor([]);
-      const toolWorkingSetManager = new ToolWorkingSetManager({
-        catalog: new ToolCatalog([
-          fixtureSkill("filesystem", [writeFilesTool]),
-          fixtureSkill("git-context", routingTools),
-        ]),
+      const mutationTools = [
+        fixtureTool("create_directory"),
+        writeFilesTool,
+        fixtureTool("patch_files"),
+      ];
+      const capabilitySurfaceManager = new CapabilitySurfaceManager({
+        registry: new ToolRegistry([...mutationTools, ...routingTools]),
         toolExecutor,
+        validateCoverage: false,
       });
       const provider = createProvider([
         {
@@ -798,7 +1842,7 @@ describe("agentLoop one-run lifecycle", () => {
           },
         },
         {
-          kind: "validate",
+          kind: "stop",
           request: {
             outcome: "failed",
             summary: "The single deterministic binding attempt failed.",
@@ -819,8 +1863,8 @@ describe("agentLoop one-run lifecycle", () => {
       const result = await agentLoop({
         provider,
         toolExecutor,
-        toolWorkingSetManager,
-        toolDefinitions: [writeFilesTool, ...routingTools],
+        capabilitySurfaceManager,
+        toolDefinitions: [...mutationTools, ...routingTools],
         runRecorder: noopRunRecorder,
         runHandle: runHandle(runId),
         workstreamBinding,
@@ -843,13 +1887,18 @@ describe("agentLoop one-run lifecycle", () => {
       expect(provider.generateTurn).toHaveBeenCalledTimes(5);
       expect(workstreamBinding.bind).toHaveBeenCalledOnce();
       const firstInput = vi.mocked(provider.generateTurn).mock.calls[0]?.[0];
-      expect(firstInput.tools.map((tool) => tool.name)).toEqual(["decision_transition_mode"]);
+      expect(firstInput.tools.map((tool) => tool.name)).toEqual([
+        "decision_enter_observe_locate",
+        "decision_enter_observe_investigate",
+        "decision_resolve_activate",
+        "decision_resolve_create",
+      ]);
       expect(firstInput.tools.map((tool) => tool.name)).not.toContain("write_files");
       const secondInput = vi.mocked(provider.generateTurn).mock.calls[1]?.[0];
       expect(secondInput.tools.map((tool) => tool.name)).toContain("git_context_find_workstreams");
       expect(secondInput.tools.map((tool) => tool.name)).not.toContain("git_context_create_workstream");
       expect(secondInput.tools.map((tool) => tool.name)).not.toContain("git_context_activate_workstream");
-      expect(feedback.events.some((event) => event.event === "tool_load_no_progress")).toBe(false);
+      expect(feedback.events.some((event) => event.event === "mode_transition_no_progress")).toBe(false);
     } finally {
       cleanup(dataDir);
     }
@@ -862,7 +1911,7 @@ describe("agentLoop one-run lifecycle", () => {
     const routingCallId = "find-one-run-owner";
     try {
       const routingTool = workstreamSearchTool();
-      const toolExecutor = createToolExecutor([writeFilesTool, routingTool]);
+      const toolExecutor = createToolExecutor([writeFilesTool, routingTool, inspectPathsTool]);
       const provider = createProvider([
         {
           kind: "transition_mode",
@@ -870,7 +1919,7 @@ describe("agentLoop one-run lifecycle", () => {
             to: "observe.locate",
             purpose: "Check whether durable work already owns this output.",
             capabilities: ["workstream:search"],
-            targets: ["one-run.txt"],
+            targets: [outputPath],
           },
         },
         {
@@ -894,7 +1943,7 @@ describe("agentLoop one-run lifecycle", () => {
             to: "resolve",
             purpose: "Bind the requested output before creating it.",
             capabilities: ["file:write"],
-            targets: ["one-run.txt"],
+            targets: [outputPath],
             binding: createBindingProposal(runId, routingCallId),
           },
         },
@@ -913,21 +1962,11 @@ describe("agentLoop one-run lifecycle", () => {
             assertions: [],
           },
         },
-        {
-          kind: "validate",
-          request: {
-            outcome: "completed",
-            summary: "Created and verified one-run.txt.",
-            response: "Created one-run.txt.",
-            resources: [{
-              resourceId: `RES-${"A".repeat(24)}`,
-              path: "one-run.txt",
-              kind: "file",
-              description: "Requested text file",
-              aliases: ["one run file"],
-            }],
-          },
-        },
+        ...validationDecisions({
+          path: outputPath,
+          response: "Created one-run.txt.",
+          id: "one-run",
+        }),
       ]);
       const workstreamBinding = {
         bind: vi.fn(async () => ({
@@ -945,7 +1984,7 @@ describe("agentLoop one-run lifecycle", () => {
       const result = await agentLoop({
         provider,
         toolExecutor,
-        toolDefinitions: [writeFilesTool, routingTool],
+        toolDefinitions: [writeFilesTool, routingTool, inspectPathsTool],
         workstreamBinding,
         feedbackLedger: feedback.ledger,
         runRecorder: noopRunRecorder,
@@ -972,6 +2011,13 @@ describe("agentLoop one-run lifecycle", () => {
         workstreamStatus: "done",
         stopReason: "completed",
       });
+      expect(result.verifiedCompletionResources).toEqual([
+        expect.objectContaining({
+          role: "deliverable",
+          kind: "file",
+          locator: { kind: "filesystem", path: outputPath },
+        }),
+      ]);
       expect(records.map((record) => [record.runId, record.step])).toEqual([
         [runId, 1],
         [runId, 2],
@@ -988,19 +2034,19 @@ describe("agentLoop one-run lifecycle", () => {
       });
       expect(readFileSync(outputPath, "utf8")).toBe("same durable run");
       expect(workstreamBinding.bind).toHaveBeenCalledTimes(1);
-      expect(provider.generateTurn).toHaveBeenCalledTimes(5);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(6);
       expect(feedback.events.find((event) => event.stage === "final" && event.event === "reply")?.data?.["feedbackSummary"])
         .toMatchObject({
           navigation: {
-            currentMode: "execute",
-            transitionRequests: 2,
-            transitionAccepted: 2,
+            currentMode: "validation",
+            transitionRequests: 3,
+            transitionAccepted: 3,
             transitionRejected: 0,
             bindingAttempts: 1,
             bindingStatus: "resolved",
-            validationAttempts: 1,
-            validationAccepted: 1,
-            validationRejected: 0,
+            terminalStopAttempts: 0,
+            terminalStopAccepted: 0,
+            terminalStopRejected: 0,
           },
         });
       expect(feedback.events.filter((event) =>
@@ -1010,13 +2056,18 @@ describe("agentLoop one-run lifecycle", () => {
       const firstInput = vi.mocked(provider.generateTurn).mock.calls[0]?.[0];
       const secondInput = vi.mocked(provider.generateTurn).mock.calls[1]?.[0];
       const fourthInput = vi.mocked(provider.generateTurn).mock.calls[3]?.[0];
-      expect(firstInput.tools.map((tool) => tool.name)).toEqual(["decision_transition_mode"]);
+      expect(firstInput.tools.map((tool) => tool.name)).toEqual([
+        "decision_enter_observe_locate",
+        "decision_enter_observe_investigate",
+        "decision_resolve_activate",
+        "decision_resolve_create",
+      ]);
       expect(firstInput.tools.map((tool) => tool.name)).not.toContain("workstream_resolve");
       expect(firstInput.tools.map((tool) => tool.name)).not.toContain("write_files");
       expect(secondInput.tools.map((tool) => tool.name)).toContain("git_context_find_workstreams");
-      expect(secondInput.tools.map((tool) => tool.name)).toContain("decision_validate");
+      expect(secondInput.tools.map((tool) => tool.name)).toContain("decision_stop");
       expect(fourthInput.tools.map((tool) => tool.name)).toContain("write_files");
-      expect(fourthInput.tools.map((tool) => tool.name)).toContain("decision_validate");
+      expect(fourthInput.tools.map((tool) => tool.name)).toContain("decision_stop");
     } finally {
       cleanup(dataDir);
     }
@@ -1031,10 +2082,10 @@ describe("agentLoop one-run lifecycle", () => {
         {
           kind: "transition_mode",
           request: {
-            to: "resolve",
-            purpose: "Use the existing binding before writing the requested file.",
+            to: "execute",
+            purpose: "Use the existing binding to write the requested file.",
             capabilities: ["file:write"],
-            targets: ["one-run.txt"],
+            targets: [outputPath],
           },
         },
         {
@@ -1052,28 +2103,18 @@ describe("agentLoop one-run lifecycle", () => {
             assertions: [],
           },
         },
-        {
-          kind: "validate",
-          request: {
-            outcome: "completed",
-            summary: "Created and verified one-run.txt in the existing binding.",
-            response: "Created one-run.txt.",
-            resources: [{
-              resourceId: `RES-${"A".repeat(24)}`,
-              path: "one-run.txt",
-              kind: "file",
-              description: "Requested text file",
-              aliases: ["one run file"],
-            }],
-          },
-        },
+        ...validationDecisions({
+          path: outputPath,
+          response: "Created one-run.txt.",
+          id: "existing-one-run",
+        }),
       ]);
       const workstreamBinding = { bind: vi.fn() };
 
       const result = await agentLoop({
         provider,
-        toolExecutor: createToolExecutor([writeFilesTool]),
-        toolDefinitions: [writeFilesTool],
+        toolExecutor: createToolExecutor([writeFilesTool, inspectPathsTool]),
+        toolDefinitions: [writeFilesTool, inspectPathsTool],
         workstreamBinding,
         runRecorder: noopRunRecorder,
         runHandle: runHandle(runId),
@@ -1088,11 +2129,11 @@ describe("agentLoop one-run lifecycle", () => {
         runId,
         outcome: "done",
         stopReason: "completed",
-        totalIterations: 3,
+        totalIterations: 4,
         totalToolCalls: 1,
       });
       expect(workstreamBinding.bind).not.toHaveBeenCalled();
-      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(4);
       expect(readFileSync(outputPath, "utf8")).toBe("bound continuation");
     } finally {
       cleanup(dataDir);
@@ -1142,7 +2183,7 @@ describe("agentLoop one-run lifecycle", () => {
           },
         },
         {
-          kind: "validate",
+          kind: "stop",
           request: {
             outcome: "failed",
             summary: "The deterministic binding gate failed.",
@@ -1239,7 +2280,7 @@ describe("agentLoop one-run lifecycle", () => {
           },
         },
         {
-          kind: "validate",
+          kind: "stop",
           request: {
             outcome: "needs_user_input",
             summary: "Multiple website workstreams remain plausible.",
@@ -1297,7 +2338,7 @@ describe("agentLoop one-run lifecycle", () => {
           },
         },
         {
-          kind: "validate",
+          kind: "stop",
           request: {
             outcome: "needs_user_input",
             summary: "The requested file is ambiguous.",
@@ -1335,11 +2376,134 @@ describe("agentLoop one-run lifecycle", () => {
     }
   });
 
+  it("recovers from a rejected blocked stop by validating a conclusive no-match search", async () => {
+    const dataDir = makeTmpDir();
+    const runId = "R-verified-no-match";
+    const query = "missing-orbit-manual.txt";
+    const feedback = createMemoryFeedbackLedger();
+    try {
+      const provider = createProvider([
+        {
+          kind: "transition_mode",
+          request: {
+            to: "observe.locate",
+            purpose: "Search the authorized workspace for the requested file.",
+            capabilities: ["file:search"],
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "find-missing-file",
+              tool: "find_files",
+              input: {
+                query,
+                roots: [dataDir],
+              },
+              dependsOn: [],
+              purpose: "Search the complete authorized workspace for the named file",
+            }],
+            allowedTools: ["find_files"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "stop",
+          request: {
+            outcome: "blocked",
+            summary: "The requested file was not found.",
+            response: "I could not find the requested file.",
+          },
+        },
+        {
+          kind: "transition_mode",
+          request: {
+            to: "validation",
+            purpose: "Validate the complete zero-match search before responding.",
+            capabilities: ["task:validation"],
+            validationChecks: [{
+              kind: "file.search_no_match",
+              subject: query,
+              searchScope: {
+                roots: [dataDir],
+                maxDepth: 10,
+                includeHidden: false,
+              },
+            }],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: "I searched the authorized workspace, but that file was not found.",
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor: createToolExecutor([findFilesTool]),
+        toolDefinitions: [findFilesTool],
+        feedbackLedger: feedback.ledger,
+        runRecorder: noopRunRecorder,
+        runHandle: runHandle(runId),
+        clientId: "c1",
+        initialUserMessage: `Find ${query} and tell me its procedure.`,
+        dataDir,
+        systemContext: "test system context",
+        harnessContext: unboundContext(
+          runId,
+          `Find ${query} and tell me its procedure.`,
+        ),
+      });
+
+      expect(result).toMatchObject({
+        runId,
+        outcome: "done",
+        stopReason: "completed",
+        status: "completed",
+        content: "I searched the authorized workspace, but that file was not found.",
+        totalIterations: 5,
+        totalToolCalls: 1,
+      });
+      const validationInput = vi.mocked(provider.generateTurn).mock.calls[3]?.[0];
+      const validationState = extractStateView(
+        validationInput.messages.find((message) => message.role === "user")?.content ?? "",
+      );
+      expect(validationState.context.run.verifiedOutcomes).toContainEqual({
+        kind: "file.search_no_match",
+        subject: query,
+        searchScope: {
+          roots: [dataDir],
+          maxDepth: 10,
+          includeHidden: false,
+        },
+        source: {
+          step: 1,
+          callId: "find-missing-file",
+          tool: "find_files",
+        },
+      });
+      expect(feedback.events).toContainEqual(expect.objectContaining({
+        stage: "guard",
+        event: "repair_resolved",
+        data: expect.objectContaining({
+          resolutionKind: "validation_accepted",
+          scopes: ["navigation", "validation"],
+          resolvedCount: 1,
+        }),
+      }));
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
   it("preserves a full workstream clarification while bounding durable WorkState", async () => {
     const dataDir = makeTmpDir();
     const question = [
+      "Should I create a new output resource or use an existing absolute path?",
       "Every mutation-capable tool requires a selected workstream resource before I can continue.",
-      "Please tell me whether I should create a new output resource or use an existing absolute path.",
       "If an existing path should be used, include the exact path and whether Ayati may modify it.",
       "I will wait for that choice before changing files so the durable resource catalog remains truthful.",
       "You may also name the intended deliverable if the destination should be created automatically.",
@@ -1347,7 +2511,16 @@ describe("agentLoop one-run lifecycle", () => {
     ].join(" ");
     expect(question.length).toBeGreaterThan(500);
     try {
-      const locateTool = fixtureTool("find_files");
+      const locateTool: ToolDefinition = {
+        ...fixtureTool("find_files"),
+        async execute() {
+          return {
+            ok: true,
+            output: "(no matches)",
+            structuredContent: { matches: [] },
+          };
+        },
+      };
       const provider = createProvider([
         {
           kind: "transition_mode",
@@ -1358,11 +2531,29 @@ describe("agentLoop one-run lifecycle", () => {
           },
         },
         {
-          kind: "validate",
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "find-destination",
+              tool: "find_files",
+              input: {},
+              dependsOn: [],
+              purpose: "Check whether the intended destination can be identified",
+            }],
+            allowedTools: ["find_files"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "stop",
           request: {
             outcome: "needs_user_input",
             summary: "The requested destination remains materially ambiguous.",
             response: question,
+            evidenceRefs: [
+              "run:R-bound-long-clarification:step:1:call:find-destination",
+            ],
           },
         },
       ]);
@@ -1393,8 +2584,8 @@ describe("agentLoop one-run lifecycle", () => {
           status: "needs_user_input",
         },
       });
-      expect(result.workState?.userInputNeeded).not.toBe(question);
-      expect(result.workState?.userInputNeeded?.length).toBeLessThanOrEqual(500);
+      expect(result.workState?.nextAction).not.toBe(question);
+      expect(result.workState?.nextAction?.length).toBeLessThanOrEqual(320);
     } finally {
       cleanup(dataDir);
     }
@@ -1433,8 +2624,9 @@ describe("agentLoop one-run lifecycle", () => {
         stopReason: "failed",
         totalIterations: 3,
         totalToolCalls: 0,
-        content: expect.stringContaining("already active"),
+        content: "I couldn't complete this request. I could not make further verified progress.",
       });
+      expect(result.content).not.toContain("already active");
       expect(provider.generateTurn).toHaveBeenCalledTimes(3);
     } finally {
       cleanup(dataDir);

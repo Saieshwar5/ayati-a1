@@ -95,6 +95,30 @@ describe("parseChatInboundMessage", () => {
     });
   });
 
+  it("accepts the legacy CLI directory kind during wire migration", () => {
+    const parsed = parseChatInboundMessage({
+      type: "chat",
+      content: "Inspect this project",
+      attachments: [{
+        kind: "directory",
+        source: "cli",
+        path: "/tmp/project",
+        name: "project",
+      }],
+    });
+
+    expect(parsed).toEqual({
+      type: "chat",
+      content: "Inspect this project",
+      attachments: [{
+        type: "directory",
+        source: "cli",
+        path: "/tmp/project",
+        name: "project",
+      }],
+    });
+  });
+
   it("ignores malformed web attachment rows", () => {
     const parsed = parseChatInboundMessage({
       type: "chat",

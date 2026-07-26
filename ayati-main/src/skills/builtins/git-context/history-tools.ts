@@ -41,12 +41,6 @@ function searchAgentHistoryTool(service: ContextEngineService): ToolDefinition {
     },
     annotations: readAnnotations(),
     resultContract: succeededContract(),
-    selectionHints: {
-      tags: ["history", "search", "agent-stream", "evidence"],
-      aliases: ["search earlier discussion", "find prior run", "search old evidence"],
-      domain: "git_context",
-      priority: 10,
-    },
     async execute(input, context): Promise<ToolResult> {
       const record = objectInput(input);
       const streamId = currentStreamId(context);
@@ -106,12 +100,6 @@ function readAgentHistoryTool(service: ContextEngineService): ToolDefinition {
     },
     annotations: readAnnotations(),
     resultContract: succeededContract(),
-    selectionHints: {
-      tags: ["history", "read", "agent-stream", "evidence"],
-      aliases: ["read earlier discussion", "open prior evidence", "read old run"],
-      domain: "git_context",
-      priority: 10,
-    },
     async execute(input, context): Promise<ToolResult> {
       const record = objectInput(input);
       const streamId = currentStreamId(context);

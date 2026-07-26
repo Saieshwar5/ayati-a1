@@ -481,6 +481,12 @@ describe("App", () => {
         "[selected local directories]",
         `- ${docsPath}`,
       ].join("\n"),
+      attachments: [{
+        type: "directory",
+        source: "cli",
+        path: docsPath,
+        name: "docs",
+      }],
     });
     expect(app.lastFrame() ?? "").toContain("Attachments:");
     expect(app.lastFrame() ?? "").toContain("docs");
@@ -490,7 +496,7 @@ describe("App", () => {
     });
   });
 
-  it("sends directory mentions as local context instead of file attachments", async () => {
+  it("sends directory mentions as directory attachments", async () => {
     const root = createTempDir();
     const docsPath = join(root, "docs");
     mkdirSync(docsPath);
@@ -502,6 +508,12 @@ describe("App", () => {
     expect(websocketState.send).toHaveBeenCalledWith({
       type: "chat",
       content: `What is missing in ${docsPath}`,
+      attachments: [{
+        type: "directory",
+        source: "cli",
+        path: docsPath,
+        name: "docs",
+      }],
     });
     expect(app.lastFrame() ?? "").toContain("Attachments:");
     expect(app.lastFrame() ?? "").toContain("docs");

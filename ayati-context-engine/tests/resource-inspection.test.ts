@@ -16,6 +16,36 @@ afterEach(async () => {
 });
 
 describe("resource locator inspection", () => {
+  it("rejects relative filesystem locators before they can inherit daemon cwd", async () => {
+    const fixture = await createWorkstreamServiceFixture("inspect-relative", "Read a local design note.");
+    fixtures.push(fixture);
+
+    await expect(fixture.service.inspectResourceForRun({
+      requestId: "REQ-inspect-relative",
+      runId: fixture.prepared.run.runId,
+      locator: { kind: "filesystem", path: "user-files/design.md" },
+      origin: "user_reference",
+      at: "2026-07-19T10:01:00+05:30",
+    })).rejects.toMatchObject({ code: "RESOURCE_LOCATOR_INVALID" });
+    expect(fixture.database.prepare("SELECT COUNT(*) AS count FROM resources").get())
+      .toEqual({ count: 0 });
+  });
+
+  it("rejects unsafe control characters in filesystem locators", async () => {
+    const fixture = await createWorkstreamServiceFixture("inspect-control", "Read a local design note.");
+    fixtures.push(fixture);
+
+    await expect(fixture.service.inspectResourceForRun({
+      requestId: "REQ-inspect-control",
+      runId: fixture.prepared.run.runId,
+      locator: { kind: "filesystem", path: `${fixture.root}/unsafe\nname.md` },
+      origin: "user_reference",
+      at: "2026-07-19T10:01:00+05:30",
+    })).rejects.toMatchObject({ code: "RESOURCE_LOCATOR_INVALID" });
+    expect(fixture.database.prepare("SELECT COUNT(*) AS count FROM resources").get())
+      .toEqual({ count: 0 });
+  });
+
   it("registers a canonical file identity with searchable agent metadata", async () => {
     const fixture = await createWorkstreamServiceFixture("inspect-file", "Read a local design note.");
     fixtures.push(fixture);

@@ -8,6 +8,7 @@ import type {
 import type { ContextEngineMachineContext } from "../../src/context-engine/index.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { AgentStateView } from "../../src/ivec/agent-runner/state-view.js";
+import { buildCoreCapsule } from "../../src/ivec/agent-runner/core-capsule.js";
 import { compilePreparedMainContext } from "../../src/ivec/context-preparation/main-admission.js";
 import { createMainPreparationJob } from "../../src/ivec/context-preparation/main-candidates.js";
 import {
@@ -51,8 +52,49 @@ describe("prepared main-context admission", () => {
     expect(finalPrompt).toContain("FRESH-WORK");
     if (typeof finalPrompt !== "string") throw new Error("Expected a serialized state prompt.");
     const finalState = JSON.parse(finalPrompt.slice(finalPrompt.indexOf("{"))) as AgentStateView;
-    expect(finalState.context.temporal.recent.map((event) => event.seq)).toEqual([3]);
-    expect(finalState.context.temporal.checkpoint?.coveredToSeq).toBe(2);
+    expect(finalState.context.core.continuity.recentExact).toEqual([]);
+    expect(finalState.context.core.current.input.seq).toBe(3);
+    expect(finalState.context.core.continuity.checkpoint?.coveredToSeq).toBe(2);
+  });
+
+  it("maintains the Core Capsule below whole-prompt pressure when its own budget is exceeded", async () => {
+    const fixture = await preparedDurableFixture(false);
+    fixture.originalState.context.core = buildCoreCapsule({
+      revision: "core:oversized",
+      runId: "RUN-1",
+      continuityMaxTokens: 300,
+      timeline: [
+        { kind: "user", seq: 1, timestamp: AT, content: "A".repeat(6_000) },
+        { kind: "assistant", seq: 2, timestamp: AT, content: "B".repeat(6_000) },
+        { kind: "user", seq: 3, timestamp: AT, content: "CURRENT", current: true },
+      ],
+      routing: { status: "unbound" },
+    });
+    expect(fixture.originalState.context.core.continuity.maintenanceRequired).toBe(true);
+
+    const compilation = await compilePreparedMainContext({
+      provider: fixture.provider,
+      stateView: fixture.originalState,
+      turnInput: turnInput(),
+      contextLimits: limits(),
+      decisionAttempt: 1,
+      policy: "enforce",
+      manager: fixture.manager,
+      contextCheckpoint: fixture.coordinator,
+      buildPrompt: prompt,
+      applyAuthoritativeContext: fixture.applyAuthoritativeContext,
+      allowBackgroundPreparation: false,
+      allowSynchronousSemanticRecovery: true,
+    });
+
+    expect(compilation.candidateBudget.measuredInputTokens).toBeLessThan(55_000);
+    expect(fixture.coordinator.plan).toHaveBeenCalledTimes(1);
+    expect(fixture.commit).toHaveBeenCalledTimes(1);
+    expect(compilation.receipt).toMatchObject({
+      mode: "stream_checkpoint",
+      candidateAction: "adopted",
+      candidate: { kind: "durable_checkpoint", status: "adopted" },
+    });
   });
 
   it("measures but never mounts or commits a ready candidate in shadow mode", async () => {
@@ -192,8 +234,7 @@ describe("prepared main-context admission", () => {
     const manager = new ContextPreparationManager({ laneId: "main:RUN-1", provider });
     manager.startBackground(pendingFocusJob(pending));
     const state = stateView("ORIGINAL-WORK", true);
-    const current = state.context.temporal.recent.find((event) => event.current);
-    if (!current || !("content" in current)) throw new Error("Expected current input.");
+    const current = state.context.core.current.input;
     current.content = "x".repeat(300_000);
 
     const compilation = await compilePreparedMainContext({
@@ -230,7 +271,7 @@ describe("prepared main-context admission", () => {
     if (!candidate) throw new Error("Expected a ready focus candidate.");
 
     const state = stateView("BOUND-WORK", true);
-    state.context.current.routing = {
+    state.context.core.current.routing = {
       status: "bound",
       workstreamId: "W-BOUND",
       requestId: "R-BOUND",
@@ -245,9 +286,14 @@ describe("prepared main-context admission", () => {
         allowedNext: ["execute", "observe.locate", "observe.investigate", "validate"],
       },
       workState: {
-        status: "not_done",
+        status: "in_progress",
         summary: "Binding is complete.",
-        evidence: ["run:RUN-1:step:1:call:route-1"],
+        plan: [],
+        importantContext: [{
+          kind: "finding",
+          value: "Binding is complete.",
+          ref: "run:RUN-1:step:1:call:route-1",
+        }],
       },
       toolCalls: [{
         step: 1,
@@ -256,9 +302,20 @@ describe("prepared main-context admission", () => {
         purpose: "Read the selected workstream.",
         input: { workstreamId: "W-BOUND" },
         status: "success",
+        verificationStatus: "passed",
         mode: "full",
         output: "Authoritative workstream W-BOUND",
         evidenceRef: "run:RUN-1:step:1:call:route-1",
+      }],
+      verifiedOutcomes: [{
+        kind: "file.written",
+        subject: "/workspace/result.txt",
+        actualKind: "file",
+        source: {
+          step: 2,
+          callId: "write-result",
+          tool: "write_files",
+        },
       }],
     };
 
@@ -282,18 +339,30 @@ describe("prepared main-context admission", () => {
     const finalPrompt = compilation.finalTurnInput.messages.find((message) => message.role === "user")?.content;
     if (typeof finalPrompt !== "string") throw new Error("Expected a serialized state prompt.");
     const finalState = JSON.parse(finalPrompt.slice(finalPrompt.indexOf("{"))) as AgentStateView;
-    expect(finalState.context.current.routing).toEqual({
+    expect(finalState.context.core.current.routing).toEqual({
       status: "bound",
       workstreamId: "W-BOUND",
       requestId: "R-BOUND",
     });
     expect(finalState.context.run?.mode).toMatchObject({ active: "execute", revision: 3 });
-    expect(finalState.context.run?.workState?.evidence).toEqual(["run:RUN-1:step:1:call:route-1"]);
+    expect(finalState.context.run?.workState?.importantContext).toContainEqual(
+      expect.objectContaining({ ref: "run:RUN-1:step:1:call:route-1" }),
+    );
     expect(finalState.context.run?.toolCalls?.[0]).toMatchObject({
       callId: "route-1",
       evidenceRef: "run:RUN-1:step:1:call:route-1",
       mode: "full",
     });
+    expect(finalState.context.run?.verifiedOutcomes).toEqual([{
+      kind: "file.written",
+      subject: "/workspace/result.txt",
+      actualKind: "file",
+      source: {
+        step: 2,
+        callId: "write-result",
+        tool: "write_files",
+      },
+    }]);
   });
 
   it("waits once and adopts a relevant pending candidate at the exact forced barrier", async () => {
@@ -306,8 +375,7 @@ describe("prepared main-context admission", () => {
     const manager = new ContextPreparationManager({ laneId: "main:RUN-1", provider });
     manager.startBackground(pendingFocusJob(pending));
     const state = stateView("ORIGINAL-WORK", true);
-    const current = state.context.temporal.recent.find((event) => event.current);
-    if (!current || !("content" in current)) throw new Error("Expected current input.");
+    const current = state.context.core.current.input;
     current.content = "x".repeat(300_000);
 
     let settled = false;
@@ -338,7 +406,7 @@ describe("prepared main-context admission", () => {
   });
 });
 
-async function preparedDurableFixture() {
+async function preparedDurableFixture(prepareCandidate = true) {
   const generateTurn = vi.fn().mockResolvedValue({
     type: "assistant" as const,
     content: JSON.stringify(checkpointSummary()),
@@ -367,21 +435,23 @@ async function preparedDurableFixture() {
   const freshState = stateView("FRESH-WORK", false, adoptedCheckpoint());
   const applyAuthoritativeContext = vi.fn(() => freshState);
   const manager = new ContextPreparationManager({ laneId: "main:RUN-1", provider });
-  const job = createMainPreparationJob({
-    provider,
-    laneId: manager.laneId,
-    stateView: originalState,
-    currentInputTokens: 80_000,
-    predictedInputTokens: 95_000,
-    recoveryTargetTokens: 60_000,
-    contextLimits: limits(),
-    modelProfileVersion: "test:test-model:128000:auto:8192:55000:60000:70000:100000",
-    contextCheckpoint: coordinator,
-    synchronous: true,
-  });
-  if (!job) throw new Error("Expected a durable checkpoint job.");
-  const candidate = await manager.prepareSynchronously(job);
-  if (!candidate) throw new Error("Expected a ready durable checkpoint candidate.");
+  if (prepareCandidate) {
+    const job = createMainPreparationJob({
+      provider,
+      laneId: manager.laneId,
+      stateView: originalState,
+      currentInputTokens: 80_000,
+      predictedInputTokens: 95_000,
+      recoveryTargetTokens: 60_000,
+      contextLimits: limits(),
+      modelProfileVersion: "test:test-model:128000:auto:8192:55000:60000:70000:100000",
+      contextCheckpoint: coordinator,
+      synchronous: true,
+    });
+    if (!job) throw new Error("Expected a durable checkpoint job.");
+    const candidate = await manager.prepareSynchronously(job);
+    if (!candidate) throw new Error("Expected a ready durable checkpoint candidate.");
+  }
   return {
     provider,
     manager,
@@ -401,34 +471,49 @@ function stateView(
   includeHistory: boolean,
   checkpoint?: ContextCheckpointRecord,
 ): AgentStateView {
+  const timeline = [
+    ...(includeHistory ? [
+      { kind: "user" as const, seq: 1, timestamp: AT, content: "Earlier request" },
+      { kind: "assistant" as const, seq: 2, timestamp: AT, content: "Earlier response" },
+    ] : []),
+    { kind: "user" as const, seq: 3, timestamp: AT, content: "CURRENT", current: true as const },
+  ];
   return {
     context: {
-      temporal: {
+      core: buildCoreCapsule({
+        revision: checkpoint ? `checkpoint:${checkpoint.checkpointId}` : "core:1",
+        runId: "RUN-1",
+        timeline,
         ...(checkpoint ? { checkpoint } : {}),
-        recent: [
-          ...(includeHistory ? [
-            { kind: "user" as const, seq: 1, timestamp: AT, content: "Earlier request" },
-            { kind: "assistant" as const, seq: 2, timestamp: AT, content: "Earlier response" },
-          ] : []),
-          { kind: "user", seq: 3, timestamp: AT, content: "CURRENT", current: true },
-        ],
-      },
-      current: { inputSeq: 3, runId: "RUN-1", routing: { status: "unbound" } },
-      stream: {
-        agentId: "local",
-        scopeKey: "default",
-        recentWork: [{
-          workstreamId: "W-20260721-0001",
-          requestId: recentWorkMarker,
-          outcome: "done",
-          resourceIds: [],
-          completedAt: AT,
+        routing: { status: "unbound" },
+      }),
+      hot: {
+        available: [],
+        loaded: [{
+          key: "test.marker",
+          description: "Context admission marker.",
+          version: `version:${recentWorkMarker}`,
+          estimatedTokens: 4,
+          freshness: "current",
+          sourceRefs: ["test:marker"],
+          content: recentWorkMarker,
+          mountedAtStep: 0,
         }],
+        budget: {
+          maxMountedTokens: 8_000,
+          mountedTokens: 4,
+        },
       },
       work: { candidates: [] },
       resources: { stream: [], ingress: [], activeWorkstream: [] },
-      observations: { revision: "obs:1", inventory: [], discovery: [], evidence: [] },
-      run: { workState: { status: "not_done", summary: "Continue." } },
+      run: {
+        workState: {
+          status: "in_progress",
+          summary: "Continue.",
+          plan: [],
+          importantContext: [],
+        },
+      },
     },
   };
 }
@@ -489,7 +574,6 @@ function machineContext(checkpoint?: ContextCheckpointRecord): ContextEngineMach
   return {
     contextRevision: checkpoint ? `context:${checkpoint.checkpointId}` : "context:initial",
     streamRevision: "stream:1",
-    observationRevision: "obs:1",
     agentStream: {
       meta: {
         streamId: "S-1",
@@ -503,12 +587,12 @@ function machineContext(checkpoint?: ContextCheckpointRecord): ContextEngineMach
       },
       ...(checkpoint ? { checkpoint } : {}),
       recentMessages: [message(3, "user", "CURRENT")],
-      recentWork: [],
+      recentWorkstreams: [],
+      recentFiles: [],
       resources: [],
     },
     current: { inputSeq: 3, runId: "RUN-1", routing: { status: "unbound" } },
     focus: { status: "none" },
-    observations: { inventory: [], discovery: [], evidence: [] },
     warnings: [],
   };
 }

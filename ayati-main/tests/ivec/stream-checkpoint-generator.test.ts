@@ -49,8 +49,24 @@ describe("generateStreamCheckpoint", () => {
     });
     const sourceContent = request?.messages[1]?.content;
     if (typeof sourceContent !== "string") throw new Error("Checkpoint source prompt is missing.");
-    const source = JSON.parse(sourceContent) as { messages: Array<{ seq: number }> };
+    const source = JSON.parse(sourceContent) as {
+      messages: Array<{
+        seq: number;
+        responseKind?: string;
+        feedbackKind?: string;
+        attachmentRefs?: Array<{ resourceId: string }>;
+      }>;
+    };
     expect(source.messages.map((message) => message.seq)).toEqual([2, 3]);
+    expect(source.messages[0]?.attachmentRefs).toEqual([{
+      resourceId: "RES-0123456789ABCDEF01234567",
+      kind: "document",
+      displayName: "context-plan.md",
+    }]);
+    expect(source.messages[1]).toMatchObject({
+      responseKind: "feedback",
+      feedbackKind: "confirmation",
+    });
     expect(JSON.stringify(request?.messages)).not.toContain("toolCalls");
     expect(JSON.stringify(request?.messages)).not.toContain("workState");
   });
@@ -122,8 +138,17 @@ function checkpointPlan(): ContextCheckpointPlan {
     streamId: "S-1",
     previousCheckpoint: previousCheckpoint(),
     selectedMessages: [
-      message(2, "user", "Keep user messages and system events in the stream."),
-      message(3, "assistant", "I will separate stream continuity from run state."),
+      message(2, "user", "Keep user messages and system events in the stream.", {
+        attachmentRefs: [{
+          resourceId: "RES-0123456789ABCDEF01234567",
+          kind: "document",
+          displayName: "context-plan.md",
+        }],
+      }),
+      message(3, "assistant", "Should I separate stream continuity from run state?", {
+        responseKind: "feedback",
+        feedbackKind: "confirmation",
+      }),
     ],
     exactTail: [message(4, "user", "Implement the plan.")],
     coveredFromSeq: 1,
@@ -178,6 +203,10 @@ function message(
   sequence: number,
   role: StreamMessage["role"],
   content: string,
+  metadata: Pick<
+    StreamMessage,
+    "responseKind" | "feedbackKind" | "attachmentRefs"
+  > = {},
 ): StreamMessage {
   return {
     messageId: `M-${sequence}`,
@@ -188,5 +217,8 @@ function message(
     content,
     contentHash: `sha256:${sequence}`,
     at: `2026-07-19T10:00:0${sequence}.000Z`,
+    ...(metadata.responseKind ? { responseKind: metadata.responseKind } : {}),
+    ...(metadata.feedbackKind ? { feedbackKind: metadata.feedbackKind } : {}),
+    ...(metadata.attachmentRefs ? { attachmentRefs: metadata.attachmentRefs } : {}),
   };
 }

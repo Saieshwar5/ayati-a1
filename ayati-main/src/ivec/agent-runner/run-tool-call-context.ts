@@ -1,10 +1,15 @@
 import type { RunToolCallContext } from "../types.js";
+import type {
+  ToolCallVerificationFailure,
+  ToolCallVerificationStatus,
+} from "./tool-call-verification-contracts.js";
 
 export type PromptRunToolCallMode = "full" | "preview" | "summary" | "reference";
 type PromptToolCallStepRef = Omit<NonNullable<RunToolCallContext["stepRef"]>, "runId">;
 
 export interface PromptRunToolCallContext {
   step: number;
+  stepKind?: RunToolCallContext["stepKind"];
   callId?: string;
   tool: string;
   purpose?: string;
@@ -22,10 +27,12 @@ export interface PromptRunToolCallContext {
   artifacts?: RunToolCallContext["artifacts"];
   stepRef?: PromptToolCallStepRef;
   evidenceRef?: string;
-  readContextKeys?: string[];
+  hasMore?: boolean;
   rawOutputChars?: number;
   originalOutputChars?: number;
   outputTruncated?: boolean;
+  verificationStatus: ToolCallVerificationStatus;
+  verificationFailure?: ToolCallVerificationFailure;
   outputCompacted?: boolean;
   recoverable?: boolean;
   compactionReason?: "context_budget" | "truncated_output";
@@ -51,6 +58,7 @@ export function buildPromptToolCallsForRun(calls: RunToolCallContext[] | undefin
 function projectPromptToolCall(call: RunToolCallContext): PromptRunToolCallContext {
   const projected: PromptRunToolCallContext = {
     step: call.step,
+    ...(call.stepKind ? { stepKind: call.stepKind } : {}),
     ...(call.callId ? { callId: call.callId } : {}),
     tool: call.tool,
     ...(call.purpose ? { purpose: call.purpose } : {}),
@@ -66,10 +74,33 @@ function projectPromptToolCall(call: RunToolCallContext): PromptRunToolCallConte
     ...(call.artifacts && call.artifacts.length > 0 ? { artifacts: call.artifacts } : {}),
     ...(call.stepRef ? { stepRef: projectStepRef(call.stepRef) } : {}),
     ...(call.evidenceRef ? { evidenceRef: call.evidenceRef } : {}),
+    ...(call.hasMore !== undefined ? { hasMore: call.hasMore } : {}),
     ...(call.rawOutputChars !== undefined ? { rawOutputChars: call.rawOutputChars } : {}),
     ...(call.outputTruncated !== undefined ? { outputTruncated: call.outputTruncated } : {}),
+    verificationStatus: promptVerificationStatus(call),
+    ...(call.verification?.failure
+      ? { verificationFailure: call.verification.failure }
+      : {}),
   };
   return projected;
+}
+
+function promptVerificationStatus(
+  call: RunToolCallContext,
+): ToolCallVerificationStatus {
+  if (
+    call.status === "failed"
+    || call.operationStatus === "failed"
+    || call.operationStatus === "partial"
+  ) {
+    return "failed";
+  }
+  if (call.verification) {
+    return call.verification.status;
+  }
+  if (call.verificationPassed === true) return "passed";
+  if (call.verificationPassed === false) return "failed";
+  return "not_available";
 }
 
 function projectStepRef(
@@ -100,6 +131,7 @@ export function compactPromptToolCall(
   const recoverable = Boolean(call.stepRef);
   return {
     step: call.step,
+    ...(call.stepKind ? { stepKind: call.stepKind } : {}),
     ...(call.callId ? { callId: call.callId } : {}),
     tool: call.tool,
     ...(call.purpose ? { purpose: call.purpose } : {}),
@@ -116,10 +148,14 @@ export function compactPromptToolCall(
     ...(call.artifacts && call.artifacts.length > 0 ? { artifacts: call.artifacts } : {}),
     ...(call.stepRef ? { stepRef: call.stepRef } : {}),
     ...(call.evidenceRef ? { evidenceRef: call.evidenceRef } : {}),
-    ...(call.readContextKeys ? { readContextKeys: call.readContextKeys } : {}),
+    ...(call.hasMore !== undefined ? { hasMore: call.hasMore } : {}),
     ...(call.rawOutputChars !== undefined ? { rawOutputChars: call.rawOutputChars } : {}),
     ...(output.length > 0 ? { originalOutputChars: call.originalOutputChars ?? output.length } : {}),
     ...(call.outputTruncated !== undefined ? { outputTruncated: call.outputTruncated } : {}),
+    verificationStatus: call.verificationStatus,
+    ...(call.verificationFailure
+      ? { verificationFailure: call.verificationFailure }
+      : {}),
     outputCompacted: true,
     ...(recoverable ? { recoverable: true } : {}),
     compactionReason: reason,

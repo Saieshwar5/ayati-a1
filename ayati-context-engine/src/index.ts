@@ -4,6 +4,7 @@ export * from "./errors.js";
 export * from "./database/database.js";
 export * from "./observability.js";
 export * from "./run-finalization-limits.js";
+export * from "./run-work-state-contracts.js";
 export * from "./runtime.js";
 export * from "./service.js";
 export * from "./services/sqlite-context-engine-service.js";

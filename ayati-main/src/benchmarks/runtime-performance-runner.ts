@@ -6,7 +6,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import { buildAgentStateView } from "../ivec/agent-runner/state-view.js";
-import { selectToolsForDecision } from "../ivec/agent-runner/tool-selector.js";
+import { CapabilityCatalog } from "../ivec/agent-runner/capabilities/catalog.js";
+import { ToolRegistry } from "../ivec/agent-runner/capabilities/registry.js";
 import type { LoopState } from "../ivec/types.js";
 import type { ContextEngineMachineContext } from "../context-engine/index.js";
 import { createToolExecutor } from "../skills/tool-executor.js";
@@ -285,10 +286,12 @@ async function runContextToolSelectionCase(config: RuntimeScaleConfig): Promise<
     toolCount: tools.length,
     mountedGroups,
   };
+  const capabilityCatalog = new CapabilityCatalog();
+  const toolRegistry = new ToolRegistry(tools);
   const operations = [
     await measureOperation("build_state_view", async () => {
       const view = buildAgentStateView(state);
-      if (!view.context.temporal.recent.some((event) => event.current)) {
+      if (view.context.core.current.input.current !== true) {
         throw new Error("state view fixture was empty.");
       }
     }, {
@@ -297,13 +300,16 @@ async function runContextToolSelectionCase(config: RuntimeScaleConfig): Promise<
       iterations: config.longIterations,
       warnIfP95MsAbove: 20,
     }),
-    await measureOperation("select_tools_for_decision", async () => {
-      const selected = selectToolsForDecision(state, tools, 24);
-      if (selected.length === 0) {
-        throw new Error("tool selection returned no tools.");
+    await measureOperation("project_capability_catalog", async () => {
+      const cards = capabilityCatalog.cardsForModes(
+        ["observe.locate", "observe.investigate", "resolve", "execute"],
+        toolRegistry.nameSet(),
+      );
+      if (cards.length === 0) {
+        throw new Error("capability projection returned no cards.");
       }
     }, {
-      description: "Score many tool definitions against the current state and pick the decision subset.",
+      description: "Project explicit capability cards from the canonical tool registry.",
       fixture,
       iterations: config.mediumIterations,
       warnIfP95MsAbove: 50,
@@ -819,13 +825,25 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
     inputKind: "user_message",
     userMessage: "Find the project artifact memory report and continue the performance analysis.",
     workState: {
-      status: "not_done",
+      status: "in_progress",
       summary: "Runtime performance benchmark in progress.",
-      openWork: ["Measure memory retrieval", "Measure filesystem scan"],
-      blockers: [],
-      verifiedFacts: ["Benchmark uses deterministic local fixtures."],
-      evidence: ["Synthetic Context Engine and personal-memory stores are seeded."],
-      nextStep: "Run non-LLM performance measurements.",
+      plan: [
+        { id: "memory", task: "Measure memory retrieval", status: "active" },
+        { id: "filesystem", task: "Measure filesystem scan", status: "pending" },
+      ],
+      importantContext: [
+        { kind: "finding", value: "Benchmark uses deterministic local fixtures." },
+        {
+          kind: "finding",
+          value: "Synthetic Context Engine and personal-memory stores are seeded.",
+        },
+      ],
+      nextAction: "Run non-LLM performance measurements.",
+    },
+    workStateRuntime: {
+      revision: 1,
+      afterStep: 0,
+      updateReason: "plan",
     },
     toolContext: {
       recent: Array.from({ length: 5 }, (_, index) => ({
@@ -862,11 +880,28 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
     virtualMode: {
       active: null,
       revision: 0,
+      operational: false,
       capabilities: [],
       targets: [],
     },
+    hotContext: {
+      available: [],
+      loaded: [{
+        key: "personal.memory",
+        description: "Stable personal facts and preferences learned about the user.",
+        version: "benchmark",
+        estimatedTokens: 10,
+        freshness: "current",
+        sourceRefs: ["benchmark:personal-memory"],
+        content: "User prefers detailed reports about agent runtime performance.",
+        mountedAtStep: 0,
+      }],
+      budget: {
+        maxMountedTokens: 8_000,
+        mountedTokens: 10,
+      },
+    },
     harnessContext: {
-      personalMemorySnapshot: "User prefers detailed reports about agent runtime performance.",
       contextEngine: buildGitContextFixture(exchangeCount, now),
     },
   };
@@ -898,7 +933,6 @@ function buildGitContextFixture(count: number, timestamp: string): ContextEngine
   return {
     contextRevision: "context:bench",
     streamRevision: "stream:bench",
-    observationRevision: "observations:bench",
     agentStream: {
       meta: {
         streamId: "ASTREAM-BENCH",
@@ -911,7 +945,9 @@ function buildGitContextFixture(count: number, timestamp: string): ContextEngine
         resourceCount: 1,
       },
       recentMessages,
-      recentWork: [],
+      recentWorkstreams: [],
+      recentFiles: [],
+      recentWorkStates: [],
       resources: [],
     },
     current: {},
@@ -919,12 +955,6 @@ function buildGitContextFixture(count: number, timestamp: string): ContextEngine
       status: "active",
       ref: "refs/heads/main",
       workstreamId: "W-20260617-0001",
-    },
-    observations: {
-      revision: "observations:bench",
-      inventory: [],
-      discovery: [],
-      evidence: [],
     },
     workstream: {
       ref: "refs/heads/main",
@@ -970,7 +1000,7 @@ function buildGitContextFixture(count: number, timestamp: string): ContextEngine
 }
 
 function buildToolFixture(count: number): ToolDefinition[] {
-  return Object.values(TOOL_TAXONOMY).slice(0, count).map((taxonomy, index) => {
+  return Object.values(TOOL_TAXONOMY).slice(0, count).map((taxonomy) => {
     const role = taxonomy.roles[0] ?? "general";
     return {
       name: taxonomy.name,
@@ -991,13 +1021,6 @@ function buildToolFixture(count: number): ToolDefinition[] {
         idempotent: taxonomy.effect === "read_only",
         retrySafe: taxonomy.effect === "read_only",
         longRunning: taxonomy.lifetime === "background",
-      },
-      selectionHints: {
-        domain: role,
-        tags: ["runtime", "performance", role],
-        aliases: [`bench-${role}-${index}`],
-        examples: [`analyze ${role} benchmark`],
-        priority: taxonomy.loadPriority + (index % 17 === 0 ? 5 : 0),
       },
       async execute(): Promise<ToolResult> {
         return { ok: true, output: "ok" };

@@ -3,24 +3,15 @@ import type { FileLibrary } from "../../../files/file-library.js";
 import type { ManagedFileRecord } from "../../../files/types.js";
 import type { SkillDefinition, ToolDefinition, ToolExecutionContext, ToolResult } from "../../types.js";
 import { requireAbsolutePath } from "../../workspace-paths.js";
+import {
+  genericObjectOutputSchema,
+  succeededContract,
+} from "../contract-helpers.js";
 
 export interface FilesSkillDeps {
   fileLibrary: FileLibrary;
   directoryLibrary?: DirectoryLibrary;
 }
-
-const FILES_PROMPT_BLOCK = [
-  "Managed file tools are built in.",
-  "Once a file matters to durable work, register it and use its fileId instead of raw paths.",
-  "Attached files are registered before the agent loop runs and can be auto-selected when there is exactly one run file.",
-  "Use file_describe to inspect file metadata and capabilities.",
-  "After workstream binding, use file_register_path when filesystem search finds one local file the user wants in the managed file library.",
-  "Pass canonical absolute filesystem paths to file_register_path and file_register_artifact.",
-  "Use file_fetch_url when the current work requires downloading a file from a URL.",
-  "Use file_read_text or file_query for text-capable files.",
-  "Use file_profile_table and file_query_table for CSV/XLSX table files. The staged table name is file_data.",
-  "Prefer attachment_list, attachment_inspect, attachment_read, attachment_query, attachment_query_table, and directory_search for attached inputs.",
-].join("\n");
 
 export function createFilesSkill(deps: FilesSkillDeps): SkillDefinition {
   const tools = [
@@ -44,7 +35,6 @@ export function createFilesSkill(deps: FilesSkillDeps): SkillDefinition {
     id: "files",
     version: "1.0.0",
     description: "Managed file registration, extraction, and querying tools.",
-    promptBlock: FILES_PROMPT_BLOCK,
     tools,
   };
 }
@@ -57,11 +47,6 @@ function createAttachmentListTool(deps: FilesSkillDeps): ToolDefinition {
       type: "object",
       properties: {},
       additionalProperties: false,
-    },
-    selectionHints: {
-      tags: ["attachment", "list", "file", "directory"],
-      domain: "attachments",
-      priority: 100,
     },
     async execute(_input, context): Promise<ToolResult> {
       return withJsonResult(async () => {
@@ -96,11 +81,6 @@ function createAttachmentInspectTool(deps: FilesSkillDeps): ToolDefinition {
     name: "attachment_inspect",
     description: "Inspect one attached file or directory by attachmentId, fileId, or directoryId.",
     inputSchema: optionalAttachmentIdSchema(),
-    selectionHints: {
-      tags: ["attachment", "inspect", "describe", "metadata"],
-      domain: "attachments",
-      priority: 100,
-    },
     async execute(input, context): Promise<ToolResult> {
       return withJsonResult(async () => {
         const ref = await resolveAttachmentRef(deps, input, context);
@@ -124,11 +104,6 @@ function createAttachmentReadTool(deps: FilesSkillDeps): ToolDefinition {
     name: "attachment_read",
     description: "Read a text-capable attached file, or return a directory attachment manifest preview.",
     inputSchema: optionalAttachmentIdSchema(),
-    selectionHints: {
-      tags: ["attachment", "read", "file", "directory"],
-      domain: "attachments",
-      priority: 98,
-    },
     async execute(input, context): Promise<ToolResult> {
       return withJsonResult(async () => {
         const ref = await resolveAttachmentRef(deps, input, context);
@@ -164,11 +139,6 @@ function createAttachmentQueryTool(deps: FilesSkillDeps): ToolDefinition {
         maxResults: { type: "number" },
       },
       additionalProperties: false,
-    },
-    selectionHints: {
-      tags: ["attachment", "query", "search", "document", "directory"],
-      domain: "attachments",
-      priority: 100,
     },
     async execute(input, context): Promise<ToolResult> {
       return withJsonResult(async () => {
@@ -211,11 +181,6 @@ function createAttachmentQueryTableTool(deps: FilesSkillDeps): ToolDefinition {
       },
       additionalProperties: false,
     },
-    selectionHints: {
-      tags: ["attachment", "table", "query", "csv", "xlsx"],
-      domain: "attachments",
-      priority: 99,
-    },
     async execute(input, context): Promise<ToolResult> {
       return withJsonResult(async () => {
         const ref = await resolveAttachmentRef(deps, input, context);
@@ -250,11 +215,6 @@ function createDirectorySearchTool(deps: FilesSkillDeps): ToolDefinition {
       },
       additionalProperties: false,
     },
-    selectionHints: {
-      tags: ["directory", "attachment", "search", "grep", "find"],
-      domain: "attachments",
-      priority: 98,
-    },
     async execute(input, context): Promise<ToolResult> {
       return withJsonResult(async () => {
         const directoryId = await resolveDirectoryId(deps, input, context);
@@ -276,11 +236,6 @@ function createFileDescribeTool(deps: FilesSkillDeps): ToolDefinition {
     name: "file_describe",
     description: "Describe a managed file's metadata, capabilities, and processing status.",
     inputSchema: optionalFileIdSchema(),
-    selectionHints: {
-      tags: ["file", "describe", "metadata"],
-      domain: "files",
-      priority: 80,
-    },
     async execute(input, context): Promise<ToolResult> {
       return withJsonResult(async () => {
         const fileId = await resolveFileId(deps.fileLibrary, input, context);
@@ -303,12 +258,8 @@ function createFileRegisterPathTool(deps: FilesSkillDeps): ToolDefinition {
       },
       additionalProperties: false,
     },
-    selectionHints: {
-      tags: ["file", "register", "path", "local", "workstream-bound"],
-      aliases: ["register bound workstream file", "add local file to managed library"],
-      domain: "files",
-      priority: 95,
-    },
+    outputSchema: genericObjectOutputSchema,
+    resultContract: fileRegistrationContract(),
     async execute(input, context): Promise<ToolResult> {
       return withJsonResult(async () => {
         const record = await deps.fileLibrary.registerPath({
@@ -338,11 +289,8 @@ function createFileFetchUrlTool(deps: FilesSkillDeps): ToolDefinition {
       },
       additionalProperties: false,
     },
-    selectionHints: {
-      tags: ["file", "download", "url", "fetch"],
-      domain: "files",
-      priority: 90,
-    },
+    outputSchema: genericObjectOutputSchema,
+    resultContract: fileRegistrationContract(),
     async execute(input, context): Promise<ToolResult> {
       return withJsonResult(async () => {
         const record = await deps.fileLibrary.registerDownload({
@@ -371,11 +319,8 @@ function createFileRegisterArtifactTool(deps: FilesSkillDeps): ToolDefinition {
       },
       additionalProperties: false,
     },
-    selectionHints: {
-      tags: ["file", "register", "artifact", "generated"],
-      domain: "files",
-      priority: 85,
-    },
+    outputSchema: genericObjectOutputSchema,
+    resultContract: fileRegistrationContract(),
     async execute(input, context): Promise<ToolResult> {
       return withJsonResult(async () => {
         const record = await deps.fileLibrary.registerArtifact({
@@ -389,16 +334,26 @@ function createFileRegisterArtifactTool(deps: FilesSkillDeps): ToolDefinition {
   };
 }
 
+function fileRegistrationContract(): ReturnType<typeof succeededContract> {
+  return succeededContract({
+    assertions: [{
+      id: "registered_file_id_present",
+      kind: "json_path_exists",
+      path: "$.result.structuredContent.file.fileId",
+    }],
+    progressFacts: [{
+      kind: "artifact_registered",
+      path: "$.result.structuredContent.file.fileId",
+      message: "Managed file artifact was registered.",
+    }],
+  });
+}
+
 function createFileReadTextTool(deps: FilesSkillDeps): ToolDefinition {
   return {
     name: "file_read_text",
     description: "Read extracted text from a managed text-capable file.",
     inputSchema: optionalFileIdSchema(),
-    selectionHints: {
-      tags: ["file", "read", "text", "document"],
-      domain: "files",
-      priority: 90,
-    },
     async execute(input, context): Promise<ToolResult> {
       return withJsonResult(async () => {
         const fileId = await resolveFileId(deps.fileLibrary, input, context);
@@ -420,11 +375,6 @@ function createFileQueryTool(deps: FilesSkillDeps): ToolDefinition {
         query: { type: "string" },
       },
       additionalProperties: false,
-    },
-    selectionHints: {
-      tags: ["file", "query", "document", "text"],
-      domain: "files",
-      priority: 95,
     },
     async execute(input, context): Promise<ToolResult> {
       return withJsonResult(async () => {
@@ -449,11 +399,6 @@ function createFileProfileTableTool(deps: FilesSkillDeps): ToolDefinition {
         sheetName: { type: "string" },
       },
       additionalProperties: false,
-    },
-    selectionHints: {
-      tags: ["file", "table", "csv", "xlsx", "profile"],
-      domain: "files",
-      priority: 88,
     },
     async execute(input, context): Promise<ToolResult> {
       return withJsonResult(async () => {
@@ -481,11 +426,6 @@ function createFileQueryTableTool(deps: FilesSkillDeps): ToolDefinition {
         maxRows: { type: "number" },
       },
       additionalProperties: false,
-    },
-    selectionHints: {
-      tags: ["file", "table", "sql", "query", "csv", "xlsx"],
-      domain: "files",
-      priority: 96,
     },
     async execute(input, context): Promise<ToolResult> {
       return withJsonResult(async () => {
