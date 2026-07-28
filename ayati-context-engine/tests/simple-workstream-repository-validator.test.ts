@@ -17,7 +17,7 @@ afterEach(async () => {
 });
 
 describe("workstream context repository validation", () => {
-  it("accepts only the card, requests, and resource ledger as committed context", async () => {
+  it("accepts only the card, progress, requests, and resource ledger as committed context", async () => {
     const fixture = await createWorkstreamServiceFixture("validate-ready");
     fixtures.push(fixture);
     const selected = await createBoundWorkstream(fixture);
@@ -55,6 +55,42 @@ describe("workstream context repository validation", () => {
 
     expect(validation.health).toBe("dirty_external");
     expect(validation.workingTreeChanges).toEqual(["?? index.html"]);
+  });
+
+  it("rejects a repository without its committed progress ledger", async () => {
+    const fixture = await createWorkstreamServiceFixture("validate-missing-progress");
+    fixtures.push(fixture);
+    const selected = await createBoundWorkstream(fixture);
+    await git(selected.workstream.contextRepositoryPath, ["rm", "progress.md"]);
+    await git(selected.workstream.contextRepositoryPath, ["commit", "-m", "remove progress"]);
+
+    await expect(validateWorkstreamRepository({
+      workstreamRoot: `${fixture.root}/workstreams`,
+      contextRepositoryPath: selected.workstream.contextRepositoryPath,
+      expectedWorkstreamId: selected.workstream.workstreamId,
+    })).rejects.toMatchObject({
+      code: "WORKSTREAM_REPOSITORY_INVALID",
+      details: { path: "progress.md" },
+    });
+  });
+
+  it("rejects a malformed committed progress ledger", async () => {
+    const fixture = await createWorkstreamServiceFixture("validate-invalid-progress");
+    fixtures.push(fixture);
+    const selected = await createBoundWorkstream(fixture);
+    await writeFile(
+      `${selected.workstream.contextRepositoryPath}/progress.md`,
+      "# Progress\n\ninvalid entry\n",
+      "utf8",
+    );
+    await git(selected.workstream.contextRepositoryPath, ["add", "progress.md"]);
+    await git(selected.workstream.contextRepositoryPath, ["commit", "-m", "break progress"]);
+
+    await expect(validateWorkstreamRepository({
+      workstreamRoot: `${fixture.root}/workstreams`,
+      contextRepositoryPath: selected.workstream.contextRepositoryPath,
+      expectedWorkstreamId: selected.workstream.workstreamId,
+    })).rejects.toMatchObject({ code: "WORKSTREAM_PROGRESS_INVALID" });
   });
 
   it("rejects a committed deliverable inside the context repository", async () => {

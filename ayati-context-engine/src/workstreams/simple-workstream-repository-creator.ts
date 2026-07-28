@@ -14,9 +14,11 @@ import {
   parseWorkstreamCommit,
   renderWorkstreamIdentityCommit,
 } from "./workstream-commit-metadata.js";
+import { renderWorkstreamProgress } from "./workstream-progress.js";
 import {
   requestPath,
   WORKSTREAM_CARD_PATH,
+  WORKSTREAM_PROGRESS_PATH,
   WORKSTREAM_RESOURCES_PATH,
 } from "./workstream-repository-layout.js";
 import {
@@ -196,6 +198,7 @@ function renderScaffold(workstream: WorkstreamInitializationRecord): Map<string,
         "Represent external work through resource identities and verified resource events.",
       ],
     })],
+    [WORKSTREAM_PROGRESS_PATH, renderWorkstreamProgress([])],
     [requestPath(INITIAL_REQUEST_ID, initialRequest.title), renderWorkstreamRequest({
       schema: "ayati.request/v2",
       id: INITIAL_REQUEST_ID,

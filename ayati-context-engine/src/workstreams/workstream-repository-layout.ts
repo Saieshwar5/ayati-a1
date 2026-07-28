@@ -1,6 +1,7 @@
 import { ContextEngineServiceError } from "../errors.js";
 
 export const WORKSTREAM_CARD_PATH = "workstream.md";
+export const WORKSTREAM_PROGRESS_PATH = "progress.md";
 export const WORKSTREAM_REQUESTS_DIRECTORY = "requests";
 export const WORKSTREAM_RESOURCES_PATH = "resources.json";
 export const WORKSTREAM_SCHEMA = "ayati.workstream/v2";

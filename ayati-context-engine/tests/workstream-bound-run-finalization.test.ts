@@ -306,6 +306,7 @@ describe("workstream-bound run finalization", () => {
       .toBe("2");
     expect((await git(selected.workstream.contextRepositoryPath, ["ls-files"])).split("\n"))
       .toEqual([
+        "progress.md",
         "requests/R-0001-verified-website.md",
         "resources.json",
         "workstream.md",

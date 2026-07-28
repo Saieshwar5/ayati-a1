@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
+import { renderWorkstreamProgress } from "../src/workstreams/workstream-progress.js";
 import {
   createBoundWorkstream,
   createWorkstreamServiceFixture,
@@ -37,10 +38,15 @@ describe("workstream context repository creation", () => {
     expect((await git(selected.workstream.contextRepositoryPath, [
       "ls-tree", "-r", "--name-only", "HEAD",
     ])).split("\n")).toEqual([
+      "progress.md",
       "requests/R-0001-coffee-shop-website.md",
       "resources.json",
       "workstream.md",
     ]);
+    expect(await readFile(
+      join(selected.workstream.contextRepositoryPath, "progress.md"),
+      "utf8",
+    )).toBe(renderWorkstreamProgress([]));
     const primary = selected.resourceBindings.find((binding) => binding.primary);
     expect(primary).toMatchObject({ role: "primary", access: "mutate" });
     expect(primary?.resource.locator).toMatchObject({ kind: "filesystem" });

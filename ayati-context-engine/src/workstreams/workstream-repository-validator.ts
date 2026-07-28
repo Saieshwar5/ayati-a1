@@ -3,10 +3,12 @@ import { basename, dirname, resolve } from "node:path";
 import { ContextEngineServiceError } from "../errors.js";
 import { runGit, runGitRaw } from "../git/git-process.js";
 import { parseWorkstreamCard, type WorkstreamCard } from "./workstream-card.js";
+import { parseWorkstreamProgress } from "./workstream-progress.js";
 import {
   isRequestId,
   requestFileName,
   WORKSTREAM_CARD_PATH,
+  WORKSTREAM_PROGRESS_PATH,
   WORKSTREAM_REQUESTS_DIRECTORY,
   WORKSTREAM_RESOURCES_PATH,
 } from "./workstream-repository-layout.js";
@@ -105,8 +107,10 @@ async function validate(input: {
     .filter(Boolean);
   const tracked = new Set(trackedPaths);
   requireTracked(tracked, WORKSTREAM_CARD_PATH);
+  requireTracked(tracked, WORKSTREAM_PROGRESS_PATH);
   requireTracked(tracked, WORKSTREAM_RESOURCES_PATH);
   const unexpected = trackedPaths.filter((path) => path !== WORKSTREAM_CARD_PATH
+    && path !== WORKSTREAM_PROGRESS_PATH
     && path !== WORKSTREAM_RESOURCES_PATH
     && !path.startsWith(WORKSTREAM_REQUESTS_DIRECTORY + "/"));
   if (unexpected.length > 0) {
@@ -114,6 +118,9 @@ async function validate(input: {
       unexpectedPaths: unexpected,
     });
   }
+  parseWorkstreamProgress(
+    await committedFile(contextRepositoryPath, WORKSTREAM_PROGRESS_PATH),
+  );
 
   const workstreamCard = parseWorkstreamCard(
     await committedFile(contextRepositoryPath, WORKSTREAM_CARD_PATH),
