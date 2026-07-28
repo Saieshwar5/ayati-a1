@@ -32,11 +32,34 @@ describe("workstream binding proposal", () => {
       string,
       Record<string, unknown>
     >;
+    expect(properties["requestDecision"]?.["description"]).toEqual(
+      expect.stringContaining("Any added or removed scope"),
+    );
     expect(properties["requestDecision"]?.["oneOf"]).toEqual(expect.arrayContaining([
       expect.objectContaining({
+        description: expect.stringContaining("unchanged"),
+        properties: expect.objectContaining({
+          kind: { const: "continue" },
+          requestId: expect.objectContaining({
+            description: expect.stringContaining("exact active request ID"),
+          }),
+        }),
+      }),
+      expect.objectContaining({
+        description: expect.stringContaining("no active request"),
+        properties: expect.objectContaining({
+          kind: { const: "create" },
+        }),
+      }),
+      expect.objectContaining({
+        description: expect.stringContaining("queued for later"),
         properties: expect.objectContaining({
           kind: { const: "switch" },
-          currentRequestId: { type: "string", pattern: "^R-[0-9]{4}$" },
+          currentRequestId: expect.objectContaining({
+            type: "string",
+            pattern: "^R-[0-9]{4}$",
+            description: expect.stringContaining("exact active request ID"),
+          }),
         }),
         required: expect.arrayContaining(["kind", "currentRequestId"]),
       }),

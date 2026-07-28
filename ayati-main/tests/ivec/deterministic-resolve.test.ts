@@ -302,6 +302,10 @@ describe("deterministic resolve gate", () => {
       repair: {
         code: "MODE_BINDING_PROPOSAL_UNVERIFIED",
         blockedTargets: ["R-0002"],
+        message: expect.stringContaining("exact active request"),
+        allowedNextActions: [
+          expect.stringContaining("Continue only an unchanged contract"),
+        ],
       },
     });
     expect(coordinator.bind).not.toHaveBeenCalled();

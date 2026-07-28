@@ -123,6 +123,8 @@ export function workstreamActivateProposalSchema(): Record<string, unknown> {
     workstreamId: { type: "string", pattern: WORKSTREAM_ID_PATTERN },
     expectedWorkstreamHead: { type: "string", minLength: 1, maxLength: 200 },
     requestDecision: {
+      description:
+        "Choose continue for the unchanged active request contract. Any added or removed scope, acceptance criterion, or constraint is a new request: create when no request is active, or switch only when the user explicitly starts it now while preserving the current request for later.",
       oneOf: [
         continueDecisionSchema(),
         createRequestDecisionSchema(),
@@ -151,9 +153,22 @@ export function workstreamCreateProposalSchema(): Record<string, unknown> {
 function continueDecisionSchema(): Record<string, unknown> {
   return objectSchema({
     kind: { const: "continue" },
-    requestId: { type: "string", pattern: REQUEST_ID_PATTERN },
-    reason: { type: "string", minLength: 1, maxLength: 500 },
-  }, ["kind", "requestId", "reason"]);
+    requestId: {
+      type: "string",
+      pattern: REQUEST_ID_PATTERN,
+      description: "The exact active request ID observed during workstream inspection.",
+    },
+    reason: {
+      type: "string",
+      minLength: 1,
+      maxLength: 500,
+      description: "Why the user's request matches the active contract without any change.",
+    },
+  }, [
+    "kind",
+    "requestId",
+    "reason",
+  ], "Continue only when the requested outcome, acceptance criteria, and constraints are unchanged.");
 }
 
 function createRequestDecisionSchema(): Record<string, unknown> {
@@ -163,19 +178,40 @@ function createRequestDecisionSchema(): Record<string, unknown> {
     request: { type: "string", minLength: 1, maxLength: 4000 },
     acceptance: boundedStringArray(20),
     constraints: boundedStringArray(20),
-    reason: { type: "string", minLength: 1, maxLength: 500 },
-  }, ["kind", "title", "request", "acceptance", "constraints", "reason"]);
+    reason: {
+      type: "string",
+      minLength: 1,
+      maxLength: 500,
+      description: "Why this is a new request and no active request needs to be preserved.",
+    },
+  }, [
+    "kind",
+    "title",
+    "request",
+    "acceptance",
+    "constraints",
+    "reason",
+  ], "Create a new immutable request only when this workstream has no active request.");
 }
 
 function switchRequestDecisionSchema(): Record<string, unknown> {
   return objectSchema({
     kind: { const: "switch" },
-    currentRequestId: { type: "string", pattern: REQUEST_ID_PATTERN },
+    currentRequestId: {
+      type: "string",
+      pattern: REQUEST_ID_PATTERN,
+      description: "The exact active request ID to return to queued status.",
+    },
     title: { type: "string", minLength: 1, maxLength: 120 },
     request: { type: "string", minLength: 1, maxLength: 4000 },
     acceptance: boundedStringArray(20),
     constraints: boundedStringArray(20),
-    reason: { type: "string", minLength: 1, maxLength: 500 },
+    reason: {
+      type: "string",
+      minLength: 1,
+      maxLength: 500,
+      description: "Why the user explicitly wants the new request to become active now.",
+    },
   }, [
     "kind",
     "currentRequestId",
@@ -184,7 +220,7 @@ function switchRequestDecisionSchema(): Record<string, unknown> {
     "acceptance",
     "constraints",
     "reason",
-  ]);
+  ], "Switch only when the user explicitly starts a new immutable request now; keep the unfinished current request queued for later.");
 }
 
 function requestDefinitionSchema(): Record<string, unknown> {
@@ -227,8 +263,15 @@ function boundedStringArray(maxItems: number): Record<string, unknown> {
 function objectSchema(
   properties: Record<string, unknown>,
   required: string[],
+  description?: string,
 ): Record<string, unknown> {
-  return { type: "object", properties, required, additionalProperties: false };
+  return {
+    type: "object",
+    ...(description ? { description } : {}),
+    properties,
+    required,
+    additionalProperties: false,
+  };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

@@ -138,11 +138,25 @@ describe("runtime tool schemas", () => {
     expect(createWorkstream?.inputSchema.properties).not.toHaveProperty("directory");
     expect(createWorkstream?.inputSchema.properties?.["resources"]).toMatchObject({ type: "array" });
     const activateWorkstream = tools.find((tool) => tool.name === "git_context_activate_workstream");
+    expect(activateWorkstream?.description).toContain("Any added or removed scope");
     expect(activateWorkstream?.inputSchema.properties?.["requestDecision"]).toMatchObject({
       type: "object",
+      description: expect.stringContaining("unchanged active contract"),
       properties: {
-        kind: { enum: ["continue", "create", "switch"] },
-        currentRequestId: { pattern: "^R-[0-9]{4}$" },
+        kind: {
+          enum: ["continue", "create", "switch"],
+          description: expect.stringContaining("Continue an unchanged contract"),
+        },
+        requestId: {
+          description: expect.stringContaining("exact active request ID"),
+        },
+        currentRequestId: {
+          pattern: "^R-[0-9]{4}$",
+          description: expect.stringContaining("queued status"),
+        },
+        request: {
+          description: expect.stringContaining("new immutable request"),
+        },
       },
     });
     expect(activateWorkstream?.inputSchema.required).toEqual(["workstreamId", "reason", "requestDecision"]);

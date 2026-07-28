@@ -80,7 +80,8 @@ function createWorkstreamTool(service: ContextEngineService): ToolDefinition {
 function activateWorkstreamTool(service: ContextEngineService): ToolDefinition {
   return {
     name: "git_context_activate_workstream",
-    description: "Bind this run to an existing workstream and explicitly continue, create, or switch its active request.",
+    description:
+      "Bind this run to an existing workstream. Continue only the unchanged active request. Any added or removed scope, acceptance criterion, or constraint is a new request: create it when no request is active, or switch only when the user explicitly wants it active now while preserving the current request for later.",
     inputSchema: {
       type: "object",
       properties: {
@@ -89,17 +90,49 @@ function activateWorkstreamTool(service: ContextEngineService): ToolDefinition {
           pattern: "^W-[0-9]{8}-[0-9]{4}$",
           description: "Exact workstream id returned by discovery.",
         },
-        reason: { type: "string", description: "Why this workstream and its resources own the current request." },
+        reason: {
+          type: "string",
+          description:
+            "Why this workstream owns the request and why the selected request decision matches the user's intent.",
+        },
         requestDecision: {
           type: "object",
+          description:
+            "Use continue for an unchanged active contract, create for a new request when none is active, or switch for an explicitly prioritized new request while the current request returns to queued status.",
           properties: {
-            kind: { enum: ["continue", "create", "switch"] },
-            requestId: { type: "string", pattern: "^R-[0-9]{4}$" },
-            currentRequestId: { type: "string", pattern: "^R-[0-9]{4}$" },
-            title: { type: "string" },
-            request: { type: "string" },
-            acceptance: { type: "array", items: { type: "string" } },
-            constraints: { type: "array", items: { type: "string" } },
+            kind: {
+              enum: ["continue", "create", "switch"],
+              description:
+                "Continue an unchanged contract; create a new contract with no active request; or explicitly switch from the exact active request.",
+            },
+            requestId: {
+              type: "string",
+              pattern: "^R-[0-9]{4}$",
+              description: "For continue, the exact active request ID returned by inspection.",
+            },
+            currentRequestId: {
+              type: "string",
+              pattern: "^R-[0-9]{4}$",
+              description: "For switch, the exact active request ID to return to queued status.",
+            },
+            title: {
+              type: "string",
+              description: "For create or switch, the concise title of the new immutable request.",
+            },
+            request: {
+              type: "string",
+              description: "For create or switch, the complete new immutable request.",
+            },
+            acceptance: {
+              type: "array",
+              items: { type: "string" },
+              description: "For create or switch, the new request's acceptance criteria.",
+            },
+            constraints: {
+              type: "array",
+              items: { type: "string" },
+              description: "For create or switch, the new request's constraints.",
+            },
           },
           required: ["kind"],
           additionalProperties: false,

@@ -256,7 +256,9 @@ function validateBindingProposal(
       "MODE_BINDING_PROPOSAL_UNVERIFIED",
       "A semantic or recency workstream candidate must be inspected before binding.",
       [proposal.workstreamId],
-      ["Use workstream:read for the exact candidate, then retry resolve."],
+      [
+        "Inspect the exact workstream and compare its immutable active request contract before choosing continue, create, or switch.",
+      ],
     );
   }
   if (proposal.requestDecision.kind === "continue"
@@ -268,9 +270,11 @@ function validateBindingProposal(
     if (!explicitRequest && !observed?.requestIds.includes(requestId)) {
       return createVirtualModeRepair(
         "MODE_BINDING_PROPOSAL_UNVERIFIED",
-        `The selected current request was not explicitly named or returned by workstream inspection: ${requestId}.`,
+        `The exact active request was not explicitly named or returned by workstream inspection: ${requestId}.`,
         [requestId],
-        ["Inspect the workstream and use its exact active request before continuing or switching."],
+        [
+          "Inspect the exact active request. Continue only an unchanged contract; switch only when the user explicitly starts a new request now.",
+        ],
       );
     }
   }
