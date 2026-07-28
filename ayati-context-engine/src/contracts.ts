@@ -817,7 +817,7 @@ export interface CreateWorkstreamForRunRequest extends ContextEngineRequestEnvel
 export interface ActivateWorkstreamForRunRequest extends ContextEngineRequestEnvelope, SelectWorkstreamForRunInput {
   workstreamId: WorkstreamId;
   expectedWorkstreamHead?: string;
-  /** Explicitly continue the active request or create a new request in this workstream. */
+  /** Explicitly continue, create, or switch the active request in this workstream. */
   route: WorkstreamRequestRoute;
 }
 
@@ -829,6 +829,15 @@ export type WorkstreamRequestRoute =
     }
   | {
       kind: "create_active_request";
+      reason: string;
+      title: string;
+      request: string;
+      acceptance: string[];
+      constraints: string[];
+    }
+  | {
+      kind: "switch_active_request";
+      currentRequestId: string;
       reason: string;
       title: string;
       request: string;
@@ -1344,11 +1353,15 @@ function isWorkstreamRequestRoute(value: unknown): value is WorkstreamRequestRou
   if (route["kind"] === "continue_active_request") {
     return /^R-\d{4}$/.test(String(route["requestId"] ?? ""));
   }
-  return route["kind"] === "create_active_request"
+  const createsRequest = (route["kind"] === "create_active_request"
+      || route["kind"] === "switch_active_request")
     && isBoundedString(route["title"], 120)
     && isBoundedString(route["request"], 2_000)
     && isBoundedStringArray(route["acceptance"], 50, 500)
     && isBoundedStringArray(route["constraints"], 50, 500);
+  return createsRequest
+    && (route["kind"] !== "switch_active_request"
+      || /^R-\d{4}$/.test(String(route["currentRequestId"] ?? "")));
 }
 
 export function isInspectResourceForRunRequest(

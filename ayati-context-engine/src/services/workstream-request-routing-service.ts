@@ -96,6 +96,13 @@ export class WorkstreamRequestRoutingService {
           requestId: input.route.requestId,
           reason: input.route.reason,
         } as const
+      : input.route.kind === "switch_active_request"
+        ? {
+            kind: input.route.kind,
+            workstreamId: input.workstreamId,
+            requestId: input.route.currentRequestId,
+            reason: input.route.reason,
+          } as const
       : {
           kind: input.route.kind,
           workstreamId: input.workstreamId,
@@ -106,7 +113,9 @@ export class WorkstreamRequestRoutingService {
       evidence: { explicitWorkstreamId: input.workstreamId },
     }, decision);
     if (resolution.status !== "ready"
-      || (resolution.next !== "continue_request" && resolution.next !== "create_active_request")) {
+      || (resolution.next !== "continue_request"
+        && resolution.next !== "create_active_request"
+        && resolution.next !== "switch_active_request")) {
       throw new ContextEngineServiceError({
         code: "WORKSTREAM_CURRENT_REQUEST_INVALID",
         message: "Request route is not ready for mutation.",
@@ -125,8 +134,23 @@ export class WorkstreamRequestRoutingService {
           createdAt: input.at,
           activate: true,
         })
-      : undefined;
-    const workstreamRequestId = changePlan?.primaryRequestId
+      : input.route.kind === "switch_active_request"
+        ? planWorkstreamRequestChange(state, {
+            kind: "defer_and_create",
+            currentRequestId: input.route.currentRequestId,
+            deferReason: input.route.reason,
+            newRequest: {
+              title: input.route.title,
+              request: input.route.request,
+              acceptance: input.route.acceptance,
+              constraints: input.route.constraints,
+              source: "user",
+              createdAt: input.at,
+            },
+          })
+        : undefined;
+    const workstreamRequestId = changePlan?.activatedRequestId
+      ?? changePlan?.primaryRequestId
       ?? (input.route.kind === "continue_active_request" ? input.route.requestId : undefined);
     if (!workstreamRequestId) throw new Error("Resolved request route is missing its request identity.");
     const pending = beginRecoverableIdempotent<PlanWorkstreamRequestRouteResponse>({

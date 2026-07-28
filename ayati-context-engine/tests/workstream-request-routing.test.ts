@@ -62,6 +62,32 @@ describe("workstream request routing resolution", () => {
     });
   });
 
+  it("switches only the explicitly identified active request", () => {
+    const state = [workstream("W-20260717-0001", "active", "R-0001")];
+    expect(resolve(state, {
+      kind: "switch_active_request",
+      workstreamId: "W-20260717-0001",
+      requestId: "R-0001",
+      reason: "The user explicitly prioritized a new bounded request.",
+    })).toMatchObject({
+      status: "ready",
+      next: "switch_active_request",
+      mutationReadiness: "request_decision_required",
+      workstreamId: "W-20260717-0001",
+      requestId: "R-0001",
+    });
+    expect(resolve(state, {
+      kind: "switch_active_request",
+      workstreamId: "W-20260717-0001",
+      requestId: "R-0002",
+      reason: "Attempt to switch a request that is not current.",
+    })).toMatchObject({
+      status: "clarification_required",
+      next: "ask_clarification",
+      recommendedDecision: "continue_active_request",
+    });
+  });
+
   it("selects another workstream and reports whether its request is mutation-ready", () => {
     expect(resolve([
       workstream("W-20260717-0001", "active", "R-0001"),

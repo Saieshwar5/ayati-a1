@@ -472,7 +472,8 @@ export class WorkstreamFinalizationService {
     const routePlan = readWorkstreamRequestRoutePlan(this.options.database, record.runId);
     const discardedPlannedRequest = record.outcome === "failed"
       && !record.plan.commitRequired
-      && routePlan?.changePlan?.primaryRequestId === record.boundRequestId;
+      && (routePlan?.changePlan?.activatedRequestId
+        ?? routePlan?.changePlan?.primaryRequestId) === record.boundRequestId;
     if (!request && !discardedPlannedRequest) {
       throw recovery("Committed workstream request is missing.");
     }

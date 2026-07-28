@@ -18,6 +18,12 @@ export type WorkstreamRequestRoutingDecision =
       workstreamId: string;
       reason: string;
     }
+  | {
+      kind: "switch_active_request";
+      workstreamId: string;
+      requestId: string;
+      reason: string;
+    }
   | { kind: "use_different_workstream"; workstreamId: string; reason: string }
   | { kind: "create_new_workstream"; reason: string }
   | { kind: "read_only"; reason: string; workstreamId?: string }
@@ -39,6 +45,7 @@ export type WorkstreamRequestRoutingNext =
   | "continue_request"
   | "create_active_request"
   | "create_queued_request"
+  | "switch_active_request"
   | "select_workstream"
   | "create_workstream"
   | "answer_read_only"
@@ -70,6 +77,7 @@ export function validateWorkstreamRequestRoutingDecision(
   const reason = boundedLine(decision.reason, "reason", 500);
   switch (decision.kind) {
     case "continue_active_request":
+    case "switch_active_request":
       return {
         kind: decision.kind,
         workstreamId: workstreamId(decision.workstreamId),
@@ -159,6 +167,26 @@ export function resolveWorkstreamRequestRoutingDecision(
       const lifecycle = lifecycleTransition(normalized, workstream);
       if (lifecycle) return lifecycle;
       return ready(normalized, "create_queued_request", "not_requested", workstream);
+    }
+    case "switch_active_request": {
+      const workstream = requireWorkstream(workstreams, normalized.workstreamId);
+      const lifecycle = lifecycleTransition(normalized, workstream);
+      if (lifecycle) return lifecycle;
+      if (workstream.currentRequest?.id !== normalized.requestId
+        || workstream.currentRequest.status !== "active") {
+        return clarification(
+          normalized,
+          [workstream.workstreamId],
+          workstream.currentRequest ? "continue_active_request" : "create_active_request",
+        );
+      }
+      return ready(
+        normalized,
+        "switch_active_request",
+        "request_decision_required",
+        workstream,
+        workstream.currentRequest,
+      );
     }
     case "use_different_workstream": {
       const workstream = requireWorkstream(workstreams, normalized.workstreamId);
@@ -258,6 +286,7 @@ function requiresOwnershipResolution(decision: WorkstreamRequestRoutingDecision)
 function decisionWorkstreamId(decision: WorkstreamRequestRoutingDecision): string | undefined {
   switch (decision.kind) {
     case "continue_active_request":
+    case "switch_active_request":
     case "create_active_request":
     case "create_queued_request":
     case "use_different_workstream":

@@ -148,6 +148,94 @@ describe("live V2 workstream request routing", () => {
     }));
   });
 
+  it("switches the active request and finalizes both lifecycle changes in one context commit", async () => {
+    const state = await createExistingWorkstream(
+      "switch-request",
+      false,
+      "Pause the initial lesson and complete a separate priority lesson now.",
+    );
+    const route = switchRequestRoute(state, "REQ-switch-active-request");
+
+    const selected = await state.fixture.service.activateWorkstreamForRun(route);
+    const replayed = await state.fixture.service.activateWorkstreamForRun(route);
+
+    expect(replayed).toEqual(selected);
+    expect(selected).toMatchObject({
+      workstreamRequestDecision: "create",
+      workstreamRequestCreated: true,
+      headBeforeSelection: state.head,
+      run: { workstreamBinding: { requestId: "R-0002" } },
+      context: {
+        currentRequest: { id: "R-0002", title: "Add priority lesson", status: "active" },
+      },
+    });
+    expect(state.fixture.database.prepare(
+      "SELECT change_plan_json FROM workstream_request_route_plans WHERE run_id = ?",
+    ).get(state.fixture.prepared.run.runId)).toMatchObject({
+      change_plan_json: expect.stringContaining("\"operation\":\"defer_and_create\""),
+    });
+    expect(await git(state.created.workstream.contextRepositoryPath, ["rev-parse", "HEAD"]))
+      .toBe(state.head);
+
+    const finalized = await state.fixture.service.finalizeRun(doneFinalization(
+      state.fixture,
+      undefined,
+      "The priority lesson is complete.",
+    ));
+
+    expect(finalized.workstreamContextCommit).toMatchObject({
+      status: "committed",
+      headBefore: state.head,
+      requestId: "R-0002",
+    });
+    expect((await git(state.created.workstream.contextRepositoryPath, [
+      "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD",
+    ])).split("\n").sort()).toEqual([
+      "requests/R-0001-long-lived-learning.md",
+      "requests/R-0002-add-priority-lesson.md",
+      "workstream.md",
+    ]);
+    const validation = await validateWorkstreamRepository({
+      workstreamRoot: join(state.fixture.root, "workstreams"),
+      contextRepositoryPath: state.created.workstream.contextRepositoryPath,
+      expectedWorkstreamId: state.created.workstream.workstreamId,
+      requestReadMode: "all",
+    });
+    expect(validation.requests).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "R-0001", status: "queued", outcome: "Not completed yet." }),
+      expect.objectContaining({ id: "R-0002", status: "done", title: "Add priority lesson" }),
+    ]));
+    expect(validation.currentRequest).toBeUndefined();
+  });
+
+  it("discards an uncommitted request switch after a failed no-change run", async () => {
+    const state = await createExistingWorkstream(
+      "discard-switch",
+      false,
+      "Pause the initial lesson and try a separate priority lesson now.",
+    );
+    await state.fixture.service.activateWorkstreamForRun(
+      switchRequestRoute(state, "REQ-switch-discarded-request"),
+    );
+
+    const finalized = await state.fixture.service.finalizeRun(failedFinalization(state.fixture));
+
+    expect(finalized.workstreamContextCommit).toEqual({ status: "not_required" });
+    expect(state.fixture.database.prepare(
+      "SELECT phase FROM workstream_request_route_plans WHERE run_id = ?",
+    ).get(state.fixture.prepared.run.runId)).toEqual({ phase: "discarded" });
+    const validation = await validateWorkstreamRepository({
+      workstreamRoot: join(state.fixture.root, "workstreams"),
+      contextRepositoryPath: state.created.workstream.contextRepositoryPath,
+      expectedWorkstreamId: state.created.workstream.workstreamId,
+      requestReadMode: "all",
+    });
+    expect(validation.requests).toEqual([
+      expect.objectContaining({ id: "R-0001", status: "active" }),
+    ]);
+    expect(validation.currentRequest?.id).toBe("R-0001");
+  });
+
   it("discards a newly planned request when failed work produced no durable change", async () => {
     const state = await createExistingWorkstream("discard", true);
     await state.fixture.service.activateWorkstreamForRun(
@@ -238,6 +326,7 @@ interface ExistingWorkstreamState {
 async function createExistingWorkstream(
   name: string,
   completeInitialRequest: boolean,
+  nextMessage?: string,
 ): Promise<ExistingWorkstreamState> {
   const fixture = await createWorkstreamServiceFixture(
     "routing-" + name,
@@ -264,9 +353,9 @@ async function createExistingWorkstream(
     timezone: "Asia/Kolkata",
     agentId: "local",
     role: "user",
-    content: completeInitialRequest
+    content: nextMessage ?? (completeInitialRequest
       ? "Add and finish the next lesson in this learning workstream."
-      : "Continue the unfinished initial learning request.",
+      : "Continue the unfinished initial learning request."),
     at: "2026-07-19T10:04:00+05:30",
   });
   return { fixture, created, head };
@@ -284,6 +373,25 @@ function createRequestRoute(state: ExistingWorkstreamState, requestId: string) {
       title: "Add the next lesson",
       request: "Create and explain the next bounded lesson.",
       acceptance: ["The next lesson exists and is verified."],
+      constraints: ["Keep the lesson concise."],
+    },
+    at: "2026-07-19T10:05:00+05:30",
+  };
+}
+
+function switchRequestRoute(state: ExistingWorkstreamState, requestId: string) {
+  return {
+    requestId,
+    runId: state.fixture.prepared.run.runId,
+    workstreamId: state.created.workstream.workstreamId,
+    expectedWorkstreamHead: state.head,
+    route: {
+      kind: "switch_active_request" as const,
+      currentRequestId: "R-0001",
+      reason: "The user explicitly prioritized a separate bounded lesson.",
+      title: "Add priority lesson",
+      request: "Create and explain the priority lesson.",
+      acceptance: ["The priority lesson exists and is verified."],
       constraints: ["Keep the lesson concise."],
     },
     at: "2026-07-19T10:05:00+05:30",

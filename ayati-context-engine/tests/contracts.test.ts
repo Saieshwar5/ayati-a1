@@ -74,6 +74,26 @@ describe("Context Engine contracts", () => {
       },
       at: AT,
     })).toBe(true);
+    const switched = {
+      requestId: "REQ-switch",
+      runId: RUN_ID,
+      workstreamId: WORKSTREAM_ID,
+      route: {
+        kind: "switch_active_request",
+        currentRequestId: "R-0001",
+        reason: "The user explicitly prioritized a separate request.",
+        title: "Add contact form",
+        request: "Add a verified contact form.",
+        acceptance: ["The contact form works."],
+        constraints: [],
+      },
+      at: AT,
+    };
+    expect(isActivateWorkstreamForRunRequest(switched)).toBe(true);
+    expect(isActivateWorkstreamForRunRequest({
+      ...switched,
+      route: { ...switched.route, currentRequestId: "not-a-request" },
+    })).toBe(false);
   });
 
   it("validates list/search/read steps and rejects inconsistent effects", () => {

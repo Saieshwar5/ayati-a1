@@ -1,5 +1,6 @@
 import { ContextEngineServiceError } from "../errors.js";
 import type { WorkstreamRequestRoutePlanRecord } from "../repositories/workstream-request-route-plan-records.js";
+import type { WorkstreamRequestChangePlan } from "./workstream-request-lifecycle.js";
 import type { WorkstreamRepositoryValidation } from "./workstream-repository-validator.js";
 import type { WorkstreamCard } from "./workstream-card.js";
 import type { WorkstreamRequest } from "./workstream-request.js";
@@ -30,8 +31,8 @@ export function resolvePlannedWorkstreamRequestState(
   }
   const plan = record.changePlan;
   if (plan.workstreamId !== record.workstreamId || plan.expectedHead !== record.baseHead
-    || plan.primaryRequestId !== record.boundRequestId
-    || plan.operation !== "create") {
+    || (plan.activatedRequestId ?? plan.primaryRequestId) !== record.boundRequestId
+    || (plan.operation !== "create" && plan.operation !== "defer_and_create")) {
     throw recovery("Pending request plan contains inconsistent identities.", record);
   }
   if (JSON.stringify(plan.workstreamCardBefore) !== JSON.stringify(validation.workstreamCard)) {
@@ -42,9 +43,8 @@ export function resolvePlannedWorkstreamRequestState(
     || plan.workstreamCardAfter.currentRequest !== plannedRequest.id) {
     throw recovery("Pending request plan does not create a valid active request.", record);
   }
-  const changedIds = new Set(plan.changedRequests.map((request) => request.id));
-  const plannedBefore = plan.requestsAfter.filter((request) => !changedIds.has(request.id));
-  if (JSON.stringify(plannedBefore) !== JSON.stringify(validation.requests)) {
+  const plannedBefore = requestsBeforePlan(plan, record.boundRequestId);
+  if (!plannedBefore || JSON.stringify(plannedBefore) !== JSON.stringify(validation.requests)) {
     throw recovery("Pending request plan no longer matches committed request history.", record);
   }
   return {
@@ -52,6 +52,30 @@ export function resolvePlannedWorkstreamRequestState(
     workstreamRequest: structuredClone(plannedRequest),
     requestCreated: true,
   };
+}
+
+function requestsBeforePlan(
+  plan: WorkstreamRequestChangePlan,
+  boundRequestId: string,
+): WorkstreamRequest[] | undefined {
+  if (plan.operation === "create") {
+    if (plan.primaryRequestId !== boundRequestId) return undefined;
+    return plan.requestsAfter
+      .filter((request) => request.id !== boundRequestId)
+      .map((request) => structuredClone(request));
+  }
+  if (plan.operation !== "defer_and_create"
+    || plan.activatedRequestId !== boundRequestId
+    || plan.workstreamCardBefore.currentRequest !== plan.primaryRequestId) {
+    return undefined;
+  }
+  const deferred = plan.requestsAfter.find((request) => request.id === plan.primaryRequestId);
+  if (!deferred || deferred.status !== "queued") return undefined;
+  return plan.requestsAfter
+    .filter((request) => request.id !== boundRequestId)
+    .map((request) => request.id === plan.primaryRequestId
+      ? { ...structuredClone(request), status: "active" }
+      : structuredClone(request));
 }
 
 function recovery(
