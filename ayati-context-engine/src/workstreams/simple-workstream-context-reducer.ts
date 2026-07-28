@@ -61,7 +61,7 @@ export function reduceSimpleWorkstreamContext(input: {
     ...structuredClone(input.workstreamCard),
     currentSnapshot: summary,
   };
-  let workstreamRequest = structuredClone(input.workstreamRequest);
+  const workstreamRequest = structuredClone(input.workstreamRequest);
 
   switch (input.outcome) {
     case "done":
@@ -94,10 +94,6 @@ export function reduceSimpleWorkstreamContext(input: {
       break;
     }
     case "incomplete":
-      workstreamRequest.outcome = compactDerived(
-        "In progress: " + summary,
-        RUN_FINALIZATION_LIMITS.summaryChars,
-      );
       workstreamCard.currentFocus = next ?? input.workstreamCard.currentFocus;
       workstreamCard.blockers = unique(workStateBlockers(input.workState));
       break;
@@ -110,10 +106,6 @@ export function reduceSimpleWorkstreamContext(input: {
           contextWrites: [],
         };
       }
-      workstreamRequest.outcome = compactDerived(
-        "Latest run failed: " + summary,
-        RUN_FINALIZATION_LIMITS.summaryChars,
-      );
       workstreamCard.currentFocus = next ?? "Review the failed run and continue the active request.";
       workstreamCard.blockers = unique(workStateBlockers(input.workState));
       break;
