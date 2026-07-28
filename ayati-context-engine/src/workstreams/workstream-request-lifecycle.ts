@@ -53,13 +53,7 @@ export type WorkstreamRequestLifecycleOperation =
       verification: "verified" | "user_accepted";
       activateNextRequestId?: string;
     }
-  | { kind: "drop"; requestId: string; reason: string }
-  | {
-      kind: "reopen";
-      requestId: string;
-      reason: string;
-      explicitSameIntention: boolean;
-    };
+  | { kind: "drop"; requestId: string; reason: string };
 
 export interface WorkstreamRequestFileWrite {
   path: string;
@@ -105,8 +99,6 @@ export function planWorkstreamRequestChange(
       return completeRequest(current, operation);
     case "drop":
       return dropRequest(current, operation.requestId, operation.reason);
-    case "reopen":
-      return reopenRequest(current, operation);
     default:
       return invalid("Workstream request lifecycle operation is not supported.");
   }
@@ -385,37 +377,6 @@ function dropRequest(
     state.requests,
     after,
   ), [after]);
-}
-
-function reopenRequest(
-  state: WorkstreamRequestLifecycleState,
-  operation: Extract<WorkstreamRequestLifecycleOperation, { kind: "reopen" }>,
-): WorkstreamRequestChangePlan {
-  requireActiveWorkstream(state.workstreamCard);
-  requireNoActiveRequest(state.requests);
-  if (operation.explicitSameIntention !== true) {
-    invalid("Reopening a completed request requires explicit same-intention confirmation.");
-  }
-  const before = requireRequest(state.requests, operation.requestId);
-  validateWorkstreamRequestTransition({
-    from: before.status,
-    to: "active",
-    explicitReopen: operation.explicitSameIntention,
-  });
-  const after: WorkstreamRequest = {
-    ...cloneRequest(before),
-    status: "active",
-    outcome: "Reopened: " + boundedLine(operation.reason, "reopen reason", 400),
-  };
-  return buildPlan(
-    state,
-    "reopen",
-    operation.requestId,
-    activateWorkstreamCard(state.workstreamCard, after),
-    replaceRequest(state.requests, after),
-    [after],
-    after.id,
-  );
 }
 
 function buildPlan(

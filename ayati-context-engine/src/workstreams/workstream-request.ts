@@ -125,15 +125,13 @@ export function renderWorkstreamRequest(request: WorkstreamRequest): string {
 export function validateWorkstreamRequestTransition(input: {
   from: WorkstreamRequestStatus;
   to: WorkstreamRequestStatus;
-  explicitReopen?: boolean;
 }): void {
   if (input.from === input.to) return;
   const allowed = (input.from === "queued" && (input.to === "active" || input.to === "dropped"))
     || (input.from === "active"
       && (input.to === "queued" || input.to === "blocked"
         || input.to === "done" || input.to === "dropped"))
-    || (input.from === "blocked" && (input.to === "active" || input.to === "dropped"))
-    || (input.from === "done" && input.to === "active" && input.explicitReopen === true);
+    || (input.from === "blocked" && (input.to === "active" || input.to === "dropped"));
   if (!allowed) {
     throw new ContextEngineServiceError({
       code: "WORKSTREAM_REQUEST_STATE_INVALID",
@@ -141,7 +139,6 @@ export function validateWorkstreamRequestTransition(input: {
       details: {
         from: input.from,
         to: input.to,
-        explicitReopen: input.explicitReopen ?? false,
       },
     });
   }

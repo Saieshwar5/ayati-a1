@@ -10,7 +10,11 @@ import {
 } from "../src/workstreams/workstream-request-lifecycle.js";
 import { validateWorkstreamRequestRoutingDecision } from "../src/workstreams/workstream-request-routing.js";
 import { validateWorkstreamRepository } from "../src/workstreams/workstream-repository-validator.js";
-import { parseWorkstreamRequest, type WorkstreamRequest } from "../src/workstreams/workstream-request.js";
+import {
+  parseWorkstreamRequest,
+  validateWorkstreamRequestTransition,
+  type WorkstreamRequest,
+} from "../src/workstreams/workstream-request.js";
 import {
   createBoundWorkstream,
   createWorkstreamServiceFixture,
@@ -383,31 +387,21 @@ describe("workstream request lifecycle planner", () => {
     }), "WORKSTREAM_REQUEST_STATE_INVALID");
   });
 
-  it("reopens only an explicitly confirmed completed intention", () => {
-    const state = requestState([request("R-0001", "done", "Correct same defect")]);
-    const original = structuredClone(state.requests[0]);
-    const plan = planWorkstreamRequestChange(state, {
-      kind: "reopen",
-      requestId: "R-0001",
-      reason: "The original acceptance criterion was not actually satisfied.",
-      explicitSameIntention: true,
-    });
-
-    expect(plan).toMatchObject({
-      activatedRequestId: "R-0001",
-      changedRequests: [{ id: "R-0001", status: "active" }],
-      workstreamCardAfter: { currentRequest: "R-0001" },
-    });
-    expect(plan.changedRequests[0]).toMatchObject({
-      request: original?.request,
-      acceptance: original?.acceptance,
-    });
-    expectCode(() => planWorkstreamRequestChange(state, {
-      kind: "reopen",
-      requestId: "R-0001",
-      reason: "Try again.",
-      explicitSameIntention: false,
-    }), "WORKSTREAM_REQUEST_STATE_INVALID");
+  it("treats done and dropped requests as terminal", () => {
+    const statuses: WorkstreamRequest["status"][] = [
+      "queued",
+      "active",
+      "blocked",
+      "done",
+      "dropped",
+    ];
+    for (const from of ["done", "dropped"] as const) {
+      for (const to of statuses.filter((status) => status !== from)) {
+        expectCode(() => validateWorkstreamRequestTransition({ from, to }),
+          "WORKSTREAM_REQUEST_STATE_INVALID");
+      }
+      expect(() => validateWorkstreamRequestTransition({ from, to: from })).not.toThrow();
+    }
   });
 
   it("rejects malformed whole-workstream request state and archived-workstream changes", () => {
