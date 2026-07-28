@@ -2,6 +2,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import {
   RUN_FINALIZATION_LIMITS,
   type WorkstreamCompletionRecord,
+  type WorkstreamRequestLifecycleEffect,
 } from "ayati-context-engine";
 import {
   compactOptionalText,
@@ -18,6 +19,7 @@ export interface AgentRunFinalizationProjection {
   next?: string;
   workState?: WorkState;
   workstreamCompletion?: WorkstreamCompletionRecord;
+  workstreamRequestEffect?: WorkstreamRequestLifecycleEffect;
 }
 
 export function buildAgentRunFinalizationProjection(input: {
@@ -52,14 +54,49 @@ export function buildAgentRunFinalizationProjection(input: {
     ...(next ? { next } : {}),
     ...(workState ? { workState } : {}),
     ...(input.workstreamBound
-      ? { workstreamCompletion: buildWorkstreamCompletion(input.result, workState) }
+      ? buildWorkstreamFinalization(input.result, workState)
       : {}),
   };
+}
+
+function buildWorkstreamFinalization(
+  result: AgentLoopResult,
+  workState: WorkState | undefined,
+): Pick<
+  AgentRunFinalizationProjection,
+  "workstreamCompletion" | "workstreamRequestEffect"
+> {
+  const selected = result.harnessContext?.contextEngine?.workstream?.selectedRequest
+    ?? result.harnessContext?.contextEngine?.workstream?.currentRequest;
+  const workstreamCompletion = buildWorkstreamCompletion(
+    result,
+    workState,
+    selected?.acceptance ?? [],
+  );
+  let workstreamRequestEffect: WorkstreamRequestLifecycleEffect = { kind: "none" };
+  const selectedCanExecute = selected?.status === "active";
+  if (workstreamCompletion.accepted && selectedCanExecute) {
+    workstreamRequestEffect = { kind: "complete", verification: "verified" };
+  } else if (selectedCanExecute
+    && (result.outcome === "blocked" || result.outcome === "needs_user_input")) {
+    const reason = compactText(
+      workState?.nextAction
+        || (workState ? workStateBlockers(workState)[0] : undefined)
+        || result.content,
+      480,
+    );
+    workstreamRequestEffect = {
+      kind: "block",
+      reason: reason || "External information or access is required before work can continue.",
+    };
+  }
+  return { workstreamCompletion, workstreamRequestEffect };
 }
 
 function buildWorkstreamCompletion(
   result: AgentLoopResult,
   workState: WorkState | undefined,
+  acceptance: readonly string[],
 ): WorkstreamCompletionRecord {
   const limits = RUN_FINALIZATION_LIMITS.completion;
   const accepted = result.outcome === "done" && workState?.status === "done";
@@ -99,11 +136,11 @@ function buildWorkstreamCompletion(
       ...(workState ? workStateBlockers(workState) : []),
       result.workstreamSummary?.failureSummary?.error,
     ], limits.failureChars, limits.maximumItems),
-    criteria: [{
-      criterion: "Complete the active workstream request with deterministic verification.",
+    criteria: acceptance.map((criterion) => ({
+      criterion,
       passed: accepted,
       ...(evidence ? { evidence } : {}),
-    }],
+    })),
   };
 }
 

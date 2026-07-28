@@ -1,16 +1,37 @@
-import { ContextEngineServiceError } from "../errors.js";
-import { renderWorkstreamCard, type WorkstreamCard } from "./workstream-card.js";
+import type { WorkstreamCard } from "./workstream-card.js";
 import {
   nextRequestId,
   requestPath,
-  WORKSTREAM_CARD_PATH,
 } from "./workstream-repository-layout.js";
 import {
+  normalizeWorkstreamRequest,
   renderWorkstreamRequest,
-  validateWorkstreamRequestTransition,
   type WorkstreamRequest,
   type WorkstreamRequestSource,
 } from "./workstream-request.js";
+import {
+  activateWorkstreamCard,
+  boundedLine,
+  boundedText,
+  buildLifecyclePlan as buildPlan,
+  cloneCard,
+  cloneRequest,
+  inactiveWorkstreamCard,
+  invalidRequestLifecycle as invalid,
+  normalizeComparable,
+  normalizeLifecycleState as normalizeState,
+  replaceRequest,
+  requestBlocker,
+  requireActiveWorkstream,
+  requireCurrentRequest,
+  requireMutableWorkstream,
+  requireNoActiveRequest,
+  requireRequest,
+  sameContract,
+  transitionRequest as transition,
+  transitionTime,
+  withoutRequestBlocker,
+} from "./workstream-request-lifecycle-state.js";
 
 export interface WorkstreamRequestLifecycleState {
   expectedHead: string;
@@ -18,42 +39,62 @@ export interface WorkstreamRequestLifecycleState {
   requests: WorkstreamRequest[];
 }
 
+interface NewRequestContract {
+  title: string;
+  request: string;
+  acceptance: string[];
+  constraints: string[];
+  source: WorkstreamRequestSource;
+  createdAt: string;
+}
+
 export type WorkstreamRequestLifecycleOperation =
-  | {
-      kind: "create";
-      title: string;
-      request: string;
-      acceptance: string[];
-      constraints: string[];
-      source: WorkstreamRequestSource;
-      createdAt: string;
-      activate: boolean;
-    }
-  | { kind: "activate"; requestId: string }
-  | { kind: "defer"; requestId: string; reason: string }
+  | ({ kind: "create"; activate: boolean } & NewRequestContract)
+  | { kind: "activate"; requestId: string; at?: string }
+  | { kind: "defer"; requestId: string; reason: string; at?: string }
   | {
       kind: "defer_and_create";
       currentRequestId: string;
       deferReason: string;
-      newRequest: {
-        title: string;
-        request: string;
-        acceptance: string[];
-        constraints: string[];
-        source: WorkstreamRequestSource;
-        createdAt: string;
-      };
+      newRequest: NewRequestContract;
     }
-  | { kind: "block"; requestId: string; reason: string }
-  | { kind: "resume"; requestId: string }
+  | {
+      kind: "defer_and_activate";
+      currentRequestId: string;
+      nextRequestId: string;
+      deferReason: string;
+      at?: string;
+    }
+  | { kind: "block"; requestId: string; reason: string; at?: string }
+  | { kind: "resume"; requestId: string; at?: string }
+  | {
+      kind: "resolve_blocked_to_queued";
+      requestId: string;
+      reason: string;
+      at?: string;
+    }
+  | {
+      kind: "amend";
+      requestId: string;
+      patch: {
+        title?: string;
+        request?: string;
+        acceptance?: string[];
+        constraints?: string[];
+      };
+      reason: string;
+      authority: "user" | "trusted_policy";
+      at?: string;
+    }
   | {
       kind: "complete";
       requestId: string;
       outcome: string;
       verification: "verified" | "user_accepted";
       activateNextRequestId?: string;
+      at?: string;
     }
-  | { kind: "drop"; requestId: string; reason: string };
+  | { kind: "drop"; requestId: string; reason: string; at?: string };
 
 export interface WorkstreamRequestFileWrite {
   path: string;
@@ -70,6 +111,7 @@ export interface WorkstreamRequestChangePlan {
   completionVerification?: "verified" | "user_accepted";
   workstreamCardBefore: WorkstreamCard;
   workstreamCardAfter: WorkstreamCard;
+  requestsBefore: WorkstreamRequest[];
   requestsAfter: WorkstreamRequest[];
   changedRequests: WorkstreamRequest[];
   writes: WorkstreamRequestFileWrite[];
@@ -86,21 +128,25 @@ export function planWorkstreamRequestChange(
     case "create":
       return createRequest(current, operation);
     case "activate":
-      return activateRequest(current, operation.requestId);
+      return activateRequest(current, operation.requestId, operation.at);
     case "defer":
-      return deferRequest(current, operation.requestId, operation.reason);
+      return deferRequest(current, operation.requestId, operation.reason, operation.at);
     case "defer_and_create":
       return deferAndCreateRequest(current, operation);
+    case "defer_and_activate":
+      return deferAndActivateRequest(current, operation);
     case "block":
-      return blockRequest(current, operation.requestId, operation.reason);
+      return blockRequest(current, operation.requestId, operation.reason, operation.at);
     case "resume":
-      return resumeRequest(current, operation.requestId);
+      return resumeRequest(current, operation.requestId, operation.at);
+    case "resolve_blocked_to_queued":
+      return resolveBlockedRequest(current, operation);
+    case "amend":
+      return amendRequest(current, operation);
     case "complete":
       return completeRequest(current, operation);
     case "drop":
-      return dropRequest(current, operation.requestId, operation.reason);
-    default:
-      return invalid("Workstream request lifecycle operation is not supported.");
+      return dropRequest(current, operation.requestId, operation.reason, operation.at);
   }
 }
 
@@ -124,31 +170,26 @@ function createRequest(
     invalid("Agent proposals must begin queued and cannot be activated implicitly.");
   }
   if (operation.activate) requireNoActiveRequest(state.requests);
-  const request: WorkstreamRequest = {
-    schema: "ayati.request/v2",
-    id: nextRequestId(state.requests.map((entry) => entry.id)),
-    title: operation.title,
-    status: operation.activate ? "active" : "queued",
-    createdAt: operation.createdAt,
-    source: operation.source,
-    request: operation.request,
-    acceptance: [...operation.acceptance],
-    constraints: [...operation.constraints],
-    outcome: "Not completed yet.",
-  };
-  renderWorkstreamRequest(request);
-  const workstreamCard = operation.activate
+  const id = nextRequestId(state.requests.map((entry) => entry.id));
+  const request = newRequest(state.workstreamCard.id, id, operation, operation.activate);
+  const card = operation.activate
     ? activateWorkstreamCard(state.workstreamCard, request)
     : cloneCard(state.workstreamCard);
-  return buildPlan(state, "create", request.id, workstreamCard, [
-    ...state.requests,
-    request,
-  ], [request], operation.activate ? request.id : undefined);
+  return buildPlan(
+    state,
+    "create",
+    request.id,
+    card,
+    [...state.requests, request],
+    [request],
+    operation.activate ? request.id : undefined,
+  );
 }
 
 function activateRequest(
   state: WorkstreamRequestLifecycleState,
   requestId: string,
+  suppliedAt?: string,
 ): WorkstreamRequestChangePlan {
   requireActiveWorkstream(state.workstreamCard);
   requireNoActiveRequest(state.requests);
@@ -159,8 +200,11 @@ function activateRequest(
       status: before.status,
     });
   }
-  validateWorkstreamRequestTransition({ from: before.status, to: "active" });
-  const after = { ...cloneRequest(before), status: "active" as const };
+  const at = transitionTime(before, suppliedAt);
+  const after = transition(before, "active", at, {
+    lifecycleNote: "Activated for execution.",
+    startedAt: before.startedAt ?? at,
+  });
   return buildPlan(
     state,
     "activate",
@@ -176,25 +220,24 @@ function deferRequest(
   state: WorkstreamRequestLifecycleState,
   requestId: string,
   reason: string,
+  suppliedAt?: string,
 ): WorkstreamRequestChangePlan {
   requireActiveWorkstream(state.workstreamCard);
   const before = requireCurrentRequest(state, requestId);
-  validateWorkstreamRequestTransition({ from: before.status, to: "queued" });
-  const normalizedReason = boundedLine(reason, "deferral reason", 400);
-  const after: WorkstreamRequest = {
-    ...cloneRequest(before),
-    status: "queued",
-  };
-  const workstreamCard = cloneCard(state.workstreamCard);
-  workstreamCard.currentRequest = null;
-  workstreamCard.currentFocus = "Choose or create the next request. Deferred "
-    + requestId + ": " + normalizedReason;
-  workstreamCard.blockers = withoutRequestBlocker(workstreamCard.blockers, requestId);
+  const normalizedReason = boundedLine(reason, "deferral reason", 500);
+  const after = transition(before, "queued", transitionTime(before, suppliedAt), {
+    lifecycleNote: "Deferred: " + normalizedReason,
+  });
+  const card = inactiveWorkstreamCard(
+    state.workstreamCard,
+    "Choose or create the next request. Deferred " + requestId + ": " + normalizedReason,
+  );
+  card.blockers = withoutRequestBlocker(card.blockers, requestId);
   const plan = buildPlan(
     state,
     "defer",
     requestId,
-    workstreamCard,
+    card,
     replaceRequest(state.requests, after),
     [after],
   );
@@ -210,70 +253,106 @@ function deferAndCreateRequest(
     invalid("Agent proposals must begin queued and cannot be activated implicitly.");
   }
   const before = requireCurrentRequest(state, operation.currentRequestId);
-  validateWorkstreamRequestTransition({ from: before.status, to: "queued" });
-  const normalizedReason = boundedLine(operation.deferReason, "deferral reason", 400);
-  const deferred: WorkstreamRequest = {
-    ...cloneRequest(before),
-    status: "queued",
-  };
-  const created: WorkstreamRequest = {
-    schema: "ayati.request/v2",
-    id: nextRequestId(state.requests.map((request) => request.id)),
-    title: operation.newRequest.title,
-    status: "active",
-    createdAt: operation.newRequest.createdAt,
-    source: operation.newRequest.source,
-    request: operation.newRequest.request,
-    acceptance: [...operation.newRequest.acceptance],
-    constraints: [...operation.newRequest.constraints],
-    outcome: "Not completed yet.",
-  };
-  renderWorkstreamRequest(created);
-  const workstreamCard = activateWorkstreamCard(state.workstreamCard, created);
-  workstreamCard.blockers = withoutRequestBlocker(
-    workstreamCard.blockers,
-    operation.currentRequestId,
-  );
+  const reason = boundedLine(operation.deferReason, "deferral reason", 500);
+  const deferred = transition(before, "queued", transitionTime(before, operation.newRequest.createdAt), {
+    lifecycleNote: "Deferred: " + reason,
+  });
+  const id = nextRequestId(state.requests.map((request) => request.id));
+  const created = newRequest(state.workstreamCard.id, id, operation.newRequest, true);
+  const card = activateWorkstreamCard(state.workstreamCard, created);
+  card.blockers = withoutRequestBlocker(card.blockers, operation.currentRequestId);
   const plan = buildPlan(
     state,
     "defer_and_create",
     operation.currentRequestId,
-    workstreamCard,
+    card,
     [...replaceRequest(state.requests, deferred), created],
     [deferred, created],
     created.id,
   );
-  return { ...plan, deferralReason: normalizedReason };
+  return { ...plan, deferralReason: reason };
+}
+
+function deferAndActivateRequest(
+  state: WorkstreamRequestLifecycleState,
+  operation: Extract<WorkstreamRequestLifecycleOperation, { kind: "defer_and_activate" }>,
+): WorkstreamRequestChangePlan {
+  requireActiveWorkstream(state.workstreamCard);
+  if (operation.currentRequestId === operation.nextRequestId) {
+    invalid("The current and next request must be different.");
+  }
+  const current = requireCurrentRequest(state, operation.currentRequestId);
+  const next = requireRequest(state.requests, operation.nextRequestId);
+  if (next.status !== "queued") {
+    invalid("Only a queued request can replace the current request.", {
+      requestId: next.id,
+      status: next.status,
+    });
+  }
+  const reason = boundedLine(operation.deferReason, "deferral reason", 500);
+  const at = transitionTime(current, operation.at);
+  const deferred = transition(current, "queued", at, {
+    lifecycleNote: "Deferred: " + reason,
+  });
+  const activated = transition(next, "active", transitionTime(next, at), {
+    lifecycleNote: "Activated after deferring " + current.id + ".",
+    startedAt: next.startedAt ?? at,
+  });
+  const requests = replaceRequest(replaceRequest(state.requests, deferred), activated);
+  const card = activateWorkstreamCard(state.workstreamCard, activated);
+  card.blockers = withoutRequestBlocker(card.blockers, current.id);
+  const plan = buildPlan(
+    state,
+    "defer_and_activate",
+    current.id,
+    card,
+    requests,
+    [deferred, activated],
+    activated.id,
+  );
+  return { ...plan, deferralReason: reason };
 }
 
 function blockRequest(
   state: WorkstreamRequestLifecycleState,
   requestId: string,
   reason: string,
+  suppliedAt?: string,
 ): WorkstreamRequestChangePlan {
   requireActiveWorkstream(state.workstreamCard);
-  const before = requireCurrentRequest(state, requestId);
-  validateWorkstreamRequestTransition({ from: before.status, to: "blocked" });
-  const normalizedReason = boundedLine(reason, "blocking reason", 400);
-  const after: WorkstreamRequest = {
-    ...cloneRequest(before),
-    status: "blocked",
-    outcome: "Blocked: " + normalizedReason,
-  };
-  const workstreamCard = cloneCard(state.workstreamCard);
-  workstreamCard.currentRequest = null;
-  workstreamCard.currentFocus = "Resolve the blocker for " + requestId + ": " + before.title + ".";
-  workstreamCard.blockers = withoutRequestBlocker(workstreamCard.blockers, requestId);
-  workstreamCard.blockers.push(requestBlocker(requestId, normalizedReason));
-  return buildPlan(state, "block", requestId, workstreamCard, replaceRequest(
-    state.requests,
-    after,
-  ), [after]);
+  const before = requireRequest(state.requests, requestId);
+  if (before.status !== "active" && before.status !== "queued") {
+    invalid("Only an active or queued request can become blocked.", {
+      requestId,
+      status: before.status,
+    });
+  }
+  const normalizedReason = boundedLine(reason, "blocking reason", 480);
+  const after = transition(before, "blocked", transitionTime(before, suppliedAt), {
+    lifecycleNote: "Blocked: " + normalizedReason,
+  });
+  const card = cloneCard(state.workstreamCard);
+  if (before.status === "active") {
+    card.currentRequest = null;
+    card.currentFocus = "Resolve the blocker for " + requestId + ": " + before.title + ".";
+    card.nextAction = "Resolve the blocker for " + requestId + ".";
+  }
+  card.blockers = withoutRequestBlocker(card.blockers, requestId);
+  card.blockers.push(requestBlocker(requestId, normalizedReason));
+  return buildPlan(
+    state,
+    "block",
+    requestId,
+    card,
+    replaceRequest(state.requests, after),
+    [after],
+  );
 }
 
 function resumeRequest(
   state: WorkstreamRequestLifecycleState,
   requestId: string,
+  suppliedAt?: string,
 ): WorkstreamRequestChangePlan {
   requireActiveWorkstream(state.workstreamCard);
   requireNoActiveRequest(state.requests);
@@ -281,22 +360,107 @@ function resumeRequest(
   if (before.status !== "blocked") {
     invalid("Only a blocked request can be resumed.", { requestId, status: before.status });
   }
-  validateWorkstreamRequestTransition({ from: before.status, to: "active" });
-  const after: WorkstreamRequest = {
-    ...cloneRequest(before),
-    status: "active",
-    outcome: "Work resumed; completion is still pending.",
-  };
-  const workstreamCard = activateWorkstreamCard(state.workstreamCard, after);
-  workstreamCard.blockers = withoutRequestBlocker(workstreamCard.blockers, requestId);
+  const at = transitionTime(before, suppliedAt);
+  const after = transition(before, "active", at, {
+    lifecycleNote: "Blocker resolved; request resumed.",
+    startedAt: before.startedAt ?? at,
+  });
+  const card = activateWorkstreamCard(state.workstreamCard, after);
+  card.blockers = withoutRequestBlocker(card.blockers, requestId);
   return buildPlan(
     state,
     "resume",
     requestId,
-    workstreamCard,
+    card,
     replaceRequest(state.requests, after),
     [after],
     requestId,
+  );
+}
+
+function resolveBlockedRequest(
+  state: WorkstreamRequestLifecycleState,
+  operation: Extract<
+    WorkstreamRequestLifecycleOperation,
+    { kind: "resolve_blocked_to_queued" }
+  >,
+): WorkstreamRequestChangePlan {
+  const before = requireRequest(state.requests, operation.requestId);
+  if (before.status !== "blocked") {
+    invalid("Only a blocked request can be resolved to queued.", {
+      requestId: before.id,
+      status: before.status,
+    });
+  }
+  const reason = boundedLine(operation.reason, "resolution reason", 500);
+  const after = transition(before, "queued", transitionTime(before, operation.at), {
+    lifecycleNote: "Blocker resolved; queued: " + reason,
+  });
+  const card = cloneCard(state.workstreamCard);
+  card.blockers = withoutRequestBlocker(card.blockers, before.id);
+  return buildPlan(
+    state,
+    "resolve_blocked_to_queued",
+    before.id,
+    card,
+    replaceRequest(state.requests, after),
+    [after],
+  );
+}
+
+function amendRequest(
+  state: WorkstreamRequestLifecycleState,
+  operation: Extract<WorkstreamRequestLifecycleOperation, { kind: "amend" }>,
+): WorkstreamRequestChangePlan {
+  const before = requireRequest(state.requests, operation.requestId);
+  if (before.status === "done" || before.status === "dropped") {
+    invalid("Done and dropped requests are terminal and cannot be amended.", {
+      requestId: before.id,
+      status: before.status,
+    });
+  }
+  if (operation.authority === "trusted_policy" && operation.patch.acceptance) {
+    const remaining = new Set(operation.patch.acceptance.map(normalizeComparable));
+    const removed = before.acceptance.filter((criterion) => !remaining.has(
+      normalizeComparable(criterion),
+    ));
+    if (removed.length > 0) {
+      invalid("A policy amendment cannot weaken existing acceptance criteria.", {
+        requestId: before.id,
+        removed,
+      });
+    }
+  }
+  const reason = boundedLine(operation.reason, "amendment reason", 500);
+  const after = normalizeWorkstreamRequest({
+    ...cloneRequest(before),
+    ...(operation.patch.title !== undefined ? { title: operation.patch.title } : {}),
+    ...(operation.patch.request !== undefined ? { request: operation.patch.request } : {}),
+    ...(operation.patch.acceptance !== undefined
+      ? { acceptance: operation.patch.acceptance }
+      : {}),
+    ...(operation.patch.constraints !== undefined
+      ? { constraints: operation.patch.constraints }
+      : {}),
+    updatedAt: transitionTime(before, operation.at),
+    lifecycleNote: "Contract amended: " + reason,
+  });
+  if (sameContract(before, after)) {
+    invalid("A request amendment must change at least one contract field.", {
+      requestId: before.id,
+    });
+  }
+  const card = before.status === "active"
+    ? activateWorkstreamCard(state.workstreamCard, after)
+    : cloneCard(state.workstreamCard);
+  return buildPlan(
+    state,
+    "amend",
+    before.id,
+    card,
+    replaceRequest(state.requests, after),
+    [after],
+    before.status === "active" ? before.id : undefined,
   );
 }
 
@@ -306,20 +470,15 @@ function completeRequest(
 ): WorkstreamRequestChangePlan {
   requireActiveWorkstream(state.workstreamCard);
   const before = requireCurrentRequest(state, operation.requestId);
-  if (operation.verification !== "verified" && operation.verification !== "user_accepted") {
-    invalid("Completing a request requires deterministic verification or explicit user acceptance.");
-  }
-  validateWorkstreamRequestTransition({ from: before.status, to: "done" });
-  const after: WorkstreamRequest = {
-    ...cloneRequest(before),
-    status: "done",
-    outcome: boundedText(operation.outcome, "completion outcome", 2_000),
-  };
+  const at = transitionTime(before, operation.at);
+  const after = transition(before, "done", at, {
+    lifecycleNote: "Completed with " + operation.verification + " evidence.",
+    finalOutcome: boundedText(operation.outcome, "completion outcome", 2_000),
+    closedAt: at,
+  });
   let requests = replaceRequest(state.requests, after);
-  let workstreamCard = cloneCard(state.workstreamCard);
-  workstreamCard.currentRequest = null;
-  workstreamCard.currentFocus = "Choose or create the next request.";
-  workstreamCard.blockers = withoutRequestBlocker(workstreamCard.blockers, operation.requestId);
+  let card = inactiveWorkstreamCard(state.workstreamCard, "Choose or create the next request.");
+  card.blockers = withoutRequestBlocker(card.blockers, operation.requestId);
   const changed = [after];
   let activatedRequestId: string | undefined;
   if (operation.activateNextRequestId) {
@@ -330,10 +489,12 @@ function completeRequest(
         status: next.status,
       });
     }
-    validateWorkstreamRequestTransition({ from: next.status, to: "active" });
-    const activated: WorkstreamRequest = { ...cloneRequest(next), status: "active" };
+    const activated = transition(next, "active", transitionTime(next, at), {
+      lifecycleNote: "Activated after completing " + operation.requestId + ".",
+      startedAt: next.startedAt ?? at,
+    });
     requests = replaceRequest(requests, activated);
-    workstreamCard = activateWorkstreamCard(workstreamCard, activated);
+    card = activateWorkstreamCard(card, activated);
     changed.push(activated);
     activatedRequestId = activated.id;
   }
@@ -341,7 +502,7 @@ function completeRequest(
     state,
     "complete",
     operation.requestId,
-    workstreamCard,
+    card,
     requests,
     changed,
     activatedRequestId,
@@ -353,6 +514,7 @@ function dropRequest(
   state: WorkstreamRequestLifecycleState,
   requestId: string,
   reason: string,
+  suppliedAt?: string,
 ): WorkstreamRequestChangePlan {
   const before = requireRequest(state.requests, requestId);
   if (before.status !== "queued" && before.status !== "active" && before.status !== "blocked") {
@@ -361,198 +523,51 @@ function dropRequest(
       status: before.status,
     });
   }
-  validateWorkstreamRequestTransition({ from: before.status, to: "dropped" });
-  const after: WorkstreamRequest = {
-    ...cloneRequest(before),
-    status: "dropped",
-    outcome: "Dropped: " + boundedLine(reason, "drop reason", 400),
-  };
-  const workstreamCard = cloneCard(state.workstreamCard);
-  if (workstreamCard.currentRequest === requestId) {
-    workstreamCard.currentRequest = null;
-    workstreamCard.currentFocus = "Choose or create the next request.";
-  }
-  workstreamCard.blockers = withoutRequestBlocker(workstreamCard.blockers, requestId);
-  return buildPlan(state, "drop", requestId, workstreamCard, replaceRequest(
-    state.requests,
-    after,
-  ), [after]);
-}
-
-function buildPlan(
-  before: WorkstreamRequestLifecycleState,
-  operation: WorkstreamRequestChangePlan["operation"],
-  primaryRequestId: string,
-  workstreamCard: WorkstreamCard,
-  requests: WorkstreamRequest[],
-  changedRequests: WorkstreamRequest[],
-  activatedRequestId?: string,
-  completionVerification?: "verified" | "user_accepted",
-): WorkstreamRequestChangePlan {
-  const after = normalizeState({
-    expectedHead: before.expectedHead,
-    workstreamCard,
-    requests,
+  const at = transitionTime(before, suppliedAt);
+  const after = transition(before, "dropped", at, {
+    lifecycleNote: "Dropped: " + boundedLine(reason, "drop reason", 500),
+    finalOutcome: "Dropped: " + boundedLine(reason, "drop reason", 500),
+    closedAt: at,
   });
-  const workstreamCardBefore = cloneCard(before.workstreamCard);
-  const workstreamCardAfter = cloneCard(after.workstreamCard);
-  const workstreamCardChanged = renderWorkstreamCard(workstreamCardBefore) !== renderWorkstreamCard(workstreamCardAfter);
-  const writes: WorkstreamRequestFileWrite[] = changedRequests.map((request) => ({
-    path: requestPath(request.id, request.title),
-    content: renderWorkstreamRequest(request),
-  }));
-  if (workstreamCardChanged) {
-    writes.push({ path: WORKSTREAM_CARD_PATH, content: renderWorkstreamCard(workstreamCardAfter) });
+  const card = cloneCard(state.workstreamCard);
+  if (card.currentRequest === requestId) {
+    Object.assign(card, inactiveWorkstreamCard(card, "Choose or create the next request."));
   }
-  writes.sort((left, right) => left.path.localeCompare(right.path));
-  return {
-    operation,
-    expectedHead: before.expectedHead,
-    workstreamId: before.workstreamCard.id,
-    primaryRequestId,
-    ...(activatedRequestId ? { activatedRequestId } : {}),
-    ...(completionVerification ? { completionVerification } : {}),
-    workstreamCardBefore,
-    workstreamCardAfter,
-    requestsAfter: after.requests.map(cloneRequest),
-    changedRequests: changedRequests.map(cloneRequest),
-    writes,
-    deletedPaths: [],
-  };
+  card.blockers = withoutRequestBlocker(card.blockers, requestId);
+  return buildPlan(
+    state,
+    "drop",
+    requestId,
+    card,
+    replaceRequest(state.requests, after),
+    [after],
+  );
 }
 
-function normalizeState(state: WorkstreamRequestLifecycleState): WorkstreamRequestLifecycleState {
-  if (!/^[a-f0-9]{40,64}$/.test(state.expectedHead)) {
-    invalid("Request planning requires a lowercase Git object identity as expected HEAD.");
-  }
-  const workstreamCard = cloneCard(state.workstreamCard);
-  renderWorkstreamCard(workstreamCard);
-  const requests = state.requests.map(cloneRequest).sort((left, right) => left.id.localeCompare(right.id));
-  const seen = new Set<string>();
-  for (const request of requests) {
-    renderWorkstreamRequest(request);
-    if (seen.has(request.id)) invalid("Workstream request state contains duplicate identities.", {
-      requestId: request.id,
-    });
-    seen.add(request.id);
-  }
-  const active = requests.filter((request) => request.status === "active");
-  if (active.length > 1) {
-    invalid("Workstream request state contains more than one active request.", {
-      activeRequestIds: active.map((request) => request.id),
-    });
-  }
-  if (workstreamCard.status !== "active" && active.length > 0) {
-    invalid("Paused or archived workstreams cannot contain an active request.");
-  }
-  const activeId = active[0]?.id ?? null;
-  if (workstreamCard.currentRequest !== activeId) {
-    invalid("Workstream card current_request must match the one active request or be none.", {
-      currentRequest: workstreamCard.currentRequest,
-      activeRequestId: activeId,
-    });
-  }
-  return { expectedHead: state.expectedHead, workstreamCard, requests };
-}
-
-function requireMutableWorkstream(workstreamCard: WorkstreamCard): void {
-  if (workstreamCard.status === "archived") {
-    invalid("Archived workstreams must be explicitly reopened before changing requests.");
-  }
-}
-
-function requireActiveWorkstream(workstreamCard: WorkstreamCard): void {
-  if (workstreamCard.status !== "active") {
-    invalid("A request can become active only inside an active workstream.", {
-      workstreamStatus: workstreamCard.status,
-    });
-  }
-}
-
-function requireNoActiveRequest(requests: WorkstreamRequest[]): void {
-  const active = requests.find((request) => request.status === "active");
-  if (active) invalid("Another request is already active.", { activeRequestId: active.id });
-}
-
-function requireCurrentRequest(
-  state: WorkstreamRequestLifecycleState,
-  requestId: string,
+function newRequest(
+  workstreamId: string,
+  id: string,
+  contract: NewRequestContract,
+  active: boolean,
 ): WorkstreamRequest {
-  const request = requireRequest(state.requests, requestId);
-  if (request.status !== "active" || state.workstreamCard.currentRequest !== requestId) {
-    invalid("Operation requires the workstream's current active request.", {
-      requestId,
-      status: request.status,
-      currentRequest: state.workstreamCard.currentRequest,
-    });
-  }
-  return request;
-}
-
-function requireRequest(requests: WorkstreamRequest[], requestId: string): WorkstreamRequest {
-  const request = requests.find((entry) => entry.id === requestId);
-  if (!request) invalid("Workstream request does not exist.", { requestId });
-  return request;
-}
-
-function activateWorkstreamCard(workstreamCard: WorkstreamCard, request: WorkstreamRequest): WorkstreamCard {
-  const result = cloneCard(workstreamCard);
-  result.currentRequest = request.id;
-  result.currentFocus = "Complete " + request.id + ": " + request.title + ".";
-  return result;
-}
-
-function requestBlocker(requestId: string, reason: string): string {
-  return "Request " + requestId + ": " + reason;
-}
-
-function withoutRequestBlocker(blockers: string[], requestId: string): string[] {
-  const prefix = "Request " + requestId + ":";
-  return blockers.filter((blocker) => !blocker.startsWith(prefix));
-}
-
-function replaceRequest(requests: WorkstreamRequest[], replacement: WorkstreamRequest): WorkstreamRequest[] {
-  return requests.map((request) => request.id === replacement.id
-    ? cloneRequest(replacement)
-    : cloneRequest(request));
-}
-
-function cloneCard(card: WorkstreamCard): WorkstreamCard {
-  return {
-    ...card,
-    blockers: [...card.blockers],
-    workingAgreements: [...card.workingAgreements],
-  };
-}
-
-function cloneRequest(request: WorkstreamRequest): WorkstreamRequest {
-  return {
-    ...request,
-    acceptance: [...request.acceptance],
-    constraints: [...request.constraints],
-  };
-}
-
-function boundedLine(value: string, field: string, maximum: number): string {
-  const normalized = value.trim().replace(/\s+/g, " ");
-  if (!normalized || normalized.length > maximum) {
-    invalid("Workstream request field is empty or exceeds its size limit.", { field, maximum });
-  }
-  return normalized;
-}
-
-function boundedText(value: string, field: string, maximum: number): string {
-  const normalized = value.trim();
-  if (!normalized || normalized.length > maximum) {
-    invalid("Workstream request field is empty or exceeds its size limit.", { field, maximum });
-  }
-  return normalized;
-}
-
-function invalid(message: string, details?: Record<string, unknown>): never {
-  throw new ContextEngineServiceError({
-    code: "WORKSTREAM_REQUEST_STATE_INVALID",
-    message,
-    ...(details ? { details } : {}),
+  const request = normalizeWorkstreamRequest({
+    schema: "ayati.request/v3",
+    id,
+    workstreamId,
+    relativePath: requestPath(id, contract.title),
+    title: contract.title,
+    status: active ? "active" : "queued",
+    source: contract.source,
+    createdAt: contract.createdAt,
+    updatedAt: contract.createdAt,
+    startedAt: active ? contract.createdAt : null,
+    closedAt: null,
+    request: contract.request,
+    acceptance: [...contract.acceptance],
+    constraints: [...contract.constraints],
+    lifecycleNote: active ? "Created as the active request." : "Created as a queued request.",
+    finalOutcome: "Pending.",
   });
+  renderWorkstreamRequest(request);
+  return request;
 }

@@ -77,10 +77,13 @@ function findWorkstreamsTool(service: ContextEngineService): ToolDefinition {
 function readWorkstreamTool(service: ContextEngineService): ToolDefinition {
   return {
     name: "git_context_read_workstream",
-    description: "Open committed workstream/request/resource context without binding the run.",
+    description: "Open committed workstream, resource, and optional exact request history without binding the run.",
     inputSchema: {
       type: "object",
-      properties: { workstreamId: { type: "string", pattern: "^W-[0-9]{8}-[0-9]{4}$" } },
+      properties: {
+        workstreamId: { type: "string", pattern: "^W-[0-9]{8}-[0-9]{4}$" },
+        requestId: { type: "string", pattern: "^R-[0-9]{4}$" },
+      },
       required: ["workstreamId"],
       additionalProperties: false,
     },
@@ -93,16 +96,24 @@ function readWorkstreamTool(service: ContextEngineService): ToolDefinition {
     annotations: readAnnotations(),
     resultContract: succeededContract(),
     async execute(input, context): Promise<ToolResult> {
-      const workstreamId = optionalString(objectInput(input), "workstreamId");
+      const record = objectInput(input);
+      const workstreamId = optionalString(record, "workstreamId");
+      const selectedRequestId = optionalString(record, "requestId");
       const identity = executionIdentity(context);
-      if (!workstreamId || !/^W-\d{8}-\d{4}$/.test(workstreamId) || !identity) {
-        return discoveryError("Opening a workstream requires a valid id and current run identity.");
+      if (!workstreamId || !/^W-\d{8}-\d{4}$/.test(workstreamId)
+        || (record["requestId"] !== undefined
+          && (!selectedRequestId || !/^R-\d{4}$/.test(selectedRequestId)))
+        || !identity) {
+        return discoveryError(
+          "Opening context requires a valid workstream, optional request id, and current run identity.",
+        );
       }
       try {
         const result = await service.readWorkstream({
           requestId: identity.requestId + ":open-workstream",
           runId: identity.runId,
           workstreamId,
+          ...(selectedRequestId ? { workstreamRequestId: selectedRequestId } : {}),
           at: new Date().toISOString(),
         });
         return okJsonResult({

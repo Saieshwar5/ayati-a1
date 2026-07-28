@@ -1,5 +1,5 @@
 import { lstat, realpath } from "node:fs/promises";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { ContextEngineServiceError } from "../errors.js";
 import { runGit, runGitRaw } from "../git/git-process.js";
 import { parseWorkstreamCard, type WorkstreamCard } from "./workstream-card.js";
@@ -9,7 +9,7 @@ import {
 } from "./workstream-progress.js";
 import {
   isRequestId,
-  requestFileName,
+  requireRequestPath,
   WORKSTREAM_CARD_PATH,
   WORKSTREAM_PROGRESS_PATH,
   WORKSTREAM_REQUESTS_DIRECTORY,
@@ -26,8 +26,12 @@ export type WorkstreamRepositoryHealth = "ready" | "dirty_external";
 export interface WorkstreamRepositoryValidation {
   workstreamId: string;
   contextRepositoryPath: string;
+  repositoryPath: string;
   branch: string;
+  /** Last commit that changed this workstream directory. */
   head: string;
+  /** Current HEAD of the shared repository. */
+  repositoryHead: string;
   health: WorkstreamRepositoryHealth;
   workstreamCard: WorkstreamCard;
   currentRequest?: WorkstreamRequest;
@@ -50,7 +54,7 @@ export async function validateWorkstreamRepository(input: {
     return await validate(input);
   } catch (error) {
     if (error instanceof ContextEngineServiceError) throw error;
-    throw invalidRepository("Workstream context repository validation failed.", {
+    throw invalidRepository("Shared workstream context validation failed.", {
       contextRepositoryPath: input.contextRepositoryPath,
       cause: error instanceof Error ? error.message : String(error),
     });
@@ -63,55 +67,95 @@ async function validate(input: {
   expectedWorkstreamId?: string;
   requestReadMode?: "all" | "current";
 }): Promise<WorkstreamRepositoryValidation> {
-  const root = await realpath(input.workstreamRoot).catch((error: NodeJS.ErrnoException) => {
-    throw invalidRepository("Configured workstream root is unavailable.", {
-      workstreamRoot: input.workstreamRoot,
-      cause: error.message,
-    });
-  });
-  const stat = await lstat(input.contextRepositoryPath).catch((error: NodeJS.ErrnoException) => {
-    throw invalidRepository("Workstream context repository is unavailable.", {
-      contextRepositoryPath: input.contextRepositoryPath,
-      health: "missing",
-      cause: error.message,
-    });
-  });
+  const repositoryPath = await realpath(input.workstreamRoot).catch(
+    (error: NodeJS.ErrnoException) => {
+      throw invalidRepository("Configured shared workstream repository is unavailable.", {
+        workstreamRoot: input.workstreamRoot,
+        cause: error.message,
+      });
+    },
+  );
+  const stat = await lstat(input.contextRepositoryPath).catch(
+    (error: NodeJS.ErrnoException) => {
+      throw invalidRepository("Workstream context directory is unavailable.", {
+        contextRepositoryPath: input.contextRepositoryPath,
+        health: "missing",
+        cause: error.message,
+      });
+    },
+  );
   if (stat.isSymbolicLink() || !stat.isDirectory()) {
-    throw invalidRepository("Workstream context repository must be a normal directory.", {
+    throw invalidRepository("Workstream context must be a normal directory.", {
       contextRepositoryPath: input.contextRepositoryPath,
     });
   }
   const contextRepositoryPath = await realpath(input.contextRepositoryPath);
-  if (dirname(contextRepositoryPath) !== root) {
-    throw invalidRepository("Workstream context repository must be a direct child of its root.", {
-      workstreamRoot: root,
+  if (dirname(contextRepositoryPath) !== repositoryPath) {
+    throw invalidRepository("Workstream context must be a direct child of the shared repository.", {
+      workstreamRoot: repositoryPath,
       contextRepositoryPath,
     });
   }
-  const gitRoot = resolve(await git(contextRepositoryPath, ["rev-parse", "--show-toplevel"]));
-  if (gitRoot !== resolve(contextRepositoryPath)) {
-    throw invalidRepository("Workstream context directory is not the exact Git repository root.", {
-      contextRepositoryPath,
+  const gitRoot = resolve(await git(repositoryPath, ["rev-parse", "--show-toplevel"]));
+  if (gitRoot !== resolve(repositoryPath)) {
+    throw invalidRepository("Configured workstream root is not the shared Git repository root.", {
+      repositoryPath,
       gitRoot,
     });
   }
-  if (await git(contextRepositoryPath, ["rev-parse", "--is-bare-repository"]) !== "false") {
-    throw invalidRepository("Workstream context repository must be non-bare.", {
+  const nestedGit = await lstat(join(contextRepositoryPath, ".git")).then(() => true).catch(
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    },
+  );
+  if (nestedGit) {
+    throw invalidRepository("Nested workstream Git repositories are forbidden.", {
       contextRepositoryPath,
     });
   }
-  const head = await git(contextRepositoryPath, ["rev-parse", "HEAD"]);
-  const branch = await git(contextRepositoryPath, ["symbolic-ref", "--short", "HEAD"]);
+  if (await git(repositoryPath, ["rev-parse", "--is-bare-repository"]) !== "false") {
+    throw invalidRepository("Shared workstream repository must be non-bare.");
+  }
+  const repositoryHead = await git(repositoryPath, ["rev-parse", "HEAD"]);
+  const branch = await git(repositoryPath, ["symbolic-ref", "--short", "HEAD"]);
   if (branch !== "main") {
-    throw invalidRepository("Workstream context repository must use its attached main branch.", {
-      contextRepositoryPath,
+    throw invalidRepository("Shared workstream repository must use its attached main branch.", {
       branch,
     });
   }
-
-  const trackedPaths = (await git(contextRepositoryPath, ["ls-tree", "-r", "--name-only", "HEAD"]))
-    .split("\n")
-    .filter(Boolean);
+  const directory = basename(contextRepositoryPath);
+  const prefix = directory + "/";
+  const lastCommit = await runGit([
+    "log",
+    "-1",
+    "--format=%H",
+    repositoryHead,
+    "--",
+    directory,
+  ], { cwd: repositoryPath });
+  if (!lastCommit) {
+    throw invalidRepository("Workstream directory has no committed shared-repository history.", {
+      directory,
+    });
+  }
+  const repositoryPaths = lines(await runGit([
+    "ls-tree",
+    "-r",
+    "--name-only",
+    repositoryHead,
+    "--",
+    directory,
+  ], { cwd: repositoryPath }));
+  const trackedPaths = repositoryPaths.map((path) => {
+    if (!path.startsWith(prefix)) {
+      throw invalidRepository("Shared repository returned a path outside the workstream.", {
+        directory,
+        path,
+      });
+    }
+    return path.slice(prefix.length);
+  });
   const tracked = new Set(trackedPaths);
   requireTracked(tracked, WORKSTREAM_CARD_PATH);
   requireTracked(tracked, WORKSTREAM_PROGRESS_PATH);
@@ -121,25 +165,24 @@ async function validate(input: {
     && path !== WORKSTREAM_RESOURCES_PATH
     && !path.startsWith(WORKSTREAM_REQUESTS_DIRECTORY + "/"));
   if (unexpected.length > 0) {
-    throw invalidRepository("Workstream context repository contains non-context tracked paths.", {
+    throw invalidRepository("Workstream directory contains non-context tracked paths.", {
       unexpectedPaths: unexpected,
     });
   }
-  const progressContent = await committedFile(
-    contextRepositoryPath,
-    WORKSTREAM_PROGRESS_PATH,
+  const committed = async (path: string): Promise<string> => (
+    await committedFile(repositoryPath, prefix + path)
   );
+  const progressContent = await committed(WORKSTREAM_PROGRESS_PATH);
   const progressEntries = parseWorkstreamProgress(progressContent);
-
-  const workstreamCard = parseWorkstreamCard(
-    await committedFile(contextRepositoryPath, WORKSTREAM_CARD_PATH),
+  const card = parseWorkstreamCard(
+    await committed(WORKSTREAM_CARD_PATH),
     input.expectedWorkstreamId,
   );
-  if (!basename(contextRepositoryPath).startsWith(workstreamCard.id + "-")) {
+  if (!directory.startsWith(card.id + "-")) {
     throw new ContextEngineServiceError({
       code: "WORKSTREAM_ID_MISMATCH",
-      message: "Workstream context directory does not begin with its workstream identity.",
-      details: { workstreamId: workstreamCard.id, contextRepositoryPath },
+      message: "Workstream directory does not begin with its workstream identity.",
+      details: { workstreamId: card.id, contextRepositoryPath },
     });
   }
   const requestPaths = trackedPaths.filter(
@@ -147,66 +190,61 @@ async function validate(input: {
   );
   validateRequestPaths(requestPaths);
   const requests = input.requestReadMode === "current"
-    ? await readCurrentRequest(contextRepositoryPath, requestPaths, workstreamCard)
-    : await readRequests(contextRepositoryPath, requestPaths);
+    ? await readCurrentRequest(requestPaths, card, committed)
+    : await readRequests(requestPaths, card.id, committed);
   const currentRequest = input.requestReadMode === "current"
     ? requests[0]
-    : validateCurrentRequest(workstreamCard, requests);
+    : validateCurrentRequest(card, requests);
   const resourceManifest = parseWorkstreamResourceManifest(
-    await committedFile(contextRepositoryPath, WORKSTREAM_RESOURCES_PATH),
-    workstreamCard.id,
+    await committed(WORKSTREAM_RESOURCES_PATH),
+    card.id,
   );
-
-  const statusOutput = await runGitRaw([
+  const status = await runGitRaw([
     "status",
     "--porcelain",
     "--untracked-files=all",
-  ], { cwd: contextRepositoryPath });
-  const workingTreeChanges = statusOutput
-    .replaceAll("\r\n", "\n")
+  ], { cwd: repositoryPath });
+  const workingTreeChanges = status.replaceAll("\r\n", "\n")
     .replace(/\n$/, "")
     .split("\n")
     .filter(Boolean);
   return {
-    workstreamId: workstreamCard.id,
+    workstreamId: card.id,
     contextRepositoryPath,
+    repositoryPath,
     branch,
-    head,
+    head: lastCommit,
+    repositoryHead,
     health: workingTreeChanges.length > 0 ? "dirty_external" : "ready",
-    workstreamCard,
+    workstreamCard: card,
     ...(currentRequest ? { currentRequest } : {}),
     requests,
-    progress: {
-      content: progressContent,
-      entries: progressEntries,
-    },
+    progress: { content: progressContent, entries: progressEntries },
     resourceManifest,
     workingTreeChanges,
   };
 }
 
-async function readRequests(contextRepositoryPath: string, paths: string[]): Promise<WorkstreamRequest[]> {
+async function readRequests(
+  paths: string[],
+  workstreamId: string,
+  committed: (path: string) => Promise<string>,
+): Promise<WorkstreamRequest[]> {
   const requests: WorkstreamRequest[] = [];
   const ids = new Set<string>();
   for (const path of paths) {
-    const name = basename(path);
-    const id = name.slice(0, 6);
-    if (!/^R-\d{4}-.+\.md$/.test(name) || !isRequestId(id)) {
-      throw invalidRepository("Workstream request directory contains an invalid tracked path.", { path });
-    }
-    const request = parseWorkstreamRequest(await committedFile(contextRepositoryPath, path), id);
-    if (requestFileName(request.id, request.title) !== name) {
-      throw new ContextEngineServiceError({
-        code: "WORKSTREAM_REQUEST_INVALID",
-        message: "Workstream request filename does not match its identity and title.",
-        details: { path, requestId: request.id },
+    const id = requireRequestPath(path).slice("requests/".length, "requests/R-0000".length);
+    const request = parseWorkstreamRequest(await committed(path), id, path);
+    if (request.workstreamId !== workstreamId) {
+      throw invalidRepository("Request belongs to a different workstream.", {
+        requestId: request.id,
+        expectedWorkstreamId: workstreamId,
+        actualWorkstreamId: request.workstreamId,
       });
     }
     if (ids.has(request.id)) {
-      throw new ContextEngineServiceError({
-        code: "WORKSTREAM_REQUEST_INVALID",
-        message: "Workstream repository contains duplicate request identities.",
-        details: { requestId: request.id },
+      throw invalidRepository("Workstream contains duplicate request identities.", {
+        requestId: request.id,
       });
     }
     ids.add(request.id);
@@ -215,95 +253,75 @@ async function readRequests(contextRepositoryPath: string, paths: string[]): Pro
   return requests.sort((left, right) => left.id.localeCompare(right.id));
 }
 
+async function readCurrentRequest(
+  paths: string[],
+  card: WorkstreamCard,
+  committed: (path: string) => Promise<string>,
+): Promise<WorkstreamRequest[]> {
+  if (!card.currentRequest) return [];
+  const matches = paths.filter(
+    (path) => basename(path).startsWith(card.currentRequest + "-"),
+  );
+  if (matches.length !== 1 || !matches[0]) {
+    throw currentInvalid("Workstream current request must have exactly one request file.", {
+      currentRequest: card.currentRequest,
+    });
+  }
+  const request = parseWorkstreamRequest(
+    await committed(matches[0]),
+    card.currentRequest,
+    matches[0],
+  );
+  if (request.workstreamId !== card.id
+    || request.status !== "active"
+    || card.status !== "active") {
+    throw currentInvalid("The current request and workstream must both be active.", {
+      currentRequest: card.currentRequest,
+      requestStatus: request.status,
+      workstreamStatus: card.status,
+    });
+  }
+  return [request];
+}
+
 function validateRequestPaths(paths: string[]): void {
   const ids = new Set<string>();
   for (const path of paths) {
+    requireRequestPath(path);
     const name = basename(path);
     const id = name.slice(0, 6);
-    if (!/^R-\d{4}-.+\.md$/.test(name) || !isRequestId(id)) {
-      throw invalidRepository("Workstream request directory contains an invalid tracked path.", { path });
-    }
-    if (ids.has(id)) {
-      throw new ContextEngineServiceError({
-        code: "WORKSTREAM_REQUEST_INVALID",
-        message: "Workstream repository contains duplicate request identities.",
-        details: { requestId: id },
+    if (!isRequestId(id) || ids.has(id)) {
+      throw invalidRepository("Request directory contains an invalid or duplicate path.", {
+        path,
       });
     }
     ids.add(id);
   }
 }
 
-async function readCurrentRequest(
-  contextRepositoryPath: string,
-  paths: string[],
-  workstreamCard: WorkstreamCard,
-): Promise<WorkstreamRequest[]> {
-  if (!workstreamCard.currentRequest) return [];
-  const matches = paths.filter((path) => basename(path).startsWith(workstreamCard.currentRequest + "-"));
-  if (matches.length !== 1 || !matches[0]) {
-    throw new ContextEngineServiceError({
-      code: "WORKSTREAM_CURRENT_REQUEST_INVALID",
-      message: "Workstream card current request must have exactly one committed request file.",
-      details: { currentRequest: workstreamCard.currentRequest },
-    });
-  }
-  const request = parseWorkstreamRequest(
-    await committedFile(contextRepositoryPath, matches[0]),
-    workstreamCard.currentRequest,
-  );
-  if (request.status !== "active" || workstreamCard.status !== "active") {
-    throw new ContextEngineServiceError({
-      code: "WORKSTREAM_CURRENT_REQUEST_INVALID",
-      message: "The current request and workstream must both be active.",
-      details: { currentRequest: workstreamCard.currentRequest, requestStatus: request.status },
-    });
-  }
-  if (requestFileName(request.id, request.title) !== basename(matches[0])) {
-    throw new ContextEngineServiceError({
-      code: "WORKSTREAM_REQUEST_INVALID",
-      message: "Workstream request filename does not match its identity and title.",
-      details: { path: matches[0], requestId: request.id },
-    });
-  }
-  return [request];
-}
-
 function validateCurrentRequest(
-  workstreamCard: WorkstreamCard,
+  card: WorkstreamCard,
   requests: WorkstreamRequest[],
 ): WorkstreamRequest | undefined {
   const active = requests.filter((request) => request.status === "active");
-  if (workstreamCard.status !== "active" && active.length > 0) {
-    throw new ContextEngineServiceError({
-      code: "WORKSTREAM_CURRENT_REQUEST_INVALID",
-      message: "Paused or archived workstreams cannot contain an active request.",
-      details: { workstreamStatus: workstreamCard.status, activeRequestId: active[0]?.id },
-    });
+  if (card.status !== "active" && active.length > 0) {
+    throw currentInvalid("Paused or archived workstreams cannot contain an active request.");
   }
   if (active.length > 1) {
-    throw new ContextEngineServiceError({
-      code: "WORKSTREAM_CURRENT_REQUEST_INVALID",
-      message: "Workstream repository may contain at most one active request.",
-      details: { activeRequestIds: active.map((request) => request.id) },
+    throw currentInvalid("Workstream may contain at most one active request.", {
+      activeRequestIds: active.map((request) => request.id),
     });
   }
-  if (!workstreamCard.currentRequest) {
+  if (!card.currentRequest) {
     if (active.length > 0) {
-      throw new ContextEngineServiceError({
-        code: "WORKSTREAM_CURRENT_REQUEST_INVALID",
-        message: "Workstream card has no current request but an active request exists.",
-        details: { activeRequestId: active[0]?.id },
-      });
+      throw currentInvalid("Workstream has no current request but an active request exists.");
     }
     return undefined;
   }
-  const current = requests.find((request) => request.id === workstreamCard.currentRequest);
+  const current = requests.find((request) => request.id === card.currentRequest);
   if (!current || current.status !== "active" || active[0]?.id !== current.id) {
-    throw new ContextEngineServiceError({
-      code: "WORKSTREAM_CURRENT_REQUEST_INVALID",
-      message: "Workstream card current request must name the repository's one active request.",
-      details: { currentRequest: workstreamCard.currentRequest },
+    throw currentInvalid("Workstream current request must name its one active request.", {
+      currentRequest: card.currentRequest,
     });
   }
   return current;
@@ -311,16 +329,31 @@ function validateCurrentRequest(
 
 function requireTracked(tracked: ReadonlySet<string>, path: string): void {
   if (!tracked.has(path)) {
-    throw invalidRepository("Workstream context repository is missing a required tracked file.", { path });
+    throw invalidRepository("Workstream is missing a required context file.", { path });
   }
 }
 
-async function committedFile(contextRepositoryPath: string, path: string): Promise<string> {
-  return await runGitRaw(["show", "HEAD:" + path], { cwd: contextRepositoryPath });
+async function committedFile(repositoryPath: string, path: string): Promise<string> {
+  return await runGitRaw(["show", "HEAD:" + path], { cwd: repositoryPath });
 }
 
-async function git(contextRepositoryPath: string, args: string[]): Promise<string> {
-  return await runGit(args, { cwd: contextRepositoryPath });
+async function git(repositoryPath: string, args: string[]): Promise<string> {
+  return await runGit(args, { cwd: repositoryPath });
+}
+
+function lines(value: string): string[] {
+  return value.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
+function currentInvalid(
+  message: string,
+  details?: Record<string, unknown>,
+): ContextEngineServiceError {
+  return new ContextEngineServiceError({
+    code: "WORKSTREAM_CURRENT_REQUEST_INVALID",
+    message,
+    ...(details ? { details } : {}),
+  });
 }
 
 function invalidRepository(

@@ -292,32 +292,7 @@ function resolvedFromCurrent(
 function requestRoute(
   decision: Extract<DeterministicWorkstreamBindingRequest["proposal"], { kind: "activate" }>["requestDecision"],
 ): WorkstreamRequestRoute {
-  if (decision.kind === "continue") {
-    return {
-      kind: "continue_active_request",
-      requestId: decision.requestId,
-      reason: decision.reason,
-    };
-  }
-  if (decision.kind === "switch") {
-    return {
-      kind: "switch_active_request",
-      currentRequestId: decision.currentRequestId,
-      title: decision.title,
-      request: decision.request,
-      acceptance: decision.acceptance,
-      constraints: decision.constraints,
-      reason: decision.reason,
-    };
-  }
-  return {
-    kind: "create_active_request",
-    title: decision.title,
-    request: decision.request,
-    acceptance: decision.acceptance,
-    constraints: decision.constraints,
-    reason: decision.reason,
-  };
+  return structuredClone(decision);
 }
 
 function targetLocator(target: string): ResourcePublicLocator[] {

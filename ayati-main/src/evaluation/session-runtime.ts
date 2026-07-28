@@ -59,7 +59,7 @@ export async function startLiveEvaluationCapture(input: {
       provider: input.provider.name,
       providerVersion: input.provider.version,
       ...(input.model ? { model: input.model } : {}),
-      configVersion: "live-evaluation-v1/context-engine-v7",
+      configVersion: "live-evaluation-v1/context-engine-v9",
       configFingerprint: canonicalHash(sanitizedConfig),
     },
     machine: {

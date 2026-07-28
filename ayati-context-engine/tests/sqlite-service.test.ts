@@ -18,19 +18,19 @@ afterEach(async () => {
   }));
 });
 
-describe("SQLite Context Engine V8 baseline", () => {
+describe("SQLite Context Engine V9 baseline", () => {
   it("rejects relative database paths instead of anchoring them to process.cwd()", async () => {
     await expect(ContextDatabase.open({ path: "context.sqlite" }))
       .rejects.toThrow("database path must be an absolute filesystem path");
   });
 
-  it("creates the clean V8 stream/run/checkpoint/resolution schema", async () => {
+  it("creates the clean V9 stream/run/checkpoint/resolution schema", async () => {
     const fixture = await createFixture();
 
-    expect(latestSchemaVersion()).toBe(8);
+    expect(latestSchemaVersion()).toBe(9);
     expect(fixture.database.prepare(
       "SELECT version FROM schema_metadata WHERE singleton = 1",
-    ).get()).toEqual({ version: 8 });
+    ).get()).toEqual({ version: 9 });
     const tables = new Set((fixture.database.prepare([
       "SELECT name FROM sqlite_schema",
       "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
@@ -60,7 +60,7 @@ describe("SQLite Context Engine V8 baseline", () => {
       .toEqual([{ foreign_keys: 1 }]);
   });
 
-  it("opens an existing V8 database with retired observation tables without using them", async () => {
+  it("opens an existing V9 database with retired observation tables without using them", async () => {
     const fixture = await createFixture();
     await closeTracked(fixture.service);
     const legacy = new DatabaseSync(fixture.databasePath);
@@ -70,11 +70,11 @@ describe("SQLite Context Engine V8 baseline", () => {
 
     const reopened = await ContextDatabase.open({ path: fixture.databasePath });
 
-    expect(reopened.schemaVersion()).toBe(8);
+    expect(reopened.schemaVersion()).toBe(9);
     reopened.close();
   });
 
-  it("refuses pre-V8 or unknown state without modifying it", async () => {
+  it("refuses pre-V9 or unknown state without modifying it", async () => {
     const root = await mkdtemp(join(tmpdir(), "ayati-old-context-schema-"));
     roots.push(root);
     const databasePath = join(root, "context.sqlite");
@@ -84,7 +84,7 @@ describe("SQLite Context Engine V8 baseline", () => {
     old.close();
 
     await expect(ContextDatabase.open({ path: databasePath })).rejects.toThrow(
-      "The configured database uses a pre-V8 or unsupported schema and was not modified.",
+      "The configured database uses a pre-V9 or unsupported schema and was not modified.",
     );
     const unchanged = new DatabaseSync(databasePath);
     expect(unchanged.prepare("SELECT version FROM schema_metadata").get()).toEqual({ version: 5 });

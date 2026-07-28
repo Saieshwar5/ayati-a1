@@ -49,7 +49,8 @@ describe("model-facing workstream and resource routing", () => {
   });
 
   it("activates existing durable context with an explicit new-request decision", async () => {
-    const activateWorkstreamForRun = vi.fn(async () => selectedResponse("create", false));
+    const activateWorkstreamForRun = vi.fn(async () =>
+      selectedResponse("create_and_activate", false));
     const service = {
       getAgentContext: vi.fn()
         .mockResolvedValueOnce(activeContext(false))
@@ -63,7 +64,7 @@ describe("model-facing workstream and resource routing", () => {
       workstreamId: WORKSTREAM_ID,
       reason: "This is the next outcome for the same website.",
       requestDecision: {
-        kind: "create",
+        kind: "create_and_activate",
         title: "Add menu",
         request: "Add the menu page.",
         acceptance: ["The menu page is verified."],
@@ -75,7 +76,7 @@ describe("model-facing workstream and resource routing", () => {
     expect(result.v2?.structuredContent).toMatchObject({
       mode: "activated",
       workstreamId: WORKSTREAM_ID,
-      requestDecision: "create",
+      requestDecision: "create_and_activate",
       requestId: "R-0002",
       requestCreated: true,
     });
@@ -84,7 +85,7 @@ describe("model-facing workstream and resource routing", () => {
       workstreamId: WORKSTREAM_ID,
       runId: "RUN-1",
       route: {
-        kind: "create_active_request",
+        kind: "create_and_activate",
         reason: "This is the next outcome for the same website.",
         title: "Add menu",
         request: "Add the menu page.",
@@ -96,7 +97,8 @@ describe("model-facing workstream and resource routing", () => {
   });
 
   it("switches from the exact active request only with a complete explicit decision", async () => {
-    const activateWorkstreamForRun = vi.fn(async () => selectedResponse("create", false));
+    const activateWorkstreamForRun = vi.fn(async () =>
+      selectedResponse("defer_current_and_create", false));
     const service = {
       getAgentContext: vi.fn()
         .mockResolvedValueOnce(activeContext(false))
@@ -109,7 +111,7 @@ describe("model-facing workstream and resource routing", () => {
       workstreamId: WORKSTREAM_ID,
       reason: "The user explicitly prioritized the contact form.",
       requestDecision: {
-        kind: "switch",
+        kind: "defer_current_and_create",
         currentRequestId: "R-0001",
         title: "Add contact form",
         request: "Add a verified contact form.",
@@ -127,7 +129,7 @@ describe("model-facing workstream and resource routing", () => {
     expect(result.ok).toBe(true);
     expect(result.v2?.structuredContent).toMatchObject({
       mode: "activated",
-      requestDecision: "create",
+      requestDecision: "defer_current_and_create",
       requestId: "R-0002",
       requestCreated: true,
     });
@@ -135,7 +137,7 @@ describe("model-facing workstream and resource routing", () => {
     expect(activateWorkstreamForRun).toHaveBeenCalledOnce();
     expect(activateWorkstreamForRun).toHaveBeenCalledWith(expect.objectContaining({
       route: {
-        kind: "switch_active_request",
+        kind: "defer_current_and_create",
         currentRequestId: "R-0001",
         reason: "The user explicitly prioritized the contact form.",
         title: "Add contact form",
@@ -160,7 +162,10 @@ describe("model-facing workstream and resource routing", () => {
     const found = await tools.find((tool) => tool.name === "git_context_find_workstreams")!
       .execute({ query: "website" }, executionContext("find"));
     const opened = await tools.find((tool) => tool.name === "git_context_read_workstream")!
-      .execute({ workstreamId: WORKSTREAM_ID }, executionContext("open"));
+      .execute({
+        workstreamId: WORKSTREAM_ID,
+        requestId: "R-0002",
+      }, executionContext("open"));
 
     expect(found.ok).toBe(true);
     expect(found.v2?.structuredContent).toMatchObject({ count: 1, workstreams: [candidate] });
@@ -172,6 +177,7 @@ describe("model-facing workstream and resource routing", () => {
     expect(readWorkstream).toHaveBeenCalledWith(expect.objectContaining({
       requestId: "RUN-1:open:open-workstream",
       workstreamId: WORKSTREAM_ID,
+      workstreamRequestId: "R-0002",
       runId: "RUN-1",
     }));
   });
@@ -375,7 +381,10 @@ function workstreamCandidate() {
   };
 }
 
-function selectedResponse(decision: "initial" | "create", created: boolean) {
+function selectedResponse(
+  decision: "initial" | "create_and_activate" | "defer_current_and_create",
+  created: boolean,
+) {
   return {
     workstream: workstream(),
     run: {

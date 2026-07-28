@@ -61,8 +61,8 @@ context SQLite and context-only Git writes. The daemon depends on its typed
    commit's fresh Context Engine projection replaces the loop projection
    before prompt rebuild.
 8. `finalizeRun` closes the run, appends the immutable assistant message,
-   verifies resource effects, and optionally commits reduced workstream
-   continuity.
+   verifies resource effects, appends one request-scoped progress entry for a
+   bound run, and commits reduced workstream continuity.
 9. Only after durable acknowledgement does the transport receive its terminal
    response envelope.
 
@@ -109,8 +109,8 @@ container, and the stream is never used as an action log.
 ```text
 <AYATI_ROOT_DIR>/
   workspace/       default visible output
-  workstreams/     context-only Git repositories
-  .ayati/          V8 database and managed resources
+  workstreams/     one shared context-only Git repository
+  .ayati/          V9 database and managed resources
 ```
 
 Workstream Git never contains deliverables. The resource catalog points to

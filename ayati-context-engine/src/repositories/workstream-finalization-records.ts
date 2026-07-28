@@ -3,6 +3,7 @@ import type {
   RunOutcome,
   RunStopReason,
   WorkstreamCompletionRecord,
+  WorkstreamRequestLifecycleEffect,
 } from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
 
@@ -40,8 +41,10 @@ export interface WorkstreamFinalizationRecord {
   summary: string;
   next?: string;
   completion: WorkstreamCompletionRecord;
+  requestEffect: WorkstreamRequestLifecycleEffect;
   assistantResponse: string;
   baseHead: string;
+  workstreamBaseHead: string;
   messageHash: string;
   plan: WorkstreamContextCommitPlan;
   resourceEvents: ResourceEvent[];
@@ -66,8 +69,10 @@ interface Row {
   summary: string;
   next_action: string | null;
   completion_json: string;
+  request_effect_json: string;
   assistant_response: string;
   base_head: string;
+  workstream_base_head: string;
   message_hash: string;
   plan_json: string;
   resource_events_json: string;
@@ -91,8 +96,10 @@ export function insertWorkstreamFinalization(database: ContextDatabase, input: {
   summary: string;
   next?: string;
   completion: WorkstreamCompletionRecord;
+  requestEffect: WorkstreamRequestLifecycleEffect;
   assistantResponse: string;
   baseHead: string;
+  workstreamBaseHead: string;
   messageHash: string;
   plan: WorkstreamContextCommitPlan;
   resourceEvents: ResourceEvent[];
@@ -101,10 +108,10 @@ export function insertWorkstreamFinalization(database: ContextDatabase, input: {
   database.prepare([
     "INSERT INTO workstream_finalizations(",
     "run_id, operation_request_id, lease_id, stream_id, workstream_id, bound_request_id,",
-    "phase, outcome, stop_reason, validation, summary, next_action, completion_json,",
-    "assistant_response, base_head, message_hash, plan_json, resource_events_json, commit_head,",
+    "phase, outcome, stop_reason, validation, summary, next_action, completion_json, request_effect_json,",
+    "assistant_response, base_head, workstream_base_head, message_hash, plan_json, resource_events_json, commit_head,",
     "commit_created, created_at, updated_at, last_error",
-    ") VALUES (?, ?, ?, ?, ?, ?, 'prepared', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, NULL)",
+    ") VALUES (?, ?, ?, ?, ?, ?, 'prepared', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, NULL)",
   ].join(" ")).run(
     input.runId,
     input.operationRequestId,
@@ -118,8 +125,10 @@ export function insertWorkstreamFinalization(database: ContextDatabase, input: {
     input.summary,
     input.next ?? null,
     JSON.stringify(input.completion),
+    JSON.stringify(input.requestEffect),
     input.assistantResponse,
     input.baseHead,
+    input.workstreamBaseHead,
     input.messageHash,
     JSON.stringify(input.plan),
     JSON.stringify(input.resourceEvents),
@@ -182,8 +191,8 @@ function requireRecord(
 function select(): string {
   return [
     "SELECT run_id, operation_request_id, lease_id, stream_id, workstream_id, bound_request_id,",
-    "phase, outcome, stop_reason, validation, summary, next_action, completion_json,",
-    "assistant_response, base_head, message_hash, plan_json, resource_events_json, commit_head,",
+    "phase, outcome, stop_reason, validation, summary, next_action, completion_json, request_effect_json,",
+    "assistant_response, base_head, workstream_base_head, message_hash, plan_json, resource_events_json, commit_head,",
     "commit_created, created_at, updated_at, last_error FROM workstream_finalizations",
   ].join(" ");
 }
@@ -203,8 +212,10 @@ function record(row: Row): WorkstreamFinalizationRecord {
     summary: row.summary,
     ...(row.next_action ? { next: row.next_action } : {}),
     completion: JSON.parse(row.completion_json) as WorkstreamCompletionRecord,
+    requestEffect: JSON.parse(row.request_effect_json) as WorkstreamRequestLifecycleEffect,
     assistantResponse: row.assistant_response,
     baseHead: row.base_head,
+    workstreamBaseHead: row.workstream_base_head,
     messageHash: row.message_hash,
     plan: JSON.parse(row.plan_json) as WorkstreamContextCommitPlan,
     resourceEvents: JSON.parse(row.resource_events_json) as ResourceEvent[],

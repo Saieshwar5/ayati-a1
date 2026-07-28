@@ -48,7 +48,8 @@ AYATI_ROOT_DIR=
 This is the single filesystem root for managed work:
 
 - `<root>/workspace/`: default visible output when the user gives no path;
-- `<root>/workstreams/`: context-only `W-*` repositories;
+- `<root>/workstreams/`: one context-only repository containing `W-*`
+  directories;
 - `<root>/.ayati/`: Context Engine SQLite and immutable managed resources.
 
 When unset, the backend uses `ayati-main/ayati`. Model-facing tool calls still

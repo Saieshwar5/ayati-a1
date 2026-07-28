@@ -14,6 +14,7 @@ import type {
   RunStopReason,
   RunWorkStateInput,
   WorkstreamCompletionRecord,
+  WorkstreamRequestLifecycleEffect,
 } from "ayati-context-engine";
 import { ContextEngineObserver } from "ayati-context-engine";
 import {
@@ -54,6 +55,7 @@ export interface ContextEngineFinalizeRunInput {
   next?: string;
   workState?: unknown;
   workstreamCompletion?: WorkstreamCompletionRecord;
+  workstreamRequestEffect?: WorkstreamRequestLifecycleEffect;
   at: string;
 }
 
@@ -175,8 +177,13 @@ class AppContextEngineRuntime implements ContextEngineRuntime {
         validation: input.validation,
         ...(input.next ? { next: input.next } : {}),
         workState: toRunWorkState(input.workState, input.outcome),
-        ...(input.workstreamCompletion
-          ? { workstream: { completion: input.workstreamCompletion } }
+        ...(input.workstreamCompletion && input.workstreamRequestEffect
+          ? {
+              workstream: {
+                completion: input.workstreamCompletion,
+                requestEffect: input.workstreamRequestEffect,
+              },
+            }
           : {}),
         at: input.at,
       });

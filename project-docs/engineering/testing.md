@@ -5,7 +5,7 @@ external-system boundaries unless a test is explicitly live acceptance.
 
 ## Package Responsibilities
 
-- `ayati-context-engine/tests`: V8 contracts/schema, stream/run lifecycle,
+- `ayati-context-engine/tests`: V9 contracts/schema, stream/run lifecycle,
   checkpoints, exact history, workstreams, resources, finalization, archive
   safety, and recovery.
 - `ayati-main/tests`: agent-facing lanes, pressure compilation, checkpoint
@@ -14,7 +14,7 @@ external-system boundaries unless a test is explicitly live acceptance.
 - `ayati-cli/src/app/**/*.test.ts*`: terminal input/rendering, commands,
   attachments, and transport envelopes.
 
-## V8 Context Invariants
+## V9 Context Invariants
 
 Changes should prove the relevant invariants:
 
@@ -40,9 +40,10 @@ Changes should prove the relevant invariants:
    mutate durable state.
 10. Personal-memory extraction consumes only the newly committed checkpoint's
     exact user/assistant range.
-11. Finalization appends at most one assistant message, closes the run
-    truthfully, creates at most one context commit, and never stages
-    deliverables.
+11. Finalization appends at most one assistant message and closes the run
+    truthfully. Every finalized bound run appends exactly one progress entry
+    and creates exactly one shared-repository commit; unbound runs create
+    neither. Deliverables are never staged.
 12. Restart/recovery preserves verified dirty resource state and blocks unsafe
     continuation.
 13. Context Engine is the serialization owner. Step persistence returns the
@@ -51,7 +52,8 @@ Changes should prove the relevant invariants:
     observations. They produce exact current-run routing references but cannot
     satisfy task-completion evidence.
 15. The deterministic resolve gate makes zero model calls, accepts one typed
-    activate-or-create proposal, rechecks authoritative candidate/resource
+    continuation, amendment, activation, resumption, creation, defer-and-switch,
+    or new-workstream proposal, rechecks authoritative candidate/resource
     state, and binds at most one workstream/request on the existing run.
 16. Whole-task validation is a stored proof-only mode with no executable
     tools. It checks a small absolute-path checklist against compact completion
@@ -149,6 +151,33 @@ Changes should prove the relevant invariants:
     authority, workspace mutation still requires all existing workstream and
     verification gates, and `bound_resource` can be restored only by operator
     configuration.
+36. Requests use only `queued`, `active`, `blocked`, `done`, and `dropped`.
+    At most one is active per workstream; `done` and `dropped` are terminal.
+    Incomplete and failed runs do not rewrite the request file. Contract
+    amendment preserves request identity, path, and creation time, and trusted
+    policy cannot silently remove acceptance criteria. Completion evidence
+    must represent every acceptance criterion in the bound request.
+37. Shared Git has exactly one `.git/` beneath `workstreams/`. A commit to one
+    `W-*` path changes global HEAD without changing another workstream's
+    path-specific last commit or making it stale.
+38. Activation loads at most the five newest progress entries for the run's
+    selected request. Older progress remains searchable and rebuildable.
+39. Finalization recovery retries an exact journal before a commit and
+    acknowledges an already-created commit by `Ayati-Run` trailer without
+    duplicating either progress or Git history. Recovery completes partial
+    journaled file writes and cleans only matching abandoned atomic temp files;
+    unrelated dirt is preserved and rejected. Restart cleanup removes only
+    unbound, uncommitted provisional workstreams and retains bound provisional
+    state for finalization recovery.
+40. Nested-repository migration is preview-first, refuses dirty or
+    non-context repositories, preserves originals in an archive, converts v2
+    cards and requests, creates an empty progress baseline when the legacy
+    ledger is absent, creates one shared baseline commit, and rebuilds an empty
+    V9 catalog.
+41. Request FTS participates in workstream discovery for terminal as well as
+    unfinished requests. An exact historical-request read returns its final
+    outcome and at most five recent progress entries without binding the run
+    or reopening the request.
 
 ## Prompt and Harness Coverage
 
@@ -205,12 +234,14 @@ successful binding, and assert the expected primary-model request count. No
 resolver pressure profile, private history, private semantic usage, or second
 context-preparation lane exists.
 
-## Reset Testing
+## Migration and Reset Testing
 
-V8 has no older-schema compatibility reader. Archive/reset tests verify that dry run is
-non-mutating, a live writer is refused, database/WAL/SHM plus managed
-resources and workstreams are archived, workspace output is preserved, and
-the manifest records the detected archived schema and the V8 target.
+V9 has no implicit older-schema compatibility reader. Migration tests verify
+that preview is non-mutating, a live writer is refused, every nested
+repository is validated, old repositories and database files are archived,
+the shared repository and V9 catalog are validated before installation, and a
+failed switch restores the original root. Archive/reset tests separately
+verify deliberate clean-state recovery while preserving workspace output.
 
 ## Live Acceptance
 

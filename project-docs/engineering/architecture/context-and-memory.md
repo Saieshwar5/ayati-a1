@@ -6,11 +6,11 @@ growth rates and different authority.
 
 ## Ownership
 
-- Context Engine SQLite V8: agent streams, immutable messages, runs, steps,
-  WorkState, checkpoints, workstreams, requests, resources, discovery indexes,
-  idempotency, and recovery journals.
-- Workstream Git: compact portable `workstream.md`, request files, and
-  `resources.json` only.
+- Context Engine SQLite V9: agent streams, immutable messages, runs, steps,
+  WorkState, checkpoints, workstreams, every request, progress projections,
+  resources, discovery indexes, idempotency, and recovery journals.
+- Shared workstream Git: compact portable `workstream.md`, request files,
+  append-only `progress.md`, and generated `resources.json` only.
 - Real resource locations: project files, documents, media, URLs, databases,
   repositories, and external objects.
 - Personal memory: stable, evolving, and time-scoped facts about the user.
@@ -59,6 +59,11 @@ for one accepted input. It contains:
 A run may remain unbound for conversation or observation, or gain one
 immutable workstream/request binding. Finalization projects only the small
 facts that need to survive into stream or workstream continuity.
+
+The next run receives a fresh WorkState. When it continues the exact same
+unfinished request, a compact material handoff may initialize that new
+WorkState, while the latest five progress entries for the selected request are
+loaded separately from the durable progress projection.
 
 Workstream routing observation is part of the same primary loop. Read-only
 candidate and owner lookups enter the run step history but are tagged as

@@ -245,21 +245,43 @@ async function createFixture(name: string): Promise<{
 function seedCandidateCatalog(database: ContextDatabase, root: string): void {
   const insert = database.prepare([
     "INSERT INTO workstreams(",
-    "workstream_id, repository_path, branch, head_sha, title_cache, objective_cache,",
-    "lifecycle_status, repository_health, status, created_at, updated_at",
-    ") VALUES (?, ?, 'main', ?, ?, ?, 'active', 'ready', 'active', ?, ?)",
+    "workstream_id, directory_path, title, aliases_json, purpose, lifecycle_status,",
+    "current_snapshot, current_focus, blockers_json, last_commit_sha, last_activity_at,",
+    "status, created_at, updated_at",
+    ") VALUES (?, ?, ?, '[]', ?, 'active', ?, ?, '[]', ?, ?, 'active', ?, ?)",
+  ].join(" "));
+  const search = database.prepare([
+    "INSERT INTO workstream_search(",
+    "workstream_id, title, aliases, purpose, current_snapshot, current_focus,",
+    "findings, unfinished_requests, resources, recent_progress",
+    ") VALUES (?, ?, '', ?, ?, ?, '', '', '', '')",
   ].join(" "));
   for (let index = 1; index <= 6; index++) {
     const suffix = String(index).padStart(4, "0");
     const at = `2026-07-${String(10 + index).padStart(2, "0")}T10:00:00.000Z`;
+    const workstreamId = `W-20260721-${suffix}`;
+    const title = index === 1 ? "Lunar archive migration" : `Recent workstream ${index}`;
+    const purpose = index === 1
+      ? "Migrate the lunar archive."
+      : `Maintain recent workstream ${index}.`;
     insert.run(
-      `W-20260721-${suffix}`,
+      workstreamId,
       join(root, "workstreams", suffix),
+      title,
+      purpose,
+      purpose,
+      "Continue the current workstream.",
       String(index).repeat(40),
-      index === 1 ? "Lunar archive migration" : `Recent workstream ${index}`,
-      index === 1 ? "Migrate the lunar archive." : `Maintain recent workstream ${index}.`,
       at,
       at,
+      at,
+    );
+    search.run(
+      workstreamId,
+      title,
+      purpose,
+      purpose,
+      "Continue the current workstream.",
     );
   }
 }

@@ -42,16 +42,20 @@ server command.
 Context Engine clean reset and catalog recovery are preview-first:
 
 ```bash
+pnpm context:workstream-migrate
+pnpm context:workstream-migrate -- --confirm
 pnpm context:archive-reset
 pnpm context:archive-reset -- --confirm
 pnpm context:catalog-rebuild
 pnpm context:catalog-rebuild -- --confirm
 ```
 
-Both mutation commands refuse a live Context Engine writer. Archive reset
-preserves `<AYATI_ROOT_DIR>/workspace/`. Catalog rebuild requires an empty V8
-catalog; after an archive reset, start and stop Ayati once before confirming
-rebuild.
+All mutation commands require a stopped Context Engine writer. Workstream
+migration converts clean nested repositories into the one shared repository,
+archives the sources and prior database, and installs a rebuilt V9 catalog.
+Archive reset preserves `<AYATI_ROOT_DIR>/workspace/`. Catalog rebuild
+requires an empty V9 catalog; after an archive reset, start and stop Ayati once
+before confirming rebuild.
 
 Live daemon evaluation:
 

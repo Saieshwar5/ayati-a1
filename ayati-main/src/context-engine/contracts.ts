@@ -70,6 +70,25 @@ export interface ContextWorkstreamProjection {
     acceptance: string[];
     constraints: string[];
   };
+  selectedRequest?: {
+    id: string;
+    title: string;
+    status: "queued" | "active" | "blocked" | "done" | "dropped";
+    request: string;
+    acceptance: string[];
+    constraints: string[];
+    lifecycleNote?: string;
+    finalOutcome?: string;
+  };
+  recentProgress: Array<{
+    runId: string;
+    outcome: "done" | "incomplete" | "failed" | "blocked" | "needs_user_input";
+    summary: string;
+    validationSummary: string;
+    nextAction?: string;
+    commit: string;
+    finalizedAt: string;
+  }>;
   resources: WorkstreamResourceBinding[];
 }
 

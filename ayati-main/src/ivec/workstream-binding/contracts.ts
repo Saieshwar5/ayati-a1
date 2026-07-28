@@ -19,25 +19,38 @@ export interface WorkstreamResourceBindingProposal {
 
 export type WorkstreamRequestDecision =
   | {
-      kind: "continue";
+      kind: "continue_current" | "activate_existing" | "resume_blocked";
       requestId: string;
       reason: string;
     }
   | {
-      kind: "create";
+      kind: "amend_current";
+      currentRequestId: string;
+      patch: Partial<WorkstreamRequestDefinition>;
+      authority: "user" | "trusted_policy";
+      reason: string;
+    }
+  | ({
+      kind: "create_and_activate" | "create_queued";
       title: string;
       request: string;
       acceptance: string[];
       constraints: string[];
       reason: string;
-    }
-  | {
-      kind: "switch";
+    })
+  | ({
+      kind: "defer_current_and_create";
       currentRequestId: string;
       title: string;
       request: string;
       acceptance: string[];
       constraints: string[];
+      reason: string;
+    })
+  | {
+      kind: "defer_current_and_activate_existing";
+      currentRequestId: string;
+      nextRequestId: string;
       reason: string;
     };
 

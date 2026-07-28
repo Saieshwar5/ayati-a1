@@ -31,21 +31,25 @@ Context Engine has a separate SQLite database, normally at
 SQLite tools.
 
 It stores operational indexes and lifecycle state such as agent streams,
-immutable messages, runs and steps, WorkState, pressure checkpoints, reusable
-observations, workstream/request catalog entries, resource mutation authority,
-finalization records, and idempotency data. The current harness binds through
-atomic workstream lifecycle operations and does not create a private resolver
-journal. The typed service interface is the only supported write path.
+immutable messages, runs and steps, WorkState, pressure checkpoints,
+workstreams, every request, compact progress projections, shared-repository
+state, resource mutation authority, finalization records, and idempotency
+data. The current harness binds through atomic workstream/request lifecycle
+operations and does not create a private resolver journal. The typed service
+interface is the only supported write path.
 
 Storage responsibilities are intentionally split:
 
-- workstream Git repositories: portable, inspectable durable work context;
+- one shared workstream Git repository: portable, inspectable durable work
+  context and append-only progress;
 - Context Engine SQLite: catalog, coordination, idempotency, and detailed run
   journal;
 - feedback traces: operator diagnostics;
 - personal/episodic stores: cross-task user memory and semantic recall.
 
-Do not place raw run transcripts in task Git merely because they exist in
+Do not place raw run transcripts in context Git merely because they exist in
 SQLite. Conversely, do not treat the catalog as a replacement for repository
-history. Catalog reconstruction from repositories is still incomplete, so
-backups currently need both Context Engine SQLite and the repositories.
+history. Workstream, request, progress, resource, and search projections are
+rebuildable from the validated repository, but exact messages, run/tool
+journals, preferences, and pending recovery state exist only in SQLite.
+Backups therefore need both SQLite and the shared repository.

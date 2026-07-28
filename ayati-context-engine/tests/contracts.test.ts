@@ -7,6 +7,7 @@ import {
   isPlanContextCheckpointRequest,
   isPrepareAgentRunRequest,
   isReadAgentHistoryRequest,
+  isReadWorkstreamRequest,
   isRecordRunStepRequest,
   isRequestEnvelope,
   isSearchAgentHistoryRequest,
@@ -68,7 +69,7 @@ describe("Context Engine contracts", () => {
       runId: RUN_ID,
       workstreamId: WORKSTREAM_ID,
       route: {
-        kind: "continue_active_request",
+        kind: "continue_current",
         requestId: "R-0001",
         reason: "Continue the same unfinished outcome.",
       },
@@ -79,7 +80,7 @@ describe("Context Engine contracts", () => {
       runId: RUN_ID,
       workstreamId: WORKSTREAM_ID,
       route: {
-        kind: "switch_active_request",
+        kind: "defer_current_and_create",
         currentRequestId: "R-0001",
         reason: "The user explicitly prioritized a separate request.",
         title: "Add contact form",
@@ -93,6 +94,21 @@ describe("Context Engine contracts", () => {
     expect(isActivateWorkstreamForRunRequest({
       ...switched,
       route: { ...switched.route, currentRequestId: "not-a-request" },
+    })).toBe(false);
+  });
+
+  it("validates optional exact historical-request reads", () => {
+    const input = {
+      requestId: "REQ-read-workstream",
+      runId: RUN_ID,
+      workstreamId: WORKSTREAM_ID,
+      workstreamRequestId: "R-0007",
+      at: AT,
+    };
+    expect(isReadWorkstreamRequest(input)).toBe(true);
+    expect(isReadWorkstreamRequest({
+      ...input,
+      workstreamRequestId: "request-seven",
     })).toBe(false);
   });
 

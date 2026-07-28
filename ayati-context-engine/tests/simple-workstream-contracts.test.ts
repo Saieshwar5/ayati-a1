@@ -20,16 +20,20 @@ import {
 describe("workstream context contracts", () => {
   it("round-trips a context-only workstream card with no deliverable paths", () => {
     const card: WorkstreamCard = {
-      schema: "ayati.workstream/v2",
+      schema: "ayati.workstream/v3",
       id: "W-20260719-0001",
       title: "Learning Rust",
       status: "active",
       currentRequest: "R-0001",
+      aliases: ["rust learning"],
       purpose: "Build durable Rust knowledge over multiple days.",
       currentSnapshot: "Ownership and borrowing are understood at an introductory level.",
+      importantFindings: ["Borrowing rules are the current learning boundary."],
+      decisions: ["Keep external files in the resource catalog."],
       currentFocus: "Practice borrowing with three small examples.",
+      openQuestions: [],
       blockers: [],
-      workingAgreements: ["Keep external files in the resource catalog."],
+      nextAction: "Compile and explain three borrowing examples.",
     };
     const rendered = renderWorkstreamCard(card);
     expect(rendered).not.toContain("Important paths");
@@ -38,16 +42,22 @@ describe("workstream context contracts", () => {
 
   it("round-trips request context independently of deliverables", () => {
     const request = {
-      schema: "ayati.request/v2" as const,
+      schema: "ayati.request/v3" as const,
       id: "R-0001",
+      workstreamId: "W-20260719-0001",
+      relativePath: "requests/R-0001-practice-borrowing.md",
       title: "Practice borrowing",
       status: "active" as const,
       createdAt: "2026-07-19T10:00:00+05:30",
+      updatedAt: "2026-07-19T10:00:00+05:30",
+      startedAt: "2026-07-19T10:00:00+05:30",
+      closedAt: null,
       source: "user" as const,
       request: "Create and explain three borrowing examples.",
       acceptance: ["All examples compile and are explained."],
       constraints: ["Keep each example small."],
-      outcome: "Not completed yet.",
+      lifecycleNote: "Created as the active request.",
+      finalOutcome: "Pending.",
     };
     expect(parseWorkstreamRequest(renderWorkstreamRequest(request), request.id)).toEqual(request);
   });
@@ -126,13 +136,35 @@ describe("workstream context contracts", () => {
       summary: "Built the first two examples and verified both.",
       next: "Build the third borrowing example.",
       messageHash: "sha256:" + "a".repeat(64),
+      mutations: 2,
     });
     expect(parseWorkstreamCommit(message)).toMatchObject({
       event: "workstream_bound_run_finalized",
       streamId: "AST-1234567890ABCDEF12345678",
       summary: "Built the first two examples and verified both.",
       next: "Build the third borrowing example.",
+      mutations: 2,
     });
+  });
+
+  it("accepts finalization-sized summary and next fields in commit metadata", () => {
+    const summary = "s".repeat(2_000);
+    const next = "n".repeat(1_000);
+    const message = renderWorkstreamCommit({
+      subject: "record bounded finalization metadata",
+      workstreamId: "W-20260719-0001",
+      requestId: "R-0001",
+      runId: "RUN-12345678-0000000001",
+      streamId: "AST-1234567890ABCDEF12345678",
+      outcome: "incomplete",
+      validation: "not_applicable",
+      summary,
+      next,
+      messageHash: "sha256:" + "a".repeat(64),
+      mutations: 0,
+    });
+
+    expect(parseWorkstreamCommit(message)).toMatchObject({ summary, next });
   });
 });
 

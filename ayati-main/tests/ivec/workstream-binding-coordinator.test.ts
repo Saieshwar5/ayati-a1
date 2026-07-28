@@ -44,7 +44,7 @@ describe("workstream binding coordinator", () => {
         workstreamId: WORKSTREAM_ID,
         expectedWorkstreamHead: HEAD,
         requestDecision: {
-          kind: "continue",
+          kind: "continue_current",
           requestId: "R-0001",
           reason: "The user explicitly continued the active request.",
         },
@@ -70,7 +70,7 @@ describe("workstream binding coordinator", () => {
       workstreamId: WORKSTREAM_ID,
       expectedWorkstreamHead: HEAD,
       route: {
-        kind: "continue_active_request",
+        kind: "continue_current",
         requestId: "R-0001",
         reason: "The user explicitly continued the active request.",
       },
@@ -115,7 +115,7 @@ describe("workstream binding coordinator", () => {
         workstreamId: WORKSTREAM_ID,
         expectedWorkstreamHead: HEAD,
         requestDecision: {
-          kind: "switch",
+          kind: "defer_current_and_create",
           currentRequestId: "R-0001",
           title: "Add contact form",
           request: "Add a verified contact form.",
@@ -136,7 +136,7 @@ describe("workstream binding coordinator", () => {
       workstreamId: WORKSTREAM_ID,
       expectedWorkstreamHead: HEAD,
       route: {
-        kind: "switch_active_request",
+        kind: "defer_current_and_create",
         currentRequestId: "R-0001",
         title: "Add contact form",
         request: "Add a verified contact form.",

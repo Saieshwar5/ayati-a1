@@ -10,13 +10,18 @@ Current product features:
 - One atomic run for every accepted user message or system event, including
   valid zero-step direct replies.
 - Autonomous durable-work discovery through compact candidates and
-  `git_context_find_workstreams` / `git_context_read_workstream`.
+  `git_context_find_workstreams` / `git_context_read_workstream`, including
+  exact read-only access to matching historical requests.
 - Workstream routing through `git_context_create_workstream` and
-  `git_context_activate_workstream`, including explicit continue-or-create
-  request decisions for existing workstreams.
+  `git_context_activate_workstream`, including explicit continuation,
+  amendment, queued activation, blocked resumption, request creation, and
+  atomic defer-and-switch decisions.
 - Explicit workstream stars, resource inspection, and resource binding.
-- Context-only independent `W-*` Git repositories containing a workstream card,
-  bounded request files, and a portable resource ledger.
+- One shared context-only Git repository containing `W-*` directories with a
+  distilled workstream card, bounded request files, an append-only progress
+  ledger, and a portable resource projection.
+- Five-state request lifecycle (`queued`, `active`, `blocked`, `done`,
+  `dropped`) with at most one active request per workstream.
 - A SQLite resource catalog covering files, directories, documents, media,
   datasets, databases, repositories, URLs, and external objects.
 - Immutable content-addressed storage for admitted user attachments.
@@ -26,8 +31,8 @@ Current product features:
   resources remain at their real locations and are never copied into context
   Git.
 - One finalization path that closes the conversation/run, persists verified
-  resource effects, reduces workstream context, and creates at most one context
-  commit.
+  resource effects, appends exactly one bound-run progress entry, reduces
+  workstream context, and creates exactly one commit for a finalized bound run.
 - Exact run-step evidence with bounded on-demand history search/read; read
   results are not copied into a second cross-run context lane.
 - Filesystem metadata, batch reads and writes, focused processes, Python,
@@ -39,7 +44,8 @@ Current product features:
   processing.
 - Passive, opt-in real-daemon evaluation with schema-versioned evidence,
   deterministic diagnostics, and per-turn/session Markdown and JSON reports.
-- Preview-first archive/reset and context-catalog rebuild commands.
+- Preview-first nested-workstream migration, archive/reset, and context-catalog
+  rebuild commands.
 
 Intended future capabilities include more clients, stronger service
 installation, finer permissions, additional external integrations, richer

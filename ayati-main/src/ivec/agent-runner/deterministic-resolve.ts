@@ -117,7 +117,7 @@ export async function dispatchDeterministicResolveGate(input: {
     return rejected(
       toolNames,
       "MODE_BINDING_PROPOSAL_REQUIRED",
-      "An unbound resolve transition requires one typed activate-or-create binding proposal.",
+      "An unbound resolve transition requires one typed workstream/request binding proposal.",
       targets,
       ["Observe workstream ownership, then retry resolve with an exact binding proposal."],
     );
@@ -257,15 +257,20 @@ function validateBindingProposal(
       "A semantic or recency workstream candidate must be inspected before binding.",
       [proposal.workstreamId],
       [
-        "Inspect the exact workstream and compare its immutable active request contract before choosing continue, create, or switch.",
+        "Inspect the exact workstream and compare its request contracts before choosing a typed lifecycle operation.",
       ],
     );
   }
-  if (proposal.requestDecision.kind === "continue"
-    || proposal.requestDecision.kind === "switch") {
-    const requestId = proposal.requestDecision.kind === "continue"
-      ? proposal.requestDecision.requestId
-      : proposal.requestDecision.currentRequestId;
+  const requestIds = requestDecisionEvidenceIds(proposal.requestDecision);
+  if (!requestIds) {
+    return createVirtualModeRepair(
+      "MODE_BINDING_PROPOSAL_UNVERIFIED",
+      "The binding proposal contains an unsupported request lifecycle operation.",
+      [],
+      ["Use one request lifecycle operation advertised by the current resolve schema."],
+    );
+  }
+  for (const requestId of requestIds) {
     const explicitRequest = state.userMessage.includes(requestId);
     if (!explicitRequest && !observed?.requestIds.includes(requestId)) {
       return createVirtualModeRepair(
@@ -273,10 +278,30 @@ function validateBindingProposal(
         `The exact active request was not explicitly named or returned by workstream inspection: ${requestId}.`,
         [requestId],
         [
-          "Inspect the exact active request. Continue only an unchanged contract; switch only when the user explicitly starts a new request now.",
+          "Inspect the exact request and choose only a lifecycle operation permitted by its observed status.",
         ],
       );
     }
+  }
+  return undefined;
+}
+
+function requestDecisionEvidenceIds(
+  decision: Extract<WorkstreamBindingProposal, { kind: "activate" }>["requestDecision"],
+): string[] | undefined {
+  switch (decision.kind) {
+    case "continue_current":
+    case "activate_existing":
+    case "resume_blocked":
+      return [decision.requestId];
+    case "amend_current":
+    case "defer_current_and_create":
+      return [decision.currentRequestId];
+    case "defer_current_and_activate_existing":
+      return [decision.currentRequestId, decision.nextRequestId];
+    case "create_and_activate":
+    case "create_queued":
+      return [];
   }
   return undefined;
 }

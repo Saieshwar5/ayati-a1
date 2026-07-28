@@ -42,6 +42,9 @@ export async function finalizeAgentRun(input: {
       ...(projection.workstreamCompletion
         ? { workstreamCompletion: projection.workstreamCompletion }
         : {}),
+      ...(projection.workstreamRequestEffect
+        ? { workstreamRequestEffect: projection.workstreamRequestEffect }
+        : {}),
       at: input.at,
     });
   } catch (error) {

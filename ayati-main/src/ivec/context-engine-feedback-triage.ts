@@ -1,4 +1,7 @@
-import type { FeedbackWorkstreamLifecycle } from "./context-engine-feedback-model.js";
+import type {
+  FeedbackWorkstreamLifecycle,
+  FeedbackWorkstreamRequestDecision,
+} from "./context-engine-feedback-model.js";
 
 export interface ContextEngineFeedbackTriageFinding {
   code: string;
@@ -30,14 +33,13 @@ export function buildContextEngineLifecycleFindings(input: {
       ));
     }
     if (repository.selectionMode === "activated"
-      && request?.decision !== "continue"
-      && request?.decision !== "create") {
+      && (!request?.decision || request.decision === "initial")) {
       findings.push(finding(
         "workstream_request_decision_missing",
         "error",
         "workstream request decision is missing",
-        "An existing workstream was activated without feedback proving an explicit continue-or-create decision.",
-        "Carry requestDecision and the resolved workstream request id through the routing result and summary.",
+        "An existing workstream was activated without a typed request lifecycle decision.",
+        "Carry the exact request decision and resolved request id through routing feedback.",
       ));
     }
     if (repository.selectionMode && !request?.requestId) {
@@ -49,7 +51,7 @@ export function buildContextEngineLifecycleFindings(input: {
         "Inspect workstream-request route planning before mutation authority is acquired.",
       ));
     }
-    if ((request?.decision === "initial" || request?.decision === "create")
+    if (request?.decision && createsRequest(request.decision)
       && request.created !== true) {
       findings.push(finding(
         "workstream_request_creation_mismatch",
@@ -59,13 +61,14 @@ export function buildContextEngineLifecycleFindings(input: {
         "Inspect request route planning and idempotent replay state.",
       ));
     }
-    if (request?.decision === "continue" && request.created !== false) {
+    if (request?.decision && usesExistingRequest(request.decision)
+      && request.created !== false) {
       findings.push(finding(
-        "workstream_request_continue_created_request",
+        "workstream_request_existing_route_created_request",
         "error",
-        "Continue decision created a request",
-        "The explicit continue decision unexpectedly allocated a new workstream request.",
-        "Verify the exact active request id and request-route reducer.",
+        "Existing-request decision created a request",
+        `The '${request.decision}' decision unexpectedly allocated a new workstream request.`,
+        "Verify the selected request identity and request-route reducer.",
       ));
     }
     if (finalization?.status === "committed") {
@@ -148,6 +151,21 @@ export function buildContextEngineLifecycleFindings(input: {
   }
 
   return findings;
+}
+
+function createsRequest(decision: FeedbackWorkstreamRequestDecision): boolean {
+  return decision === "initial"
+    || decision === "create_and_activate"
+    || decision === "create_queued"
+    || decision === "defer_current_and_create";
+}
+
+function usesExistingRequest(decision: FeedbackWorkstreamRequestDecision): boolean {
+  return decision === "continue_current"
+    || decision === "activate_existing"
+    || decision === "resume_blocked"
+    || decision === "amend_current"
+    || decision === "defer_current_and_activate_existing";
 }
 
 function finding(

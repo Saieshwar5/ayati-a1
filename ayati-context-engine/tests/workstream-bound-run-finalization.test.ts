@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import type {
@@ -12,6 +12,7 @@ import { RUN_FINALIZATION_LIMITS } from "../src/run-finalization-limits.js";
 import { parseWorkstreamCommit } from "../src/workstreams/workstream-commit-metadata.js";
 import { validateWorkstreamRepository } from "../src/workstreams/workstream-repository-validator.js";
 import {
+  boundRequestAcceptance,
   createBoundWorkstream,
   createWorkstreamServiceFixture,
   workState,
@@ -94,10 +95,10 @@ describe("workstream-bound run finalization", () => {
     expect((await git(selected.workstream.contextRepositoryPath, [
       "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD",
     ])).split("\n").sort()).toEqual([
-      "progress.md",
-      "requests/R-0001-context-only-workstream.md",
-      "resources.json",
-      "workstream.md",
+      workstreamPath(selected, "progress.md"),
+      workstreamPath(selected, "requests/R-0001-context-only-workstream.md"),
+      workstreamPath(selected, "resources.json"),
+      workstreamPath(selected, "workstream.md"),
     ]);
     const validation = await validateWorkstreamRepository({
       workstreamRoot: join(fixture.root, "workstreams"),
@@ -214,8 +215,10 @@ describe("workstream-bound run finalization", () => {
       health: "ready",
       workstreamCard: {
         currentRequest: null,
-        currentFocus: question,
-        blockers: [question],
+        currentFocus: "Resolve the blocker for R-0001: Clarification Boundary.",
+        blockers: [
+          "Request R-0001: The user must select or provide the durable output resource.",
+        ],
       },
       requests: [{ id: "R-0001", status: "blocked" }],
       progress: {
@@ -378,7 +381,7 @@ describe("workstream-bound run finalization", () => {
       workstreamId: created.workstream.workstreamId,
       expectedWorkstreamHead: first.workstreamContextCommit.headAfter,
       route: {
-        kind: "continue_active_request",
+        kind: "continue_current",
         requestId: "R-0001",
         reason: "The same unfinished request is being inspected.",
       },
@@ -386,7 +389,8 @@ describe("workstream-bound run finalization", () => {
     });
     const headBefore = await git(created.workstream.contextRepositoryPath, ["rev-parse", "HEAD"]);
     const requestBefore = await git(created.workstream.contextRepositoryPath, [
-      "show", headBefore + ":requests/R-0001-read-only-continuation.md",
+      "show",
+      headBefore + ":" + workstreamPath(created, "requests/R-0001-read-only-continuation.md"),
     ]);
     const input = failedFinalization(fixture);
 
@@ -409,9 +413,9 @@ describe("workstream-bound run finalization", () => {
       .not.toBe(headBefore);
     expect((await git(created.workstream.contextRepositoryPath, [
       "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD",
-    ])).split("\n")).toEqual(["progress.md"]);
+    ])).split("\n")).toEqual([workstreamPath(created, "progress.md")]);
     expect(await git(created.workstream.contextRepositoryPath, [
-      "show", "HEAD:requests/R-0001-read-only-continuation.md",
+      "show", "HEAD:" + workstreamPath(created, "requests/R-0001-read-only-continuation.md"),
     ])).toBe(requestBefore);
     expect(await git(created.workstream.contextRepositoryPath, ["rev-list", "--count", "HEAD"]))
       .toBe("3");
@@ -485,7 +489,7 @@ describe("workstream-bound run finalization", () => {
       workstreamId: created.workstream.workstreamId,
       expectedWorkstreamHead: first.workstreamContextCommit.headAfter,
       route: {
-        kind: "continue_active_request",
+        kind: "continue_current",
         requestId: "R-0001",
         reason: "Continue the same unfinished implementation request.",
       },
@@ -514,6 +518,7 @@ describe("workstream-bound run finalization", () => {
       objective: "Prove context Git safety during finalization.",
     });
     const dirtyPath = join(selected.workstream.contextRepositoryPath, "unverified.txt");
+    await mkdir(selected.workstream.contextRepositoryPath);
     await writeFile(dirtyPath, "must be preserved\n", "utf8");
 
     await expect(fixture.service.finalizeRun(doneFinalization(fixture, [])))
@@ -580,12 +585,13 @@ function doneFinalization(
         resources,
         missing: [],
         failures: [],
-        criteria: [{
-          criterion: "The requested outcome is deterministically verified.",
+        criteria: boundRequestAcceptance(fixture).map((criterion) => ({
+          criterion,
           passed: true,
           evidence: "Resource and context verification passed.",
-        }],
+        })),
       },
+      requestEffect: { kind: "complete", verification: "verified" },
     },
     at: "2026-07-19T10:06:00+05:30",
   };
@@ -605,6 +611,7 @@ function incompleteFinalization(fixture: WorkstreamServiceFixture): FinalizeRunR
     workState: workState({ summary: "The request remains in progress." }),
     workstream: {
       completion: { accepted: false, resources: [], missing: [], failures: [], criteria: [] },
+      requestEffect: { kind: "none" },
     },
     at: "2026-07-19T10:03:00+05:30",
   };
@@ -642,6 +649,10 @@ function needsUserInputFinalization(
           evidence: "The user must select or provide the resource.",
         }],
       },
+      requestEffect: {
+        kind: "block",
+        reason: "The user must select or provide the durable output resource.",
+      },
     },
     at: "2026-07-19T10:06:00+05:30",
   };
@@ -666,6 +677,7 @@ function failedFinalization(fixture: WorkstreamServiceFixture): FinalizeRunReque
         failures: ["The read failed."],
         criteria: [{ criterion: "The source is read.", passed: false }],
       },
+      requestEffect: { kind: "none" },
     },
     at: "2026-07-19T10:06:00+05:30",
   };
@@ -706,6 +718,13 @@ function requireFilesystemPrimary(selected: SelectedWorkstreamForRunResponse): {
     path: binding.resource.locator.path,
     versionKey: binding.resource.version.key,
   };
+}
+
+function workstreamPath(
+  selected: SelectedWorkstreamForRunResponse,
+  relativePath: string,
+): string {
+  return basename(selected.workstream.contextRepositoryPath) + "/" + relativePath;
 }
 
 async function git(repositoryPath: string, args: string[]): Promise<string> {

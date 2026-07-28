@@ -6,7 +6,9 @@ import {
   compactFeedbackWorkstreamLifecycle,
   mergeFeedbackWorkstreamLifecycle,
   readFeedbackWorkstreamLifecycle,
+  readFeedbackWorkstreamRequestDecision,
   type FeedbackWorkstreamLifecycle,
+  type FeedbackWorkstreamRequestDecision,
 } from "./context-engine-feedback-model.js";
 import { buildContextEngineLifecycleFindings } from "./context-engine-feedback-triage.js";
 import {
@@ -1460,10 +1462,8 @@ function readSelectionMode(value: unknown): "created" | "activated" | undefined 
 
 function readWorkstreamRequestDecision(
   value: unknown,
-): "initial" | "continue" | "create" | undefined {
-  return value === "initial" || value === "continue" || value === "create"
-    ? value
-    : undefined;
+): FeedbackWorkstreamRequestDecision | undefined {
+  return readFeedbackWorkstreamRequestDecision(value);
 }
 
 function readWorkstreamRequestStatus(

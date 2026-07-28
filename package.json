@@ -11,6 +11,7 @@
     "dev:cli": "pnpm --filter ayati-cli dev",
     "start:main": "pnpm --filter ayati-main start",
     "context:archive-reset": "node --env-file-if-exists=.env scripts/context-archive-reset.mjs",
+    "context:workstream-migrate": "pnpm --filter ayati-context-engine build && node --env-file-if-exists=.env scripts/context-workstream-migrate.mjs",
     "context:catalog-rebuild": "pnpm --filter ayati-context-engine build && node --env-file-if-exists=.env scripts/context-catalog-rebuild.mjs",
     "start:main:feedback": "pnpm eval:agent -- live --name legacy-feedback",
     "feedback:context-engine": "pnpm eval:agent -- report --latest",

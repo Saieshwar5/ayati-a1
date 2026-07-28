@@ -1,7 +1,7 @@
 import type {
+  ContextEngineRequestEnvelope,
   GetWorkstreamRequest,
   GetWorkstreamResponse,
-  ContextEngineRequestEnvelope,
   WorkstreamCatalogEntry,
   WorkstreamContextProjection,
 } from "../contracts.js";
@@ -9,31 +9,32 @@ import type { ContextDatabase } from "../database/database.js";
 import {
   beginRecoverableIdempotent,
   completeRecoverableIdempotent,
-  hasRecoverableIdempotencyRequest,
-  markRecoverableIdempotencyFailed,
 } from "../database/idempotency.js";
 import { ContextEngineServiceError } from "../errors.js";
 import {
-  activateWorkstream,
   allocateSimpleWorkstream,
+  readBindableWorkstreamCatalogEntry,
   readInitializingWorkstreams,
-  readWorkstreamCatalogEntry,
   readWorkstreamInitialization,
-  type WorkstreamInitializationRecord,
 } from "../repositories/workstream-records.js";
-import { readWorkstreamContext } from "../workstreams/workstream-context-reader.js";
+import { readRecentRequestProgress } from "../repositories/workstream-progress-records.js";
+import { readSharedWorkstreamRepositoryState } from "../repositories/workstream-repository-state-records.js";
 import {
-  completeSimpleWorkstreamCreation,
-  ensureSimpleWorkstreamRepository,
-  type SimpleWorkstreamCreationHook,
-} from "../workstreams/simple-workstream-repository-creator.js";
+  readUnfinishedWorkstreamRequests,
+  readWorkstreamRequest,
+} from "../repositories/workstream-request-records.js";
+import { readWorkstreamContext } from "../workstreams/workstream-context-reader.js";
+import { projectProvisionalWorkstreamValidation } from "../workstreams/provisional-workstream-context.js";
+import { ensureSharedWorkstreamRepository } from "../workstreams/shared-workstream-repository.js";
 
 export interface WorkstreamLifecycleServiceOptions {
   database: ContextDatabase;
   workstreamRoot: string;
   now: () => string;
-  simpleWorkstreamCreationHook?: SimpleWorkstreamCreationHook;
-  onContextRead?: (workstream: WorkstreamCatalogEntry, context: WorkstreamContextProjection) => void;
+  onContextRead?: (
+    workstream: WorkstreamCatalogEntry,
+    context: WorkstreamContextProjection,
+  ) => void;
 }
 
 export interface CreateSimpleWorkstreamResult {
@@ -55,84 +56,69 @@ export interface CreateSimpleWorkstreamInput extends ContextEngineRequestEnvelop
 }
 
 export class WorkstreamLifecycleService {
-  private readonly database: ContextDatabase;
-  private readonly workstreamRoot: string;
-  private readonly now: () => string;
-  private readonly simpleWorkstreamCreationHook?: SimpleWorkstreamCreationHook;
-  private readonly onContextRead?: (
-    workstream: WorkstreamCatalogEntry,
-    context: WorkstreamContextProjection,
-  ) => void;
+  constructor(private readonly options: WorkstreamLifecycleServiceOptions) {}
 
-  constructor(options: WorkstreamLifecycleServiceOptions) {
-    this.database = options.database;
-    this.workstreamRoot = options.workstreamRoot;
-    this.now = options.now;
-    this.simpleWorkstreamCreationHook = options.simpleWorkstreamCreationHook;
-    this.onContextRead = options.onContextRead;
+  async ensureRepository(at = this.options.now()): Promise<void> {
+    await ensureSharedWorkstreamRepository({
+      database: this.options.database,
+      workstreamRoot: this.options.workstreamRoot,
+      at,
+    });
   }
 
-  async createSimpleWorkstream(input: CreateSimpleWorkstreamInput): Promise<CreateSimpleWorkstreamResult> {
+  async createSimpleWorkstream(
+    input: CreateSimpleWorkstreamInput,
+  ): Promise<CreateSimpleWorkstreamResult> {
     const normalized = normalizeWorkstreamInput(input);
     validateSimpleWorkstreamCreationInput(input);
-    const recovering = hasRecoverableIdempotencyRequest({
-      database: this.database,
-      requestId: input.requestId,
-      operation: "create_simple_workstream",
-      payload: input,
-    });
-    type CreationRecord = { workstreamId: string; created: boolean } | CreateSimpleWorkstreamResult;
-    const pending = beginRecoverableIdempotent<CreationRecord>({
-      database: this.database,
+    await this.ensureRepository(input.at);
+    type Allocation = { workstreamId: string; created: true } | CreateSimpleWorkstreamResult;
+    const pending = beginRecoverableIdempotent<Allocation>({
+      database: this.options.database,
       requestId: input.requestId,
       operation: "create_simple_workstream",
       payload: input,
       now: input.at,
       execute: () => {
-        const workstream = allocateSimpleWorkstream(
-          this.database,
-          this.workstreamRoot,
+        const record = allocateSimpleWorkstream(
+          this.options.database,
+          this.options.workstreamRoot,
           {
             ...input,
-            ...(normalized.initialRequest ? { initialRequest: normalized.initialRequest } : {}),
+            ...(normalized.initialRequest
+              ? { initialRequest: normalized.initialRequest }
+              : {}),
           },
           normalized,
         );
-        return { workstreamId: workstream.workstreamId, created: true };
+        return { workstreamId: record.workstreamId, created: true };
       },
     });
+    if (pending.completed && "workstream" in pending.result) return pending.result;
     const workstreamId = "workstreamId" in pending.result
       ? pending.result.workstreamId
       : pending.result.workstream.workstreamId;
-    if (pending.completed && "workstream" in pending.result) return pending.result;
-    try {
-      const record = readWorkstreamInitialization(this.database, workstreamId);
-      if (!record) throw workstreamNotFound(workstreamId);
-      await this.simpleWorkstreamCreationHook?.("allocated", record);
-      const workstream = await this.initializeSimpleWorkstream(record, input.at, recovering);
-      const result: CreateSimpleWorkstreamResult = { workstream, created: pending.result.created };
-      return completeRecoverableIdempotent({
-        database: this.database,
-        requestId: input.requestId,
-        result,
-        now: input.at,
-      });
-    } catch (error) {
-      markRecoverableIdempotencyFailed({
-        database: this.database,
-        requestId: input.requestId,
-      });
-      throw error;
-    }
+    const record = readWorkstreamInitialization(this.options.database, workstreamId);
+    const workstream = readBindableWorkstreamCatalogEntry(
+      this.options.database,
+      workstreamId,
+    );
+    if (!record || !workstream) throw workstreamNotFound(workstreamId);
+    const result: CreateSimpleWorkstreamResult = {
+      workstream,
+      created: pending.result.created,
+    };
+    return completeRecoverableIdempotent({
+      database: this.options.database,
+      requestId: input.requestId,
+      result,
+      now: input.at,
+    });
   }
 
   async getWorkstream(input: GetWorkstreamRequest): Promise<GetWorkstreamResponse> {
     validateWorkstreamId(input.workstreamId);
-    const workstream = this.requireActiveWorkstream(input.workstreamId);
-    const record = readWorkstreamInitialization(this.database, input.workstreamId);
-    if (!record) {
-      throw workstreamNotFound(input.workstreamId);
-    }
+    const workstream = this.requireReadableWorkstream(input.workstreamId);
     const context = await this.readContext(workstream);
     return {
       workstream: {
@@ -143,74 +129,157 @@ export class WorkstreamLifecycleService {
         title: context.title,
         objective: context.objective,
       },
-      context,
+      context: {
+        ...context,
+        unfinishedRequests: readUnfinishedWorkstreamRequests(
+          this.options.database,
+          workstream.workstreamId,
+        ).map((request) => ({
+          id: request.id,
+          title: request.title,
+          status: request.status as "queued" | "active" | "blocked",
+          request: request.request,
+          acceptance: [...request.acceptance],
+          constraints: [...request.constraints],
+        })),
+      },
+    };
+  }
+
+  async getWorkstreamRequestContext(input: {
+    workstreamId: string;
+    requestId: string;
+  }): Promise<GetWorkstreamResponse> {
+    const result = await this.getWorkstream({ workstreamId: input.workstreamId });
+    const request = readWorkstreamRequest(
+      this.options.database,
+      input.workstreamId,
+      input.requestId,
+    );
+    if (!request || !result.context) {
+      throw new ContextEngineServiceError({
+        code: "NOT_FOUND",
+        message: "Workstream request does not exist.",
+        details: {
+          workstreamId: input.workstreamId,
+          requestId: input.requestId,
+        },
+      });
+    }
+    const recentProgress = readRecentRequestProgress(this.options.database, {
+      workstreamId: input.workstreamId,
+      requestId: input.requestId,
+      limit: 5,
+    }).map((entry) => ({
+      runId: entry.runId,
+      outcome: entry.outcome,
+      summary: entry.summary,
+      validationSummary: entry.validationSummary,
+      ...(entry.nextAction ? { nextAction: entry.nextAction } : {}),
+      commit: entry.commit,
+      finalizedAt: entry.finalizedAt,
+    }));
+    return {
+      ...result,
+      context: {
+        ...result.context,
+        selectedRequest: {
+          id: request.id,
+          title: request.title,
+          status: request.status,
+          request: request.request,
+          acceptance: [...request.acceptance],
+          constraints: [...request.constraints],
+          lifecycleNote: request.lifecycleNote,
+          finalOutcome: request.finalOutcome,
+        },
+        recentProgress,
+      },
     };
   }
 
   async recoverInitializingState(): Promise<void> {
-    for (const workstream of readInitializingWorkstreams(this.database)) {
-      try {
-        const head = await ensureSimpleWorkstreamRepository({
-          workstream,
-          workstreamRoot: this.workstreamRoot,
-          recovering: true,
-        });
-        activateWorkstream(this.database, workstream.workstreamId, head, this.now());
-        await completeSimpleWorkstreamCreation(workstream);
-      } catch {
-        // One ambiguous context repository must not prevent unrelated streams
-        // and workstreams from recovering. The original request can retry the
-        // same idempotent initialization record.
+    await this.ensureRepository();
+    for (const workstream of readInitializingWorkstreams(this.options.database)) {
+      const boundRun = this.options.database.prepare([
+        "SELECT run_id FROM runs WHERE workstream_id = ? LIMIT 1",
+      ].join(" ")).get(workstream.workstreamId) as { run_id: string } | undefined;
+      if (boundRun) {
+        // A bound provisional workstream belongs to run finalization recovery,
+        // which materializes its first progress entry and commit.
+        continue;
       }
+      this.options.database.prepare([
+        "DELETE FROM workstreams WHERE workstream_id = ?",
+        "AND status = 'initializing' AND last_commit_sha IS NULL",
+      ].join(" ")).run(workstream.workstreamId);
     }
-  }
-
-  private async initializeSimpleWorkstream(
-    record: WorkstreamInitializationRecord,
-    at: string,
-    recovering: boolean,
-  ): Promise<WorkstreamCatalogEntry> {
-    if (record.status !== "initializing") {
-      await completeSimpleWorkstreamCreation(record);
-      const workstream = this.requireActiveWorkstream(record.workstreamId);
-      const context = await this.readContext(workstream);
-      if (context.workstream.head !== workstream.head) {
-        throw new ContextEngineServiceError({
-          code: "WORKSTREAM_HEAD_MISMATCH",
-          message: "Recovered workstream HEAD does not match its catalog entry.",
-          details: { workstreamId: workstream.workstreamId, catalogHead: workstream.head, actualHead: context.workstream.head },
-        });
-      }
-      return workstream;
-    }
-    const head = await ensureSimpleWorkstreamRepository({
-      workstream: record,
-      workstreamRoot: this.workstreamRoot,
-      recovering,
-      ...(this.simpleWorkstreamCreationHook ? { onPhase: this.simpleWorkstreamCreationHook } : {}),
-    });
-    const workstream = activateWorkstream(this.database, record.workstreamId, head, at);
-    await this.simpleWorkstreamCreationHook?.("catalog_activated", record);
-    await completeSimpleWorkstreamCreation(record);
-    return workstream;
-  }
-
-  private requireActiveWorkstream(workstreamId: string): WorkstreamCatalogEntry {
-    const workstream = readWorkstreamCatalogEntry(this.database, workstreamId);
-    if (!workstream || workstream.status !== "active") {
-      throw workstreamNotFound(workstreamId);
-    }
-    return workstream;
   }
 
   async readContext(
     workstream: WorkstreamCatalogEntry,
   ): Promise<WorkstreamContextProjection> {
-    const context = await readWorkstreamContext(workstream, {
-      workstreamRoot: this.workstreamRoot,
-    });
-    this.onContextRead?.(workstream, context);
+    const record = readWorkstreamInitialization(
+      this.options.database,
+      workstream.workstreamId,
+    );
+    if (!record) throw workstreamNotFound(workstream.workstreamId);
+    const context = record.materialized
+      ? await readWorkstreamContext(workstream, {
+          workstreamRoot: this.options.workstreamRoot,
+        })
+      : this.readProvisionalContext(record);
+    if (record.materialized) this.options.onContextRead?.(workstream, context);
     return context;
+  }
+
+  private readProvisionalContext(
+    record: NonNullable<ReturnType<typeof readWorkstreamInitialization>>,
+  ): WorkstreamContextProjection {
+    const repository = readSharedWorkstreamRepositoryState(this.options.database);
+    if (!repository) throw new Error("Shared workstream repository is unavailable.");
+    const validation = projectProvisionalWorkstreamValidation({
+      database: this.options.database,
+      workstream: record,
+      repository,
+    });
+    const request = validation.currentRequest;
+    return {
+      workstream: {
+        workstreamId: record.workstreamId,
+        contextRepositoryPath: record.contextRepositoryPath,
+        branch: repository.branch,
+        head: record.head,
+      },
+      title: validation.workstreamCard.title,
+      objective: validation.workstreamCard.purpose,
+      summary: validation.workstreamCard.currentSnapshot,
+      recentCommits: [],
+      schemaVersion: validation.workstreamCard.schema,
+      lifecycleStatus: validation.workstreamCard.status,
+      repositoryHealth: validation.health,
+      currentFocus: validation.workstreamCard.currentFocus,
+      blockers: [...validation.workstreamCard.blockers],
+      ...(request ? {
+        currentRequest: {
+          id: request.id,
+          title: request.title,
+          status: request.status,
+          request: request.request,
+          acceptance: [...request.acceptance],
+          constraints: [...request.constraints],
+        },
+      } : {}),
+    };
+  }
+
+  private requireReadableWorkstream(workstreamId: string): WorkstreamCatalogEntry {
+    const workstream = readBindableWorkstreamCatalogEntry(
+      this.options.database,
+      workstreamId,
+    );
+    if (!workstream) throw workstreamNotFound(workstreamId);
+    return workstream;
   }
 }
 
@@ -219,42 +288,33 @@ function normalizeWorkstreamInput(input: CreateSimpleWorkstreamInput): {
   objective: string;
   initialRequest?: NonNullable<CreateSimpleWorkstreamInput["initialRequest"]>;
 } {
-  const title = input.title.trim().replace(/\s+/g, " ");
-  const objective = input.objective.trim().replace(/\s+/g, " ");
-  if (title.length === 0 || title.length > 120) {
-    throw new ContextEngineServiceError({
-      code: "INVALID_REQUEST",
-      message: "Workstream title must contain between 1 and 120 characters.",
-    });
-  }
-  if (objective.length === 0 || objective.length > 2_000) {
-    throw new ContextEngineServiceError({
-      code: "INVALID_REQUEST",
-      message: "Workstream objective must contain between 1 and 2000 characters.",
-    });
-  }
+  const title = normalizeBounded(input.title, "Workstream title", 120);
+  const objective = normalizeBounded(input.objective, "Workstream objective", 2_000);
   const initialRequest = input.initialRequest
     ? {
         title: normalizeBounded(input.initialRequest.title, "Initial request title", 120),
         request: normalizeBounded(input.initialRequest.request, "Initial request", 4_000),
-        acceptance: normalizeList(input.initialRequest.acceptance, "Initial request acceptance", 1_000, false),
-        constraints: normalizeList(input.initialRequest.constraints, "Initial request constraints", 1_000, true),
+        acceptance: normalizeList(
+          input.initialRequest.acceptance,
+          "Initial request acceptance",
+          500,
+          false,
+        ),
+        constraints: normalizeList(
+          input.initialRequest.constraints,
+          "Initial request constraints",
+          500,
+          true,
+        ),
       }
     : undefined;
-  return {
-    title,
-    objective,
-    ...(initialRequest ? { initialRequest } : {}),
-  };
+  return { title, objective, ...(initialRequest ? { initialRequest } : {}) };
 }
 
 function normalizeBounded(value: string, field: string, maximum: number): string {
   const normalized = value.trim().replace(/\s+/g, " ");
-  if (normalized.length === 0 || normalized.length > maximum) {
-    throw new ContextEngineServiceError({
-      code: "INVALID_REQUEST",
-      message: `${field} must contain between 1 and ${maximum} characters.`,
-    });
+  if (!normalized || normalized.length > maximum) {
+    throw invalid(`${field} must contain between 1 and ${maximum} characters.`);
   }
   return normalized;
 }
@@ -265,41 +325,31 @@ function normalizeList(
   maximum: number,
   allowEmpty: boolean,
 ): string[] {
-  const normalized = values.map((value) => normalizeBounded(value, field, maximum));
-  if (!allowEmpty && normalized.length === 0) {
-    throw new ContextEngineServiceError({
-      code: "INVALID_REQUEST",
-      message: `${field} must contain at least one item.`,
-    });
+  const result = [...new Set(values.map((value) => normalizeBounded(value, field, maximum)))];
+  if ((!allowEmpty && result.length === 0) || result.length > 20) {
+    throw invalid(`${field} must contain ${allowEmpty ? "0" : "1"} to 20 entries.`);
   }
-  if (normalized.length > 20) {
-    throw new ContextEngineServiceError({
-      code: "INVALID_REQUEST",
-      message: `${field} may contain at most 20 items.`,
-    });
-  }
-  return normalized;
-}
-
-function validateWorkstreamId(workstreamId: string): void {
-  if (!/^W-\d{8}-\d{4}$/.test(workstreamId)) {
-    throw workstreamNotFound(workstreamId);
-  }
+  return result;
 }
 
 function validateSimpleWorkstreamCreationInput(input: CreateSimpleWorkstreamInput): void {
-  if (!Number.isFinite(Date.parse(input.at))) {
-    throw new ContextEngineServiceError({
-      code: "INVALID_REQUEST",
-      message: "Workstream creation time must be a valid timestamp.",
-    });
+  if (!input.runId || !input.requestId || !Number.isFinite(Date.parse(input.at))) {
+    throw invalid("Workstream creation requires a run, request, and valid timestamp.");
   }
+}
+
+function validateWorkstreamId(workstreamId: string): void {
+  if (!/^W-\d{8}-\d{4}$/.test(workstreamId)) throw workstreamNotFound(workstreamId);
 }
 
 function workstreamNotFound(workstreamId: string): ContextEngineServiceError {
   return new ContextEngineServiceError({
     code: "WORKSTREAM_NOT_FOUND",
-    message: "Workstream does not exist.",
+    message: "Workstream does not exist or is not available.",
     details: { workstreamId },
   });
+}
+
+function invalid(message: string): ContextEngineServiceError {
+  return new ContextEngineServiceError({ code: "INVALID_REQUEST", message });
 }

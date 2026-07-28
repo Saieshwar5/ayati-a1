@@ -1,6 +1,20 @@
+import type { WorkstreamRequestRoute } from "ayati-context-engine";
+
 export type FeedbackWorkstreamSelectionMode = "created" | "activated";
-export type FeedbackWorkstreamRequestDecision = "initial" | "continue" | "create";
+export type FeedbackWorkstreamRequestDecision = "initial" | WorkstreamRequestRoute["kind"];
 export type FeedbackWorkstreamFinalizationStatus = "not_started" | "started" | "not_required" | "no_change" | "committed" | "failed";
+
+const FEEDBACK_WORKSTREAM_REQUEST_DECISIONS = {
+  initial: true,
+  continue_current: true,
+  activate_existing: true,
+  resume_blocked: true,
+  amend_current: true,
+  create_and_activate: true,
+  create_queued: true,
+  defer_current_and_activate_existing: true,
+  defer_current_and_create: true,
+} as const satisfies Record<FeedbackWorkstreamRequestDecision, true>;
 
 export interface FeedbackWorkstreamRepository {
   workstreamId?: string;
@@ -66,6 +80,16 @@ export function readFeedbackWorkstreamLifecycle(value: unknown): FeedbackWorkstr
   });
 }
 
+export function readFeedbackWorkstreamRequestDecision(
+  value: unknown,
+): FeedbackWorkstreamRequestDecision | undefined {
+  if (typeof value !== "string"
+    || !Object.hasOwn(FEEDBACK_WORKSTREAM_REQUEST_DECISIONS, value)) {
+    return undefined;
+  }
+  return value as FeedbackWorkstreamRequestDecision;
+}
+
 export function compactFeedbackWorkstreamLifecycle(
   value: FeedbackWorkstreamLifecycle | undefined,
 ): FeedbackWorkstreamLifecycle | undefined {
@@ -97,7 +121,7 @@ function readRepository(value: unknown): FeedbackWorkstreamRepository | undefine
 
 function readRequest(value: unknown): FeedbackWorkstreamRequest | undefined {
   if (!isRecord(value)) return undefined;
-  const decision = oneOf(value["decision"], ["initial", "continue", "create"] as const);
+  const decision = readFeedbackWorkstreamRequestDecision(value["decision"]);
   const status = oneOf(value["status"], ["queued", "active", "blocked", "done", "dropped"] as const);
   return compactRecord({
     decision,

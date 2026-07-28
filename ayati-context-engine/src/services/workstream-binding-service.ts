@@ -43,7 +43,7 @@ export class WorkstreamBindingService {
       creation.workstream,
       creation.created,
       {
-        kind: "continue_active_request",
+        kind: "continue_current",
         requestId: "R-0001",
         reason: "Continue the initial request created with the workstream.",
       },
@@ -59,7 +59,7 @@ export class WorkstreamBindingService {
     this.emitRequested(
       input,
       "activate",
-      input.route.kind === "continue_active_request" ? "continue" : "create",
+      input.route.kind,
     );
     const response = await this.workstreamLifecycle.getWorkstream({ workstreamId: input.workstreamId });
     if (input.expectedWorkstreamHead && response.workstream.head !== input.expectedWorkstreamHead) {
@@ -79,7 +79,7 @@ export class WorkstreamBindingService {
       response.workstream,
       false,
       input.route,
-      input.route.kind === "continue_active_request" ? "continue" : "create",
+      input.route.kind,
     );
   }
 
@@ -88,7 +88,7 @@ export class WorkstreamBindingService {
     workstream: WorkstreamCatalogEntry,
     workstreamCreated: boolean,
     route: WorkstreamRequestRoute,
-    workstreamRequestDecision: "initial" | "continue" | "create",
+    workstreamRequestDecision: "initial" | WorkstreamRequestRoute["kind"],
   ): Promise<SelectedWorkstreamForRunResponse> {
     const headBeforeSelection = workstream.head;
     const planned = await this.workstreamRequestRouting.plan({
@@ -103,11 +103,12 @@ export class WorkstreamBindingService {
       input.runId,
       await this.workstreamLifecycle.readContext(workstream),
     );
-    const status = context.currentRequest?.status;
+    const selectedRequest = context.selectedRequest ?? context.currentRequest;
+    const status = selectedRequest?.status;
     if (!status) {
       throw new Error("Selected workstream context is missing its active request status.");
     }
-    if (workstreamRequestDecision === "continue") {
+    if (!planned.requestCreated) {
       this.restoreContinuationWorkState({
         runId: input.runId,
         workstreamId: workstream.workstreamId,
@@ -123,6 +124,7 @@ export class WorkstreamBindingService {
       workstreamRequestDecision,
       workstreamRequestStatus: status,
       workstreamRequestCreated: workstreamRequestDecision === "initial" ? true : planned.requestCreated,
+      mutationReady: status === "active",
       headBeforeSelection,
       resourceBindings: context.resources ?? [],
     };
@@ -183,7 +185,7 @@ export class WorkstreamBindingService {
   private emitRequested(
     input: CreateWorkstreamForRunRequest | ActivateWorkstreamForRunRequest,
     mode: "create" | "activate",
-    decision: "initial" | "continue" | "create",
+    decision: "initial" | WorkstreamRequestRoute["kind"],
   ): void {
     const streamId = readRunEvidence(this.database, input.runId)?.streamId;
     this.observer.emit({

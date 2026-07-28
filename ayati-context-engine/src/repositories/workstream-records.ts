@@ -6,21 +6,26 @@ import type {
   WorkstreamStatus,
 } from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
+import { buildInitialWorkstreamContext } from "../workstreams/initial-workstream-context.js";
 import { workstreamDirectoryName } from "../workstreams/workstream-repository-layout.js";
+import { readSharedWorkstreamRepositoryState } from "./workstream-repository-state-records.js";
+import { writeWorkstreamRequestProjection } from "./workstream-request-records.js";
 
 interface WorkstreamRow {
   workstream_id: string;
-  repository_path: string;
-  branch: string;
-  head_sha: string | null;
-  title_cache: string;
-  objective_cache: string;
+  directory_path: string;
+  title: string;
+  aliases_json: string;
+  purpose: string;
   initial_request_json: string | null;
   lifecycle_status: "active" | "paused" | "archived";
-  repository_health: "ready" | "dirty_external" | "unavailable";
   current_request_id: string | null;
-  current_request_title: string | null;
-  current_request_status: "queued" | "active" | "blocked" | "done" | "dropped" | null;
+  current_snapshot: string;
+  current_focus: string;
+  blockers_json: string;
+  last_run_id: string | null;
+  last_commit_sha: string | null;
+  last_activity_at: string;
   status: WorkstreamStatus | "recovery_required";
   created_by_run_id: string | null;
   created_at: string;
@@ -31,7 +36,9 @@ export interface WorkstreamInitializationRecord {
   workstreamId: string;
   contextRepositoryPath: string;
   branch: "main";
-  head: string | null;
+  head: string;
+  lastCommit: string | null;
+  materialized: boolean;
   title: string;
   objective: string;
   initialRequest?: {
@@ -58,6 +65,7 @@ export function allocateSimpleWorkstream(
   input: SimpleWorkstreamAllocationInput,
   normalized: { title: string; objective: string },
 ): WorkstreamInitializationRecord {
+  const repository = requireRepositoryState(database);
   const datePart = input.at.slice(0, 10).replaceAll("-", "");
   const prefix = "W-" + datePart + "-";
   const row = database.prepare([
@@ -65,30 +73,52 @@ export function allocateSimpleWorkstream(
     "FROM workstreams WHERE workstream_id LIKE ?",
   ].join(" ")).get(prefix + "%") as { next: number };
   const workstreamId = prefix + String(Number(row.next)).padStart(4, "0");
-  const contextRepositoryPath = join(
+  const directoryPath = join(
     workstreamRoot,
     workstreamDirectoryName(workstreamId, normalized.title),
   );
+  const initial = buildInitialWorkstreamContext({
+    workstreamId,
+    title: normalized.title,
+    purpose: normalized.objective,
+    at: input.at,
+    ...(input.initialRequest ? { initialRequest: input.initialRequest } : {}),
+  });
   database.prepare([
     "INSERT INTO workstreams(",
-    "workstream_id, repository_path, branch, head_sha, title_cache, objective_cache, initial_request_json,",
-    "lifecycle_status, repository_health, current_request_id, current_request_title,",
-    "current_request_status, status, created_by_run_id, created_at, updated_at",
-    ") VALUES (?, ?, 'main', NULL, ?, ?, ?, 'active', 'ready', 'R-0001', ?,",
-    "'active', 'initializing', ?, ?, ?)",
+    "workstream_id, directory_path, title, aliases_json, purpose, initial_request_json,",
+    "lifecycle_status, current_request_id, current_snapshot, current_focus, blockers_json,",
+    "last_run_id, last_commit_sha, last_activity_at, status, created_by_run_id, created_at, updated_at",
+    ") VALUES (?, ?, ?, '[]', ?, ?, 'active', NULL, ?, ?, '[]', NULL, NULL, ?,",
+    "'initializing', ?, ?, ?)",
   ].join(" ")).run(
     workstreamId,
-    contextRepositoryPath,
+    directoryPath,
     normalized.title,
     normalized.objective,
-    input.initialRequest ? JSON.stringify(input.initialRequest) : null,
-    input.initialRequest?.title ?? normalized.title,
+    JSON.stringify(input.initialRequest ?? {
+      title: initial.request.title,
+      request: initial.request.request,
+      acceptance: initial.request.acceptance,
+      constraints: initial.request.constraints,
+    }),
+    initial.card.currentSnapshot,
+    initial.card.currentFocus,
+    input.at,
     input.runId,
     input.at,
     input.at,
   );
+  writeWorkstreamRequestProjection(database, {
+    request: initial.request,
+    createdByRunId: input.runId,
+    lastActivityAt: input.at,
+  });
+  database.prepare([
+    "UPDATE workstreams SET current_request_id = 'R-0001' WHERE workstream_id = ?",
+  ].join(" ")).run(workstreamId);
   const workstream = readWorkstreamInitialization(database, workstreamId);
-  if (!workstream) {
+  if (!workstream || workstream.head !== repository.head) {
     throw new Error("Allocated workstream could not be read: " + workstreamId);
   }
   return workstream;
@@ -99,7 +129,7 @@ export function readWorkstreamInitialization(
   workstreamId: string,
 ): WorkstreamInitializationRecord | undefined {
   const row = readWorkstreamRow(database, workstreamId);
-  return row ? initializationRecord(row) : undefined;
+  return row ? initializationRecord(database, row) : undefined;
 }
 
 export function readInitializingWorkstreams(
@@ -110,27 +140,26 @@ export function readInitializingWorkstreams(
     "WHERE status = 'initializing'",
     "ORDER BY created_at, workstream_id",
   ].join(" ")).all() as unknown as WorkstreamRow[];
-  return rows.map(initializationRecord);
+  return rows.map((row) => initializationRecord(database, row));
 }
 
 export function activateWorkstream(
   database: ContextDatabase,
   workstreamId: string,
-  head: string,
+  commit: string,
   at: string,
 ): WorkstreamCatalogEntry {
   const result = database.prepare([
-    "UPDATE workstreams SET head_sha = ?, status = 'active', repository_health = 'ready', updated_at = ?",
+    "UPDATE workstreams SET last_commit_sha = ?, status = 'active',",
+    "last_activity_at = ?, updated_at = ?",
     "WHERE workstream_id = ? AND status = 'initializing'",
-  ].join(" ")).run(head, at, workstreamId);
+  ].join(" ")).run(commit, at, at, workstreamId);
   if (Number(result.changes) !== 1) {
     throw new Error("Workstream activation did not update exactly one row: " + workstreamId);
   }
   const row = readWorkstreamRow(database, workstreamId);
-  if (!row) {
-    throw new Error("Activated workstream could not be read: " + workstreamId);
-  }
-  return catalogEntry(row);
+  if (!row) throw new Error("Activated workstream could not be read: " + workstreamId);
+  return catalogEntry(database, row);
 }
 
 export function readWorkstreamCatalogEntry(
@@ -138,10 +167,20 @@ export function readWorkstreamCatalogEntry(
   workstreamId: string,
 ): WorkstreamCatalogEntry | undefined {
   const row = readWorkstreamRow(database, workstreamId);
-  if (!row || !row.head_sha || row.status === "recovery_required") {
+  if (!row || !row.last_commit_sha || row.status === "initializing"
+    || row.status === "recovery_required") {
     return undefined;
   }
-  return catalogEntry(row);
+  return catalogEntry(database, row);
+}
+
+export function readBindableWorkstreamCatalogEntry(
+  database: ContextDatabase,
+  workstreamId: string,
+): WorkstreamCatalogEntry | undefined {
+  const row = readWorkstreamRow(database, workstreamId);
+  if (!row || row.status === "recovery_required") return undefined;
+  return catalogEntry(database, row);
 }
 
 export function readWorkstreamCatalogEntries(
@@ -152,63 +191,110 @@ export function readWorkstreamCatalogEntries(
   const rows = query
     ? database.prepare([
         workstreamSelect(),
-        "WHERE status = 'active'",
-        "AND (lower(title_cache) LIKE ? OR lower(objective_cache) LIKE ?)",
-        "ORDER BY updated_at DESC, workstream_id DESC LIMIT ?",
+        "WHERE status IN ('active', 'archived')",
+        "AND (lower(title) LIKE ? OR lower(purpose) LIKE ?)",
+        "ORDER BY last_activity_at DESC, workstream_id DESC LIMIT ?",
       ].join(" ")).all("%" + query + "%", "%" + query + "%", input.limit)
     : database.prepare([
         workstreamSelect(),
-        "WHERE status = 'active'",
-        "ORDER BY updated_at DESC, workstream_id DESC LIMIT ?",
+        "WHERE status IN ('active', 'archived')",
+        "ORDER BY last_activity_at DESC, workstream_id DESC LIMIT ?",
       ].join(" ")).all(input.limit);
-  return (rows as unknown as WorkstreamRow[])
-    .filter((row) => Boolean(row.head_sha))
-    .map(catalogEntry);
+  return (rows as unknown as WorkstreamRow[]).map((row) => catalogEntry(database, row));
 }
 
 export function updateWorkstreamHead(
   database: ContextDatabase,
   workstreamId: string,
   expectedHead: string,
-  head: string,
+  commit: string,
   at: string,
 ): WorkstreamCatalogEntry {
   const result = database.prepare([
-    "UPDATE workstreams SET head_sha = ?, repository_health = 'ready', updated_at = ?",
-    "WHERE workstream_id = ? AND head_sha = ? AND status = 'active'",
-  ].join(" ")).run(head, at, workstreamId, expectedHead);
+    "UPDATE workstreams SET last_commit_sha = ?, last_activity_at = ?, updated_at = ?",
+    "WHERE workstream_id = ? AND last_commit_sha = ? AND status = 'active'",
+  ].join(" ")).run(commit, at, at, workstreamId, expectedHead);
   const workstream = readWorkstreamCatalogEntry(database, workstreamId);
   if (Number(result.changes) !== 1 || !workstream) {
-    throw new Error("Workstream HEAD changed while checkpointing: " + workstreamId);
+    throw new Error("Workstream revision changed while checkpointing: " + workstreamId);
   }
   return workstream;
 }
 
-function readWorkstreamRow(database: ContextDatabase, workstreamId: string): WorkstreamRow | undefined {
-  return database.prepare([
-    workstreamSelect(),
+export function updateWorkstreamProjection(database: ContextDatabase, input: {
+  workstreamId: string;
+  title: string;
+  aliases: string[];
+  purpose: string;
+  lifecycleStatus: "active" | "paused" | "archived";
+  currentRequestId: string | null;
+  currentSnapshot: string;
+  currentFocus: string;
+  blockers: string[];
+  lastRunId: string;
+  lastCommit: string;
+  at: string;
+}): void {
+  database.prepare([
+    "UPDATE workstreams SET title = ?, aliases_json = ?, purpose = ?, lifecycle_status = ?,",
+    "current_request_id = ?, current_snapshot = ?, current_focus = ?, blockers_json = ?,",
+    "last_run_id = ?, last_commit_sha = ?, last_activity_at = ?, updated_at = ?, status =",
+    "CASE WHEN status = 'initializing' THEN 'active' ELSE status END",
     "WHERE workstream_id = ?",
-  ].join(" ")).get(workstreamId) as WorkstreamRow | undefined;
+  ].join(" ")).run(
+    input.title,
+    JSON.stringify(input.aliases),
+    input.purpose,
+    input.lifecycleStatus,
+    input.currentRequestId,
+    input.currentSnapshot,
+    input.currentFocus,
+    JSON.stringify(input.blockers),
+    input.lastRunId,
+    input.lastCommit,
+    input.at,
+    input.at,
+    input.workstreamId,
+  );
+}
+
+function readWorkstreamRow(
+  database: ContextDatabase,
+  workstreamId: string,
+): WorkstreamRow | undefined {
+  return database.prepare(workstreamSelect() + " WHERE workstream_id = ?")
+    .get(workstreamId) as WorkstreamRow | undefined;
 }
 
 function workstreamSelect(): string {
   return [
-    "SELECT workstream_id, repository_path, branch, head_sha, title_cache, objective_cache, initial_request_json,",
-    "lifecycle_status, repository_health, current_request_id, current_request_title,",
-    "current_request_status, status, created_by_run_id, created_at, updated_at FROM workstreams",
+    "SELECT workstream_id, directory_path, title, aliases_json, purpose, initial_request_json,",
+    "lifecycle_status, current_request_id, current_snapshot, current_focus, blockers_json,",
+    "last_run_id, last_commit_sha, last_activity_at, status, created_by_run_id,",
+    "created_at, updated_at FROM workstreams",
   ].join(" ");
 }
 
-function initializationRecord(row: WorkstreamRow): WorkstreamInitializationRecord {
+function initializationRecord(
+  database: ContextDatabase,
+  row: WorkstreamRow,
+): WorkstreamInitializationRecord {
+  const repository = requireRepositoryState(database);
   return {
     workstreamId: row.workstream_id,
-    contextRepositoryPath: row.repository_path,
+    contextRepositoryPath: row.directory_path,
     branch: "main",
-    head: row.head_sha,
-    title: row.title_cache,
-    objective: row.objective_cache,
+    head: row.last_commit_sha ?? repository.head,
+    lastCommit: row.last_commit_sha,
+    materialized: Boolean(row.last_commit_sha),
+    title: row.title,
+    objective: row.purpose,
     ...(row.initial_request_json
-      ? { initialRequest: JSON.parse(row.initial_request_json) as NonNullable<WorkstreamInitializationRecord["initialRequest"]> }
+      ? {
+          initialRequest: JSON.parse(row.initial_request_json) as NonNullable<
+            WorkstreamInitializationRecord["initialRequest"]
+          >,
+        }
       : {}),
     status: row.status,
     ...(row.created_by_run_id ? { createdByRunId: row.created_by_run_id } : {}),
@@ -217,23 +303,32 @@ function initializationRecord(row: WorkstreamRow): WorkstreamInitializationRecor
   };
 }
 
-function catalogEntry(row: WorkstreamRow): WorkstreamCatalogEntry {
-  if (!row.head_sha) {
-    throw new Error("Active workstream is missing its Git HEAD: " + row.workstream_id);
-  }
+function catalogEntry(
+  database: ContextDatabase,
+  row: WorkstreamRow,
+): WorkstreamCatalogEntry {
+  const record = initializationRecord(database, row);
   const workstream: WorkstreamRef = {
     workstreamId: row.workstream_id,
-    contextRepositoryPath: row.repository_path,
-    branch: row.branch,
-    head: row.head_sha,
+    contextRepositoryPath: row.directory_path,
+    branch: "main",
+    head: record.head,
   };
   return {
     ...workstream,
-    title: row.title_cache,
-    objective: row.objective_cache,
-    status: row.status === "archived" ? "archived" : "active",
+    title: row.title,
+    objective: row.purpose,
+    status: row.status === "archived" ? "archived" : row.status === "initializing"
+      ? "initializing"
+      : "active",
     ...(row.created_by_run_id ? { createdByRunId: row.created_by_run_id } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function requireRepositoryState(database: ContextDatabase) {
+  const state = readSharedWorkstreamRepositoryState(database);
+  if (!state) throw new Error("Shared workstream repository is not initialized.");
+  return state;
 }

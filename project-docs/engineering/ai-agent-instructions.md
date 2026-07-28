@@ -28,17 +28,19 @@ Product rules:
 - Do not assume Ayati is CLI-only.
 - Keep core intelligence, memory, tools, provider access, permissions, and background event processing in the daemon.
 - Memory is product-critical because it gives continuity and personalization.
-- Context-only workstream repositories and the resource catalog are the
-  durable-work source. `W-*` repositories contain `workstream.md`, request
-  files, and `resources.json`; never put deliverables in them.
+- The shared context-only workstream repository and resource catalog are the
+  durable-work source. `W-*` directories contain `workstream.md`,
+  `progress.md`, request files, and generated `resources.json`; never put
+  deliverables in them.
 - Preserve the git-native ownership boundary: the agent may discover/open
   context and resource owners through read-only Git Context tools, then submit
-  one typed activate-or-create proposal to the deterministic resolve gate.
+  one typed request-routing or workstream-creation proposal to the
+  deterministic resolve gate.
   Runtime owns lifecycle calls, identity allocation, request reduction,
   resource verification, finalization, and context commits.
-- For activation proposals, explicitly pass
-  `requestDecision.kind="continue"` or `requestDecision.kind="create"`. A
-  candidate or previously active workstream is not mutation authority.
+- For activation proposals, explicitly select continuation, amendment, queued
+  activation, blocked resumption, request creation, or atomic defer-and-switch.
+  A candidate or previously active workstream is not mutation authority.
 - Use real resource locators for work. Do not edit context repositories or
   runtime-owned `.ayati/` state from general tools.
 - Tool access is high privilege because the daemon can affect the user's computer.

@@ -54,6 +54,11 @@ describe("run finalization coordinator", () => {
       validation: "passed",
       workstreamCompletion: expect.objectContaining({
         accepted: true,
+        criteria: [{
+          criterion: "The responsive homepage is verified.",
+          passed: true,
+          evidence: "Created the page.",
+        }],
         resources: [{
           locator: { kind: "filesystem", path: "/ayati/workspace/site/index.html" },
           kind: "file",
@@ -210,7 +215,7 @@ function workstreamContext() {
       title: "Build website",
       status: "active" as const,
       request: "Build the website.",
-      acceptance: [],
+      acceptance: ["The responsive homepage is verified."],
       constraints: [],
     },
     resources: [{

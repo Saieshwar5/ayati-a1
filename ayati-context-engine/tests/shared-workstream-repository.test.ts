@@ -3,10 +3,12 @@ import { access, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { renderWorkstreamProgress } from "../src/workstreams/workstream-progress.js";
+import { WorkstreamLifecycleService } from "../src/services/workstream-lifecycle-service.js";
+import { parseWorkstreamProgress } from "../src/workstreams/workstream-progress.js";
 import {
   createBoundWorkstream,
   createWorkstreamServiceFixture,
+  materializeBoundWorkstream,
   type WorkstreamServiceFixture,
 } from "./simple-workstream-repository-fixtures.js";
 
@@ -18,7 +20,7 @@ afterEach(async () => {
 });
 
 describe("workstream context repository creation", () => {
-  it("creates one context-only Git repository and a separate default output resource", async () => {
+  it("materializes one shared context repository and a separate default output resource", async () => {
     const fixture = await createWorkstreamServiceFixture("create-layout");
     fixtures.push(fixture);
 
@@ -26,6 +28,12 @@ describe("workstream context repository creation", () => {
       title: "Coffee Shop Website",
       objective: "Build a small coffee-shop website.",
     });
+    expect(await git(join(fixture.root, "workstreams"), ["rev-list", "--count", "HEAD"]))
+      .toBe("1");
+    await expect(access(selected.workstream.contextRepositoryPath))
+      .rejects.toMatchObject({ code: "ENOENT" });
+
+    await materializeBoundWorkstream(fixture);
 
     expect(selected.run.runId).toBe(fixture.prepared.run.runId);
     expect(selected.run.workstreamBinding).toEqual({
@@ -35,6 +43,9 @@ describe("workstream context repository creation", () => {
     });
     expect(dirname(selected.workstream.contextRepositoryPath)).toBe(join(fixture.root, "workstreams"));
     expect(await git(selected.workstream.contextRepositoryPath, ["status", "--porcelain"])).toBe("");
+    await expect(access(join(fixture.root, "workstreams", ".git"))).resolves.toBeUndefined();
+    await expect(access(join(selected.workstream.contextRepositoryPath, ".git")))
+      .rejects.toMatchObject({ code: "ENOENT" });
     expect((await git(selected.workstream.contextRepositoryPath, [
       "ls-tree", "-r", "--name-only", "HEAD",
     ])).split("\n")).toEqual([
@@ -43,10 +54,16 @@ describe("workstream context repository creation", () => {
       "resources.json",
       "workstream.md",
     ]);
-    expect(await readFile(
+    expect(parseWorkstreamProgress(await readFile(
       join(selected.workstream.contextRepositoryPath, "progress.md"),
       "utf8",
-    )).toBe(renderWorkstreamProgress([]));
+    ))).toEqual([
+      expect.objectContaining({
+        runId: fixture.prepared.run.runId,
+        requestId: "R-0001",
+        outcome: "incomplete",
+      }),
+    ]);
     const primary = selected.resourceBindings.find((binding) => binding.primary);
     expect(primary).toMatchObject({ role: "primary", access: "mutate" });
     expect(primary?.resource.locator).toMatchObject({ kind: "filesystem" });
@@ -94,6 +111,62 @@ describe("workstream context repository creation", () => {
     expect(fixture.database.prepare(
       "SELECT workstream_id FROM runs WHERE run_id = ?",
     ).get(fixture.prepared.run.runId)).toEqual({ workstream_id: null });
+  });
+
+  it("removes only an unbound provisional allocation during restart recovery", async () => {
+    const fixture = await createWorkstreamServiceFixture("recover-unbound-provisional");
+    fixtures.push(fixture);
+    const lifecycle = new WorkstreamLifecycleService({
+      database: fixture.database,
+      workstreamRoot: join(fixture.root, "workstreams"),
+      now: () => "2026-07-19T10:02:00+05:30",
+    });
+    const allocated = await lifecycle.createSimpleWorkstream({
+      requestId: "REQ-allocate-before-crash",
+      runId: fixture.prepared.run.runId,
+      title: "Interrupted allocation",
+      objective: "Exercise a crash before immutable run binding.",
+      at: "2026-07-19T10:01:00+05:30",
+    });
+
+    expect(allocated.workstream.status).toBe("initializing");
+    expect(fixture.database.prepare(
+      "SELECT COUNT(*) AS count FROM workstream_requests",
+    ).get()).toEqual({ count: 1 });
+
+    await lifecycle.recoverInitializingState();
+
+    expect(fixture.database.prepare(
+      "SELECT COUNT(*) AS count FROM workstreams",
+    ).get()).toEqual({ count: 0 });
+    expect(fixture.database.prepare(
+      "SELECT COUNT(*) AS count FROM workstream_requests",
+    ).get()).toEqual({ count: 0 });
+  });
+
+  it("preserves a bound provisional allocation for finalization recovery", async () => {
+    const fixture = await createWorkstreamServiceFixture("recover-bound-provisional");
+    fixtures.push(fixture);
+    const selected = await createBoundWorkstream(fixture, {
+      title: "Recover bound allocation",
+      objective: "Materialize the bound provisional notebook during finalization.",
+    });
+    const lifecycle = new WorkstreamLifecycleService({
+      database: fixture.database,
+      workstreamRoot: join(fixture.root, "workstreams"),
+      now: () => "2026-07-19T10:02:00+05:30",
+    });
+
+    await lifecycle.recoverInitializingState();
+
+    expect(fixture.database.prepare([
+      "SELECT status FROM workstreams WHERE workstream_id = ?",
+    ].join(" ")).get(selected.workstream.workstreamId)).toEqual({
+      status: "initializing",
+    });
+    expect(fixture.database.prepare(
+      "SELECT COUNT(*) AS count FROM workstream_requests",
+    ).get()).toEqual({ count: 1 });
   });
 });
 

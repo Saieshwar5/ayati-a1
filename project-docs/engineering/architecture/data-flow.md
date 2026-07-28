@@ -77,15 +77,18 @@ Older content is recovered explicitly with `agent_history_search` and
 Workstream candidates come from deterministic catalog discovery. Exact
 resource ownership and explicit continuation outrank text, unfinished, star,
 recency, and frequency signals. Real operations run against resource locators,
-never the context repository.
+never the context repository. Once a workstream is selected, a separate typed
+decision distinguishes same-contract continuation, contract amendment, a new
+request in the same project, and a new workstream.
 
 ## Finalization
 
 The daemon calls `finalizeRun` and waits for acknowledgement. Context Engine
 appends the immutable assistant message, closes the run, records verified
 resource effects, persists the terminal WorkState and its bounded validation
-receipts, reduces workstream context when needed, and creates at most one
-context commit. Deliverables are not staged in workstream Git.
+receipts, applies any request lifecycle effect, appends one immutable progress
+entry, reduces durable current knowledge, and creates exactly one shared
+context commit for a bound run. Deliverables are not staged in workstream Git.
 
 Only then does the daemon send the terminal response envelope.
 

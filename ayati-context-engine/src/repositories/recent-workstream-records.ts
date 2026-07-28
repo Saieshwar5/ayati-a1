@@ -24,14 +24,18 @@ export function readRecentWorkstreams(
 ): RecentWorkstreamMetadata[] {
   const boundedLimit = Math.min(Math.max(Math.trunc(limit), 1), MAX_RECENT_WORKSTREAMS);
   const rows = database.prepare([
-    "SELECT t.workstream_id, t.title_cache AS title, t.lifecycle_status,",
-    "t.repository_health, t.current_request_id, t.current_request_title,",
-    "t.current_request_status,",
+    "SELECT t.workstream_id, t.title, t.lifecycle_status,",
+    "CASE WHEN rs.repository_health IN ('ready', 'dirty_external')",
+    "  THEN rs.repository_health ELSE 'unavailable' END AS repository_health,",
+    "t.current_request_id, q.title AS current_request_title,",
+    "q.status AS current_request_status,",
     "CASE WHEN latest.accessed_at > t.created_at THEN latest.access_kind",
     "  ELSE 'created' END AS last_activity_kind,",
     "CASE WHEN latest.accessed_at > t.created_at THEN latest.accessed_at",
     "  ELSE t.created_at END AS last_activity_at",
-    "FROM workstreams t",
+    "FROM workstreams t CROSS JOIN workstream_repository_state rs",
+    "LEFT JOIN workstream_requests q ON q.workstream_id = t.workstream_id",
+    "  AND q.request_id = t.current_request_id",
     "LEFT JOIN workstream_accesses latest ON latest.rowid = (",
     "  SELECT access.rowid FROM workstream_accesses access",
     "  WHERE access.workstream_id = t.workstream_id",
@@ -39,7 +43,7 @@ export function readRecentWorkstreams(
     "    CASE access.access_kind WHEN 'bound' THEN 0 ELSE 1 END,",
     "    access.run_id DESC LIMIT 1",
     ")",
-    "WHERE t.status IN ('active', 'archived') AND t.head_sha IS NOT NULL",
+    "WHERE t.status IN ('active', 'archived') AND t.last_commit_sha IS NOT NULL",
     "ORDER BY last_activity_at DESC, t.workstream_id DESC",
     "LIMIT ?",
   ].join(" ")).all(boundedLimit) as unknown as RecentWorkstreamRow[];

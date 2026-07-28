@@ -10,13 +10,13 @@ import type { WorkstreamRequest, WorkstreamRequestStatus } from "../src/workstre
 describe("workstream request routing resolution", () => {
   it("continues the exact active request for the same unfinished website outcome", () => {
     expect(resolve([workstream("W-20260717-0001", "active", "R-0002")], {
-      kind: "continue_active_request",
+      kind: "continue_current",
       workstreamId: "W-20260717-0001",
       requestId: "R-0002",
       reason: "The mobile layout acceptance criteria are still unfinished.",
     })).toMatchObject({
       status: "ready",
-      next: "continue_request",
+      next: "continue_current",
       mutationReadiness: "ready",
       workstreamId: "W-20260717-0001",
       requestId: "R-0002",
@@ -25,12 +25,12 @@ describe("workstream request routing resolution", () => {
 
   it("routes a separate website feature to a new active request in the same workstream", () => {
     expect(resolve([workstream("W-20260717-0001", "active", null)], {
-      kind: "create_active_request",
+      kind: "create_and_activate",
       workstreamId: "W-20260717-0001",
       reason: "Online ordering is a new bounded feature in the website workstream.",
     })).toMatchObject({
       status: "ready",
-      next: "create_active_request",
+      next: "create_and_activate",
       mutationReadiness: "request_decision_required",
       workstreamId: "W-20260717-0001",
     });
@@ -38,12 +38,12 @@ describe("workstream request routing resolution", () => {
 
   it("queues an independent suggestion when another request is active", () => {
     expect(resolve([workstream("W-20260717-0001", "active", "R-0001")], {
-      kind: "create_queued_request",
+      kind: "create_queued",
       workstreamId: "W-20260717-0001",
       reason: "Dark mode can be scheduled independently from the active checkout work.",
     })).toMatchObject({
       status: "ready",
-      next: "create_queued_request",
+      next: "create_queued",
       mutationReadiness: "not_requested",
       workstreamId: "W-20260717-0001",
     });
@@ -51,13 +51,13 @@ describe("workstream request routing resolution", () => {
 
   it("does not replace an existing active request with a second active request", () => {
     expect(resolve([workstream("W-20260717-0001", "active", "R-0001")], {
-      kind: "create_active_request",
+      kind: "create_and_activate",
       workstreamId: "W-20260717-0001",
       reason: "The user requested a separate improvement.",
     })).toMatchObject({
       status: "clarification_required",
       next: "ask_clarification",
-      recommendedDecision: "create_queued_request",
+      recommendedDecision: "defer_current_and_create",
       candidateWorkstreamIds: ["W-20260717-0001"],
     });
   });
@@ -65,26 +65,25 @@ describe("workstream request routing resolution", () => {
   it("switches only the explicitly identified active request", () => {
     const state = [workstream("W-20260717-0001", "active", "R-0001")];
     expect(resolve(state, {
-      kind: "switch_active_request",
+      kind: "defer_current_and_create",
       workstreamId: "W-20260717-0001",
       requestId: "R-0001",
       reason: "The user explicitly prioritized a new bounded request.",
     })).toMatchObject({
       status: "ready",
-      next: "switch_active_request",
+      next: "defer_current_and_create",
       mutationReadiness: "request_decision_required",
       workstreamId: "W-20260717-0001",
       requestId: "R-0001",
     });
     expect(resolve(state, {
-      kind: "switch_active_request",
+      kind: "defer_current_and_create",
       workstreamId: "W-20260717-0001",
       requestId: "R-0002",
       reason: "Attempt to switch a request that is not current.",
     })).toMatchObject({
       status: "clarification_required",
       next: "ask_clarification",
-      recommendedDecision: "continue_active_request",
     });
   });
 
@@ -108,7 +107,7 @@ describe("workstream request routing resolution", () => {
   it("requires a lifecycle transition before paused or archived workstream mutation", () => {
     for (const status of ["paused", "archived"] as const) {
       expect(resolve([workstream("W-20260717-0001", status, null)], {
-        kind: "create_active_request",
+        kind: "create_and_activate",
         workstreamId: "W-20260717-0001",
         reason: "The user requested a new implementation in this workstream.",
       })).toMatchObject({
@@ -179,7 +178,7 @@ describe("workstream request routing resolution", () => {
       workstream("W-20260717-0001", "active", "R-0001"),
       workstream("W-20260717-0002", "active", "R-0001"),
     ], {
-      kind: "continue_active_request",
+      kind: "continue_current",
       workstreamId: "W-20260717-0001",
       requestId: "R-0001",
       reason: "Attempt to continue despite conflicting ownership.",
@@ -226,8 +225,8 @@ function workstream(
   currentRequestId: string | null,
 ): WorkstreamRequestLifecycleState {
   const requests = currentRequestId
-    ? [request(currentRequestId, "active")]
-    : [request("R-0001", "done")];
+    ? [request(workstreamId, currentRequestId, "active")]
+    : [request(workstreamId, "R-0001", "done")];
   return {
     expectedHead: "a".repeat(40),
     workstreamCard: card(workstreamId, status, currentRequestId),
@@ -241,30 +240,50 @@ function card(
   currentRequest: string | null,
 ): WorkstreamCard {
   return {
-    schema: "ayati.workstream/v1",
+    schema: "ayati.workstream/v3",
     id: workstreamId,
     title: "Routing fixture",
     status,
     currentRequest,
+    aliases: [],
     purpose: "Exercise deterministic workstream and request routing.",
     currentSnapshot: "The workstream has durable committed context.",
+    importantFindings: [],
+    decisions: [],
     currentFocus: currentRequest ? "Continue " + currentRequest + "." : "Choose the next request.",
+    openQuestions: [],
     blockers: [],
-    workingAgreements: [],
+    nextAction: currentRequest ? "Continue " + currentRequest + "." : "Choose the next request.",
   };
 }
 
-function request(id: string, status: WorkstreamRequestStatus): WorkstreamRequest {
+function request(
+  workstreamId: string,
+  id: string,
+  status: WorkstreamRequestStatus,
+): WorkstreamRequest {
+  const createdAt = "2026-07-17T12:00:00+05:30";
+  const terminal = status === "done" || status === "dropped";
   return {
-    schema: "ayati.request/v1",
+    schema: "ayati.request/v3",
     id,
+    workstreamId,
+    relativePath: `requests/${id}-request-${id.toLowerCase()}.md`,
     title: "Request " + id,
     status,
-    createdAt: "2026-07-17T12:00:00+05:30",
+    createdAt,
+    updatedAt: createdAt,
+    startedAt: status === "active" || status === "blocked" || terminal ? createdAt : null,
+    closedAt: terminal ? createdAt : null,
     source: "user",
     request: "Complete the bounded requested outcome.",
     acceptance: ["The requested outcome is verified."],
     constraints: [],
-    outcome: status === "done" ? "The request is complete." : "Not completed yet.",
+    lifecycleNote: "Routing fixture.",
+    finalOutcome: status === "done"
+      ? "The request is complete."
+      : status === "dropped"
+        ? "The request was dropped."
+        : "Pending.",
   };
 }

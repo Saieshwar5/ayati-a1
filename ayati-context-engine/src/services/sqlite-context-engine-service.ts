@@ -78,6 +78,7 @@ import {
   readRun,
   readRunEvidence,
 } from "../repositories/run-records.js";
+import { readRecentRequestProgress } from "../repositories/workstream-progress-records.js";
 import { refreshWorkstreamDiscoveryProjection } from "../repositories/workstream-discovery-records.js";
 import {
   finishWorkstreamResolutionActivity,
@@ -207,8 +208,22 @@ export class SqliteContextEngineService implements ContextEngineService {
           run.run.runId,
           selected.context,
         );
+        const recentProgress = readRecentRequestProgress(this.database, {
+          workstreamId: binding.workstreamId,
+          requestId: binding.requestId,
+          limit: 5,
+        }).map((entry) => ({
+          runId: entry.runId,
+          outcome: entry.outcome,
+          summary: entry.summary,
+          validationSummary: entry.validationSummary,
+          ...(entry.nextAction ? { nextAction: entry.nextAction } : {}),
+          commit: entry.commit,
+          finalizedAt: entry.finalizedAt,
+        }));
         return {
           ...context,
+          recentProgress,
           resources: this.resourceCatalog.readWorkstreamBindings(binding.workstreamId),
         };
       },
@@ -490,9 +505,11 @@ export class SqliteContextEngineService implements ContextEngineService {
         if (!requestId) throw new Error("Resolved workstream selection is missing its request binding.");
         receipt = {
           status: "resolved",
-          kind: input.commit.route.kind === "continue_active_request"
-            ? "continued_request"
-            : "created_request",
+          kind: input.commit.route.kind === "create_and_activate"
+            || input.commit.route.kind === "create_queued"
+            || input.commit.route.kind === "defer_current_and_create"
+            ? "created_request"
+            : "continued_request",
           workstreamId: selected.workstream.workstreamId,
           requestId,
         };
@@ -656,9 +673,14 @@ export class SqliteContextEngineService implements ContextEngineService {
       });
       if (replay) return replay;
       this.requireActiveRun(input.runId);
-      const selected = await this.workstreamLifecycle.getWorkstream({
-        workstreamId: input.workstreamId,
-      });
+      const selected = input.workstreamRequestId
+        ? await this.workstreamLifecycle.getWorkstreamRequestContext({
+            workstreamId: input.workstreamId,
+            requestId: input.workstreamRequestId,
+          })
+        : await this.workstreamLifecycle.getWorkstream({
+            workstreamId: input.workstreamId,
+          });
       const resources = this.resourceCatalog.readWorkstreamBindings(input.workstreamId);
       return executeIdempotent<ReadWorkstreamResponse>({
         database: this.database,

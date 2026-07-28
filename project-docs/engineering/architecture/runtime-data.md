@@ -5,7 +5,9 @@ Ayati uses one managed root:
 ```text
 <AYATI_ROOT_DIR>/
   workspace/              preserved user-visible outputs
-  workstreams/            context-only Git repositories
+  workstreams/            one shared context-only Git repository
+    .git/
+    W-*/                   context directories, never nested repositories
   .ayati/
     context.db
     context.db-wal
@@ -20,9 +22,11 @@ evaluation evidence is isolated beneath `data/evaluations/`. Do not commit
 generated runtime state.
 
 SQLite is authoritative for operational lifecycle and resource metadata.
-`workstreams/` is the portable context history. `workspace/` and user-selected
-external paths hold real resources. Do not edit SQLite or context repositories
-while Context Engine is running.
+`workstreams/` is one portable shared context history containing
+`workstream.md`, `progress.md`, request files, and generated resource
+projections. `workspace/` and user-selected external paths hold real
+resources. Do not edit SQLite or the shared repository while Context Engine is
+running.
 
 ## Live Evaluation Evidence
 
@@ -88,6 +92,19 @@ archives the database including WAL/SHM, managed resources, and
 workstreams into a timestamped sibling archive with a manifest. It preserves
 `workspace/` and refuses broad paths or a live Context Engine writer.
 
-`pnpm context:catalog-rebuild` scans validated context repositories and previews
-the reconstructible workstream/resource catalog. `--confirm` requires an empty
-initialized V8 database and a stopped daemon.
+For a pre-V9 root containing nested `W-*/.git` repositories, run:
+
+```bash
+pnpm context:workstream-migrate
+pnpm context:workstream-migrate -- --confirm
+```
+
+Preview is read-only. Confirmation requires a stopped daemon, validates every
+source repository, archives the old workstream root and database files,
+creates a canonical empty `progress.md` when an older repository has no
+ledger, creates one shared baseline commit, installs a V9 database, and
+records recovery manifests.
+
+`pnpm context:catalog-rebuild` scans the validated shared repository and
+previews the reconstructible workstream/request/progress/resource catalog.
+`--confirm` requires an empty initialized V9 database and a stopped daemon.

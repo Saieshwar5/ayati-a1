@@ -104,6 +104,8 @@ function collectCandidateArray(
     const request = asRecord(record?.["currentRequest"]);
     const requestId = stringValue(request?.["id"]);
     if (requestId) current.requestIds.add(requestId);
+    collectRequestIds(record?.["unfinishedRequests"], current.requestIds);
+    collectRequestIds(record?.["matchingRequests"], current.requestIds);
   }
 }
 
@@ -124,6 +126,18 @@ function collectReadWorkstream(
   const currentRequest = asRecord(context?.["currentRequest"]);
   const requestId = stringValue(currentRequest?.["id"]);
   if (requestId) current.requestIds.add(requestId);
+  const selectedRequest = asRecord(context?.["selectedRequest"]);
+  const selectedRequestId = stringValue(selectedRequest?.["id"]);
+  if (selectedRequestId) current.requestIds.add(selectedRequestId);
+  collectRequestIds(context?.["unfinishedRequests"], current.requestIds);
+}
+
+function collectRequestIds(value: unknown, target: Set<string>): void {
+  if (!Array.isArray(value)) return;
+  for (const item of value) {
+    const requestId = stringValue(asRecord(item)?.["id"]);
+    if (requestId) target.add(requestId);
+  }
 }
 
 function collectResourceArray(

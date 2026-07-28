@@ -223,7 +223,7 @@ describe("deterministic resolve gate", () => {
           workstreamId: "W-20260722-0001",
           expectedWorkstreamHead: "a".repeat(40),
           requestDecision: {
-            kind: "continue",
+            kind: "continue_current",
             requestId: "R-0001",
             reason: "Continue the exact active request returned by discovery.",
           },
@@ -251,7 +251,7 @@ describe("deterministic resolve gate", () => {
           workstreamId: "W-20260722-0001",
           expectedWorkstreamHead: "a".repeat(40),
           requestDecision: {
-            kind: "switch",
+            kind: "defer_current_and_create",
             currentRequestId: "R-0001",
             title: "Add contact form",
             request: "Add a verified contact form.",
@@ -282,7 +282,7 @@ describe("deterministic resolve gate", () => {
           workstreamId: "W-20260722-0001",
           expectedWorkstreamHead: "a".repeat(40),
           requestDecision: {
-            kind: "switch",
+            kind: "defer_current_and_create",
             currentRequestId: "R-0002",
             title: "Add contact form",
             request: "Add a verified contact form.",
@@ -304,7 +304,7 @@ describe("deterministic resolve gate", () => {
         blockedTargets: ["R-0002"],
         message: expect.stringContaining("exact active request"),
         allowedNextActions: [
-          expect.stringContaining("Continue only an unchanged contract"),
+          expect.stringContaining("Inspect the exact request"),
         ],
       },
     });

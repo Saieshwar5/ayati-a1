@@ -35,9 +35,10 @@ Mental model:
 - `ayati-main` is the app's persistent agent daemon.
 - `ayati-main` opens `ayati-context-engine` in-process and owns its lifecycle;
   users do not start a second service.
-- Durable context is stored in independent `W-*` repositories under
-  `<AYATI_ROOT_DIR>/workstreams/`; real outputs stay in `workspace/` or the
-  user-selected resource path.
+- Durable context is stored in one shared repository at
+  `<AYATI_ROOT_DIR>/workstreams/`; each `W-*` child contains only its
+  workstream card, progress, request contracts, and resource projection. Real
+  outputs stay in `workspace/` or the user-selected resource path.
 - `ayati-cli` is one communication client.
 - Stop or restart the CLI without assuming the daemon state is gone.
 - Stop or restart a session without assuming durable work is closed;

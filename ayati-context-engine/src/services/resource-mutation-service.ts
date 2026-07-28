@@ -345,14 +345,19 @@ export class ResourceMutationService {
 
   private requireMutationResources(input: PrepareResourceMutationRequest): Map<string, ResourceRef> {
     const run = this.database.prepare([
-      "SELECT workstream_id, bound_request_id, status FROM runs WHERE run_id = ?",
+      "SELECT r.workstream_id, r.bound_request_id, r.status, q.status AS request_status",
+      "FROM runs r LEFT JOIN workstream_requests q",
+      "ON q.workstream_id = r.workstream_id AND q.request_id = r.bound_request_id",
+      "WHERE r.run_id = ?",
     ].join(" ")).get(input.runId) as {
       workstream_id: string | null;
       bound_request_id: string | null;
       status: string;
+      request_status: string | null;
     } | undefined;
     if (!run || run.status !== "running" || run.workstream_id !== input.workstreamId
-      || run.bound_request_id !== input.activeRequestId) {
+      || run.bound_request_id !== input.activeRequestId
+      || run.request_status !== "active") {
       throw new ContextEngineServiceError({
         code: "MUTATION_REQUIRES_WORKSTREAM_BINDING",
         message: "Resource mutation requires the matching active workstream/request binding.",

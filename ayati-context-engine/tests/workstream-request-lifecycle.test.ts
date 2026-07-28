@@ -18,6 +18,7 @@ import {
 import {
   createBoundWorkstream,
   createWorkstreamServiceFixture,
+  workState,
   type WorkstreamServiceFixture,
 } from "./simple-workstream-repository-fixtures.js";
 
@@ -136,7 +137,7 @@ describe("workstream request lifecycle planner", () => {
 
   it("defers the current request without changing its contract or outcome", () => {
     const state = activeState();
-    state.requests[0]!.outcome = "Implementation is partially verified.";
+    state.requests[0]!.lifecycleNote = "Implementation is partially verified.";
     state.workstreamCard.blockers = ["A separate durable blocker."];
     const originalRequest = structuredClone(state.requests[0]!);
 
@@ -153,7 +154,7 @@ describe("workstream request lifecycle planner", () => {
       changedRequests: [{
         id: "R-0001",
         status: "queued",
-        outcome: "Implementation is partially verified.",
+        lifecycleNote: "Deferred: A newly authorized request should run first.",
       }],
       workstreamCardAfter: {
         status: "active",
@@ -166,6 +167,7 @@ describe("workstream request lifecycle planner", () => {
     expect(plan.changedRequests[0]).toEqual({
       ...originalRequest,
       status: "queued",
+      lifecycleNote: "Deferred: A newly authorized request should run first.",
     });
     expect(plan.writes.map((write) => write.path)).toEqual([
       "requests/R-0001-initial-request.md",
@@ -182,7 +184,7 @@ describe("workstream request lifecycle planner", () => {
       changedRequests: [{
         id: "R-0001",
         status: "active",
-        outcome: "Implementation is partially verified.",
+        finalOutcome: "Pending.",
       }],
       workstreamCardAfter: { currentRequest: "R-0001" },
     });
@@ -210,7 +212,7 @@ describe("workstream request lifecycle planner", () => {
 
   it("atomically defers the current request and creates the next active request", () => {
     const state = activeState();
-    state.requests[0]!.outcome = "The initial implementation is partially verified.";
+    state.requests[0]!.lifecycleNote = "The initial implementation is partially verified.";
     state.requests.push(request("R-0002", "done", "Earlier completed work"));
     const original = structuredClone(state);
 
@@ -228,8 +230,8 @@ describe("workstream request lifecycle planner", () => {
       activatedRequestId: "R-0003",
       deferralReason: "The newly authorized contact form should run first.",
       changedRequests: [
-        { id: "R-0001", status: "queued", outcome: original.requests[0]!.outcome },
-        { id: "R-0003", status: "active", source: "user", outcome: "Not completed yet." },
+        { id: "R-0001", status: "queued" },
+        { id: "R-0003", status: "active", source: "user", finalOutcome: "Pending." },
       ],
       workstreamCardAfter: {
         status: "active",
@@ -237,7 +239,12 @@ describe("workstream request lifecycle planner", () => {
         currentFocus: "Complete R-0003: Add contact form.",
       },
     });
-    expect(plan.changedRequests[0]).toEqual({ ...original.requests[0]!, status: "queued" });
+    expect(plan.changedRequests[0]).toEqual({
+      ...original.requests[0]!,
+      status: "queued",
+      updatedAt: "2026-07-17T13:00:00+05:30",
+      lifecycleNote: "Deferred: The newly authorized contact form should run first.",
+    });
     expect(plan.requestsAfter.filter((request) => request.status === "active")
       .map((request) => request.id)).toEqual(["R-0003"]);
     expect(plan.writes.map((write) => write.path)).toEqual([
@@ -265,6 +272,49 @@ describe("workstream request lifecycle planner", () => {
     }), "WORKSTREAM_REQUEST_STATE_INVALID");
   });
 
+  it("atomically defers the current request and activates an existing queued request", () => {
+    const state = activeState();
+    state.requests.push(request("R-0002", "queued", "Queued priority"));
+
+    const plan = planWorkstreamRequestChange(state, {
+      kind: "defer_and_activate",
+      currentRequestId: "R-0001",
+      nextRequestId: "R-0002",
+      deferReason: "The queued priority was selected explicitly.",
+      at: "2026-07-17T14:00:00+05:30",
+    });
+
+    expect(plan).toMatchObject({
+      operation: "defer_and_activate",
+      primaryRequestId: "R-0001",
+      activatedRequestId: "R-0002",
+      deferralReason: "The queued priority was selected explicitly.",
+      changedRequests: [
+        {
+          id: "R-0001",
+          status: "queued",
+          lifecycleNote: "Deferred: The queued priority was selected explicitly.",
+        },
+        {
+          id: "R-0002",
+          status: "active",
+          lifecycleNote: "Activated after deferring R-0001.",
+        },
+      ],
+      workstreamCardAfter: {
+        currentRequest: "R-0002",
+        currentFocus: "Complete R-0002: Queued priority.",
+      },
+    });
+    expect(plan.requestsAfter.filter((entry) => entry.status === "active"))
+      .toEqual([expect.objectContaining({ id: "R-0002" })]);
+    expect(plan.writes.map((write) => write.path)).toEqual([
+      "requests/R-0001-initial-request.md",
+      "requests/R-0002-queued-priority.md",
+      "workstream.md",
+    ]);
+  });
+
   it("blocks the current request, clears current_request, and records one blocker", () => {
     const plan = planWorkstreamRequestChange(activeState(), {
       kind: "block",
@@ -276,7 +326,8 @@ describe("workstream request lifecycle planner", () => {
       changedRequests: [{
         id: "R-0001",
         status: "blocked",
-        outcome: "Blocked: The user must provide the source dataset.",
+        finalOutcome: "Pending.",
+        lifecycleNote: "Blocked: The user must provide the source dataset.",
       }],
       workstreamCardAfter: {
         currentRequest: null,
@@ -307,6 +358,94 @@ describe("workstream request lifecycle planner", () => {
     });
   });
 
+  it("resolves a blocked request to queued without displacing the active request", () => {
+    const state = activeState();
+    state.requests.push(request("R-0002", "blocked", "Deferred analysis"));
+    state.workstreamCard.blockers = [
+      "Request R-0002: Waiting for an external dataset.",
+      "A separate durable blocker.",
+    ];
+
+    const plan = planWorkstreamRequestChange(state, {
+      kind: "resolve_blocked_to_queued",
+      requestId: "R-0002",
+      reason: "The dataset is now available, but the current request remains first.",
+      at: "2026-07-17T14:00:00+05:30",
+    });
+
+    expect(plan).toMatchObject({
+      operation: "resolve_blocked_to_queued",
+      primaryRequestId: "R-0002",
+      changedRequests: [{
+        id: "R-0002",
+        status: "queued",
+        lifecycleNote: "Blocker resolved; queued: The dataset is now available, "
+          + "but the current request remains first.",
+      }],
+      workstreamCardAfter: {
+        currentRequest: "R-0001",
+        blockers: ["A separate durable blocker."],
+      },
+    });
+    expect(plan.requestsAfter.filter((entry) => entry.status === "active"))
+      .toEqual([expect.objectContaining({ id: "R-0001" })]);
+  });
+
+  it("amends a request contract without changing its identity, path, or creation time", () => {
+    const state = activeState();
+    const before = structuredClone(state.requests[0]!);
+
+    const plan = planWorkstreamRequestChange(state, {
+      kind: "amend",
+      requestId: "R-0001",
+      patch: {
+        title: "Clarified initial request",
+        acceptance: ["The clarified outcome is verified."],
+        constraints: ["Keep the implementation dependency-free."],
+      },
+      reason: "The user clarified the desired outcome and constraint.",
+      authority: "user",
+      at: "2026-07-17T14:00:00+05:30",
+    });
+
+    expect(plan.changedRequests[0]).toMatchObject({
+      id: before.id,
+      relativePath: before.relativePath,
+      createdAt: before.createdAt,
+      startedAt: before.startedAt,
+      updatedAt: "2026-07-17T14:00:00+05:30",
+      title: "Clarified initial request",
+      acceptance: ["The clarified outcome is verified."],
+      constraints: ["Keep the implementation dependency-free."],
+      lifecycleNote: "Contract amended: The user clarified the desired outcome and constraint.",
+    });
+    expect(plan.workstreamCardAfter).toMatchObject({
+      currentRequest: "R-0001",
+      currentFocus: "Complete R-0001: Clarified initial request.",
+    });
+    expect(plan.writes.map((write) => write.path)).toEqual([
+      before.relativePath,
+      "workstream.md",
+    ]);
+
+    expectCode(() => planWorkstreamRequestChange(state, {
+      kind: "amend",
+      requestId: "R-0001",
+      patch: { acceptance: [] },
+      reason: "A policy tried to silently weaken the contract.",
+      authority: "trusted_policy",
+      at: "2026-07-17T14:00:00+05:30",
+    }), "WORKSTREAM_REQUEST_STATE_INVALID");
+    expectCode(() => planWorkstreamRequestChange(state, {
+      kind: "amend",
+      requestId: "R-0001",
+      patch: { title: before.title },
+      reason: "No contract field actually changed.",
+      authority: "user",
+      at: "2026-07-17T14:00:00+05:30",
+    }), "WORKSTREAM_REQUEST_STATE_INVALID");
+  });
+
   it("completes verified work, preserves the workstream, and clears current_request", () => {
     const state = activeState();
     const originalRequest = structuredClone(state.requests[0]);
@@ -323,7 +462,7 @@ describe("workstream request lifecycle planner", () => {
       changedRequests: [{
         id: "R-0001",
         status: "done",
-        outcome: "The implementation and focused tests are complete.",
+        finalOutcome: "The implementation and focused tests are complete.",
       }],
     });
     expect(plan.changedRequests[0]).toMatchObject({
@@ -376,7 +515,7 @@ describe("workstream request lifecycle planner", () => {
     expect(plan.writes).toHaveLength(1);
     expect(parseWorkstreamRequest(plan.writes[0]!.content)).toMatchObject({
       status: "dropped",
-      outcome: "Dropped: The user no longer wants this feature.",
+      finalOutcome: "Dropped: The user no longer wants this feature.",
     });
     expectCode(() => planWorkstreamRequestChange(requestState([
       request("R-0001", "dropped", "Already dropped"),
@@ -441,12 +580,12 @@ describe("workstream request lifecycle planner", () => {
 
   it("validates explicit routing decisions without applying keyword heuristics", () => {
     expect(validateWorkstreamRequestRoutingDecision({
-      kind: "continue_active_request",
+      kind: "continue_current",
       workstreamId: "W-20260717-0001",
       requestId: "R-0002",
       reason: "  The user is continuing the same unfinished outcome.  ",
     })).toEqual({
-      kind: "continue_active_request",
+      kind: "continue_current",
       workstreamId: "W-20260717-0001",
       requestId: "R-0002",
       reason: "The user is continuing the same unfinished outcome.",
@@ -465,12 +604,29 @@ describe("workstream request lifecycle planner", () => {
     }), "INVALID_REQUEST");
   });
 
-  it("plans against a real committed V2 workstream without filesystem or Git side effects", async () => {
+  it("plans against a real committed V3 workstream without filesystem or Git side effects", async () => {
     const fixture = await createWorkstreamServiceFixture("request-plan");
     fixtures.push(fixture);
     const selected = await createBoundWorkstream(fixture, {
       title: "Website workstream",
       objective: "Maintain a website through durable requests.",
+    });
+    await fixture.service.finalizeRun({
+      requestId: fixture.prepared.run.runId + ":finalize",
+      runId: fixture.prepared.run.runId,
+      outcome: "incomplete",
+      stopReason: "run_limit",
+      assistantResponse: "The website request remains active.",
+      streamSummary: "Initialized the website workstream.",
+      summary: "The website request remains active.",
+      validation: "not_applicable",
+      next: "Continue the website request.",
+      workState: workState({ summary: "The website request remains active." }),
+      workstream: {
+        completion: { accepted: false, resources: [], missing: [], failures: [], criteria: [] },
+        requestEffect: { kind: "none" },
+      },
+      at: "2026-07-19T10:02:00+05:30",
     });
     const workstreamRoot = join(fixture.root, "workstreams");
     const validation = await validateWorkstreamRepository({
@@ -533,33 +689,51 @@ function requestState(
 
 function workstreamCard(currentRequest: string | null): WorkstreamCard {
   return {
-    schema: "ayati.workstream/v2",
+    schema: "ayati.workstream/v3",
     id: "W-20260717-0001",
     title: "Lifecycle workstream",
     status: "active",
     currentRequest,
+    aliases: [],
     purpose: "Exercise the durable request lifecycle.",
     currentSnapshot: "The workstream repository is initialized.",
+    importantFindings: [],
+    decisions: ["Keep request state deterministic."],
     currentFocus: currentRequest
       ? "Complete " + currentRequest + ": Initial request."
       : "Choose or create the next request.",
+    openQuestions: [],
     blockers: [],
-    workingAgreements: ["Keep request state deterministic."],
+    nextAction: currentRequest
+      ? "Advance " + currentRequest + " toward completion."
+      : "Choose or create the next request.",
   };
 }
 
 function request(id: string, status: WorkstreamRequest["status"], title: string): WorkstreamRequest {
+  const createdAt = "2026-07-17T12:00:00+05:30";
+  const terminal = status === "done" || status === "dropped";
   return {
-    schema: "ayati.request/v2",
+    schema: "ayati.request/v3",
     id,
+    workstreamId: "W-20260717-0001",
+    relativePath: `requests/${id}-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.md`,
     title,
     status,
-    createdAt: "2026-07-17T12:00:00+05:30",
+    createdAt,
+    updatedAt: createdAt,
+    startedAt: status === "active" || status === "blocked" || terminal ? createdAt : null,
+    closedAt: terminal ? createdAt : null,
     source: "user",
     request: "Complete " + title.toLowerCase() + ".",
     acceptance: ["The requested outcome is verified."],
     constraints: [],
-    outcome: status === "done" ? "The request is complete." : "Not completed yet.",
+    lifecycleNote: "Lifecycle fixture.",
+    finalOutcome: status === "done"
+      ? "The request is complete."
+      : status === "dropped"
+        ? "The request was dropped."
+        : "Pending.",
   };
 }
 

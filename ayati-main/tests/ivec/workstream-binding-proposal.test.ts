@@ -11,7 +11,7 @@ describe("workstream binding proposal", () => {
       workstreamId: "W-20260722-0001",
       expectedWorkstreamHead: "a".repeat(40),
       requestDecision: {
-        kind: "switch",
+        kind: "defer_current_and_create",
         currentRequestId: "R-0001",
         title: "Add contact form",
         request: "Add a verified contact form.",
@@ -33,36 +33,39 @@ describe("workstream binding proposal", () => {
       Record<string, unknown>
     >;
     expect(properties["requestDecision"]?.["description"]).toEqual(
-      expect.stringContaining("Any added or removed scope"),
+      expect.stringContaining("separate outcome"),
     );
-    expect(properties["requestDecision"]?.["oneOf"]).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        description: expect.stringContaining("unchanged"),
-        properties: expect.objectContaining({
-          kind: { const: "continue" },
+    const decisions = properties["requestDecision"]?.["oneOf"] as Array<{
+      description: string;
+      properties: Record<string, unknown>;
+      required: string[];
+    }>;
+    expect(decisions).toHaveLength(8);
+    expect(decisions.find((decision) =>
+      (decision.properties["kind"] as { const?: string }).const === "continue_current"))
+      .toMatchObject({
+        description: expect.stringContaining("observed request status"),
+        properties: {
           requestId: expect.objectContaining({
-            description: expect.stringContaining("exact active request ID"),
+            description: expect.stringContaining("exact request ID"),
           }),
-        }),
-      }),
-      expect.objectContaining({
-        description: expect.stringContaining("no active request"),
-        properties: expect.objectContaining({
-          kind: { const: "create" },
-        }),
-      }),
-      expect.objectContaining({
-        description: expect.stringContaining("queued for later"),
-        properties: expect.objectContaining({
-          kind: { const: "switch" },
+        },
+      });
+    expect(decisions.find((decision) =>
+      (decision.properties["kind"] as { const?: string }).const === "create_and_activate"))
+      .toMatchObject({ description: expect.stringContaining("no request is active") });
+    expect(decisions.find((decision) =>
+      (decision.properties["kind"] as { const?: string }).const === "defer_current_and_create"))
+      .toMatchObject({
+        description: expect.stringContaining("separate active outcome"),
+        properties: {
           currentRequestId: expect.objectContaining({
             type: "string",
             pattern: "^R-[0-9]{4}$",
             description: expect.stringContaining("exact active request ID"),
           }),
-        }),
+        },
         required: expect.arrayContaining(["kind", "currentRequestId"]),
-      }),
-    ]));
+      });
   });
 });

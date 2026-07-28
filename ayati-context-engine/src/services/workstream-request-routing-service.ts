@@ -2,6 +2,7 @@ import type {
   PlanWorkstreamRequestRouteRequest,
   PlanWorkstreamRequestRouteResponse,
   WorkstreamContextProjection,
+  WorkstreamRequestRoute,
 } from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
 import {
@@ -19,10 +20,23 @@ import {
   readRunEvidence,
 } from "../repositories/run-records.js";
 import { readWorkstreamInitialization } from "../repositories/workstream-records.js";
-import { planWorkstreamRequestChange } from "../workstreams/workstream-request-lifecycle.js";
+import { readSharedWorkstreamRepositoryState } from "../repositories/workstream-repository-state-records.js";
+import {
+  synchronizeCurrentWorkstreamRequest,
+  writeWorkstreamRequestProjection,
+} from "../repositories/workstream-request-records.js";
+import {
+  planWorkstreamRequestChange,
+  type WorkstreamRequestChangePlan,
+  type WorkstreamRequestLifecycleOperation,
+} from "../workstreams/workstream-request-lifecycle.js";
 import { resolvePlannedWorkstreamRequestState } from "../workstreams/planned-workstream-request.js";
+import { projectProvisionalWorkstreamValidation } from "../workstreams/provisional-workstream-context.js";
 import { resolveWorkstreamRequestRoutingDecision } from "../workstreams/workstream-request-routing.js";
-import { validateWorkstreamRepository } from "../workstreams/workstream-repository-validator.js";
+import {
+  validateWorkstreamRepository,
+  type WorkstreamRepositoryValidation,
+} from "../workstreams/workstream-repository-validator.js";
 
 export class WorkstreamRequestRoutingService {
   constructor(private readonly options: {
@@ -32,56 +46,39 @@ export class WorkstreamRequestRoutingService {
 
   async plan(input: PlanWorkstreamRequestRouteRequest): Promise<PlanWorkstreamRequestRouteResponse> {
     const workstream = readWorkstreamInitialization(this.options.database, input.workstreamId);
-    if (!workstream?.head || workstream.status !== "active") {
-      throw invalid("Request planning requires an active workstream context repository.", input);
+    if (!workstream?.head
+      || (workstream.status !== "active" && workstream.status !== "initializing")) {
+      throw invalid("Request planning requires an active or provisional workstream.", input);
     }
     if (workstream.head !== input.expectedWorkstreamHead) {
-      throw new ContextEngineServiceError({
-        code: "WORKSTREAM_HEAD_MISMATCH",
-        message: "Workstream HEAD does not match the request plan expectation.",
-        retryable: true,
-        details: {
-          workstreamId: input.workstreamId,
-          expectedHead: input.expectedWorkstreamHead,
-          actualHead: workstream.head,
-        },
-      });
+      throw headMismatch(input, workstream.head);
     }
     const run = readRunEvidence(this.options.database, input.runId);
     if (!run || run.status !== "running"
-      || (run.workstreamBinding && run.workstreamBinding.workstreamId !== input.workstreamId)) {
+      || (run.workstreamBinding
+        && run.workstreamBinding.workstreamId !== input.workstreamId)) {
       throw invalid("Request planning requires the matching active run.", input);
     }
-    const existingPlan = readWorkstreamRequestRoutePlan(this.options.database, input.runId);
-    if (existingPlan && existingPlan.operationRequestId !== input.requestId) {
-      throw invalid("Active run already owns a different workstream request plan.", input);
+    const existing = readWorkstreamRequestRoutePlan(this.options.database, input.runId);
+    if (existing && existing.operationRequestId !== input.requestId) {
+      throw invalid("Run already owns a different request route plan.", input);
     }
-    if (run.workstreamBinding && !existingPlan) {
-      throw invalid("Active run is already bound without a recoverable request plan.", input);
+    if (run.workstreamBinding && !existing) {
+      throw invalid("Run is already bound without its recoverable route plan.", input);
     }
-    const validation = await validateWorkstreamRepository({
-      workstreamRoot: this.options.workstreamRoot,
-      contextRepositoryPath: workstream.contextRepositoryPath,
-      expectedWorkstreamId: input.workstreamId,
-      requestReadMode: "all",
-    });
-    if (validation.head !== input.expectedWorkstreamHead || validation.branch !== workstream.branch) {
-      throw new ContextEngineServiceError({
-        code: "WORKSTREAM_HEAD_MISMATCH",
-        message: "Workstream repository identity changed before request planning.",
-        retryable: true,
-        details: {
-          workstreamId: input.workstreamId,
-          expectedHead: input.expectedWorkstreamHead,
-          actualHead: validation.head,
-        },
-      });
+    const validation = await this.validation(workstream);
+    if (validation.head !== input.expectedWorkstreamHead
+      || validation.branch !== workstream.branch) {
+      throw headMismatch(input, validation.head);
     }
     if (validation.health !== "ready") {
       throw new ContextEngineServiceError({
         code: "RECOVERY_REQUIRED",
-        message: "Request planning requires a clean workstream context repository.",
-        details: { workstreamId: input.workstreamId, workingTreeChanges: validation.workingTreeChanges },
+        message: "Request planning requires a clean shared workstream repository.",
+        details: {
+          workstreamId: input.workstreamId,
+          workingTreeChanges: validation.workingTreeChanges,
+        },
       });
     }
     const state = {
@@ -89,70 +86,22 @@ export class WorkstreamRequestRoutingService {
       workstreamCard: validation.workstreamCard,
       requests: validation.requests,
     };
-    const decision = input.route.kind === "continue_active_request"
-      ? {
-          kind: input.route.kind,
-          workstreamId: input.workstreamId,
-          requestId: input.route.requestId,
-          reason: input.route.reason,
-        } as const
-      : input.route.kind === "switch_active_request"
-        ? {
-            kind: input.route.kind,
-            workstreamId: input.workstreamId,
-            requestId: input.route.currentRequestId,
-            reason: input.route.reason,
-          } as const
-      : {
-          kind: input.route.kind,
-          workstreamId: input.workstreamId,
-          reason: input.route.reason,
-        } as const;
     const resolution = resolveWorkstreamRequestRoutingDecision({
       workstreams: [state],
       evidence: { explicitWorkstreamId: input.workstreamId },
-    }, decision);
-    if (resolution.status !== "ready"
-      || (resolution.next !== "continue_request"
-        && resolution.next !== "create_active_request"
-        && resolution.next !== "switch_active_request")) {
+    }, routingDecision(input.workstreamId, input.route));
+    if (resolution.status !== "ready" || resolution.next !== input.route.kind) {
       throw new ContextEngineServiceError({
         code: "WORKSTREAM_CURRENT_REQUEST_INVALID",
-        message: "Request route is not ready for mutation.",
+        message: "Request route is not valid for the current lifecycle state.",
         retryable: true,
         details: { workstreamId: input.workstreamId, resolution },
       });
     }
-    const changePlan = input.route.kind === "create_active_request"
-      ? planWorkstreamRequestChange(state, {
-          kind: "create",
-          title: input.route.title,
-          request: input.route.request,
-          acceptance: input.route.acceptance,
-          constraints: input.route.constraints,
-          source: "user",
-          createdAt: input.at,
-          activate: true,
-        })
-      : input.route.kind === "switch_active_request"
-        ? planWorkstreamRequestChange(state, {
-            kind: "defer_and_create",
-            currentRequestId: input.route.currentRequestId,
-            deferReason: input.route.reason,
-            newRequest: {
-              title: input.route.title,
-              request: input.route.request,
-              acceptance: input.route.acceptance,
-              constraints: input.route.constraints,
-              source: "user",
-              createdAt: input.at,
-            },
-          })
-        : undefined;
-    const workstreamRequestId = changePlan?.activatedRequestId
-      ?? changePlan?.primaryRequestId
-      ?? (input.route.kind === "continue_active_request" ? input.route.requestId : undefined);
-    if (!workstreamRequestId) throw new Error("Resolved request route is missing its request identity.");
+    const changePlan = input.route.kind === "continue_current"
+      ? undefined
+      : planWorkstreamRequestChange(state, lifecycleOperation(input.route, input.at));
+    const boundRequestId = selectedRequestId(input.route, changePlan);
     const pending = beginRecoverableIdempotent<PlanWorkstreamRequestRouteResponse>({
       database: this.options.database,
       requestId: input.requestId,
@@ -160,12 +109,25 @@ export class WorkstreamRequestRoutingService {
       payload: input,
       now: input.at,
       execute: () => {
+        if (changePlan) {
+          for (const request of changePlan.changedRequests) {
+            writeWorkstreamRequestProjection(this.options.database, {
+              request,
+              createdByRunId: changePlan.requestsBefore.some(
+                (entry) => entry.id === request.id,
+              ) ? undefined : input.runId,
+              lastRunId: input.runId,
+              lastActivityAt: input.at,
+            });
+          }
+          synchronizeCurrentWorkstreamRequest(this.options.database, input.workstreamId);
+        }
         const record = insertWorkstreamRequestRoutePlan(this.options.database, {
           runId: input.runId,
           operationRequestId: input.requestId,
           streamId: run.streamId,
           workstreamId: input.workstreamId,
-          boundRequestId: workstreamRequestId,
+          boundRequestId,
           baseHead: input.expectedWorkstreamHead,
           route: input.route,
           ...(changePlan ? { changePlan } : {}),
@@ -174,7 +136,7 @@ export class WorkstreamRequestRoutingService {
         const boundRun = bindActiveRunToWorkstream(this.options.database, {
           runId: input.runId,
           workstreamId: input.workstreamId,
-          requestId: workstreamRequestId,
+          requestId: boundRequestId,
           at: input.at,
         });
         return workstreamRequestRoutePlanResponse(record, boundRun);
@@ -189,34 +151,179 @@ export class WorkstreamRequestRoutingService {
     });
   }
 
-  async projectContext(runId: string, context: WorkstreamContextProjection): Promise<WorkstreamContextProjection> {
+  async projectContext(
+    runId: string,
+    context: WorkstreamContextProjection,
+  ): Promise<WorkstreamContextProjection> {
+    const { unfinishedRequests: _routingRequests, ...boundedContext } = context;
     const record = readWorkstreamRequestRoutePlan(this.options.database, runId);
-    if (!record || record.phase !== "planned") {
-      return context;
-    }
-    const workstream = readWorkstreamInitialization(this.options.database, context.workstream.workstreamId);
-    if (!workstream?.head) {
+    if (!record || record.phase !== "planned") return boundedContext;
+    const workstream = readWorkstreamInitialization(
+      this.options.database,
+      context.workstream.workstreamId,
+    );
+    if (!workstream) {
       throw new ContextEngineServiceError({
         code: "WORKSTREAM_NOT_FOUND",
-        message: "Workstream context projection requires an active workstream.",
+        message: "Selected workstream is unavailable.",
         details: { runId, workstreamId: context.workstream.workstreamId },
       });
     }
-    const validation = await validateWorkstreamRepository({
-      workstreamRoot: this.options.workstreamRoot,
-      contextRepositoryPath: context.workstream.contextRepositoryPath,
-      expectedWorkstreamId: context.workstream.workstreamId,
-      requestReadMode: "all",
-    });
-    const planned = resolvePlannedWorkstreamRequestState(record, validation);
+    const planned = resolvePlannedWorkstreamRequestState(
+      record,
+      await this.validation(workstream),
+    );
+    const active = planned.workstreamCard.currentRequest
+      ? record.changePlan?.requestsAfter.find(
+          (request) => request.id === planned.workstreamCard.currentRequest,
+        ) ?? (boundedContext.currentRequest?.id === planned.workstreamCard.currentRequest
+          ? boundedContext.currentRequest
+          : undefined)
+      : undefined;
     return {
-      ...context,
+      ...boundedContext,
       lifecycleStatus: planned.workstreamCard.status,
       currentFocus: planned.workstreamCard.currentFocus,
       blockers: [...planned.workstreamCard.blockers],
-      currentRequest: structuredClone(planned.workstreamRequest),
+      ...(active ? { currentRequest: requestProjection(active) } : { currentRequest: undefined }),
+      selectedRequest: requestProjection(planned.workstreamRequest),
     };
   }
+
+  private async validation(
+    workstream: NonNullable<ReturnType<typeof readWorkstreamInitialization>>,
+  ): Promise<WorkstreamRepositoryValidation> {
+    if (workstream.materialized) {
+      return await validateWorkstreamRepository({
+        workstreamRoot: this.options.workstreamRoot,
+        contextRepositoryPath: workstream.contextRepositoryPath,
+        expectedWorkstreamId: workstream.workstreamId,
+        requestReadMode: "all",
+      });
+    }
+    const repository = readSharedWorkstreamRepositoryState(this.options.database);
+    if (!repository) throw new Error("Shared workstream repository is unavailable.");
+    return projectProvisionalWorkstreamValidation({
+      database: this.options.database,
+      workstream,
+      repository,
+    });
+  }
+}
+
+function routingDecision(
+  workstreamId: string,
+  route: WorkstreamRequestRoute,
+) {
+  const common = { workstreamId, reason: route.reason };
+  switch (route.kind) {
+    case "continue_current":
+    case "activate_existing":
+    case "resume_blocked":
+      return { kind: route.kind, requestId: route.requestId, ...common } as const;
+    case "amend_current":
+      return { kind: route.kind, requestId: route.currentRequestId, ...common } as const;
+    case "create_and_activate":
+    case "create_queued":
+      return { kind: route.kind, ...common } as const;
+    case "defer_current_and_create":
+      return { kind: route.kind, requestId: route.currentRequestId, ...common } as const;
+    case "defer_current_and_activate_existing":
+      return {
+        kind: route.kind,
+        requestId: route.currentRequestId,
+        nextRequestId: route.nextRequestId,
+        ...common,
+      } as const;
+  }
+}
+
+function lifecycleOperation(
+  route: Exclude<WorkstreamRequestRoute, { kind: "continue_current" }>,
+  at: string,
+): WorkstreamRequestLifecycleOperation {
+  switch (route.kind) {
+    case "activate_existing":
+      return { kind: "activate", requestId: route.requestId, at };
+    case "resume_blocked":
+      return { kind: "resume", requestId: route.requestId, at };
+    case "amend_current":
+      return {
+        kind: "amend",
+        requestId: route.currentRequestId,
+        patch: route.patch,
+        reason: route.reason,
+        authority: route.authority,
+        at,
+      };
+    case "create_and_activate":
+    case "create_queued":
+      return {
+        kind: "create",
+        title: route.title,
+        request: route.request,
+        acceptance: route.acceptance,
+        constraints: route.constraints,
+        source: "user",
+        createdAt: at,
+        activate: route.kind === "create_and_activate",
+      };
+    case "defer_current_and_create":
+      return {
+        kind: "defer_and_create",
+        currentRequestId: route.currentRequestId,
+        deferReason: route.reason,
+        newRequest: {
+          title: route.title,
+          request: route.request,
+          acceptance: route.acceptance,
+          constraints: route.constraints,
+          source: "user",
+          createdAt: at,
+        },
+      };
+    case "defer_current_and_activate_existing":
+      return {
+        kind: "defer_and_activate",
+        currentRequestId: route.currentRequestId,
+        nextRequestId: route.nextRequestId,
+        deferReason: route.reason,
+        at,
+      };
+  }
+}
+
+function selectedRequestId(
+  route: WorkstreamRequestRoute,
+  plan: WorkstreamRequestChangePlan | undefined,
+): string {
+  if (route.kind === "continue_current"
+    || route.kind === "activate_existing"
+    || route.kind === "resume_blocked") {
+    return route.requestId;
+  }
+  if (route.kind === "amend_current") return route.currentRequestId;
+  const id = plan?.activatedRequestId ?? plan?.primaryRequestId;
+  if (!id) throw new Error("Request lifecycle plan did not select a request.");
+  return id;
+}
+
+function requestProjection(request: {
+  id: string;
+  title: string;
+  status: "queued" | "active" | "blocked" | "done" | "dropped";
+  request: string;
+  acceptance: string[];
+  constraints: string[];
+}) {
+  return {
+    id: request.id,
+    title: request.title,
+    status: request.status,
+    request: request.request,
+    acceptance: [...request.acceptance],
+    constraints: [...request.constraints],
+  };
 }
 
 function invalid(
@@ -227,5 +334,24 @@ function invalid(
     code: "INVALID_REQUEST",
     message,
     details: { runId: input.runId, workstreamId: input.workstreamId },
+  });
+}
+
+function headMismatch(
+  input: Pick<
+    PlanWorkstreamRequestRouteRequest,
+    "workstreamId" | "expectedWorkstreamHead"
+  >,
+  actualHead: string,
+): ContextEngineServiceError {
+  return new ContextEngineServiceError({
+    code: "WORKSTREAM_HEAD_MISMATCH",
+    message: "Workstream revision changed before request planning.",
+    retryable: true,
+    details: {
+      workstreamId: input.workstreamId,
+      expectedHead: input.expectedWorkstreamHead,
+      actualHead,
+    },
   });
 }

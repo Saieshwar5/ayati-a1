@@ -953,11 +953,11 @@ function buildGitContextFixture(count: number, timestamp: string): ContextEngine
     current: {},
     focus: {
       status: "active",
-      ref: "refs/heads/main",
+      ref: "workstreams/W-20260617-0001@bench-head",
       workstreamId: "W-20260617-0001",
     },
     workstream: {
-      ref: "refs/heads/main",
+      ref: "workstreams/W-20260617-0001@bench-head",
       workstreamId: "W-20260617-0001",
       title: "Runtime performance analysis",
       objective: "Measure non-LLM runtime performance paths.",
@@ -968,6 +968,7 @@ function buildGitContextFixture(count: number, timestamp: string): ContextEngine
       currentFocus: "Measure non-LLM runtime paths.",
       blockers: [],
       next: "Run non-LLM performance measurements.",
+      recentProgress: [],
       resources: [{
         resource: {
           resourceId: "RES-0123456789ABCDEF01234567",

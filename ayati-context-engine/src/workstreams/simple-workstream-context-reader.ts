@@ -1,4 +1,5 @@
 import type { CommitSummary, WorkstreamCatalogEntry, WorkstreamContextProjection } from "../contracts.js";
+import { basename } from "node:path";
 import { runGitRaw } from "../git/git-process.js";
 import { parseWorkstreamCommit } from "./workstream-commit-metadata.js";
 import { validateWorkstreamRepository } from "./workstream-repository-validator.js";
@@ -21,8 +22,10 @@ export async function readSimpleWorkstreamContext(
     "log",
     "-" + RECENT_COMMIT_LIMIT,
     "--format=%H%x1f%s%x1f%cI%x1f%B%x1e",
-    validation.head,
-  ], { cwd: validation.contextRepositoryPath });
+    validation.repositoryHead,
+    "--",
+    basename(validation.contextRepositoryPath),
+  ], { cwd: validation.repositoryPath });
   const recentCommits = parseCommits(logOutput);
   const latestFinalization = recentCommits.find(
     (commit) => commit.event === "workstream_bound_run_finalized",

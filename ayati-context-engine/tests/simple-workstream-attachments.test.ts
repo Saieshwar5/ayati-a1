@@ -7,6 +7,7 @@ import type { ResourceAdmission } from "../src/contracts.js";
 import {
   createBoundWorkstream,
   createWorkstreamServiceFixture,
+  materializeBoundWorkstream,
   workState,
   type WorkstreamServiceFixture,
 } from "./simple-workstream-repository-fixtures.js";
@@ -101,6 +102,7 @@ describe("resource catalog and durable workstream relationships", () => {
         primary: true,
       }],
     });
+    await materializeBoundWorkstream(fixture);
 
     expect((await fixture.service.findResources({ query: "learning code" })).resources[0])
       .toMatchObject({
@@ -188,6 +190,7 @@ describe("resource catalog and durable workstream relationships", () => {
       workState: workState({ summary: "Research remains in progress." }),
       workstream: {
         completion: { accepted: false, resources: [], missing: [], failures: [], criteria: [] },
+        requestEffect: { kind: "none" },
       },
       at: "2026-07-19T10:02:00+05:30",
     });

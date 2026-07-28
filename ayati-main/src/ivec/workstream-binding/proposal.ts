@@ -65,22 +65,77 @@ function normalizeRequestDecision(value: unknown): WorkstreamRequestDecision | u
   if (!record) return undefined;
   const reason = stringValue(record["reason"]);
   if (!reason) return undefined;
-  if (record["kind"] === "continue") {
+  if (record["kind"] === "continue_current"
+    || record["kind"] === "activate_existing"
+    || record["kind"] === "resume_blocked") {
     const requestId = stringValue(record["requestId"]);
-    return requestId ? { kind: "continue", requestId, reason } : undefined;
+    return requestId && /^R-[0-9]{4}$/.test(requestId)
+      ? { kind: record["kind"], requestId, reason }
+      : undefined;
   }
-  if (record["kind"] === "create") {
+  if (record["kind"] === "amend_current") {
+    const currentRequestId = stringValue(record["currentRequestId"]);
+    const patch = normalizeRequestPatch(record["patch"]);
+    const authority = record["authority"];
+    return currentRequestId
+      && /^R-[0-9]{4}$/.test(currentRequestId)
+      && patch
+      && (authority === "user" || authority === "trusted_policy")
+      ? { kind: record["kind"], currentRequestId, patch, authority, reason }
+      : undefined;
+  }
+  if (record["kind"] === "create_and_activate" || record["kind"] === "create_queued") {
     const definition = normalizeRequestDefinition(record);
-    return definition ? { kind: "create", ...definition, reason } : undefined;
+    return definition ? { kind: record["kind"], ...definition, reason } : undefined;
   }
-  if (record["kind"] === "switch") {
+  if (record["kind"] === "defer_current_and_create") {
     const currentRequestId = stringValue(record["currentRequestId"]);
     const definition = normalizeRequestDefinition(record);
     return currentRequestId && /^R-[0-9]{4}$/.test(currentRequestId) && definition
-      ? { kind: "switch", currentRequestId, ...definition, reason }
+      ? { kind: record["kind"], currentRequestId, ...definition, reason }
+      : undefined;
+  }
+  if (record["kind"] === "defer_current_and_activate_existing") {
+    const currentRequestId = stringValue(record["currentRequestId"]);
+    const nextRequestId = stringValue(record["nextRequestId"]);
+    return currentRequestId && nextRequestId
+      && /^R-[0-9]{4}$/.test(currentRequestId)
+      && /^R-[0-9]{4}$/.test(nextRequestId)
+      ? { kind: record["kind"], currentRequestId, nextRequestId, reason }
       : undefined;
   }
   return undefined;
+}
+
+function normalizeRequestPatch(
+  value: unknown,
+): Partial<WorkstreamRequestDefinition> | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+  const keys = Object.keys(record);
+  if (keys.length === 0
+    || keys.some((key) => !["title", "request", "acceptance", "constraints"].includes(key))) {
+    return undefined;
+  }
+  const title = record["title"] === undefined ? undefined : stringValue(record["title"]);
+  const request = record["request"] === undefined ? undefined : stringValue(record["request"]);
+  const acceptance = record["acceptance"] === undefined
+    ? undefined
+    : stringArray(record["acceptance"]);
+  const constraints = record["constraints"] === undefined
+    ? undefined
+    : stringArray(record["constraints"]);
+  if ((record["title"] !== undefined && !title)
+    || (record["request"] !== undefined && !request)
+    || (record["acceptance"] !== undefined && !acceptance?.length)) {
+    return undefined;
+  }
+  return {
+    ...(title ? { title } : {}),
+    ...(request ? { request } : {}),
+    ...(acceptance ? { acceptance } : {}),
+    ...(constraints ? { constraints } : {}),
+  };
 }
 
 function normalizeRequestDefinition(value: unknown): WorkstreamRequestDefinition | undefined {
@@ -124,11 +179,16 @@ export function workstreamActivateProposalSchema(): Record<string, unknown> {
     expectedWorkstreamHead: { type: "string", minLength: 1, maxLength: 200 },
     requestDecision: {
       description:
-        "Choose continue for the unchanged active request contract. Any added or removed scope, acceptance criterion, or constraint is a new request: create when no request is active, or switch only when the user explicitly starts it now while preserving the current request for later.",
+        "Choose one explicit lifecycle operation. Continue only the same contract; amend only the same independently acceptable outcome; create a new request for a separate outcome; defer instead of falsely blocking unfinished work.",
       oneOf: [
-        continueDecisionSchema(),
-        createRequestDecisionSchema(),
-        switchRequestDecisionSchema(),
+        existingRequestDecisionSchema("continue_current"),
+        existingRequestDecisionSchema("activate_existing"),
+        existingRequestDecisionSchema("resume_blocked"),
+        amendRequestDecisionSchema(),
+        createRequestDecisionSchema("create_and_activate"),
+        createRequestDecisionSchema("create_queued"),
+        deferAndCreateDecisionSchema(),
+        deferAndActivateDecisionSchema(),
       ],
     },
     evidence: evidenceSchema(),
@@ -150,30 +210,34 @@ export function workstreamCreateProposalSchema(): Record<string, unknown> {
   }, ["kind", "title", "objective", "initialRequest", "resources", "evidence"]);
 }
 
-function continueDecisionSchema(): Record<string, unknown> {
+function existingRequestDecisionSchema(
+  kind: "continue_current" | "activate_existing" | "resume_blocked",
+): Record<string, unknown> {
   return objectSchema({
-    kind: { const: "continue" },
+    kind: { const: kind },
     requestId: {
       type: "string",
       pattern: REQUEST_ID_PATTERN,
-      description: "The exact active request ID observed during workstream inspection.",
+      description: "The exact request ID observed during workstream inspection.",
     },
     reason: {
       type: "string",
       minLength: 1,
       maxLength: 500,
-      description: "Why the user's request matches the active contract without any change.",
+      description: "Why this exact lifecycle operation matches the user's intention.",
     },
   }, [
     "kind",
     "requestId",
     "reason",
-  ], "Continue only when the requested outcome, acceptance criteria, and constraints are unchanged.");
+  ], "Use only when the observed request status permits this exact operation.");
 }
 
-function createRequestDecisionSchema(): Record<string, unknown> {
+function createRequestDecisionSchema(
+  kind: "create_and_activate" | "create_queued",
+): Record<string, unknown> {
   return objectSchema({
-    kind: { const: "create" },
+    kind: { const: kind },
     title: { type: "string", minLength: 1, maxLength: 120 },
     request: { type: "string", minLength: 1, maxLength: 4000 },
     acceptance: boundedStringArray(20),
@@ -182,7 +246,7 @@ function createRequestDecisionSchema(): Record<string, unknown> {
       type: "string",
       minLength: 1,
       maxLength: 500,
-      description: "Why this is a new request and no active request needs to be preserved.",
+      description: "Why this is a separately acceptable outcome in the same workstream.",
     },
   }, [
     "kind",
@@ -191,12 +255,14 @@ function createRequestDecisionSchema(): Record<string, unknown> {
     "acceptance",
     "constraints",
     "reason",
-  ], "Create a new immutable request only when this workstream has no active request.");
+  ], kind === "create_and_activate"
+    ? "Create and activate only when no request is active."
+    : "Create queued work for later without changing the active request.");
 }
 
-function switchRequestDecisionSchema(): Record<string, unknown> {
+function deferAndCreateDecisionSchema(): Record<string, unknown> {
   return objectSchema({
-    kind: { const: "switch" },
+    kind: { const: "defer_current_and_create" },
     currentRequestId: {
       type: "string",
       pattern: REQUEST_ID_PATTERN,
@@ -220,7 +286,50 @@ function switchRequestDecisionSchema(): Record<string, unknown> {
     "acceptance",
     "constraints",
     "reason",
-  ], "Switch only when the user explicitly starts a new immutable request now; keep the unfinished current request queued for later.");
+  ], "Defer the unfinished active request and create a separate active outcome.");
+}
+
+function deferAndActivateDecisionSchema(): Record<string, unknown> {
+  return objectSchema({
+    kind: { const: "defer_current_and_activate_existing" },
+    currentRequestId: { type: "string", pattern: REQUEST_ID_PATTERN },
+    nextRequestId: { type: "string", pattern: REQUEST_ID_PATTERN },
+    reason: { type: "string", minLength: 1, maxLength: 500 },
+  }, [
+    "kind",
+    "currentRequestId",
+    "nextRequestId",
+    "reason",
+  ], "Defer the current request and activate an existing queued request.");
+}
+
+function amendRequestDecisionSchema(): Record<string, unknown> {
+  return objectSchema({
+    kind: { const: "amend_current" },
+    currentRequestId: { type: "string", pattern: REQUEST_ID_PATTERN },
+    authority: { enum: ["user", "trusted_policy"] },
+    patch: {
+      type: "object",
+      minProperties: 1,
+      properties: {
+        title: { type: "string", minLength: 1, maxLength: 120 },
+        request: { type: "string", minLength: 1, maxLength: 4000 },
+        acceptance: {
+          ...boundedStringArray(20),
+          minItems: 1,
+        },
+        constraints: boundedStringArray(20),
+      },
+      additionalProperties: false,
+    },
+    reason: { type: "string", minLength: 1, maxLength: 500 },
+  }, [
+    "kind",
+    "currentRequestId",
+    "authority",
+    "patch",
+    "reason",
+  ], "Amend only when the durable outcome remains the same.");
 }
 
 function requestDefinitionSchema(): Record<string, unknown> {

@@ -14,7 +14,7 @@ High-risk runtime capabilities:
 - Upload handling.
 - Context Engine workstream/resource lifecycle mutation.
 
-Resources and context repositories are separate security boundaries:
+Resources and the shared context repository are separate security boundaries:
 
 - authorize mutation against exact bound resource locators and access modes;
 - resolve symlinks before enforcing file or directory containment;

@@ -856,7 +856,7 @@ describe("AsyncAgentFeedbackLedger", () => {
         headBefore: "a".repeat(40),
       },
       request: {
-        decision: "create",
+        decision: "create_and_activate",
         requestId: "R-0002",
         status: "active",
         created: true,
@@ -940,7 +940,11 @@ describe("AsyncAgentFeedbackLedger", () => {
         selectionMode: "activated",
         headAfter: "b".repeat(40),
       },
-      request: { decision: "create", requestId: "R-0002", created: true },
+      request: {
+        decision: "create_and_activate",
+        requestId: "R-0002",
+        created: true,
+      },
       run: { runId: "RUN-2", workstreamBound: true },
       finalization: {
         status: "committed",
@@ -1116,7 +1120,7 @@ describe("AsyncAgentFeedbackLedger", () => {
             headAfter: "a".repeat(40),
           },
           request: {
-            decision: "continue",
+            decision: "continue_current",
             requestId: "R-0001",
             created: false,
           },

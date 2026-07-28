@@ -265,13 +265,17 @@ export function recordRunStep(
   input: RecordRunStepRequest,
 ): { step: RunStepContext; workState: NonNullable<ReturnType<typeof readRunWorkState>> } {
   const run = database.prepare([
-    "SELECT stream_id, workstream_id, bound_request_id, status, step_count FROM runs WHERE run_id = ?",
+    "SELECT r.stream_id, r.workstream_id, r.bound_request_id, r.status, r.step_count,",
+    "q.status AS request_status FROM runs r LEFT JOIN workstream_requests q",
+    "ON q.workstream_id = r.workstream_id AND q.request_id = r.bound_request_id",
+    "WHERE r.run_id = ?",
   ].join(" ")).get(input.runId) as {
     stream_id: string;
     workstream_id: string | null;
     bound_request_id: string | null;
     status: string;
     step_count: number;
+    request_status: string | null;
   } | undefined;
   if (!run || run.status !== "running") {
     throw new ContextEngineServiceError({
@@ -290,10 +294,11 @@ export function recordRunStep(
   }
   assertToolClassifications(input.record.toolCalls);
   const mutation = input.record.toolCalls.find((call) => call.toolPurpose === "mutation");
-  if (mutation && (!run.workstream_id || !run.bound_request_id)) {
+  if (mutation && (!run.workstream_id || !run.bound_request_id
+    || run.request_status !== "active")) {
     throw new ContextEngineServiceError({
       code: "MUTATION_REQUIRES_WORKSTREAM_BINDING",
-      message: "Mutation effects require an immutable workstream/request binding.",
+      message: "Mutation effects require an immutable binding to an active request.",
       details: { runId: input.runId, tool: mutation.tool, toolEffect: mutation.toolEffect },
     });
   }

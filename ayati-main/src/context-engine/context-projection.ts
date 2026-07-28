@@ -54,7 +54,8 @@ export function buildContextEngineProjection(
     focus: workstreamBound && activeWorkstream
       ? {
           status: "active",
-          ref: "refs/heads/" + activeWorkstream.workstream.branch,
+          ref: "workstreams/" + activeWorkstream.workstream.workstreamId
+            + "@" + activeWorkstream.workstream.head,
           workstreamId: activeWorkstream.workstream.workstreamId,
         }
       : { status: "none" },
@@ -118,7 +119,7 @@ function projectWorkstream(
   context: NonNullable<AgentContextProjection["activeWorkstream"]>,
 ): ContextWorkstreamProjection {
   return {
-    ref: "refs/heads/" + context.workstream.branch,
+    ref: "workstreams/" + context.workstream.workstreamId + "@" + context.workstream.head,
     workstreamId: context.workstream.workstreamId,
     title: context.title,
     objective: context.objective,
@@ -135,6 +136,8 @@ function projectWorkstream(
     blockers: context.blockers ?? [],
     ...(context.next ? { next: context.next } : {}),
     ...(context.currentRequest ? { currentRequest: context.currentRequest } : {}),
+    ...(context.selectedRequest ? { selectedRequest: context.selectedRequest } : {}),
+    recentProgress: context.recentProgress ?? [],
     resources: context.resources ?? [],
   };
 }

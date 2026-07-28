@@ -145,7 +145,9 @@ export function workstreamRequestRoutePlanResponse(
     boundRequestId: record.boundRequestId,
     baseHead: record.baseHead,
     phase: record.phase,
-    requestCreated: Boolean(record.changePlan),
+    requestCreated: record.route.kind === "create_and_activate"
+      || record.route.kind === "create_queued"
+      || record.route.kind === "defer_current_and_create",
   };
 }
 

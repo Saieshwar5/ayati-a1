@@ -1,13 +1,8 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import type {
   FinalizeRunRequest,
   FinalizeRunResponse,
   RunOutcome,
-  RunWorkState,
-  WorkstreamCompletionRecord,
-  WorkstreamResourceBinding,
 } from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
 import {
@@ -18,13 +13,12 @@ import {
 import { ContextEngineServiceError } from "../errors.js";
 import {
   commitWorkstreamContextPlan,
-  contentHash,
   recognizeCommittedWorkstreamContextPlan,
 } from "../git/workstream-context-transaction.js";
 import { appendStreamMessage, readRunMessages } from "../repositories/message-records.js";
 import {
-  finalizeRunRecord,
   markRunRecoveryRequired,
+  readActiveRunIds,
   readRunEvidence,
 } from "../repositories/run-records.js";
 import { readRunWorkState, replaceRunWorkState } from "../repositories/run-work-state-records.js";
@@ -36,49 +30,35 @@ import {
   type WorkstreamContextCommitPlan,
   type WorkstreamFinalizationRecord,
 } from "../repositories/workstream-finalization-records.js";
-import { readResourceEventsForRun } from "../repositories/resource-records.js";
 import { resolveAssistantResponseMetadata } from "./assistant-response-metadata.js";
 import {
   readWorkstreamInitialization,
-  updateWorkstreamHead,
 } from "../repositories/workstream-records.js";
-import { writeWorkstreamDiscoveryProjection } from "../repositories/workstream-discovery-records.js";
+import {
+  markSharedWorkstreamRepositoryHealth,
+} from "../repositories/workstream-repository-state-records.js";
 import {
   readWorkstreamRequestRoutePlan,
   updateWorkstreamRequestRoutePlan,
 } from "../repositories/workstream-request-route-plan-records.js";
-import { resolvePlannedWorkstreamRequestState } from "../workstreams/planned-workstream-request.js";
 import {
   renderWorkstreamCommit,
   type WorkstreamCommitOutcome,
 } from "../workstreams/workstream-commit-metadata.js";
-import { appendWorkstreamProgressEntry } from "../workstreams/workstream-progress.js";
-import { buildWorkstreamProgressEntry } from "../workstreams/workstream-progress-projection.js";
-import { reduceSimpleWorkstreamContext } from "../workstreams/simple-workstream-context-reducer.js";
-import {
-  WORKSTREAM_PROGRESS_PATH,
-  WORKSTREAM_RESOURCES_PATH,
-} from "../workstreams/workstream-repository-layout.js";
-import {
-  renderWorkstreamResourceManifest,
-  WORKSTREAM_RESOURCE_MANIFEST_SCHEMA,
-} from "../workstreams/workstream-resource-manifest.js";
-import {
-  validateWorkstreamRepository,
-  type WorkstreamRepositoryValidation,
-} from "../workstreams/workstream-repository-validator.js";
 import type { ResourceCatalogService } from "./resource-catalog-service.js";
+import {
+  acknowledgeWorkstreamFinalization,
+  validateCommittedWorkstreamFinalization,
+} from "./workstream-finalization-acknowledger.js";
+import {
+  prepareWorkstreamFinalization,
+  type BoundWorkstreamFinalizeInput,
+} from "./workstream-finalization-planner.js";
 
 export type WorkstreamFinalizationHook = (
   phase: "plan_persisted" | "commit_created",
   record: WorkstreamFinalizationRecord,
 ) => void | Promise<void>;
-
-interface BoundFinalizeInput extends Omit<FinalizeRunRequest, "workstream"> {
-  workstreamId: string;
-  boundRequestId: string;
-  completion: WorkstreamCompletionRecord;
-}
 
 export class WorkstreamFinalizationService {
   constructor(private readonly options: {
@@ -115,9 +95,14 @@ export class WorkstreamFinalizationService {
       return await this.execute(existing, input.at);
     }
 
-    let prepared: Awaited<ReturnType<WorkstreamFinalizationService["prepare"]>>;
+    let prepared: Awaited<ReturnType<typeof prepareWorkstreamFinalization>>;
     try {
-      prepared = await this.prepare(input);
+      prepared = await prepareWorkstreamFinalization({
+        database: this.options.database,
+        workstreamRoot: this.options.workstreamRoot,
+        resourceCatalog: this.options.resourceCatalog,
+        request: input,
+      });
     } catch (error) {
       if (error instanceof ContextEngineServiceError && error.code === "RECOVERY_REQUIRED") {
         markRunRecoveryRequired(this.options.database, input.runId);
@@ -158,6 +143,7 @@ export class WorkstreamFinalizationService {
             summary: prepared.finalSummary,
             ...(input.next ? { next: normalizeText(input.next) } : {}),
             messageHash,
+            mutations: mutationCount(prepared.resourceEvents),
           }),
         };
         insertWorkstreamFinalization(this.options.database, {
@@ -172,8 +158,10 @@ export class WorkstreamFinalizationService {
           summary: prepared.finalSummary,
           ...(input.next ? { next: normalizeText(input.next) } : {}),
           completion: input.completion,
+          requestEffect: input.requestEffect,
           assistantResponse: input.assistantResponse,
           baseHead: prepared.baseHead,
+          workstreamBaseHead: prepared.workstreamBaseHead,
           messageHash,
           plan,
           resourceEvents: prepared.resourceEvents,
@@ -212,170 +200,80 @@ export class WorkstreamFinalizationService {
         this.markRecoveryRequired(record, error, at);
       }
     }
+    await this.recoverInterruptedBoundRuns(at);
   }
 
-  private normalize(input: FinalizeRunRequest): BoundFinalizeInput {
+  private async recoverInterruptedBoundRuns(at: string): Promise<void> {
+    for (const runId of readActiveRunIds(this.options.database)) {
+      const run = readRunEvidence(this.options.database, runId);
+      if (!run?.workstreamBinding || run.status !== "running") continue;
+      if (readWorkstreamFinalization(this.options.database, runId)) continue;
+      const routePlan = readWorkstreamRequestRoutePlan(this.options.database, runId);
+      if (!routePlan || routePlan.phase !== "planned") continue;
+      const workState = readRunWorkState(this.options.database, runId);
+      if (!workState) {
+        markRunRecoveryRequired(this.options.database, runId);
+        continue;
+      }
+      try {
+        await this.finalize({
+          requestId: "RECOVER:" + runId + ":finalize",
+          runId,
+          outcome: "incomplete",
+          stopReason: "interrupted",
+          assistantResponse: "",
+          streamSummary: "The previous run was interrupted before durable finalization.",
+          summary: "The run was interrupted; its verified context and request routing were recovered.",
+          validation: "not_applicable",
+          ...(workState.nextAction ? { next: workState.nextAction } : {}),
+          workState: {
+            status: workState.status,
+            summary: workState.summary,
+            plan: workState.plan,
+            importantContext: workState.importantContext,
+            nextAction: workState.nextAction ?? null,
+          },
+          workstream: {
+            completion: {
+              accepted: false,
+              resources: [],
+              missing: ["The interrupted run did not submit final acceptance evidence."],
+              failures: [],
+              criteria: [],
+            },
+            requestEffect: { kind: "none" },
+          },
+          at,
+        });
+      } catch (error) {
+        const record = readWorkstreamFinalization(this.options.database, runId);
+        if (record) {
+          this.markRecoveryRequired(record, error, at);
+        } else {
+          markRunRecoveryRequired(this.options.database, runId);
+        }
+      }
+    }
+  }
+
+  private normalize(input: FinalizeRunRequest): BoundWorkstreamFinalizeInput {
     const run = readRunEvidence(this.options.database, input.runId);
     const binding = run?.workstreamBinding;
     const completion = input.workstream?.completion;
-    if (!run || !binding || !completion) {
+    const requestEffect = input.workstream?.requestEffect;
+    if (!run || !binding || !completion || !requestEffect) {
       throw invalid("Workstream-bound finalization requires run binding and completion evidence.");
     }
-    if (input.outcome === "done" && !completion.accepted) {
-      throw invalid("A done workstream-bound run requires accepted completion evidence.");
+    if (requestEffect.kind === "complete" && !completion.accepted) {
+      throw invalid("Completing a request requires accepted completion evidence.");
     }
     return {
       ...input,
       workstreamId: binding.workstreamId,
       boundRequestId: binding.requestId,
       completion,
+      requestEffect,
     };
-  }
-
-  private async prepare(input: BoundFinalizeInput) {
-    const run = readRunEvidence(this.options.database, input.runId);
-    if (!run || run.status !== "running"
-      || run.workstreamBinding?.workstreamId !== input.workstreamId
-      || run.workstreamBinding.requestId !== input.boundRequestId) {
-      throw invalid("Finalization requires the matching active workstream-bound run.");
-    }
-    this.requireVerifiedMutationState(input.runId);
-    const workstream = readWorkstreamInitialization(this.options.database, input.workstreamId);
-    if (!workstream?.head || workstream.status !== "active") {
-      throw invalid("Finalization requires an active workstream context repository.");
-    }
-    const validation = await validateWorkstreamRepository({
-      workstreamRoot: this.options.workstreamRoot,
-      contextRepositoryPath: workstream.contextRepositoryPath,
-      expectedWorkstreamId: input.workstreamId,
-      requestReadMode: "all",
-    });
-    if (validation.head !== workstream.head || validation.branch !== workstream.branch) {
-      throw headMismatch(input.workstreamId, workstream.head, validation.head);
-    }
-    if (validation.health !== "ready") {
-      throw recovery("Workstream context repository has unjournaled changes.", {
-        workingTreeChanges: validation.workingTreeChanges,
-      });
-    }
-    const routePlan = readWorkstreamRequestRoutePlan(this.options.database, input.runId);
-    if (routePlan?.phase !== undefined && routePlan.phase !== "planned") {
-      throw recovery("Workstream request route plan is not active.", { phase: routePlan.phase });
-    }
-    const planned = routePlan
-      ? resolvePlannedWorkstreamRequestState(routePlan, validation)
-      : validation.currentRequest
-        ? {
-            workstreamCard: validation.workstreamCard,
-            workstreamRequest: validation.currentRequest,
-            requestCreated: false,
-          }
-        : undefined;
-    if (!planned || planned.workstreamRequest.id !== input.boundRequestId) {
-      throw recovery("Finalization request no longer matches the run binding.");
-    }
-
-    const bindings = await this.options.resourceCatalog.admitCompletionResources({
-      runId: input.runId,
-      workstreamId: input.workstreamId,
-      completion: input.completion,
-      at: input.at,
-    });
-    const resourceEvents = readResourceEventsForRun(this.options.database, input.runId);
-    const hasVerifiedChanges = resourceEvents.some((event) =>
-      event.type === "created" || event.type === "modified" || event.type === "moved"
-      || event.type === "deleted" || event.type === "downloaded"
-      || event.type === "external_state_changed");
-    const currentWorkState = readRunWorkState(this.options.database, input.runId);
-    if (!currentWorkState) throw recovery("Finalization requires persisted WorkState.");
-    const finalWorkState: RunWorkState = {
-      ...input.workState,
-      runId: input.runId,
-      revision: currentWorkState.revision + 1,
-      afterStep: run.stepCount,
-      updateReason: input.outcome === "done" ? "run_completed" : "run_paused",
-      updatedAt: input.at,
-    };
-    const reduced = reduceSimpleWorkstreamContext({
-      workstreamCard: planned.workstreamCard,
-      workstreamRequest: planned.workstreamRequest,
-      workState: finalWorkState,
-      outcome: input.outcome,
-      validation: input.validation,
-      summary: input.summary,
-      ...(input.next ? { next: input.next } : {}),
-      completion: input.completion,
-      hasVerifiedChanges,
-    });
-    const progressContent = appendWorkstreamProgressEntry(
-      validation.progress.content,
-      buildWorkstreamProgressEntry({
-        runId: input.runId,
-        requestId: input.boundRequestId,
-        at: input.at,
-        outcome: input.outcome,
-        summary: input.summary,
-        validation: input.validation,
-        workState: finalWorkState,
-        completion: input.completion,
-        resourceEvents,
-        ...(input.next ? { next: input.next } : {}),
-      }),
-    );
-    const desiredWrites = new Map<string, string>();
-    if (routePlan?.changePlan) {
-      for (const write of routePlan.changePlan.writes) desiredWrites.set(write.path, write.content);
-    }
-    for (const write of reduced.contextWrites) desiredWrites.set(write.path, write.content);
-    desiredWrites.set(WORKSTREAM_PROGRESS_PATH, progressContent);
-    desiredWrites.set(WORKSTREAM_RESOURCES_PATH, renderResourceManifest(
-      input.workstreamId,
-      validation.resourceManifest.updatedAt,
-      bindings,
-    ));
-    const contextWrites = await changedWrites(
-      workstream.contextRepositoryPath,
-      desiredWrites,
-    );
-    const contextBefore = await Promise.all(contextWrites.map(async (write) => ({
-      path: write.path,
-      sha256: await readContextHash(workstream.contextRepositoryPath, write.path),
-    })));
-    return {
-      run,
-      baseHead: workstream.head,
-      resourceEvents,
-      plan: {
-        commitRequired: contextWrites.length > 0,
-        contextWrites,
-        contextBefore,
-        stagedPaths: contextWrites.map((write) => write.path).sort(),
-        commitMessage: "",
-      },
-      finalSummary: reduced.contextWrites.length > 0
-        ? reduced.workstreamCard.currentSnapshot
-        : normalizeText(input.summary),
-    };
-  }
-
-  private requireVerifiedMutationState(runId: string): void {
-    const blocking = this.options.database.prepare([
-      "SELECT o.operation_id, o.status, l.status AS lease_status",
-      "FROM resource_mutation_operations o JOIN resource_mutation_leases l ON l.lease_id = o.lease_id",
-      "WHERE o.run_id = ? AND (o.status IN ('prepared', 'recovery_required')",
-      "OR l.status IN ('active', 'recovery_required')) LIMIT 1",
-    ].join(" ")).get(runId) as {
-      operation_id: string;
-      status: string;
-      lease_status: string;
-    } | undefined;
-    if (blocking) {
-      throw recovery("Run has an unverified or recovery-required resource mutation.", {
-        operationId: blocking.operation_id,
-        operationStatus: blocking.status,
-        leaseStatus: blocking.lease_status,
-      });
-    }
   }
 
   private async execute(record: WorkstreamFinalizationRecord, at: string): Promise<FinalizeRunResponse> {
@@ -467,111 +365,20 @@ export class WorkstreamFinalizationService {
     }
     if (!record.commitHead) throw recovery("Finalization journal is missing its context HEAD.");
     commit = { head: record.commitHead, created: record.commitCreated };
-    const validation = await this.validateCommitted(record, commit.head);
-    this.acknowledge(record, commit, validation, at);
-    return commit;
-  }
-
-  private async validateCommitted(
-    record: WorkstreamFinalizationRecord,
-    head: string,
-  ): Promise<WorkstreamRepositoryValidation> {
-    const workstream = readWorkstreamInitialization(this.options.database, record.workstreamId);
-    if (!workstream) throw recovery("Committed workstream is missing from the catalog.");
-    const validation = await validateWorkstreamRepository({
+    const validation = await validateCommittedWorkstreamFinalization({
+      database: this.options.database,
       workstreamRoot: this.options.workstreamRoot,
-      contextRepositoryPath: workstream.contextRepositoryPath,
-      expectedWorkstreamId: record.workstreamId,
-      requestReadMode: "all",
+      record,
+      head: commit.head,
     });
-    if (validation.head !== head || validation.health !== "ready") {
-      throw recovery("Committed workstream context did not validate cleanly.");
-    }
-    const progressEntries = validation.progress.entries
-      .filter((entry) => entry.runId === record.runId);
-    const progressEntry = progressEntries[0];
-    if (progressEntries.length !== 1
-      || progressEntry?.requestId !== record.boundRequestId
-      || progressEntry.outcome !== record.outcome
-      || progressEntry.at !== record.createdAt) {
-      throw recovery("Committed workstream progress does not match the finalized run.", {
-        runId: record.runId,
-        requestId: record.boundRequestId,
-        outcome: record.outcome,
-      });
-    }
-    const request = validation.requests.find((entry) => entry.id === record.boundRequestId);
-    if (!request) {
-      throw recovery("Committed workstream request is missing.");
-    }
-    if (record.outcome === "done" && request.status !== "done") {
-      throw recovery("Completed run did not persist a completed request.");
-    }
-    if ((record.outcome === "blocked" || record.outcome === "needs_user_input")
-      && request.status !== "blocked") {
-      throw recovery("Blocked run did not persist a blocked request.");
-    }
-    return validation;
-  }
-
-  private acknowledge(
-    record: WorkstreamFinalizationRecord,
-    commit: { head: string; created: boolean },
-    validation: WorkstreamRepositoryValidation,
-    at: string,
-  ): void {
-    this.options.database.transaction(() => {
-      if (commit.created) {
-        const workstream = readWorkstreamInitialization(this.options.database, record.workstreamId);
-        if (workstream?.head === record.baseHead) {
-          updateWorkstreamHead(this.options.database, record.workstreamId, record.baseHead, commit.head, at);
-        } else if (workstream?.head !== commit.head) {
-          throw new Error("Workstream catalog HEAD cannot acknowledge the context commit.");
-        }
-      }
-      const current = validation.currentRequest;
-      writeWorkstreamDiscoveryProjection(this.options.database, {
-        workstreamId: record.workstreamId,
-        expectedHead: commit.head,
-        title: validation.workstreamCard.title,
-        objective: validation.workstreamCard.purpose,
-        lifecycleStatus: validation.workstreamCard.status,
-        repositoryHealth: validation.health,
-        ...(current ? {
-          currentRequest: {
-            id: current.id,
-            title: current.title,
-            status: current.status,
-            searchText: [current.title, current.request].join("\n"),
-          },
-        } : {}),
-      });
-      const run = readRunEvidence(this.options.database, record.runId);
-      if (run?.status === "running" || run?.status === "recovery_required") {
-        finalizeRunRecord(this.options.database, {
-          runId: record.runId,
-          outcome: record.outcome,
-          stopReason: record.stopReason,
-          at,
-        });
-      }
-      const routePlan = readWorkstreamRequestRoutePlan(this.options.database, record.runId);
-      if (routePlan) {
-        updateWorkstreamRequestRoutePlan(this.options.database, {
-          runId: record.runId,
-          phase: record.plan.commitRequired ? "committed" : "discarded",
-          commitHead: commit.head,
-          at,
-        });
-      }
-      updateWorkstreamFinalization(this.options.database, {
-        runId: record.runId,
-        phase: "completed",
-        commitHead: commit.head,
-        commitCreated: commit.created,
-        at,
-      });
+    acknowledgeWorkstreamFinalization({
+      database: this.options.database,
+      record,
+      commit,
+      validation,
+      at,
     });
+    return commit;
   }
 
   private markRecoveryRequired(
@@ -582,6 +389,11 @@ export class WorkstreamFinalizationService {
     const message = error instanceof Error ? error.message : String(error);
     this.options.database.transaction(() => {
       markRunRecoveryRequired(this.options.database, record.runId);
+      markSharedWorkstreamRepositoryHealth(
+        this.options.database,
+        "recovery_required",
+        at,
+      );
       updateWorkstreamFinalization(this.options.database, {
         runId: record.runId,
         phase: "recovery_required",
@@ -598,65 +410,6 @@ export class WorkstreamFinalizationService {
         });
       }
     });
-  }
-}
-
-function renderResourceManifest(
-  workstreamId: string,
-  existingUpdatedAt: string,
-  bindings: WorkstreamResourceBinding[],
-): string {
-  const updatedAt = bindings.reduce(
-    (latest, binding) => binding.lastUsedAt && binding.lastUsedAt > latest ? binding.lastUsedAt : latest,
-    existingUpdatedAt,
-  );
-  return renderWorkstreamResourceManifest({
-    schema: WORKSTREAM_RESOURCE_MANIFEST_SCHEMA,
-    workstreamId,
-    updatedAt,
-    resources: bindings.map((binding) => ({
-      resourceId: binding.resource.resourceId,
-      kind: binding.resource.kind,
-      origin: binding.resource.origin,
-      role: binding.role,
-      access: binding.access,
-      primary: binding.primary,
-      requestIds: binding.requestIds,
-      displayName: binding.resource.displayName,
-      description: binding.resource.description,
-      aliases: binding.resource.aliases,
-      locator: binding.resource.locator,
-      version: binding.resource.version,
-      availability: binding.resource.availability,
-      ...(binding.resource.mediaType ? { mediaType: binding.resource.mediaType } : {}),
-      ...(binding.lastUsedAt ? { lastUsedAt: binding.lastUsedAt } : {}),
-    })),
-  });
-}
-
-async function changedWrites(
-  contextRepositoryPath: string,
-  desired: ReadonlyMap<string, string>,
-): Promise<Array<{ path: string; content: string }>> {
-  const result: Array<{ path: string; content: string }> = [];
-  for (const [path, content] of desired) {
-    const current = await readFile(join(contextRepositoryPath, path), "utf8").catch(
-      (error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return undefined;
-        throw error;
-      },
-    );
-    if (current !== content) result.push({ path, content });
-  }
-  return result.sort((left, right) => left.path.localeCompare(right.path));
-}
-
-async function readContextHash(contextRepositoryPath: string, path: string): Promise<string> {
-  try {
-    return contentHash(await readFile(join(contextRepositoryPath, path), "utf8"));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing";
-    throw error;
   }
 }
 
@@ -700,7 +453,7 @@ function response(
 function assertMatchingRetry(
   database: ContextDatabase,
   record: WorkstreamFinalizationRecord,
-  input: BoundFinalizeInput,
+  input: BoundWorkstreamFinalizeInput,
 ): void {
   const run = readRunEvidence(database, input.runId);
   const matches = record.operationRequestId === input.requestId
@@ -713,7 +466,8 @@ function assertMatchingRetry(
     && record.validation === input.validation
     && (record.next ?? null) === (input.next ? normalizeText(input.next) : null)
     && record.assistantResponse === input.assistantResponse
-    && JSON.stringify(record.completion) === JSON.stringify(input.completion);
+    && JSON.stringify(record.completion) === JSON.stringify(input.completion)
+    && JSON.stringify(record.requestEffect) === JSON.stringify(input.requestEffect);
   if (!matches) {
     throw new ContextEngineServiceError({
       code: "IDEMPOTENCY_CONFLICT",
@@ -729,6 +483,18 @@ function commitOutcome(outcome: RunOutcome): WorkstreamCommitOutcome {
   return outcome;
 }
 
+function mutationCount(events: Array<{ type: string }>): number {
+  const mutations = new Set([
+    "created",
+    "modified",
+    "moved",
+    "deleted",
+    "downloaded",
+    "external_state_changed",
+  ]);
+  return events.filter((event) => mutations.has(event.type)).length;
+}
+
 function normalizeText(value: string): string {
   return value.trim().replace(/\s+/g, " ");
 }
@@ -739,12 +505,4 @@ function invalid(message: string, details?: Record<string, unknown>): ContextEng
 
 function recovery(message: string, details?: Record<string, unknown>): ContextEngineServiceError {
   return new ContextEngineServiceError({ code: "RECOVERY_REQUIRED", message, ...(details ? { details } : {}) });
-}
-
-function headMismatch(workstreamId: string, expected: string, actual: string): ContextEngineServiceError {
-  return new ContextEngineServiceError({
-    code: "WORKSTREAM_HEAD_MISMATCH",
-    message: "Workstream context HEAD changed during finalization.",
-    details: { workstreamId, expectedHead: expected, actualHead: actual },
-  });
 }

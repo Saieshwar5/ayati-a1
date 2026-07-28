@@ -9,6 +9,7 @@ import {
   readRecentWorkStateHandoffs,
 } from "../src/repositories/recent-work-state-records.js";
 import {
+  boundRequestAcceptance,
   createBoundWorkstream,
   createWorkstreamServiceFixture,
   workState,
@@ -228,12 +229,15 @@ async function finalizeCurrent(
             resources: [],
             missing: [],
             failures: [],
-            criteria: [{
-              criterion: "The requested WorkState Hot Context work is complete.",
+            criteria: boundRequestAcceptance(fixture).map((criterion) => ({
+              criterion,
               passed: true,
               evidence: "The implementation handoff was recorded.",
-            }],
+            })),
           },
+          requestEffect: input.outcome && input.outcome !== "done"
+            ? { kind: "none" }
+            : { kind: "complete", verification: "verified" },
         }
       : undefined,
     at: input.at,

@@ -12,9 +12,9 @@ Default services:
 Runtime data:
 
 - Stored under `ayati-main/data/`.
-- Context Engine stores its V8 SQLite database and managed resources under
-  `<AYATI_ROOT_DIR>/.ayati/`; context-only workstream repositories live under
-  `<AYATI_ROOT_DIR>/workstreams/`.
+- Context Engine stores its V9 SQLite database and managed resources under
+  `<AYATI_ROOT_DIR>/.ayati/`; the one shared context-only workstream repository
+  lives at `<AYATI_ROOT_DIR>/workstreams/`.
 - Should not be committed.
 
 Daemon operation concerns:
@@ -24,8 +24,9 @@ Daemon operation concerns:
   its in-process Context Engine together.
 - Logs should be available for debugging long-running behavior.
 - Runtime data should have backup/retention guidance before serious use.
-- Backups must include Context Engine SQLite, managed resources, and context-only
-  workstream repositories. Preserve `workspace/` separately as user-visible data.
+- Backups must include Context Engine SQLite, managed resources, and the shared
+  context-only workstream repository. Preserve `workspace/` separately as
+  user-visible data.
 - Remote access should be disabled or strongly protected until auth and permissions are designed.
 
 Production or shared deployment is not fully documented yet. Before deploying outside local development, define:

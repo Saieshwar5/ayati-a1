@@ -89,6 +89,31 @@ describe("resource-scoped mutation authority", () => {
     });
   });
 
+  it("rejects mutation when the run is bound to a queued request", async () => {
+    const state = await createMutationFixture("queued-request");
+    const workstreamId = boundWorkstreamId(state);
+    state.fixture.database.transaction(() => {
+      state.fixture.database.prepare(
+        "UPDATE workstreams SET current_request_id = NULL WHERE workstream_id = ?",
+      ).run(workstreamId);
+      state.fixture.database.prepare([
+        "UPDATE workstream_requests SET status = 'queued', lifecycle_note = ?",
+        "WHERE workstream_id = ? AND request_id = ?",
+      ].join(" ")).run(
+        "This request is queued and cannot execute mutations.",
+        workstreamId,
+        state.activeRequestId,
+      );
+    });
+
+    await expect(state.fixture.service.prepareResourceMutation(
+      mutationInput(state, "call-queued-request", "src/app.ts"),
+    )).rejects.toMatchObject({ code: "MUTATION_REQUIRES_WORKSTREAM_BINDING" });
+    expect(state.fixture.database.prepare(
+      "SELECT COUNT(*) AS count FROM resource_mutation_leases WHERE run_id = ?",
+    ).get(state.fixture.prepared.run.runId)).toEqual({ count: 0 });
+  });
+
   it("rejects stale versions and resources without mutate access", async () => {
     const state = await createMutationFixture("guards");
     await expect(state.fixture.service.prepareResourceMutation({

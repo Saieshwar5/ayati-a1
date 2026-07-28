@@ -81,7 +81,8 @@ function activateWorkstreamTool(service: ContextEngineService): ToolDefinition {
   return {
     name: "git_context_activate_workstream",
     description:
-      "Bind this run to an existing workstream. Continue only the unchanged active request. Any added or removed scope, acceptance criterion, or constraint is a new request: create it when no request is active, or switch only when the user explicitly wants it active now while preserving the current request for later.",
+      "Bind this run to an existing workstream using one explicit request lifecycle operation. "
+      + "Any added or removed independently acceptable scope belongs in a new request.",
     inputSchema: {
       type: "object",
       properties: {
@@ -98,40 +99,69 @@ function activateWorkstreamTool(service: ContextEngineService): ToolDefinition {
         requestDecision: {
           type: "object",
           description:
-            "Use continue for an unchanged active contract, create for a new request when none is active, or switch for an explicitly prioritized new request while the current request returns to queued status.",
+            "Continue the unchanged active contract, amend a clarification, activate or resume "
+            + "observed work, create a separate request, or atomically defer and switch.",
           properties: {
             kind: {
-              enum: ["continue", "create", "switch"],
+              enum: [
+                "continue_current",
+                "activate_existing",
+                "resume_blocked",
+                "amend_current",
+                "create_and_activate",
+                "create_queued",
+                "defer_current_and_activate_existing",
+                "defer_current_and_create",
+              ],
               description:
-                "Continue an unchanged contract; create a new contract with no active request; or explicitly switch from the exact active request.",
+                "The exact lifecycle operation authorized by the user and current durable state; "
+                + "continue_current never changes the request contract.",
             },
             requestId: {
               type: "string",
               pattern: "^R-[0-9]{4}$",
-              description: "For continue, the exact active request ID returned by inspection.",
+              description: "Exact request for continue, activate, or resume.",
             },
             currentRequestId: {
               type: "string",
               pattern: "^R-[0-9]{4}$",
-              description: "For switch, the exact active request ID to return to queued status.",
+              description: "Exact active request that amendment or deferral will update.",
+            },
+            nextRequestId: {
+              type: "string",
+              pattern: "^R-[0-9]{4}$",
+              description: "Exact queued request to activate after deferring the current request.",
             },
             title: {
               type: "string",
-              description: "For create or switch, the concise title of the new immutable request.",
+              description: "Title for a newly created request.",
             },
             request: {
               type: "string",
-              description: "For create or switch, the complete new immutable request.",
+              description: "Contract body for the new immutable request identity.",
             },
             acceptance: {
               type: "array",
               items: { type: "string" },
-              description: "For create or switch, the new request's acceptance criteria.",
+              description: "Acceptance criteria for a newly created request.",
             },
             constraints: {
               type: "array",
               items: { type: "string" },
-              description: "For create or switch, the new request's constraints.",
+              description: "Constraints for a newly created request.",
+            },
+            authority: {
+              enum: ["user", "trusted_policy"],
+            },
+            patch: {
+              type: "object",
+              properties: {
+                title: { type: "string" },
+                request: { type: "string" },
+                acceptance: { type: "array", items: { type: "string" } },
+                constraints: { type: "array", items: { type: "string" } },
+              },
+              additionalProperties: false,
             },
           },
           required: ["kind"],
@@ -202,7 +232,7 @@ async function routingSuccess(
       workstreamCreated: selected.workstreamCreated,
       requestDecision: selected.workstreamRequestDecision,
       requestId: selected.run.workstreamBinding?.requestId,
-      requestStatus: selected.context.currentRequest?.status,
+      requestStatus: (selected.context.selectedRequest ?? selected.context.currentRequest)?.status,
       requestCreated: selected.workstreamRequestCreated,
       headBeforeSelection: selected.headBeforeSelection,
       resources: selected.resourceBindings,
@@ -239,7 +269,19 @@ function routingOutputSchema(): Record<string, unknown> {
       runId: { type: "string" },
       workstreamHead: { type: "string" },
       workstreamCreated: { type: "boolean" },
-      requestDecision: { enum: ["initial", "continue", "create"] },
+      requestDecision: {
+        enum: [
+          "initial",
+          "continue_current",
+          "activate_existing",
+          "resume_blocked",
+          "amend_current",
+          "create_and_activate",
+          "create_queued",
+          "defer_current_and_activate_existing",
+          "defer_current_and_create",
+        ],
+      },
       requestId: { type: "string" },
       requestStatus: { enum: ["queued", "active", "blocked", "done", "dropped"] },
       requestCreated: { type: "boolean" },
@@ -292,32 +334,43 @@ function parseActivateInput(input: unknown, context?: ToolExecutionContext): {
   }
   const route = parseRequestDecision(record["requestDecision"], reason);
   if (!route) {
-    return routingError("Activation requires a complete continue, create, or switch request decision.");
+    return routingError("Activation requires one complete, valid request lifecycle decision.");
   }
   return { streamId, workstreamId, route };
 }
 
 function parseRequestDecision(value: unknown, reason: string): WorkstreamRequestRoute | undefined {
   const record = objectInput(value);
-  if (record["kind"] === "continue") {
+  if (record["kind"] === "continue_current"
+    || record["kind"] === "activate_existing"
+    || record["kind"] === "resume_blocked") {
     const requestId = stringField(record, "requestId");
     return requestId && /^R-\d{4}$/.test(requestId)
-      ? { kind: "continue_active_request", requestId, reason }
+      ? { kind: record["kind"], requestId, reason }
       : undefined;
   }
-  if (record["kind"] === "create" || record["kind"] === "switch") {
+  if (record["kind"] === "create_and_activate"
+    || record["kind"] === "create_queued"
+    || record["kind"] === "defer_current_and_create") {
     const title = stringField(record, "title");
     const request = stringField(record, "request");
     const acceptance = stringArray(record["acceptance"]);
     const constraints = stringArray(record["constraints"]);
     if (!title || !request || acceptance.length === 0) return undefined;
-    if (record["kind"] === "create") {
-      return { kind: "create_active_request", title, request, acceptance, constraints, reason };
+    if (record["kind"] !== "defer_current_and_create") {
+      return {
+        kind: record["kind"],
+        title,
+        request,
+        acceptance,
+        constraints,
+        reason,
+      };
     }
     const currentRequestId = stringField(record, "currentRequestId");
     return currentRequestId && /^R-\d{4}$/.test(currentRequestId)
       ? {
-          kind: "switch_active_request",
+          kind: "defer_current_and_create",
           currentRequestId,
           title,
           request,
@@ -327,7 +380,57 @@ function parseRequestDecision(value: unknown, reason: string): WorkstreamRequest
         }
       : undefined;
   }
+  if (record["kind"] === "defer_current_and_activate_existing") {
+    const currentRequestId = stringField(record, "currentRequestId");
+    const nextRequestId = stringField(record, "nextRequestId");
+    return currentRequestId && nextRequestId
+      && /^R-\d{4}$/.test(currentRequestId)
+      && /^R-\d{4}$/.test(nextRequestId)
+      ? { kind: record["kind"], currentRequestId, nextRequestId, reason }
+      : undefined;
+  }
+  if (record["kind"] === "amend_current") {
+    const currentRequestId = stringField(record, "currentRequestId");
+    const patch = requestPatch(record["patch"]);
+    const authority = record["authority"];
+    return currentRequestId && /^R-\d{4}$/.test(currentRequestId)
+      && patch
+      && (authority === "user" || authority === "trusted_policy")
+      ? { kind: record["kind"], currentRequestId, patch, authority, reason }
+      : undefined;
+  }
   return undefined;
+}
+
+function requestPatch(value: unknown): {
+  title?: string;
+  request?: string;
+  acceptance?: string[];
+  constraints?: string[];
+} | undefined {
+  const record = objectInput(value);
+  const keys = Object.keys(record);
+  if (keys.length === 0
+    || keys.some((key) => !["title", "request", "acceptance", "constraints"].includes(key))) {
+    return undefined;
+  }
+  const title = record["title"] === undefined ? undefined : stringField(record, "title");
+  const request = record["request"] === undefined ? undefined : stringField(record, "request");
+  const acceptance = record["acceptance"] === undefined
+    ? undefined
+    : stringArray(record["acceptance"]);
+  const constraints = record["constraints"] === undefined
+    ? undefined
+    : stringArray(record["constraints"]);
+  if ((record["title"] !== undefined && !title)
+    || (record["request"] !== undefined && !request)
+    || (record["acceptance"] !== undefined && !acceptance?.length)) return undefined;
+  return {
+    ...(title ? { title } : {}),
+    ...(request ? { request } : {}),
+    ...(acceptance ? { acceptance } : {}),
+    ...(constraints ? { constraints } : {}),
+  };
 }
 
 function resourceBindings(value: unknown): Array<{

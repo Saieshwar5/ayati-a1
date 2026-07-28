@@ -1,4 +1,5 @@
 import { ContextEngineServiceError } from "../errors.js";
+import { RUN_FINALIZATION_LIMITS } from "../run-finalization-limits.js";
 import { requireRequestId, requireWorkstreamId } from "./workstream-repository-layout.js";
 import { requireSingleLine } from "./workstream-markdown.js";
 
@@ -19,6 +20,7 @@ export interface WorkstreamCommitInput extends WorkstreamIdentityCommitInput {
   summary: string;
   next?: string;
   messageHash: string;
+  mutations: number;
 }
 
 export type WorkstreamCommitMetadata =
@@ -42,6 +44,7 @@ export type WorkstreamCommitMetadata =
       summary: string;
       next?: string;
       messageHash: string;
+      mutations: number;
       schema: "workstream/v3";
     };
 
@@ -67,11 +70,25 @@ export function renderWorkstreamCommit(input: WorkstreamCommitInput): string {
     "Agent-Stream: " + identity(input.streamId, "Agent-Stream"),
     "Outcome: " + outcome(input.outcome),
     "Validation: " + validation(input.validation),
-    "Summary: " + boundedLine(input.summary, "Summary", 1_000),
-    ...(input.next ? ["Next: " + boundedLine(input.next, "Next", 500)] : []),
+    "Summary: " + boundedLine(
+      input.summary,
+      "Summary",
+      RUN_FINALIZATION_LIMITS.summaryChars,
+    ),
+    ...(input.next ? ["Next: " + boundedLine(
+      input.next,
+      "Next",
+      RUN_FINALIZATION_LIMITS.nextChars,
+    )] : []),
     "Message-Hash: " + hash(input.messageHash),
     "Ayati-Schema: workstream/v3",
     "Ayati-Event: workstream_bound_run_finalized",
+    "",
+    "Ayati-Workstream: " + requireWorkstreamId(input.workstreamId),
+    "Ayati-Request: " + requireRequestId(input.requestId),
+    "Ayati-Run: " + identity(input.runId, "Ayati-Run"),
+    "Ayati-Outcome: " + outcome(input.outcome),
+    "Ayati-Mutations: " + mutationCount(input.mutations),
   ];
   return lines.join("\n");
 }
@@ -117,11 +134,24 @@ export function parseWorkstreamCommit(message: string): WorkstreamCommitMetadata
     streamId: identity(required(fields, "Agent-Stream"), "Agent-Stream"),
     outcome: outcome(required(fields, "Outcome")),
     validation: validation(required(fields, "Validation")),
-    summary: boundedLine(required(fields, "Summary"), "Summary", 1_000),
-    ...(fields["Next"] ? { next: boundedLine(fields["Next"], "Next", 500) } : {}),
+    summary: boundedLine(
+      required(fields, "Summary"),
+      "Summary",
+      RUN_FINALIZATION_LIMITS.summaryChars,
+    ),
+    ...(fields["Next"] ? {
+      next: boundedLine(fields["Next"], "Next", RUN_FINALIZATION_LIMITS.nextChars),
+    } : {}),
     messageHash: hash(required(fields, "Message-Hash")),
+    mutations: parseMutationCount(required(fields, "Ayati-Mutations")),
     schema: "workstream/v3",
   };
+  if (fields["Ayati-Workstream"] !== workstreamId
+    || fields["Ayati-Request"] !== requestId
+    || fields["Ayati-Run"] !== parsed.runId
+    || fields["Ayati-Outcome"] !== parsed.outcome) {
+    invalid("Workstream commit trailers do not match their readable metadata.");
+  }
   return parsed;
 }
 
@@ -157,6 +187,11 @@ const FINALIZATION_FIELDS = new Set([
   "Summary",
   "Next",
   "Message-Hash",
+  "Ayati-Workstream",
+  "Ayati-Request",
+  "Ayati-Run",
+  "Ayati-Outcome",
+  "Ayati-Mutations",
 ]);
 
 function rejectUnsupportedFields(
@@ -213,6 +248,21 @@ function hash(value: string): string {
     invalid("Workstream commit message hash is invalid.");
   }
   return value;
+}
+
+function mutationCount(value: number): string {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    invalid("Workstream commit mutation count is invalid.");
+  }
+  return String(value);
+}
+
+function parseMutationCount(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    invalid("Workstream commit mutation count is invalid.");
+  }
+  return parsed;
 }
 
 function boundedLine(value: string, field: string, maximum: number): string {

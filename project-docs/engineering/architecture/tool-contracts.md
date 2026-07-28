@@ -131,6 +131,11 @@ Their capability ids are `workstream:search`, `workstream:read`, and
 `resource:ownership`. They identify routing and cannot satisfy task
 completion by themselves.
 
+Workstream search reports matching request identities and states from the
+request FTS index, including terminal requests. `git_context_read_workstream`
+accepts an optional exact `R-*` id so the model can answer from a completed or
+dropped request without reopening or binding it.
+
 Hidden deterministic lifecycle controls:
 
 - `git_context_inspect_resource`
@@ -146,11 +151,12 @@ Bound resource control:
 - `git_context_bind_resources`
 
 Reading never binds. When the main run enters `resolve` with a binding-required
-capability, evidence-backed mutation scope, and typed activate-or-create proposal, the
-runtime validates current-run routing evidence and invokes one atomic Context
-Engine binding operation without a model call. It then enters `execute`
-mechanically before asking for a fresh decision. Activating an existing
-workstream must continue an exact active request or create a new request.
+capability, evidence-backed mutation scope, and typed request-routing or
+workstream-creation proposal, the runtime validates current-run routing
+evidence and invokes one atomic Context Engine binding operation without a
+model call. It then enters `execute` mechanically before asking for a fresh
+decision. Routing an existing workstream must explicitly continue, amend,
+activate, resume, create, or atomically defer and switch its request.
 Replay identity derives from the existing run id and deterministic gate id.
 An ambiguity that performs no binding does not consume the mutation-safe
 binding attempt. An explicit create-new instruction or an exact follow-up

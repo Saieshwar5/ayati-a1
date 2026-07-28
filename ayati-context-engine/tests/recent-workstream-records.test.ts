@@ -116,21 +116,45 @@ function insertWorkstream(
   head: string | null = String(index).repeat(40).slice(0, 40),
 ): void {
   const date = String(index).padStart(2, "0");
+  const workstreamId = `W-202607${date}-0001`;
   fixture.database.prepare([
     "INSERT INTO workstreams(",
-    "workstream_id, repository_path, branch, head_sha, title_cache, objective_cache,",
-    "lifecycle_status, repository_health, current_request_id, current_request_title,",
-    "current_request_status, status, created_at, updated_at",
-    ") VALUES (?, ?, 'main', ?, ?, ?, 'active', 'ready', 'R-0001', ?, 'active', ?, ?, ?)",
+    "workstream_id, directory_path, title, aliases_json, purpose, lifecycle_status,",
+    "current_request_id, current_snapshot, current_focus, blockers_json, last_commit_sha,",
+    "last_activity_at, status, created_at, updated_at",
+    ") VALUES (?, ?, ?, '[]', ?, 'active', NULL, ?, ?, '[]', ?, ?, ?, ?, ?)",
   ].join(" ")).run(
-    `W-202607${date}-0001`,
+    workstreamId,
     `${fixture.root}/workstreams/W-202607${date}-0001`,
-    head,
     `Workstream ${index}`,
     `Objective ${index}`,
-    `Request ${index}`,
+    `Snapshot ${index}`,
+    `Focus ${index}`,
+    head,
+    createdAt,
     status,
     createdAt,
     createdAt,
   );
+  fixture.database.prepare([
+    "INSERT INTO workstream_requests(",
+    "workstream_id, request_id, relative_path, title, status, source, request_text,",
+    "acceptance_json, constraints_json, contract_hash, lifecycle_note, outcome_summary,",
+    "created_at, updated_at, started_at, closed_at, last_activity_at",
+    ") VALUES (?, 'R-0001', 'requests/R-0001-request.md', ?, 'active', 'user', ?,",
+    "'[\"The request is verified.\"]', '[]', ?, 'Created as active.', 'Pending.',",
+    "?, ?, ?, NULL, ?)",
+  ].join(" ")).run(
+    workstreamId,
+    `Request ${index}`,
+    `Complete request ${index}.`,
+    `hash-${index}`,
+    createdAt,
+    createdAt,
+    createdAt,
+    createdAt,
+  );
+  fixture.database.prepare(
+    "UPDATE workstreams SET current_request_id = 'R-0001' WHERE workstream_id = ?",
+  ).run(workstreamId);
 }

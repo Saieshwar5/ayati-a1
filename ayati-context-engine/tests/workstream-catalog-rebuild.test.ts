@@ -60,14 +60,28 @@ describe("workstream catalog rebuild", () => {
 
     expect(rebuilt.applied).toBe(true);
     expect(database.prepare([
-      "SELECT workstream_id, repository_path, lifecycle_status, repository_health",
+      "SELECT workstream_id, directory_path, lifecycle_status, last_commit_sha",
       "FROM workstreams",
     ].join(" ")).get()).toEqual({
       workstream_id: source.workstreamId,
-      repository_path: source.contextRepositoryPath,
+      directory_path: source.contextRepositoryPath,
       lifecycle_status: "active",
+      last_commit_sha: rebuilt.repositories[0]?.head,
+    });
+    expect(database.prepare([
+      "SELECT repository_path, branch, head_sha, repository_health",
+      "FROM workstream_repository_state WHERE singleton_id = 1",
+    ].join(" ")).get()).toMatchObject({
+      repository_path: join(source.fixture.root, "workstreams"),
+      branch: "main",
       repository_health: "ready",
     });
+    expect(database.prepare(
+      "SELECT request_id, status FROM workstream_requests",
+    ).get()).toEqual({ request_id: "R-0001", status: "active" });
+    expect(database.prepare(
+      "SELECT run_id, request_id, outcome FROM workstream_progress",
+    ).get()).toMatchObject({ request_id: "R-0001", outcome: "incomplete" });
     expect(database.prepare([
       "SELECT wr.workstream_id, wr.resource_id, wr.role, wr.access, wr.is_primary,",
       "r.origin, r.locator_kind FROM workstream_resources wr",
@@ -100,7 +114,7 @@ describe("workstream catalog rebuild", () => {
 
     await rebuildWorkstreamCatalog(input);
     await expect(rebuildWorkstreamCatalog(input))
-      .rejects.toThrow("empty workstream and resource catalog");
+      .rejects.toThrow("empty workstream, request, progress, and resource catalog");
   });
 });
 
@@ -131,6 +145,7 @@ async function createRebuildSource(name: string): Promise<{
     workState: workState({ summary: "The workstream remains in progress." }),
     workstream: {
       completion: { accepted: false, resources: [], missing: [], failures: [], criteria: [] },
+      requestEffect: { kind: "none" },
     },
     at: "2026-07-19T10:02:00+05:30",
   });

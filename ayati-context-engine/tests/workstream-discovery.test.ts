@@ -80,6 +80,78 @@ describe("autonomous workstream discovery", () => {
     });
   });
 
+  it("finds a completed request through request FTS without reopening it", async () => {
+    const fixture = await createWorkstreamServiceFixture("completed-request-search");
+    fixtures.push(fixture);
+    const selected = await createBoundWorkstream(fixture, {
+      title: "Historical Audit",
+      objective: "Maintain verified historical audit work.",
+      initialRequest: {
+        title: "Record nebula retention receipt",
+        request: "Record the nebula retention receipt for later reference.",
+        acceptance: ["The nebula retention receipt is verified."],
+        constraints: ["Keep the receipt in durable context."],
+      },
+    });
+    await fixture.service.finalizeRun({
+      requestId: "REQ-complete-historical-request",
+      runId: fixture.prepared.run.runId,
+      outcome: "done",
+      stopReason: "completed",
+      assistantResponse: "The historical audit request is complete.",
+      streamSummary: "Completed one historical audit request.",
+      summary: "The historical audit request is verified and complete.",
+      validation: "passed",
+      workState: workState({
+        status: "done",
+        summary: "The historical audit request is verified and complete.",
+      }),
+      workstream: {
+        completion: {
+          accepted: true,
+          resources: [],
+          missing: [],
+          failures: [],
+          criteria: [{
+            criterion: "The nebula retention receipt is verified.",
+            passed: true,
+            evidence: "The deterministic audit validation passed.",
+          }],
+        },
+        requestEffect: { kind: "complete", verification: "verified" },
+      },
+      at: "2026-07-19T10:03:00+05:30",
+    });
+
+    const found = await fixture.service.findWorkstreams({
+      query: "nebula retention receipt",
+      limit: 10,
+    });
+    const byStatus = await fixture.service.findWorkstreams({
+      query: "done",
+      limit: 10,
+    });
+
+    expect(found.workstreams[0]).toMatchObject({
+      workstreamId: selected.workstream.workstreamId,
+      unfinishedRequests: [],
+      matchingRequests: [{
+        id: "R-0001",
+        title: "Record nebula retention receipt",
+        status: "done",
+      }],
+      discovery: {
+        tier: "probable",
+        reasons: expect.arrayContaining(["matching_request", "text_match"]),
+      },
+    });
+    expect(found.workstreams[0]).not.toHaveProperty("currentRequest");
+    expect(byStatus.workstreams[0]).toMatchObject({
+      workstreamId: selected.workstream.workstreamId,
+      matchingRequests: [{ id: "R-0001", status: "done" }],
+    });
+  });
+
   it("uses referential continuation only as discovery evidence and never binds the run", async () => {
     const state = await createDiscoveryFixture();
 
@@ -258,6 +330,7 @@ async function finalizeIncomplete(
     workState: workState({ summary: "Work remains in progress." }),
     workstream: {
       completion: { accepted: false, resources: [], missing: [], failures: [], criteria: [] },
+      requestEffect: { kind: "none" },
     },
     at,
   });

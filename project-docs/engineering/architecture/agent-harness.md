@@ -142,10 +142,10 @@ The model never sees a separate workstream-resolution agent or lifecycle tool.
 Before `resolve`, it uses read-only workstream search/read and resource-owner
 lookup in an observation mode. An accepted transition to `resolve` must have
 mutation-permitting intent, a binding-required capability, evidence-backed
-mutation scopes, and one typed activate-or-create proposal citing exact current-run
-routing evidence. The deterministic gate performs at most one lifecycle
-binding attempt, makes no model request, and requires a fresh primary decision
-after authoritative bound context is mounted.
+mutation scopes, and one typed request-routing or workstream-creation proposal
+citing exact current-run routing evidence. The deterministic gate performs at
+most one lifecycle binding attempt, makes no model request, and requires a
+fresh primary decision after authoritative bound context is mounted.
 
 Executable tools retain native schemas. Harness-only controls are not
 persisted as fake calls. If a provider returns a whole JSON object whose shape
@@ -220,8 +220,9 @@ Older stream continuity is accessed with:
 - `agent_history_read`
 
 Binding uses the already prepared agent stream and run; it never allocates a
-second run. Existing workstreams require an explicit continue-or-create
-request decision in the proposal. After binding, the runner refreshes context
+second run. Existing workstreams require an explicit request operation:
+continue, amend, activate queued work, resume blocked work, create a request,
+or atomically defer and switch. After binding, the runner refreshes context
 and asks for a new decision. A stale mutation call is rejected and never
 stored for replay.
 
@@ -494,9 +495,11 @@ Clarification acceptance does not depend on punctuation. Successful work never
 uses `decision_stop`.
 
 One coordinator serves chat and system events. `finalizeRun` receives outcome,
-stop reason, assistant response, summaries, validation, WorkState, and optional
-completion. It atomically appends the assistant message and closes the run,
-then returns independent resource effects and workstream-context commit facts.
+stop reason, assistant response, summaries, validation, WorkState, completion
+evidence, and a request lifecycle effect. It atomically appends the assistant
+message and closes the run. A bound finalization appends one immutable progress
+entry, creates one shared-repository commit, then returns independent resource
+effects and workstream-context commit facts.
 
 Response ordering is strict:
 

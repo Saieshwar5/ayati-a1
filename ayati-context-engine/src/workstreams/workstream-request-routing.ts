@@ -6,20 +6,40 @@ import {
 } from "./workstream-request-lifecycle.js";
 import type { WorkstreamRequest } from "./workstream-request.js";
 
+type RequestOperation =
+  | "continue_current"
+  | "activate_existing"
+  | "resume_blocked"
+  | "amend_current"
+  | "create_and_activate"
+  | "create_queued"
+  | "defer_current_and_activate_existing"
+  | "defer_current_and_create";
+
 export type WorkstreamRequestRoutingDecision =
   | {
-      kind: "continue_active_request";
+      kind: Extract<
+        RequestOperation,
+        "continue_current" | "activate_existing" | "resume_blocked" | "amend_current"
+      >;
       workstreamId: string;
       requestId: string;
       reason: string;
     }
   | {
-      kind: "create_active_request" | "create_queued_request";
+      kind: Extract<RequestOperation, "create_and_activate" | "create_queued">;
       workstreamId: string;
       reason: string;
     }
   | {
-      kind: "switch_active_request";
+      kind: "defer_current_and_activate_existing";
+      workstreamId: string;
+      requestId: string;
+      nextRequestId: string;
+      reason: string;
+    }
+  | {
+      kind: "defer_current_and_create";
       workstreamId: string;
       requestId: string;
       reason: string;
@@ -30,9 +50,7 @@ export type WorkstreamRequestRoutingDecision =
   | { kind: "clarify"; reason: string; question: string };
 
 export interface WorkstreamRequestRoutingEvidence {
-  /** Exact workstream identity explicitly supplied by the user or a trusted caller. */
   explicitWorkstreamId?: string;
-  /** Workstream identities proven to own named files, directories, or resources. */
   resourceOwnerWorkstreamIds?: string[];
 }
 
@@ -42,10 +60,7 @@ export interface WorkstreamRequestRoutingState {
 }
 
 export type WorkstreamRequestRoutingNext =
-  | "continue_request"
-  | "create_active_request"
-  | "create_queued_request"
-  | "switch_active_request"
+  | RequestOperation
   | "select_workstream"
   | "create_workstream"
   | "answer_read_only"
@@ -76,16 +91,27 @@ export function validateWorkstreamRequestRoutingDecision(
 ): WorkstreamRequestRoutingDecision {
   const reason = boundedLine(decision.reason, "reason", 500);
   switch (decision.kind) {
-    case "continue_active_request":
-    case "switch_active_request":
+    case "continue_current":
+    case "activate_existing":
+    case "resume_blocked":
+    case "amend_current":
+    case "defer_current_and_create":
       return {
         kind: decision.kind,
         workstreamId: workstreamId(decision.workstreamId),
         requestId: requestId(decision.requestId),
         reason,
       };
-    case "create_active_request":
-    case "create_queued_request":
+    case "defer_current_and_activate_existing":
+      return {
+        kind: decision.kind,
+        workstreamId: workstreamId(decision.workstreamId),
+        requestId: requestId(decision.requestId),
+        nextRequestId: requestId(decision.nextRequestId),
+        reason,
+      };
+    case "create_and_activate":
+    case "create_queued":
     case "use_different_workstream":
       return {
         kind: decision.kind,
@@ -98,7 +124,9 @@ export function validateWorkstreamRequestRoutingDecision(
       return {
         kind: decision.kind,
         reason,
-        ...(decision.workstreamId ? { workstreamId: workstreamId(decision.workstreamId) } : {}),
+        ...(decision.workstreamId
+          ? { workstreamId: workstreamId(decision.workstreamId) }
+          : {}),
       };
     case "clarify":
       return {
@@ -106,209 +134,192 @@ export function validateWorkstreamRequestRoutingDecision(
         reason,
         question: boundedLine(decision.question, "question", 500),
       };
-    default:
-      return invalid("Request routing decision kind is not supported.");
   }
 }
 
-/**
- * Resolves an explicit routing decision against durable workstream/request state.
- * Natural-language classification remains outside this pure policy boundary.
- */
 export function resolveWorkstreamRequestRoutingDecision(
   state: WorkstreamRequestRoutingState,
   decision: WorkstreamRequestRoutingDecision,
 ): WorkstreamRequestRoutingResolution {
   const normalized = validateWorkstreamRequestRoutingDecision(decision);
-  const workstreams = normalizeRoutingWorkstreams(state.workstreams);
-  const strongWorkstreamIds = strongOwnershipWorkstreamIds(state.evidence, workstreams);
-  const requestedWorkstreamId = decisionWorkstreamId(normalized);
-  if (requestedWorkstreamId && !workstreams.has(requestedWorkstreamId)) {
-    invalid("Routing decision references an unavailable workstream.", { workstreamId: requestedWorkstreamId });
+  const workstreams = normalizeWorkstreams(state.workstreams);
+  const owners = strongOwners(state.evidence, workstreams);
+  const selectedId = decisionWorkstreamId(normalized);
+  if (selectedId && !workstreams.has(selectedId)) {
+    invalid("Routing decision references an unavailable workstream.", {
+      workstreamId: selectedId,
+    });
+  }
+  if (normalized.kind !== "read_only" && normalized.kind !== "clarify") {
+    if (owners.length > 1) return clarification(normalized, owners);
+    const owner = owners[0];
+    if (owner && normalized.kind === "create_new_workstream") {
+      return clarification(normalized, [owner], "use_different_workstream");
+    }
+    if (owner && selectedId && owner !== selectedId) {
+      return clarification(normalized, [owner, selectedId]);
+    }
   }
 
-  if (requiresOwnershipResolution(normalized)) {
-    if (strongWorkstreamIds.length > 1) {
-      return clarification(normalized, strongWorkstreamIds);
-    }
-    const strongWorkstreamId = strongWorkstreamIds[0];
-    if (strongWorkstreamId && normalized.kind === "create_new_workstream") {
-      return clarification(normalized, [strongWorkstreamId], "use_different_workstream");
-    }
-    if (strongWorkstreamId && requestedWorkstreamId && requestedWorkstreamId !== strongWorkstreamId) {
-      return clarification(normalized, [strongWorkstreamId, requestedWorkstreamId]);
-    }
+  if (normalized.kind === "create_new_workstream") {
+    return readyWithoutWorkstream(normalized, "create_workstream", "workstream_creation_required");
+  }
+  if (normalized.kind === "clarify") return clarification(normalized, owners);
+  if (normalized.kind === "read_only") {
+    const workstream = normalized.workstreamId
+      ? requireWorkstream(workstreams, normalized.workstreamId)
+      : undefined;
+    return {
+      status: "ready",
+      decision: normalized,
+      next: "answer_read_only",
+      mutationReadiness: "not_requested",
+      ...(workstream ? {
+        workstreamId: workstream.workstreamId,
+        workstreamStatus: workstream.status,
+        ...(workstream.current ? { requestId: workstream.current.id } : {}),
+      } : {}),
+    };
+  }
+  const workstream = requireWorkstream(workstreams, normalized.workstreamId);
+  const lifecycle = requireActiveLifecycle(normalized, workstream);
+  if (lifecycle) return lifecycle;
+  if (normalized.kind === "use_different_workstream") {
+    return ready(
+      normalized,
+      "select_workstream",
+      workstream.current ? "ready" : "request_decision_required",
+      workstream,
+      workstream.current,
+    );
   }
 
   switch (normalized.kind) {
-    case "continue_active_request": {
-      const workstream = requireWorkstream(workstreams, normalized.workstreamId);
-      const lifecycle = lifecycleTransition(normalized, workstream);
-      if (lifecycle) return lifecycle;
-      if (workstream.currentRequest?.id !== normalized.requestId
-        || workstream.currentRequest.status !== "active") {
-        return clarification(normalized, [workstream.workstreamId], workstream.currentRequest
-          ? "continue_active_request"
-          : "create_active_request");
+    case "continue_current": {
+      const request = requestWithStatus(workstream, normalized.requestId, "active");
+      if (!request || workstream.current?.id !== request.id) {
+        return clarification(normalized, [workstream.workstreamId]);
       }
-      return ready(normalized, "continue_request", "ready", workstream, workstream.currentRequest);
+      return ready(normalized, normalized.kind, "ready", workstream, request);
     }
-    case "create_active_request": {
-      const workstream = requireWorkstream(workstreams, normalized.workstreamId);
-      const lifecycle = lifecycleTransition(normalized, workstream);
-      if (lifecycle) return lifecycle;
-      if (workstream.currentRequest) {
-        return clarification(normalized, [workstream.workstreamId], "create_queued_request");
+    case "activate_existing": {
+      if (workstream.current) return clarification(normalized, [workstream.workstreamId]);
+      const request = requestWithStatus(workstream, normalized.requestId, "queued");
+      if (!request) return clarification(normalized, [workstream.workstreamId]);
+      return ready(normalized, normalized.kind, "request_decision_required", workstream, request);
+    }
+    case "resume_blocked": {
+      if (workstream.current) return clarification(normalized, [workstream.workstreamId]);
+      const request = requestWithStatus(workstream, normalized.requestId, "blocked");
+      if (!request) return clarification(normalized, [workstream.workstreamId]);
+      return ready(normalized, normalized.kind, "request_decision_required", workstream, request);
+    }
+    case "amend_current": {
+      if (workstream.current?.id !== normalized.requestId) {
+        return clarification(normalized, [workstream.workstreamId]);
       }
-      return ready(normalized, "create_active_request", "request_decision_required", workstream);
+      return ready(normalized, normalized.kind, "request_decision_required", workstream, workstream.current);
     }
-    case "create_queued_request": {
-      const workstream = requireWorkstream(workstreams, normalized.workstreamId);
-      const lifecycle = lifecycleTransition(normalized, workstream);
-      if (lifecycle) return lifecycle;
-      return ready(normalized, "create_queued_request", "not_requested", workstream);
-    }
-    case "switch_active_request": {
-      const workstream = requireWorkstream(workstreams, normalized.workstreamId);
-      const lifecycle = lifecycleTransition(normalized, workstream);
-      if (lifecycle) return lifecycle;
-      if (workstream.currentRequest?.id !== normalized.requestId
-        || workstream.currentRequest.status !== "active") {
-        return clarification(
-          normalized,
-          [workstream.workstreamId],
-          workstream.currentRequest ? "continue_active_request" : "create_active_request",
-        );
-      }
-      return ready(
+    case "create_and_activate":
+      if (workstream.current) return clarification(
         normalized,
-        "switch_active_request",
-        "request_decision_required",
-        workstream,
-        workstream.currentRequest,
+        [workstream.workstreamId],
+        "defer_current_and_create",
       );
+      return ready(normalized, normalized.kind, "request_decision_required", workstream);
+    case "create_queued":
+      return ready(normalized, normalized.kind, "not_requested", workstream);
+    case "defer_current_and_create":
+      if (workstream.current?.id !== normalized.requestId) {
+        return clarification(normalized, [workstream.workstreamId]);
+      }
+      return ready(normalized, normalized.kind, "request_decision_required", workstream, workstream.current);
+    case "defer_current_and_activate_existing": {
+      if (workstream.current?.id !== normalized.requestId) {
+        return clarification(normalized, [workstream.workstreamId]);
+      }
+      const next = requestWithStatus(workstream, normalized.nextRequestId, "queued");
+      if (!next) return clarification(normalized, [workstream.workstreamId]);
+      return ready(normalized, normalized.kind, "request_decision_required", workstream, next);
     }
-    case "use_different_workstream": {
-      const workstream = requireWorkstream(workstreams, normalized.workstreamId);
-      const lifecycle = lifecycleTransition(normalized, workstream);
-      if (lifecycle) return lifecycle;
-      return ready(
-        normalized,
-        "select_workstream",
-        workstream.currentRequest ? "ready" : "request_decision_required",
-        workstream,
-        workstream.currentRequest,
-      );
-    }
-    case "create_new_workstream":
-      return {
-        status: "ready",
-        decision: normalized,
-        next: "create_workstream",
-        mutationReadiness: "workstream_creation_required",
-      };
-    case "read_only": {
-      const workstream = normalized.workstreamId ? requireWorkstream(workstreams, normalized.workstreamId) : undefined;
-      return {
-        status: "ready",
-        decision: normalized,
-        next: "answer_read_only",
-        mutationReadiness: "not_requested",
-        ...(workstream ? {
-          workstreamId: workstream.workstreamId,
-          workstreamStatus: workstream.status,
-          ...(workstream.currentRequest ? { requestId: workstream.currentRequest.id } : {}),
-        } : {}),
-      };
-    }
-    case "clarify":
-      return clarification(normalized, strongWorkstreamIds);
-    default:
-      return invalid("Request routing decision kind is not supported.");
   }
 }
 
-interface NormalizedRoutingWorkstream {
+interface RoutingWorkstream {
   workstreamId: string;
   status: "active" | "paused" | "archived";
-  currentRequest?: WorkstreamRequest;
+  requests: WorkstreamRequest[];
+  current?: WorkstreamRequest;
 }
 
-function normalizeRoutingWorkstreams(
+function normalizeWorkstreams(
   states: WorkstreamRequestLifecycleState[],
-): Map<string, NormalizedRoutingWorkstream> {
-  if (states.length > 100) {
-    invalid("Routing state exceeds the supported workstream candidate limit.", { maximum: 100 });
-  }
-  const workstreams = new Map<string, NormalizedRoutingWorkstream>();
+): Map<string, RoutingWorkstream> {
+  if (states.length > 100) invalid("Routing state exceeds 100 workstreams.");
+  const result = new Map<string, RoutingWorkstream>();
   for (const state of states) {
     const requests = listWorkstreamRequests(state);
-    const workstreamId = state.workstreamCard.id;
-    if (workstreams.has(workstreamId)) {
-      invalid("Routing state contains a duplicate workstream identity.", { workstreamId });
-    }
-    const currentRequest = state.workstreamCard.currentRequest
+    const id = state.workstreamCard.id;
+    if (result.has(id)) invalid("Routing state contains a duplicate workstream.", { id });
+    const current = state.workstreamCard.currentRequest
       ? requests.find((request) => request.id === state.workstreamCard.currentRequest)
       : undefined;
-    workstreams.set(workstreamId, {
-      workstreamId,
+    result.set(id, {
+      workstreamId: id,
       status: state.workstreamCard.status,
-      ...(currentRequest ? { currentRequest } : {}),
+      requests,
+      ...(current ? { current } : {}),
     });
   }
-  return workstreams;
+  return result;
 }
 
-function strongOwnershipWorkstreamIds(
+function requestWithStatus(
+  workstream: RoutingWorkstream,
+  requestIdValue: string,
+  status: WorkstreamRequest["status"],
+): WorkstreamRequest | undefined {
+  return workstream.requests.find(
+    (request) => request.id === requestIdValue && request.status === status,
+  );
+}
+
+function strongOwners(
   evidence: WorkstreamRequestRoutingEvidence | undefined,
-  workstreams: Map<string, NormalizedRoutingWorkstream>,
+  workstreams: Map<string, RoutingWorkstream>,
 ): string[] {
   const values = [
     ...(evidence?.explicitWorkstreamId ? [evidence.explicitWorkstreamId] : []),
     ...(evidence?.resourceOwnerWorkstreamIds ?? []),
   ];
-  const unique = [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort();
-  if (unique.length > 20) {
-    invalid("Routing evidence exceeds the supported strong-identity limit.", { maximum: 20 });
-  }
-  for (const workstreamId of unique) {
-    if (!isWorkstreamId(workstreamId) || !workstreams.has(workstreamId)) {
-      invalid("Routing evidence references an unavailable workstream identity.", { workstreamId });
+  const unique = [...new Set(values)].sort();
+  if (unique.length > 20) invalid("Routing evidence exceeds 20 strong identities.");
+  for (const id of unique) {
+    if (!isWorkstreamId(id) || !workstreams.has(id)) {
+      invalid("Routing evidence references an unavailable workstream.", { id });
     }
   }
   return unique;
 }
 
-function requiresOwnershipResolution(decision: WorkstreamRequestRoutingDecision): boolean {
-  return decision.kind !== "read_only" && decision.kind !== "clarify";
-}
-
-function decisionWorkstreamId(decision: WorkstreamRequestRoutingDecision): string | undefined {
-  switch (decision.kind) {
-    case "continue_active_request":
-    case "switch_active_request":
-    case "create_active_request":
-    case "create_queued_request":
-    case "use_different_workstream":
-    case "read_only":
-      return decision.workstreamId;
-    default:
-      return undefined;
-  }
+function decisionWorkstreamId(
+  decision: WorkstreamRequestRoutingDecision,
+): string | undefined {
+  return "workstreamId" in decision ? decision.workstreamId : undefined;
 }
 
 function requireWorkstream(
-  workstreams: Map<string, NormalizedRoutingWorkstream>,
-  workstreamId: string,
-): NormalizedRoutingWorkstream {
-  const workstream = workstreams.get(workstreamId);
-  if (!workstream) invalid("Routing decision references an unavailable workstream.", { workstreamId });
+  workstreams: Map<string, RoutingWorkstream>,
+  id: string,
+): RoutingWorkstream {
+  const workstream = workstreams.get(id);
+  if (!workstream) invalid("Routing decision references an unavailable workstream.", { id });
   return workstream;
 }
 
-function lifecycleTransition(
+function requireActiveLifecycle(
   decision: WorkstreamRequestRoutingDecision,
-  workstream: NormalizedRoutingWorkstream,
+  workstream: RoutingWorkstream,
 ): WorkstreamRequestRoutingResolution | undefined {
   if (workstream.status === "active") return undefined;
   return {
@@ -325,7 +336,7 @@ function ready(
   decision: WorkstreamRequestRoutingDecision,
   next: WorkstreamRequestRoutingNext,
   mutationReadiness: WorkstreamRequestMutationReadiness,
-  workstream: NormalizedRoutingWorkstream,
+  workstream: RoutingWorkstream,
   request?: WorkstreamRequest,
 ): WorkstreamRequestRoutingResolution {
   return {
@@ -339,9 +350,17 @@ function ready(
   };
 }
 
+function readyWithoutWorkstream(
+  decision: WorkstreamRequestRoutingDecision,
+  next: WorkstreamRequestRoutingNext,
+  mutationReadiness: WorkstreamRequestMutationReadiness,
+): WorkstreamRequestRoutingResolution {
+  return { status: "ready", decision, next, mutationReadiness };
+}
+
 function clarification(
   decision: WorkstreamRequestRoutingDecision,
-  candidateWorkstreamIds: string[],
+  candidates: string[],
   recommendedDecision?: WorkstreamRequestRoutingDecision["kind"],
 ): WorkstreamRequestRoutingResolution {
   return {
@@ -349,29 +368,27 @@ function clarification(
     decision,
     next: "ask_clarification",
     mutationReadiness: "not_requested",
-    ...(candidateWorkstreamIds.length > 0
-      ? { candidateWorkstreamIds: [...new Set(candidateWorkstreamIds)].sort() }
+    ...(candidates.length > 0
+      ? { candidateWorkstreamIds: [...new Set(candidates)].sort() }
       : {}),
     ...(recommendedDecision ? { recommendedDecision } : {}),
   };
 }
 
 function workstreamId(value: string): string {
-  if (!isWorkstreamId(value)) invalid("Routing decision contains an invalid workstream ID.", { workstreamId: value });
+  if (!isWorkstreamId(value)) invalid("Routing decision has an invalid workstream ID.");
   return value;
 }
 
 function requestId(value: string): string {
-  if (!isRequestId(value)) {
-    invalid("Routing decision contains an invalid request ID.", { requestId: value });
-  }
+  if (!isRequestId(value)) invalid("Routing decision has an invalid request ID.");
   return value;
 }
 
 function boundedLine(value: string, field: string, maximum: number): string {
   const normalized = value.trim().replace(/\s+/g, " ");
   if (!normalized || normalized.length > maximum) {
-    invalid("Routing decision field is empty or exceeds its size limit.", { field, maximum });
+    invalid("Routing decision field is empty or too long.", { field, maximum });
   }
   return normalized;
 }

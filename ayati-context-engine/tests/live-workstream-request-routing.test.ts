@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import type {
@@ -11,6 +11,7 @@ import { ResourceCatalogService } from "../src/services/resource-catalog-service
 import { WorkstreamFinalizationService } from "../src/services/workstream-finalization-service.js";
 import { validateWorkstreamRepository } from "../src/workstreams/workstream-repository-validator.js";
 import {
+  boundRequestAcceptance,
   createBoundWorkstream,
   createWorkstreamServiceFixture,
   workState,
@@ -24,7 +25,7 @@ afterEach(async () => {
   await Promise.all(fixtures.splice(0).map(async (fixture) => await fixture.dispose()));
 });
 
-describe("live V2 workstream request routing", () => {
+describe("live V3 workstream request routing", () => {
   it("binds continuation to the exact committed active request without another run", async () => {
     const state = await createExistingWorkstream("continue", false);
     const input = {
@@ -33,7 +34,7 @@ describe("live V2 workstream request routing", () => {
       workstreamId: state.created.workstream.workstreamId,
       expectedWorkstreamHead: state.head,
       route: {
-        kind: "continue_active_request" as const,
+        kind: "continue_current" as const,
         requestId: "R-0001",
         reason: "The user is continuing the same unfinished outcome.",
       },
@@ -45,7 +46,7 @@ describe("live V2 workstream request routing", () => {
 
     expect(replayed).toEqual(selected);
     expect(selected).toMatchObject({
-      workstreamRequestDecision: "continue",
+      workstreamRequestDecision: "continue_current",
       workstreamRequestCreated: false,
       run: {
         runId: state.fixture.prepared.run.runId,
@@ -72,7 +73,7 @@ describe("live V2 workstream request routing", () => {
 
     expect(replayed).toEqual(selected);
     expect(selected).toMatchObject({
-      workstreamRequestDecision: "create",
+      workstreamRequestDecision: "create_and_activate",
       workstreamRequestCreated: true,
       headBeforeSelection: state.head,
       run: { workstreamBinding: { requestId: "R-0002" } },
@@ -127,10 +128,10 @@ describe("live V2 workstream request routing", () => {
     expect((await git(state.created.workstream.contextRepositoryPath, [
       "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD",
     ])).split("\n").sort()).toEqual([
-      "progress.md",
-      "requests/R-0002-add-the-next-lesson.md",
-      "resources.json",
-      "workstream.md",
+      workstreamPath(state, "progress.md"),
+      workstreamPath(state, "requests/R-0002-add-the-next-lesson.md"),
+      workstreamPath(state, "resources.json"),
+      workstreamPath(state, "workstream.md"),
     ]);
     expect(await readFile(lessonPath, "utf8")).toBe("# Next lesson\n");
     expect((await git(state.created.workstream.contextRepositoryPath, ["ls-files"])).split("\n"))
@@ -167,7 +168,7 @@ describe("live V2 workstream request routing", () => {
 
     expect(replayed).toEqual(selected);
     expect(selected).toMatchObject({
-      workstreamRequestDecision: "create",
+      workstreamRequestDecision: "defer_current_and_create",
       workstreamRequestCreated: true,
       headBeforeSelection: state.head,
       run: { workstreamBinding: { requestId: "R-0002" } },
@@ -197,10 +198,10 @@ describe("live V2 workstream request routing", () => {
     expect((await git(state.created.workstream.contextRepositoryPath, [
       "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD",
     ])).split("\n").sort()).toEqual([
-      "progress.md",
-      "requests/R-0001-long-lived-learning.md",
-      "requests/R-0002-add-priority-lesson.md",
-      "workstream.md",
+      workstreamPath(state, "progress.md"),
+      workstreamPath(state, "requests/R-0001-long-lived-learning.md"),
+      workstreamPath(state, "requests/R-0002-add-priority-lesson.md"),
+      workstreamPath(state, "workstream.md"),
     ]);
     const validation = await validateWorkstreamRepository({
       workstreamRoot: join(state.fixture.root, "workstreams"),
@@ -209,7 +210,7 @@ describe("live V2 workstream request routing", () => {
       requestReadMode: "all",
     });
     expect(validation.requests).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: "R-0001", status: "queued", outcome: "Not completed yet." }),
+      expect.objectContaining({ id: "R-0001", status: "queued", finalOutcome: "Pending." }),
       expect.objectContaining({ id: "R-0002", status: "done", title: "Add priority lesson" }),
     ]));
     expect(validation.currentRequest).toBeUndefined();
@@ -293,6 +294,93 @@ describe("live V2 workstream request routing", () => {
       requestId: "R-0002",
       outcome: "failed",
     });
+  });
+
+  it("finishes an exact journal after interruption during context-file writes", async () => {
+    const fixture = await createWorkstreamServiceFixture(
+      "routing-recovery-before-commit",
+      "Complete a context-only durable outcome.",
+    );
+    fixtures.push(fixture);
+    const selected = await createBoundWorkstream(fixture, {
+      title: "Pre-commit Recovery",
+      objective: "Recover a journaled finalization before its context commit.",
+    });
+    const sharedRepository = join(fixture.root, "workstreams");
+    const baseHead = await git(sharedRepository, ["rev-parse", "HEAD"]);
+    const input = doneFinalization(fixture, undefined, "The recoverable outcome is complete.");
+    let partialPath = "";
+    let temporaryPath = "";
+    const interrupted = new WorkstreamFinalizationService({
+      database: fixture.database,
+      workstreamRoot: join(fixture.root, "workstreams"),
+      resourceCatalog: new ResourceCatalogService({
+        database: fixture.database,
+        rootDirectory: fixture.root,
+      }),
+      hook: async (phase, record) => {
+        if (phase !== "plan_persisted") return;
+        const write = record.plan.contextWrites[0];
+        if (!write) throw new Error("Expected at least one journaled context write.");
+        const target = join(selected.workstream.contextRepositoryPath, write.path);
+        partialPath = basename(selected.workstream.contextRepositoryPath) + "/" + write.path;
+        temporaryPath = target + ".tmp-123-12345678-1234-4123-8123-123456789abc";
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, write.content, "utf8");
+        await writeFile(temporaryPath, "partial atomic write", "utf8");
+        throw new Error("interrupt during context writes");
+      },
+    });
+
+    await expect(interrupted.finalize(input, fixture.prepared.session))
+      .rejects.toThrow("interrupt during context writes");
+    expect(await git(sharedRepository, ["rev-parse", "HEAD"]))
+      .toBe(baseHead);
+    expect(await git(sharedRepository, [
+      "status",
+      "--porcelain",
+      "--untracked-files=all",
+    ]))
+      .toContain(partialPath);
+    await expect(access(temporaryPath)).resolves.toBeUndefined();
+    expect(fixture.database.prepare([
+      "SELECT phase, commit_created, commit_head FROM workstream_finalizations WHERE run_id = ?",
+    ].join(" ")).get(fixture.prepared.run.runId)).toEqual({
+      phase: "prepared",
+      commit_created: 0,
+      commit_head: null,
+    });
+
+    const recovery = new WorkstreamFinalizationService({
+      database: fixture.database,
+      workstreamRoot: join(fixture.root, "workstreams"),
+      resourceCatalog: new ResourceCatalogService({
+        database: fixture.database,
+        rootDirectory: fixture.root,
+      }),
+    });
+    await recovery.recover("2026-07-19T10:08:00+05:30");
+    await recovery.recover("2026-07-19T10:09:00+05:30");
+    await expect(access(temporaryPath)).rejects.toMatchObject({ code: "ENOENT" });
+
+    expect(fixture.database.prepare([
+      "SELECT phase, commit_created, commit_head FROM workstream_finalizations WHERE run_id = ?",
+    ].join(" ")).get(fixture.prepared.run.runId)).toMatchObject({
+      phase: "completed",
+      commit_created: 1,
+      commit_head: expect.stringMatching(/^[0-9a-f]{40}$/),
+    });
+    const validation = await validateWorkstreamRepository({
+      workstreamRoot: join(fixture.root, "workstreams"),
+      contextRepositoryPath: selected.workstream.contextRepositoryPath,
+      expectedWorkstreamId: selected.workstream.workstreamId,
+      requestReadMode: "all",
+    });
+    expect(validation.progress.entries.filter(
+      (entry) => entry.runId === fixture.prepared.run.runId,
+    )).toHaveLength(1);
+    expect(await git(selected.workstream.contextRepositoryPath, ["rev-list", "--count", "HEAD"]))
+      .toBe("2");
   });
 
   it("recognizes and acknowledges an exact context commit after interrupted finalization", async () => {
@@ -414,7 +502,7 @@ function createRequestRoute(state: ExistingWorkstreamState, requestId: string) {
     workstreamId: state.created.workstream.workstreamId,
     expectedWorkstreamHead: state.head,
     route: {
-      kind: "create_active_request" as const,
+      kind: "create_and_activate" as const,
       reason: "The next lesson is a separate bounded outcome in the same learning workstream.",
       title: "Add the next lesson",
       request: "Create and explain the next bounded lesson.",
@@ -432,7 +520,7 @@ function switchRequestRoute(state: ExistingWorkstreamState, requestId: string) {
     workstreamId: state.created.workstream.workstreamId,
     expectedWorkstreamHead: state.head,
     route: {
-      kind: "switch_active_request" as const,
+      kind: "defer_current_and_create" as const,
       currentRequestId: "R-0001",
       reason: "The user explicitly prioritized a separate bounded lesson.",
       title: "Add priority lesson",
@@ -478,8 +566,12 @@ function doneFinalization(
         }] : [],
         missing: [],
         failures: [],
-        criteria: [{ criterion: "The bounded outcome is verified.", passed: true }],
+        criteria: boundRequestAcceptance(fixture).map((criterion) => ({
+          criterion,
+          passed: true,
+        })),
       },
+      requestEffect: { kind: "complete", verification: "verified" },
     },
     at: "2026-07-19T10:08:00+05:30",
   };
@@ -499,6 +591,7 @@ function incompleteFinalization(fixture: WorkstreamServiceFixture): FinalizeRunR
     workState: workState({ summary: "The initial learning request remains in progress." }),
     workstream: {
       completion: { accepted: false, resources: [], missing: [], failures: [], criteria: [] },
+      requestEffect: { kind: "none" },
     },
     at: "2026-07-19T10:03:00+05:30",
   };
@@ -523,6 +616,7 @@ function failedFinalization(fixture: WorkstreamServiceFixture): FinalizeRunReque
         failures: ["No verified change was produced."],
         criteria: [{ criterion: "The new lesson is verified.", passed: false }],
       },
+      requestEffect: { kind: "none" },
     },
     at: "2026-07-19T10:06:00+05:30",
   };
@@ -547,4 +641,8 @@ function requirePrimary(selected: SelectedWorkstreamForRunResponse): {
 async function git(cwd: string, args: string[]): Promise<string> {
   const result = await execFileAsync("git", args, { cwd });
   return result.stdout.trim();
+}
+
+function workstreamPath(state: ExistingWorkstreamState, relativePath: string): string {
+  return basename(state.created.workstream.contextRepositoryPath) + "/" + relativePath;
 }

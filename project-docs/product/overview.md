@@ -40,7 +40,9 @@ Durable work is represented by two separate concepts:
 - A resource is the real thing being read or changed: a file, directory,
   document, media item, URL, dataset, database, repository, or external object.
 
-Workstream repositories are context-only Git histories. Deliverables remain in
+One shared workstream repository is the context-only Git history. Each
+workstream contains a distilled card, bounded request contracts, an append-only
+progress ledger, and a generated resource projection. Deliverables remain in
 the user-visible workspace or at the path the user selected. Ayati does not
 initialize Git for ordinary output unless the user asks for it.
 
@@ -50,6 +52,10 @@ Primary value:
 - One durable run boundary with truthful finalization and restart recovery.
 - Autonomous workstream discovery using exact identity, resource ownership,
   unfinished work, stars, recency, frequency, and semantic text relevance.
+- Explicit request routing that distinguishes continuation, contract
+  amendment, a new bounded outcome in the same project, and a new workstream.
+- One immutable progress entry and one recoverable shared-repository commit
+  for every finalized workstream-bound run.
 - Safe mutation through immutable workstream binding plus exact resource
   scopes and deterministic before/after verification.
 - A resource catalog that lets the agent find resources from workstreams and

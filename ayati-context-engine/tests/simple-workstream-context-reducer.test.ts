@@ -51,7 +51,10 @@ describe("simple workstream context reducer", () => {
       summary,
       next,
       completion: incompleteCompletion(),
+      requestEffect: { kind: "none" },
       hasVerifiedChanges,
+      expectedHead: "a".repeat(40),
+      at: "2026-07-28T10:05:00+05:30",
     });
 
     expect(result.workstreamRequest).toEqual(request);
@@ -65,35 +68,77 @@ describe("simple workstream context reducer", () => {
       "workstream.md",
     ]);
   });
+
+  it("rejects completion evidence that omits an acceptance criterion", () => {
+    const request = activeRequest();
+    request.acceptance.push("The completed request retains its durable identity.");
+
+    expect(() => reduceSimpleWorkstreamContext({
+      workstreamCard: activeWorkstreamCard(),
+      workstreamRequest: request,
+      workState: {
+        ...runWorkState("The implementation is complete.", "No further action."),
+        status: "done",
+      },
+      outcome: "done",
+      validation: "passed",
+      summary: "The implementation is complete.",
+      completion: {
+        accepted: true,
+        resources: [],
+        missing: [],
+        failures: [],
+        criteria: [{
+          criterion: request.acceptance[0]!,
+          passed: true,
+          evidence: "The first criterion passed.",
+        }],
+      },
+      requestEffect: { kind: "complete", verification: "verified" },
+      hasVerifiedChanges: false,
+      expectedHead: "a".repeat(40),
+      at: "2026-07-28T10:05:00+05:30",
+    })).toThrow("every acceptance criterion");
+  });
 });
 
 function activeWorkstreamCard(): WorkstreamCard {
   return {
-    schema: "ayati.workstream/v2",
+    schema: "ayati.workstream/v3",
     id: "W-20260728-0001",
     title: "Request lifecycle",
     status: "active",
     currentRequest: "R-0001",
+    aliases: [],
     purpose: "Keep request contracts separate from per-run progress.",
     currentSnapshot: "The request is active and no run progress is recorded yet.",
+    importantFindings: [],
+    decisions: [],
     currentFocus: "Advance the active request.",
+    openQuestions: [],
     blockers: [],
-    workingAgreements: [],
+    nextAction: "Advance the active request.",
   };
 }
 
 function activeRequest(): WorkstreamRequest {
   return {
-    schema: "ayati.request/v2",
+    schema: "ayati.request/v3",
     id: "R-0001",
+    workstreamId: "W-20260728-0001",
+    relativePath: "requests/R-0001-separate-request-and-run-progress.md",
     title: "Separate request and run progress",
     status: "active",
     createdAt: "2026-07-28T10:00:00+05:30",
+    updatedAt: "2026-07-28T10:00:00+05:30",
+    startedAt: "2026-07-28T10:00:00+05:30",
+    closedAt: null,
     source: "user",
     request: "Keep ordinary run progress out of the durable request contract.",
     acceptance: ["Incomplete and failed runs leave the request contract unchanged."],
     constraints: [],
-    outcome: "Not completed yet.",
+    lifecycleNote: "Created as the active request.",
+    finalOutcome: "Pending.",
   };
 }
 

@@ -27,6 +27,10 @@ import {
   setWorkstreamStar,
   type WorkstreamDiscoveryRow,
 } from "../repositories/workstream-discovery-records.js";
+import {
+  searchWorkstreamRequests,
+  type WorkstreamRequestSearchHit,
+} from "../repositories/workstream-request-records.js";
 
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 50;
@@ -54,15 +58,43 @@ export class WorkstreamDiscoveryService {
     const explicitResourceIds = new Set(
       (input.query ?? input.currentText ?? "").toUpperCase().match(/RES-[0-9A-F]{24}/g) ?? [],
     );
-    const ftsIds = new Set(searchWorkstreamIds(
+    const broadExpression = ftsExpression(query);
+    const strictExpression = strictFtsExpression(query);
+    const requestMatches = searchWorkstreamRequests(
       this.database,
-      ftsExpression(query),
-      Math.max(limit * 4, 50),
-    ));
+      broadExpression,
+      Math.max(limit * 20, 200),
+    );
+    const strictRequestMatches = searchWorkstreamRequests(
+      this.database,
+      strictExpression,
+      Math.max(limit * 20, 200),
+    );
+    const ftsIds = new Set([
+      ...searchWorkstreamIds(
+        this.database,
+        broadExpression,
+        Math.max(limit * 4, 50),
+      ),
+      ...requestMatches.map((request) => request.workstreamId),
+    ]);
+    const strictFtsIds = new Set([
+      ...searchWorkstreamIds(
+        this.database,
+        strictExpression,
+        Math.max(limit * 4, 50),
+      ),
+      ...strictRequestMatches.map((request) => request.workstreamId),
+    ]);
     const resourceIndex = readWorkstreamResourceDiscoveryIndex(this.database);
     const matchingResourceIds = searchResourceIdsByText(
       this.database,
       ftsExpression(query),
+      Math.max(limit * 20, 200),
+    );
+    const strictMatchingResourceIds = searchResourceIdsByText(
+      this.database,
+      strictFtsExpression(query),
       Math.max(limit * 20, 200),
     );
     const previousWorkstreamId = input.streamId && REFERENTIAL_CONTINUATION.test(input.currentText ?? "")
@@ -73,12 +105,20 @@ export class WorkstreamDiscoveryService {
       const title = normalizeText(row.title);
       exactTitleCounts.set(title, (exactTitleCounts.get(title) ?? 0) + 1);
     }
-    const textMatchCount = query
-      ? rows.filter((row) => ftsIds.has(row.workstreamId)
+    const strictTextMatchCount = query
+      ? rows.filter((row) => strictFtsIds.has(row.workstreamId)
         || rowText(row).includes(query)
+        || (resourceIndex.get(row.workstreamId)?.resources ?? [])
+          .some((resource) => strictMatchingResourceIds.has(resource.resourceId))).length
+      : 0;
+    const broadTextMatchCount = query
+      ? rows.filter((row) => ftsIds.has(row.workstreamId)
         || (resourceIndex.get(row.workstreamId)?.resources ?? [])
           .some((resource) => matchingResourceIds.has(resource.resourceId))).length
       : 0;
+    const textMatchCount = strictTextMatchCount > 0
+      ? strictTextMatchCount
+      : broadTextMatchCount;
     const candidates = rows.map((row) => candidateForRow({
       row,
       query,
@@ -92,6 +132,11 @@ export class WorkstreamDiscoveryService {
       explicitResourceIds,
       matchingResourceIds,
       resources: resourceIndex.get(row.workstreamId),
+      matchingRequests: matchingRequestsForWorkstream(
+        row.workstreamId,
+        requestMatches,
+        strictRequestMatches,
+      ),
     }));
     const visible = candidates.filter((candidate) => {
       const exact = hasStrongReason(candidate);
@@ -185,6 +230,7 @@ function candidateForRow(input: {
   explicitResourceIds: ReadonlySet<string>;
   matchingResourceIds: ReadonlySet<string>;
   resources?: WorkstreamResourceDiscoveryIndex;
+  matchingRequests: WorkstreamRequestSearchHit[];
 }): WorkstreamCandidate {
   const reasons: WorkstreamDiscoveryReason[] = [];
   const resources = input.resources?.resources ?? [];
@@ -205,8 +251,10 @@ function candidateForRow(input: {
     reasons.push("owned_resource");
   }
   if (input.previousWorkstreamId === input.row.workstreamId) reasons.push("direct_continuation");
-  if (input.query && input.row.currentRequestTitle
-    && textOverlaps(input.query, input.row.currentRequestTitle)) {
+  if (input.matchingRequests.length > 0
+    || (input.query && input.row.unfinishedRequests.some(
+      (request) => textOverlaps(input.query, request.title),
+    ))) {
     reasons.push("matching_request");
   }
   if (input.ftsMatch || (input.query && rowText(input.row).includes(input.query))) {
@@ -215,9 +263,7 @@ function candidateForRow(input: {
   if (resources.some((resource) => input.matchingResourceIds.has(resource.resourceId))) {
     reasons.push("resource_match");
   }
-  if (input.row.currentRequestStatus === "active"
-    || input.row.currentRequestStatus === "blocked"
-    || input.row.currentRequestStatus === "queued") {
+  if (input.row.unfinishedRequests.length > 0) {
     reasons.push("unfinished_request");
   }
   if (input.row.starred) reasons.push("starred");
@@ -254,6 +300,16 @@ function candidateForRow(input: {
           },
         }
       : {}),
+    unfinishedRequests: input.row.unfinishedRequests.map((request) => ({ ...request })),
+    ...(input.matchingRequests.length > 0
+      ? {
+          matchingRequests: input.matchingRequests.map((request) => ({
+            id: request.requestId,
+            title: request.title,
+            status: request.status,
+          })),
+        }
+      : {}),
     head: input.row.head,
     primaryResources: input.resources?.primaryResources ?? [],
     updatedAt: input.row.updatedAt,
@@ -262,6 +318,18 @@ function candidateForRow(input: {
     ...(input.row.lastOpenedAt ? { lastOpenedAt: input.row.lastOpenedAt } : {}),
     boundRunsLast30Days: input.row.boundRunsLast30Days,
   };
+}
+
+function matchingRequestsForWorkstream(
+  workstreamId: string,
+  broad: WorkstreamRequestSearchHit[],
+  strict: WorkstreamRequestSearchHit[],
+): WorkstreamRequestSearchHit[] {
+  const strictMatches = strict.filter((request) => request.workstreamId === workstreamId);
+  return (strictMatches.length > 0
+    ? strictMatches
+    : broad.filter((request) => request.workstreamId === workstreamId))
+    .slice(0, 5);
 }
 
 function defaultShortlist(candidates: WorkstreamCandidate[], limit: number): WorkstreamCandidate[] {
@@ -328,10 +396,20 @@ function hasStrongReason(candidate: WorkstreamCandidate): boolean {
 }
 
 function ftsExpression(value: string): string {
-  return [...new Set(value.split(/[^\p{L}\p{N}_]+/u).filter((token) => token.length >= 2))]
-    .slice(0, 20)
+  return ftsTokens(value)
     .map((token) => `"${token.replaceAll('"', '""')}"*`)
     .join(" OR ");
+}
+
+function strictFtsExpression(value: string): string {
+  return ftsTokens(value)
+    .map((token) => `"${token.replaceAll('"', '""')}"*`)
+    .join(" AND ");
+}
+
+function ftsTokens(value: string): string[] {
+  return [...new Set(value.split(/[^\p{L}\p{N}_]+/u).filter((token) => token.length >= 2))]
+    .slice(0, 20);
 }
 
 function normalizeText(value: string): string {
@@ -343,7 +421,7 @@ function rowText(row: WorkstreamDiscoveryRow): string {
     row.workstreamId,
     row.title,
     row.objective,
-    row.currentRequestTitle ?? "",
+    ...row.unfinishedRequests.map((request) => request.title),
   ].join(" "));
 }
 

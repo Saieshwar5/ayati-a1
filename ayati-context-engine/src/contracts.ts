@@ -510,7 +510,7 @@ export interface WorkstreamContextProjection {
   validation?: string;
   workstreamStatus?: "in_progress" | "done" | "blocked";
   next?: string;
-  schemaVersion?: "ayati.workstream/v2";
+  schemaVersion?: "ayati.workstream/v3";
   lifecycleStatus?: "active" | "paused" | "archived";
   repositoryHealth?: "ready" | "dirty_external";
   currentFocus?: string;
@@ -523,6 +523,36 @@ export interface WorkstreamContextProjection {
     acceptance: string[];
     constraints: string[];
   };
+  /** Request selected for this run or explicitly opened for read-only historical context. */
+  selectedRequest?: {
+    id: string;
+    title: string;
+    status: "queued" | "active" | "blocked" | "done" | "dropped";
+    request: string;
+    acceptance: string[];
+    constraints: string[];
+    lifecycleNote?: string;
+    finalOutcome?: string;
+  };
+  /** Unfinished contracts exposed only during routing or an explicit workstream read. */
+  unfinishedRequests?: Array<{
+    id: string;
+    title: string;
+    status: "queued" | "active" | "blocked";
+    request: string;
+    acceptance: string[];
+    constraints: string[];
+  }>;
+  /** At most five finalized entries for the request selected by the current run. */
+  recentProgress?: Array<{
+    runId: RunId;
+    outcome: RunOutcome;
+    summary: string;
+    validationSummary: string;
+    nextAction?: string;
+    commit: string;
+    finalizedAt: string;
+  }>;
   resources?: WorkstreamResourceBinding[];
 }
 
@@ -561,6 +591,17 @@ export interface WorkstreamCandidate {
     title: string;
     status: "queued" | "active" | "blocked" | "done" | "dropped";
   };
+  unfinishedRequests: Array<{
+    id: string;
+    title: string;
+    status: "queued" | "active" | "blocked";
+  }>;
+  /** Query-matching requests, including terminal historical requests. */
+  matchingRequests?: Array<{
+    id: string;
+    title: string;
+    status: "queued" | "active" | "blocked" | "done" | "dropped";
+  }>;
   head: string;
   primaryResources: ResourceRef[];
   updatedAt: string;
@@ -772,6 +813,7 @@ export interface GetWorkstreamResponse {
 export interface ReadWorkstreamRequest extends ContextEngineRequestEnvelope {
   runId: RunId;
   workstreamId: WorkstreamId;
+  workstreamRequestId?: string;
   at: string;
 }
 
@@ -817,33 +859,53 @@ export interface CreateWorkstreamForRunRequest extends ContextEngineRequestEnvel
 export interface ActivateWorkstreamForRunRequest extends ContextEngineRequestEnvelope, SelectWorkstreamForRunInput {
   workstreamId: WorkstreamId;
   expectedWorkstreamHead?: string;
-  /** Explicitly continue, create, or switch the active request in this workstream. */
+  /** One explicit request lifecycle operation validated against current state. */
   route: WorkstreamRequestRoute;
+}
+
+export interface WorkstreamRequestDefinition {
+  title: string;
+  request: string;
+  acceptance: string[];
+  constraints: string[];
 }
 
 export type WorkstreamRequestRoute =
   | {
-      kind: "continue_active_request";
+      kind: "continue_current";
       requestId: string;
       reason: string;
     }
   | {
-      kind: "create_active_request";
+      kind: "activate_existing";
+      requestId: string;
       reason: string;
-      title: string;
-      request: string;
-      acceptance: string[];
-      constraints: string[];
     }
   | {
-      kind: "switch_active_request";
+      kind: "resume_blocked";
+      requestId: string;
+      reason: string;
+    }
+  | ({
+      kind: "amend_current";
       currentRequestId: string;
       reason: string;
-      title: string;
-      request: string;
-      acceptance: string[];
-      constraints: string[];
-    };
+      authority: "user" | "trusted_policy";
+      patch: Partial<WorkstreamRequestDefinition>;
+    })
+  | ({ kind: "create_and_activate"; reason: string } & WorkstreamRequestDefinition)
+  | ({ kind: "create_queued"; reason: string } & WorkstreamRequestDefinition)
+  | {
+      kind: "defer_current_and_activate_existing";
+      currentRequestId: string;
+      nextRequestId: string;
+      reason: string;
+    }
+  | ({
+      kind: "defer_current_and_create";
+      currentRequestId: string;
+      reason: string;
+    } & WorkstreamRequestDefinition);
 
 export type WorkstreamRequestRoutePlanPhase =
   | "planned"
@@ -873,9 +935,10 @@ export interface SelectedWorkstreamForRunResponse {
   run: RunRef;
   context: WorkstreamContextProjection;
   workstreamCreated: boolean;
-  workstreamRequestDecision: "initial" | "continue" | "create";
+  workstreamRequestDecision: "initial" | WorkstreamRequestRoute["kind"];
   workstreamRequestStatus: "queued" | "active" | "blocked" | "done" | "dropped";
   workstreamRequestCreated: boolean;
+  mutationReady: boolean;
   headBeforeSelection: string;
   resourceBindings: WorkstreamResourceBinding[];
 }
@@ -1085,6 +1148,21 @@ export interface WorkstreamCompletionRecord {
   }>;
 }
 
+export type WorkstreamRequestLifecycleEffect =
+  | { kind: "none" }
+  | {
+      kind: "complete";
+      verification: "verified" | "user_accepted";
+    }
+  | {
+      kind: "block";
+      reason: string;
+    }
+  | {
+      kind: "drop";
+      reason: string;
+    };
+
 export type ResourceEventType =
   | "registered"
   | "linked"
@@ -1130,6 +1208,7 @@ export interface FinalizeRunRequest extends ContextEngineRequestEnvelope {
   workState: RunWorkStateInput;
   workstream?: {
     completion: WorkstreamCompletionRecord;
+    requestEffect: WorkstreamRequestLifecycleEffect;
   };
   at: string;
 }
@@ -1310,6 +1389,8 @@ export function isReadWorkstreamRequest(value: unknown): value is ReadWorkstream
   return isRequestEnvelope(value)
     && isNonEmptyString(value["runId"])
     && /^W-\d{8}-\d{4}$/.test(String(value["workstreamId"] ?? ""))
+    && (value["workstreamRequestId"] === undefined
+      || /^R-\d{4}$/.test(String(value["workstreamRequestId"])))
     && isNonEmptyString(value["at"]);
 }
 
@@ -1350,18 +1431,46 @@ export function isPlanWorkstreamRequestRouteRequest(
 function isWorkstreamRequestRoute(value: unknown): value is WorkstreamRequestRoute {
   if (!isRecord(value) || !isBoundedString(value["reason"], 500)) return false;
   const route = value;
-  if (route["kind"] === "continue_active_request") {
+  if (route["kind"] === "continue_current"
+    || route["kind"] === "activate_existing"
+    || route["kind"] === "resume_blocked") {
     return /^R-\d{4}$/.test(String(route["requestId"] ?? ""));
   }
-  const createsRequest = (route["kind"] === "create_active_request"
-      || route["kind"] === "switch_active_request")
-    && isBoundedString(route["title"], 120)
-    && isBoundedString(route["request"], 2_000)
-    && isBoundedStringArray(route["acceptance"], 50, 500)
-    && isBoundedStringArray(route["constraints"], 50, 500);
-  return createsRequest
-    && (route["kind"] !== "switch_active_request"
-      || /^R-\d{4}$/.test(String(route["currentRequestId"] ?? "")));
+  if (route["kind"] === "create_and_activate" || route["kind"] === "create_queued") {
+    return isWorkstreamRequestDefinition(route);
+  }
+  if (route["kind"] === "defer_current_and_create") {
+    return /^R-\d{4}$/.test(String(route["currentRequestId"] ?? ""))
+      && isWorkstreamRequestDefinition(route);
+  }
+  if (route["kind"] === "defer_current_and_activate_existing") {
+    return /^R-\d{4}$/.test(String(route["currentRequestId"] ?? ""))
+      && /^R-\d{4}$/.test(String(route["nextRequestId"] ?? ""));
+  }
+  if (route["kind"] === "amend_current") {
+    const patch = route["patch"];
+    return /^R-\d{4}$/.test(String(route["currentRequestId"] ?? ""))
+      && (route["authority"] === "user" || route["authority"] === "trusted_policy")
+      && isRecord(patch)
+      && Object.keys(patch).length > 0
+      && Object.keys(patch).every((key) =>
+        key === "title" || key === "request" || key === "acceptance" || key === "constraints")
+      && (patch["title"] === undefined || isBoundedString(patch["title"], 120))
+      && (patch["request"] === undefined || isBoundedString(patch["request"], 4_000))
+      && (patch["acceptance"] === undefined
+        || isBoundedStringArray(patch["acceptance"], 20, 500))
+      && (patch["constraints"] === undefined
+        || isBoundedStringArray(patch["constraints"], 20, 500));
+  }
+  return false;
+}
+
+function isWorkstreamRequestDefinition(value: Record<string, unknown>): boolean {
+  return isBoundedString(value["title"], 120)
+    && isBoundedString(value["request"], 4_000)
+    && isBoundedStringArray(value["acceptance"], 20, 500)
+    && (value["acceptance"] as unknown[]).length > 0
+    && isBoundedStringArray(value["constraints"], 20, 500);
 }
 
 export function isInspectResourceForRunRequest(
@@ -1434,7 +1543,9 @@ export function isFinalizeRunRequest(value: unknown): value is FinalizeRunReques
   const workstreamValid = workstream === undefined
     || (isRecord(workstream)
       && isWorkstreamCompletionRecord(workstream["completion"])
-      && (value["outcome"] !== "done" || workstream["completion"].accepted));
+      && isWorkstreamRequestLifecycleEffect(workstream["requestEffect"])
+      && (workstream["requestEffect"].kind !== "complete"
+        || workstream["completion"].accepted));
   const responseKind = value["assistantResponseKind"];
   const feedbackKind = value["assistantFeedbackKind"];
   const responseMetadataValid = (responseKind === undefined
@@ -2077,6 +2188,20 @@ function isWorkstreamCompletionRecord(value: unknown): value is WorkstreamComple
     && isBoundedString(item["criterion"], RUN_FINALIZATION_LIMITS.completion.criterionChars)
     && typeof item["passed"] === "boolean"
     && optionalBoundedString(item["evidence"], RUN_FINALIZATION_LIMITS.completion.evidenceChars));
+}
+
+function isWorkstreamRequestLifecycleEffect(
+  value: unknown,
+): value is WorkstreamRequestLifecycleEffect {
+  if (!isRecord(value)) return false;
+  if (value["kind"] === "none") return Object.keys(value).length === 1;
+  if (value["kind"] === "complete") {
+    return value["verification"] === "verified"
+      || value["verification"] === "user_accepted";
+  }
+  if (value["kind"] === "block") return isBoundedString(value["reason"], 480);
+  if (value["kind"] === "drop") return isBoundedString(value["reason"], 500);
+  return false;
 }
 
 function isCompletionResource(value: unknown): boolean {
