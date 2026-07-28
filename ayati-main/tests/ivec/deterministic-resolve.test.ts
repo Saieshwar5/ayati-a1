@@ -237,6 +237,74 @@ describe("deterministic resolve gate", () => {
 
     expect(result).toMatchObject({ kind: "failed", attempted: true });
     expect(coordinator.bind).toHaveBeenCalledOnce();
+
+    coordinator.bind.mockClear();
+    const switched = await dispatchDeterministicResolveGate({
+      state: current,
+      request: {
+        to: "resolve",
+        purpose: "Switch from the exact observed active request.",
+        capabilities: ["file:write"],
+        targets: ["W-20260722-0001"],
+        binding: {
+          kind: "activate",
+          workstreamId: "W-20260722-0001",
+          expectedWorkstreamHead: "a".repeat(40),
+          requestDecision: {
+            kind: "switch",
+            currentRequestId: "R-0001",
+            title: "Add contact form",
+            request: "Add a verified contact form.",
+            acceptance: ["The contact form works."],
+            constraints: [],
+            reason: "The user explicitly prioritized a separate request.",
+          },
+          evidence: [ROUTING_REF],
+        },
+      },
+      toolNames: ["write_files"],
+      coordinator,
+      alreadyAttempted: false,
+    });
+    expect(switched).toMatchObject({ kind: "failed", attempted: true });
+    expect(coordinator.bind).toHaveBeenCalledOnce();
+
+    coordinator.bind.mockClear();
+    const unobserved = await dispatchDeterministicResolveGate({
+      state: current,
+      request: {
+        to: "resolve",
+        purpose: "Attempt to switch an unobserved request.",
+        capabilities: ["file:write"],
+        targets: ["W-20260722-0001"],
+        binding: {
+          kind: "activate",
+          workstreamId: "W-20260722-0001",
+          expectedWorkstreamHead: "a".repeat(40),
+          requestDecision: {
+            kind: "switch",
+            currentRequestId: "R-0002",
+            title: "Add contact form",
+            request: "Add a verified contact form.",
+            acceptance: ["The contact form works."],
+            constraints: [],
+            reason: "Attempt to switch without observing the current request.",
+          },
+          evidence: [ROUTING_REF],
+        },
+      },
+      toolNames: ["write_files"],
+      coordinator,
+      alreadyAttempted: false,
+    });
+    expect(unobserved).toMatchObject({
+      kind: "rejected",
+      repair: {
+        code: "MODE_BINDING_PROPOSAL_UNVERIFIED",
+        blockedTargets: ["R-0002"],
+      },
+    });
+    expect(coordinator.bind).not.toHaveBeenCalled();
   });
 
   it("never invokes the coordinator after the run has attempted binding", async () => {

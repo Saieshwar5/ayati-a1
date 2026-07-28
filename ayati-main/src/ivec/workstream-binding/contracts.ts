@@ -30,6 +30,15 @@ export type WorkstreamRequestDecision =
       acceptance: string[];
       constraints: string[];
       reason: string;
+    }
+  | {
+      kind: "switch";
+      currentRequestId: string;
+      title: string;
+      request: string;
+      acceptance: string[];
+      constraints: string[];
+      reason: string;
     };
 
 export interface WorkstreamRequestDefinition {

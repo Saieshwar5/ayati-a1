@@ -259,14 +259,18 @@ function validateBindingProposal(
       ["Use workstream:read for the exact candidate, then retry resolve."],
     );
   }
-  if (proposal.requestDecision.kind === "continue") {
-    const explicitRequest = state.userMessage.includes(proposal.requestDecision.requestId);
-    if (!explicitRequest && !observed?.requestIds.includes(proposal.requestDecision.requestId)) {
+  if (proposal.requestDecision.kind === "continue"
+    || proposal.requestDecision.kind === "switch") {
+    const requestId = proposal.requestDecision.kind === "continue"
+      ? proposal.requestDecision.requestId
+      : proposal.requestDecision.currentRequestId;
+    const explicitRequest = state.userMessage.includes(requestId);
+    if (!explicitRequest && !observed?.requestIds.includes(requestId)) {
       return createVirtualModeRepair(
         "MODE_BINDING_PROPOSAL_UNVERIFIED",
-        `The continued request was not explicitly named or returned by workstream inspection: ${proposal.requestDecision.requestId}.`,
-        [proposal.requestDecision.requestId],
-        ["Inspect the workstream and continue its exact active request, or propose a new request."],
+        `The selected current request was not explicitly named or returned by workstream inspection: ${requestId}.`,
+        [requestId],
+        ["Inspect the workstream and use its exact active request before continuing or switching."],
       );
     }
   }

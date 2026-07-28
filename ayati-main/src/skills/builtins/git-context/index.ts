@@ -80,7 +80,7 @@ function createWorkstreamTool(service: ContextEngineService): ToolDefinition {
 function activateWorkstreamTool(service: ContextEngineService): ToolDefinition {
   return {
     name: "git_context_activate_workstream",
-    description: "Bind this run to an existing workstream and explicitly continue or create its active request.",
+    description: "Bind this run to an existing workstream and explicitly continue, create, or switch its active request.",
     inputSchema: {
       type: "object",
       properties: {
@@ -93,8 +93,9 @@ function activateWorkstreamTool(service: ContextEngineService): ToolDefinition {
         requestDecision: {
           type: "object",
           properties: {
-            kind: { enum: ["continue", "create"] },
+            kind: { enum: ["continue", "create", "switch"] },
             requestId: { type: "string", pattern: "^R-[0-9]{4}$" },
+            currentRequestId: { type: "string", pattern: "^R-[0-9]{4}$" },
             title: { type: "string" },
             request: { type: "string" },
             acceptance: { type: "array", items: { type: "string" } },
@@ -257,7 +258,9 @@ function parseActivateInput(input: unknown, context?: ToolExecutionContext): {
     return routingError("An agent stream, valid W-* workstreamId, and reason are required.");
   }
   const route = parseRequestDecision(record["requestDecision"], reason);
-  if (!route) return routingError("Activation requires a complete continue-or-create request decision.");
+  if (!route) {
+    return routingError("Activation requires a complete continue, create, or switch request decision.");
+  }
   return { streamId, workstreamId, route };
 }
 
@@ -269,13 +272,26 @@ function parseRequestDecision(value: unknown, reason: string): WorkstreamRequest
       ? { kind: "continue_active_request", requestId, reason }
       : undefined;
   }
-  if (record["kind"] === "create") {
+  if (record["kind"] === "create" || record["kind"] === "switch") {
     const title = stringField(record, "title");
     const request = stringField(record, "request");
     const acceptance = stringArray(record["acceptance"]);
     const constraints = stringArray(record["constraints"]);
-    return title && request && acceptance.length > 0
-      ? { kind: "create_active_request", title, request, acceptance, constraints, reason }
+    if (!title || !request || acceptance.length === 0) return undefined;
+    if (record["kind"] === "create") {
+      return { kind: "create_active_request", title, request, acceptance, constraints, reason };
+    }
+    const currentRequestId = stringField(record, "currentRequestId");
+    return currentRequestId && /^R-\d{4}$/.test(currentRequestId)
+      ? {
+          kind: "switch_active_request",
+          currentRequestId,
+          title,
+          request,
+          acceptance,
+          constraints,
+          reason,
+        }
       : undefined;
   }
   return undefined;

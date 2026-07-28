@@ -138,7 +138,13 @@ describe("runtime tool schemas", () => {
     expect(createWorkstream?.inputSchema.properties).not.toHaveProperty("directory");
     expect(createWorkstream?.inputSchema.properties?.["resources"]).toMatchObject({ type: "array" });
     const activateWorkstream = tools.find((tool) => tool.name === "git_context_activate_workstream");
-    expect(activateWorkstream?.inputSchema.properties?.["requestDecision"]).toMatchObject({ type: "object" });
+    expect(activateWorkstream?.inputSchema.properties?.["requestDecision"]).toMatchObject({
+      type: "object",
+      properties: {
+        kind: { enum: ["continue", "create", "switch"] },
+        currentRequestId: { pattern: "^R-[0-9]{4}$" },
+      },
+    });
     expect(activateWorkstream?.inputSchema.required).toEqual(["workstreamId", "reason", "requestDecision"]);
     expect(createWorkstream?.outputSchema.properties).not.toHaveProperty("contextRepositoryPath");
     expect(createWorkstream?.outputSchema.properties?.["streamId"]).toMatchObject({ type: "string" });

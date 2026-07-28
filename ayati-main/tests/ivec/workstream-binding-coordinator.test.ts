@@ -78,6 +78,75 @@ describe("workstream binding coordinator", () => {
     });
   });
 
+  it("maps an explicit switch to the exact active request and binds the new request", async () => {
+    const activateWorkstreamForRun = vi.fn(async () => ({
+      run: {
+        runId: "RUN-1",
+        streamId: "S-1",
+        workstreamBinding: {
+          workstreamId: WORKSTREAM_ID,
+          requestId: "R-0002",
+          boundAt: NOW,
+        },
+      },
+    }));
+    const service = {
+      getAgentContext: vi.fn()
+        .mockResolvedValueOnce(agentContext(false))
+        .mockResolvedValueOnce(agentContext(true, "R-0002")),
+      findWorkstreams: vi.fn(async () => ({ workstreams: [candidate("definite")] })),
+      activateWorkstreamForRun,
+    } as unknown as ContextEngineService;
+    const coordinator = createWorkstreamBindingCoordinator({
+      service,
+      runId: "RUN-1",
+      streamId: "S-1",
+      currentInput: "Pause the website update and add the contact form now.",
+      now: () => new Date(NOW),
+    });
+
+    const result = await coordinator.bind({
+      purpose: "Switch to the explicitly prioritized website request.",
+      referenceTargets: [WORKSTREAM_ID],
+      mutationScopes: [],
+      expectedContextRevision: "ctx:unbound",
+      proposal: {
+        kind: "activate",
+        workstreamId: WORKSTREAM_ID,
+        expectedWorkstreamHead: HEAD,
+        requestDecision: {
+          kind: "switch",
+          currentRequestId: "R-0001",
+          title: "Add contact form",
+          request: "Add a verified contact form.",
+          acceptance: ["The contact form works."],
+          constraints: ["Preserve the existing design."],
+          reason: "The user explicitly prioritized the contact form.",
+        },
+        evidence: ["run:RUN-1:step:1:call:read-owner"],
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "resolved",
+      kind: "activated_workstream",
+      requestId: "R-0002",
+    });
+    expect(activateWorkstreamForRun).toHaveBeenCalledWith(expect.objectContaining({
+      workstreamId: WORKSTREAM_ID,
+      expectedWorkstreamHead: HEAD,
+      route: {
+        kind: "switch_active_request",
+        currentRequestId: "R-0001",
+        title: "Add contact form",
+        request: "Add a verified contact form.",
+        acceptance: ["The contact form works."],
+        constraints: ["Preserve the existing design."],
+        reason: "The user explicitly prioritized the contact form.",
+      },
+    }));
+  });
+
   it("returns ambiguity instead of creating when authoritative ownership is strong", async () => {
     const createWorkstreamForRun = vi.fn();
     const service = {
@@ -391,7 +460,7 @@ function candidate(tier: "probable" | "definite") {
   };
 }
 
-function agentContext(bound: boolean) {
+function agentContext(bound: boolean, requestId = "R-0001") {
   return {
     contextRevision: bound ? "ctx:bound" : "ctx:unbound",
     streamRevision: "stream:1",
@@ -430,7 +499,7 @@ function agentContext(bound: boolean) {
           ? {
               workstreamBinding: {
                 workstreamId: WORKSTREAM_ID,
-                requestId: "R-0001",
+                requestId,
                 boundAt: NOW,
               },
             }
@@ -474,7 +543,7 @@ function agentContext(bound: boolean) {
             repositoryHealth: "ready" as const,
             blockers: [],
             currentRequest: {
-              id: "R-0001",
+              id: requestId,
               title: "Update website",
               status: "active" as const,
               request: "Update the website.",

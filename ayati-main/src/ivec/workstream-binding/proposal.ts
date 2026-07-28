@@ -73,6 +73,13 @@ function normalizeRequestDecision(value: unknown): WorkstreamRequestDecision | u
     const definition = normalizeRequestDefinition(record);
     return definition ? { kind: "create", ...definition, reason } : undefined;
   }
+  if (record["kind"] === "switch") {
+    const currentRequestId = stringValue(record["currentRequestId"]);
+    const definition = normalizeRequestDefinition(record);
+    return currentRequestId && /^R-[0-9]{4}$/.test(currentRequestId) && definition
+      ? { kind: "switch", currentRequestId, ...definition, reason }
+      : undefined;
+  }
   return undefined;
 }
 
@@ -116,7 +123,11 @@ export function workstreamActivateProposalSchema(): Record<string, unknown> {
     workstreamId: { type: "string", pattern: WORKSTREAM_ID_PATTERN },
     expectedWorkstreamHead: { type: "string", minLength: 1, maxLength: 200 },
     requestDecision: {
-      oneOf: [continueDecisionSchema(), createRequestDecisionSchema()],
+      oneOf: [
+        continueDecisionSchema(),
+        createRequestDecisionSchema(),
+        switchRequestDecisionSchema(),
+      ],
     },
     evidence: evidenceSchema(),
   }, ["kind", "workstreamId", "expectedWorkstreamHead", "requestDecision", "evidence"]);
@@ -154,6 +165,26 @@ function createRequestDecisionSchema(): Record<string, unknown> {
     constraints: boundedStringArray(20),
     reason: { type: "string", minLength: 1, maxLength: 500 },
   }, ["kind", "title", "request", "acceptance", "constraints", "reason"]);
+}
+
+function switchRequestDecisionSchema(): Record<string, unknown> {
+  return objectSchema({
+    kind: { const: "switch" },
+    currentRequestId: { type: "string", pattern: REQUEST_ID_PATTERN },
+    title: { type: "string", minLength: 1, maxLength: 120 },
+    request: { type: "string", minLength: 1, maxLength: 4000 },
+    acceptance: boundedStringArray(20),
+    constraints: boundedStringArray(20),
+    reason: { type: "string", minLength: 1, maxLength: 500 },
+  }, [
+    "kind",
+    "currentRequestId",
+    "title",
+    "request",
+    "acceptance",
+    "constraints",
+    "reason",
+  ]);
 }
 
 function requestDefinitionSchema(): Record<string, unknown> {

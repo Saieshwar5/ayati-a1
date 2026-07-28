@@ -95,6 +95,57 @@ describe("model-facing workstream and resource routing", () => {
     }));
   });
 
+  it("switches from the exact active request only with a complete explicit decision", async () => {
+    const activateWorkstreamForRun = vi.fn(async () => selectedResponse("create", false));
+    const service = {
+      getAgentContext: vi.fn()
+        .mockResolvedValueOnce(activeContext(false))
+        .mockResolvedValueOnce(activeContext(true)),
+      activateWorkstreamForRun,
+    } as unknown as ContextEngineService;
+    const tool = createGitContextSkill({ service }).tools
+      .find((candidate) => candidate.name === "git_context_activate_workstream")!;
+    const input = {
+      workstreamId: WORKSTREAM_ID,
+      reason: "The user explicitly prioritized the contact form.",
+      requestDecision: {
+        kind: "switch",
+        currentRequestId: "R-0001",
+        title: "Add contact form",
+        request: "Add a verified contact form.",
+        acceptance: ["The contact form works."],
+        constraints: ["Preserve the existing design."],
+      },
+    };
+
+    const result = await tool.execute(input, executionContext("switch-workstream-request"));
+    const invalid = await tool.execute({
+      ...input,
+      requestDecision: { ...input.requestDecision, currentRequestId: "invalid" },
+    }, executionContext("reject-invalid-switch"));
+
+    expect(result.ok).toBe(true);
+    expect(result.v2?.structuredContent).toMatchObject({
+      mode: "activated",
+      requestDecision: "create",
+      requestId: "R-0002",
+      requestCreated: true,
+    });
+    expect(invalid.ok).toBe(false);
+    expect(activateWorkstreamForRun).toHaveBeenCalledOnce();
+    expect(activateWorkstreamForRun).toHaveBeenCalledWith(expect.objectContaining({
+      route: {
+        kind: "switch_active_request",
+        currentRequestId: "R-0001",
+        reason: "The user explicitly prioritized the contact form.",
+        title: "Add contact form",
+        request: "Add a verified contact form.",
+        acceptance: ["The contact form works."],
+        constraints: ["Preserve the existing design."],
+      },
+    }));
+  });
+
   it("finds and opens durable work without binding the run", async () => {
     const candidate = workstreamCandidate();
     const findWorkstreams = vi.fn(async () => ({ workstreams: [candidate] }));
