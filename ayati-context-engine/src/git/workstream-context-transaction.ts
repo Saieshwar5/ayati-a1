@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { ContextEngineServiceError } from "../errors.js";
 import { writeFileAtomically } from "../files/atomic-file.js";
 import type { WorkstreamContextCommitPlan } from "../repositories/workstream-finalization-records.js";
+import { WORKSTREAM_PROGRESS_PATH } from "../workstreams/workstream-repository-layout.js";
 import { gitCommitEnvironment, runGit } from "./git-process.js";
 
 export async function commitWorkstreamContextPlan(input: {
@@ -152,7 +153,8 @@ async function requireCleanTree(contextRepositoryPath: string): Promise<void> {
 }
 
 function requireContextPath(path: string): void {
-  if (path === "workstream.md" || path === "resources.json"
+  if (path === "workstream.md" || path === WORKSTREAM_PROGRESS_PATH
+    || path === "resources.json"
     || /^requests\/R-\d{4}-.+\.md$/.test(path)) {
     return;
   }

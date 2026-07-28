@@ -127,6 +127,7 @@ describe("live V2 workstream request routing", () => {
     expect((await git(state.created.workstream.contextRepositoryPath, [
       "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD",
     ])).split("\n").sort()).toEqual([
+      "progress.md",
       "requests/R-0002-add-the-next-lesson.md",
       "resources.json",
       "workstream.md",
@@ -142,6 +143,11 @@ describe("live V2 workstream request routing", () => {
     });
     expect(validation.requests.find((request) => request.id === "R-0002"))
       .toMatchObject({ status: "done", title: "Add the next lesson" });
+    expect(validation.progress.entries[1]).toMatchObject({
+      runId: state.fixture.prepared.run.runId,
+      requestId: "R-0002",
+      outcome: "done",
+    });
     expect(validation.resourceManifest.resources).toContainEqual(expect.objectContaining({
       role: "deliverable",
       locator: { kind: "filesystem", path: lessonPath },
@@ -191,6 +197,7 @@ describe("live V2 workstream request routing", () => {
     expect((await git(state.created.workstream.contextRepositoryPath, [
       "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD",
     ])).split("\n").sort()).toEqual([
+      "progress.md",
       "requests/R-0001-long-lived-learning.md",
       "requests/R-0002-add-priority-lesson.md",
       "workstream.md",
@@ -206,9 +213,14 @@ describe("live V2 workstream request routing", () => {
       expect.objectContaining({ id: "R-0002", status: "done", title: "Add priority lesson" }),
     ]));
     expect(validation.currentRequest).toBeUndefined();
+    expect(validation.progress.entries[1]).toMatchObject({
+      runId: state.fixture.prepared.run.runId,
+      requestId: "R-0002",
+      outcome: "done",
+    });
   });
 
-  it("discards an uncommitted request switch after a failed no-change run", async () => {
+  it("commits a request switch with failed progress when its first run has no mutations", async () => {
     const state = await createExistingWorkstream(
       "discard-switch",
       false,
@@ -220,23 +232,35 @@ describe("live V2 workstream request routing", () => {
 
     const finalized = await state.fixture.service.finalizeRun(failedFinalization(state.fixture));
 
-    expect(finalized.workstreamContextCommit).toEqual({ status: "not_required" });
+    expect(finalized.workstreamContextCommit).toMatchObject({
+      status: "committed",
+      headBefore: state.head,
+      requestId: "R-0002",
+    });
     expect(state.fixture.database.prepare(
       "SELECT phase FROM workstream_request_route_plans WHERE run_id = ?",
-    ).get(state.fixture.prepared.run.runId)).toEqual({ phase: "discarded" });
+    ).get(state.fixture.prepared.run.runId)).toEqual({ phase: "committed" });
     const validation = await validateWorkstreamRepository({
       workstreamRoot: join(state.fixture.root, "workstreams"),
       contextRepositoryPath: state.created.workstream.contextRepositoryPath,
       expectedWorkstreamId: state.created.workstream.workstreamId,
       requestReadMode: "all",
     });
-    expect(validation.requests).toEqual([
-      expect.objectContaining({ id: "R-0001", status: "active" }),
-    ]);
-    expect(validation.currentRequest?.id).toBe("R-0001");
+    expect(validation.requests).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "R-0001", status: "queued" }),
+      expect.objectContaining({ id: "R-0002", status: "active" }),
+    ]));
+    expect(validation.currentRequest?.id).toBe("R-0002");
+    expect(validation.progress.entries).toHaveLength(2);
+    expect(validation.progress.entries[1]).toMatchObject({
+      runId: state.fixture.prepared.run.runId,
+      requestId: "R-0002",
+      outcome: "failed",
+      summary: "The attempt failed without durable changes.",
+    });
   });
 
-  it("discards a newly planned request when failed work produced no durable change", async () => {
+  it("commits a new request with failed progress when its first run has no mutations", async () => {
     const state = await createExistingWorkstream("discard", true);
     await state.fixture.service.activateWorkstreamForRun(
       createRequestRoute(state, "REQ-activate-discarded-request"),
@@ -244,21 +268,31 @@ describe("live V2 workstream request routing", () => {
 
     const finalized = await state.fixture.service.finalizeRun(failedFinalization(state.fixture));
 
-    expect(finalized.workstreamContextCommit).toEqual({ status: "not_required" });
+    expect(finalized.workstreamContextCommit).toMatchObject({
+      status: "committed",
+      headBefore: state.head,
+      requestId: "R-0002",
+    });
     expect(state.fixture.database.prepare(
       "SELECT phase FROM workstream_request_route_plans WHERE run_id = ?",
-    ).get(state.fixture.prepared.run.runId)).toEqual({ phase: "discarded" });
-    await expect(readFile(join(
-      state.created.workstream.contextRepositoryPath,
-      "requests/R-0002-add-the-next-lesson.md",
-    ), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    ).get(state.fixture.prepared.run.runId)).toEqual({ phase: "committed" });
     const validation = await validateWorkstreamRepository({
       workstreamRoot: join(state.fixture.root, "workstreams"),
       contextRepositoryPath: state.created.workstream.contextRepositoryPath,
       expectedWorkstreamId: state.created.workstream.workstreamId,
       requestReadMode: "all",
     });
-    expect(validation.requests.map((request) => request.id)).toEqual(["R-0001"]);
+    expect(validation.requests).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "R-0001", status: "done" }),
+      expect.objectContaining({ id: "R-0002", status: "active" }),
+    ]));
+    expect(validation.currentRequest?.id).toBe("R-0002");
+    expect(validation.progress.entries).toHaveLength(2);
+    expect(validation.progress.entries[1]).toMatchObject({
+      runId: state.fixture.prepared.run.runId,
+      requestId: "R-0002",
+      outcome: "failed",
+    });
   });
 
   it("recognizes and acknowledges an exact context commit after interrupted finalization", async () => {
@@ -303,6 +337,7 @@ describe("live V2 workstream request routing", () => {
       }),
     });
     await recovery.recover("2026-07-19T10:08:00+05:30");
+    await recovery.recover("2026-07-19T10:09:00+05:30");
 
     expect(fixture.database.prepare([
       "SELECT phase, commit_created, commit_head FROM workstream_finalizations WHERE run_id = ?",
@@ -314,6 +349,17 @@ describe("live V2 workstream request routing", () => {
     expect(fixture.database.prepare(
       "SELECT status, stop_reason FROM runs WHERE run_id = ?",
     ).get(fixture.prepared.run.runId)).toEqual({ status: "done", stop_reason: "completed" });
+    const validation = await validateWorkstreamRepository({
+      workstreamRoot: join(fixture.root, "workstreams"),
+      contextRepositoryPath: selected.workstream.contextRepositoryPath,
+      expectedWorkstreamId: selected.workstream.workstreamId,
+      requestReadMode: "all",
+    });
+    expect(validation.progress.entries.filter(
+      (entry) => entry.runId === fixture.prepared.run.runId,
+    )).toHaveLength(1);
+    expect(await git(selected.workstream.contextRepositoryPath, ["rev-list", "--count", "HEAD"]))
+      .toBe("2");
   });
 });
 

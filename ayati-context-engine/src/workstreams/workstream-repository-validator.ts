@@ -3,7 +3,10 @@ import { basename, dirname, resolve } from "node:path";
 import { ContextEngineServiceError } from "../errors.js";
 import { runGit, runGitRaw } from "../git/git-process.js";
 import { parseWorkstreamCard, type WorkstreamCard } from "./workstream-card.js";
-import { parseWorkstreamProgress } from "./workstream-progress.js";
+import {
+  parseWorkstreamProgress,
+  type WorkstreamProgressEntry,
+} from "./workstream-progress.js";
 import {
   isRequestId,
   requestFileName,
@@ -29,6 +32,10 @@ export interface WorkstreamRepositoryValidation {
   workstreamCard: WorkstreamCard;
   currentRequest?: WorkstreamRequest;
   requests: WorkstreamRequest[];
+  progress: {
+    content: string;
+    entries: WorkstreamProgressEntry[];
+  };
   resourceManifest: WorkstreamResourceManifest;
   workingTreeChanges: string[];
 }
@@ -118,9 +125,11 @@ async function validate(input: {
       unexpectedPaths: unexpected,
     });
   }
-  parseWorkstreamProgress(
-    await committedFile(contextRepositoryPath, WORKSTREAM_PROGRESS_PATH),
+  const progressContent = await committedFile(
+    contextRepositoryPath,
+    WORKSTREAM_PROGRESS_PATH,
   );
+  const progressEntries = parseWorkstreamProgress(progressContent);
 
   const workstreamCard = parseWorkstreamCard(
     await committedFile(contextRepositoryPath, WORKSTREAM_CARD_PATH),
@@ -167,6 +176,10 @@ async function validate(input: {
     workstreamCard,
     ...(currentRequest ? { currentRequest } : {}),
     requests,
+    progress: {
+      content: progressContent,
+      entries: progressEntries,
+    },
     resourceManifest,
     workingTreeChanges,
   };

@@ -52,8 +52,13 @@ import {
   renderWorkstreamCommit,
   type WorkstreamCommitOutcome,
 } from "../workstreams/workstream-commit-metadata.js";
+import { appendWorkstreamProgressEntry } from "../workstreams/workstream-progress.js";
+import { buildWorkstreamProgressEntry } from "../workstreams/workstream-progress-projection.js";
 import { reduceSimpleWorkstreamContext } from "../workstreams/simple-workstream-context-reducer.js";
-import { WORKSTREAM_RESOURCES_PATH } from "../workstreams/workstream-repository-layout.js";
+import {
+  WORKSTREAM_PROGRESS_PATH,
+  WORKSTREAM_RESOURCES_PATH,
+} from "../workstreams/workstream-repository-layout.js";
 import {
   renderWorkstreamResourceManifest,
   WORKSTREAM_RESOURCE_MANIFEST_SCHEMA,
@@ -302,13 +307,27 @@ export class WorkstreamFinalizationService {
       completion: input.completion,
       hasVerifiedChanges,
     });
-    const applyRoutePlan = Boolean(routePlan?.changePlan)
-      && !(input.outcome === "failed" && !hasVerifiedChanges);
+    const progressContent = appendWorkstreamProgressEntry(
+      validation.progress.content,
+      buildWorkstreamProgressEntry({
+        runId: input.runId,
+        requestId: input.boundRequestId,
+        at: input.at,
+        outcome: input.outcome,
+        summary: input.summary,
+        validation: input.validation,
+        workState: finalWorkState,
+        completion: input.completion,
+        resourceEvents,
+        ...(input.next ? { next: input.next } : {}),
+      }),
+    );
     const desiredWrites = new Map<string, string>();
-    if (applyRoutePlan) {
-      for (const write of routePlan!.changePlan!.writes) desiredWrites.set(write.path, write.content);
+    if (routePlan?.changePlan) {
+      for (const write of routePlan.changePlan.writes) desiredWrites.set(write.path, write.content);
     }
     for (const write of reduced.contextWrites) desiredWrites.set(write.path, write.content);
+    desiredWrites.set(WORKSTREAM_PROGRESS_PATH, progressContent);
     desiredWrites.set(WORKSTREAM_RESOURCES_PATH, renderResourceManifest(
       input.workstreamId,
       validation.resourceManifest.updatedAt,
@@ -468,16 +487,23 @@ export class WorkstreamFinalizationService {
     if (validation.head !== head || validation.health !== "ready") {
       throw recovery("Committed workstream context did not validate cleanly.");
     }
+    const progressEntries = validation.progress.entries
+      .filter((entry) => entry.runId === record.runId);
+    const progressEntry = progressEntries[0];
+    if (progressEntries.length !== 1
+      || progressEntry?.requestId !== record.boundRequestId
+      || progressEntry.outcome !== record.outcome
+      || progressEntry.at !== record.createdAt) {
+      throw recovery("Committed workstream progress does not match the finalized run.", {
+        runId: record.runId,
+        requestId: record.boundRequestId,
+        outcome: record.outcome,
+      });
+    }
     const request = validation.requests.find((entry) => entry.id === record.boundRequestId);
-    const routePlan = readWorkstreamRequestRoutePlan(this.options.database, record.runId);
-    const discardedPlannedRequest = record.outcome === "failed"
-      && !record.plan.commitRequired
-      && (routePlan?.changePlan?.activatedRequestId
-        ?? routePlan?.changePlan?.primaryRequestId) === record.boundRequestId;
-    if (!request && !discardedPlannedRequest) {
+    if (!request) {
       throw recovery("Committed workstream request is missing.");
     }
-    if (!request) return validation;
     if (record.outcome === "done" && request.status !== "done") {
       throw recovery("Completed run did not persist a completed request.");
     }

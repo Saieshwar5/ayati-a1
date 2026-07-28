@@ -94,6 +94,7 @@ describe("workstream-bound run finalization", () => {
     expect((await git(selected.workstream.contextRepositoryPath, [
       "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD",
     ])).split("\n").sort()).toEqual([
+      "progress.md",
       "requests/R-0001-context-only-workstream.md",
       "resources.json",
       "workstream.md",
@@ -107,6 +108,13 @@ describe("workstream-bound run finalization", () => {
       health: "ready",
       workstreamCard: { currentRequest: null, currentSnapshot: "The requested work is complete." },
       requests: [{ id: "R-0001", status: "done" }],
+      progress: {
+        entries: [{
+          runId: fixture.prepared.run.runId,
+          requestId: "R-0001",
+          outcome: "done",
+        }],
+      },
       resourceManifest: { resources: [{ role: "primary", access: "mutate" }] },
     });
   });
@@ -210,6 +218,14 @@ describe("workstream-bound run finalization", () => {
         blockers: [question],
       },
       requests: [{ id: "R-0001", status: "blocked" }],
+      progress: {
+        entries: [{
+          runId: fixture.prepared.run.runId,
+          requestId: "R-0001",
+          outcome: "needs_user_input",
+          next: question,
+        }],
+      },
     });
   });
 
@@ -332,7 +348,7 @@ describe("workstream-bound run finalization", () => {
       : undefined).toBe(metadata ? await git(selected.workstream.contextRepositoryPath, ["rev-parse", "HEAD"]) : "");
   });
 
-  it("does not create a context commit for a later failed read-only continuation", async () => {
+  it("records a later failed read-only continuation in one progress-only commit", async () => {
     const fixture = await createFixture("read-only-failure");
     const created = await createBoundWorkstream(fixture, {
       title: "Read-only Continuation",
@@ -369,18 +385,50 @@ describe("workstream-bound run finalization", () => {
       at: "2026-07-19T10:05:00+05:30",
     });
     const headBefore = await git(created.workstream.contextRepositoryPath, ["rev-parse", "HEAD"]);
+    const requestBefore = await git(created.workstream.contextRepositoryPath, [
+      "show", headBefore + ":requests/R-0001-read-only-continuation.md",
+    ]);
+    const input = failedFinalization(fixture);
 
-    const result = await fixture.service.finalizeRun(failedFinalization(fixture));
+    const result = await fixture.service.finalizeRun(input);
+    const replayed = await fixture.service.finalizeRun(input);
     const context = await fixture.service.getAgentContext({
       streamId: fixture.prepared.stream.streamId,
     });
 
+    expect(replayed).toEqual(result);
     expect(result).toMatchObject({
       run: { status: "failed", stopReason: "failed" },
-      workstreamContextCommit: { status: "not_required" },
+      workstreamContextCommit: {
+        status: "committed",
+        headBefore,
+        requestId: "R-0001",
+      },
     });
     expect(await git(created.workstream.contextRepositoryPath, ["rev-parse", "HEAD"]))
-      .toBe(headBefore);
+      .not.toBe(headBefore);
+    expect((await git(created.workstream.contextRepositoryPath, [
+      "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD",
+    ])).split("\n")).toEqual(["progress.md"]);
+    expect(await git(created.workstream.contextRepositoryPath, [
+      "show", "HEAD:requests/R-0001-read-only-continuation.md",
+    ])).toBe(requestBefore);
+    expect(await git(created.workstream.contextRepositoryPath, ["rev-list", "--count", "HEAD"]))
+      .toBe("3");
+    const validation = await validateWorkstreamRepository({
+      workstreamRoot: join(fixture.root, "workstreams"),
+      contextRepositoryPath: created.workstream.contextRepositoryPath,
+      expectedWorkstreamId: created.workstream.workstreamId,
+      requestReadMode: "all",
+    });
+    expect(validation.currentRequest).toMatchObject({ id: "R-0001", status: "active" });
+    expect(validation.progress.entries).toHaveLength(2);
+    expect(validation.progress.entries[1]).toMatchObject({
+      runId: fixture.prepared.run.runId,
+      requestId: "R-0001",
+      outcome: "failed",
+      summary: "The read-only attempt failed.",
+    });
     expect(firstRunId).not.toBe(fixture.prepared.run.runId);
     expect("observations" in context).toBe(false);
   });
