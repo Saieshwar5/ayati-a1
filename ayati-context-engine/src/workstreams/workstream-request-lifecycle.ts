@@ -30,6 +30,7 @@ export type WorkstreamRequestLifecycleOperation =
       activate: boolean;
     }
   | { kind: "activate"; requestId: string }
+  | { kind: "defer"; requestId: string; reason: string }
   | { kind: "block"; requestId: string; reason: string }
   | { kind: "resume"; requestId: string }
   | {
@@ -78,6 +79,8 @@ export function planWorkstreamRequestChange(
       return createRequest(current, operation);
     case "activate":
       return activateRequest(current, operation.requestId);
+    case "defer":
+      return deferRequest(current, operation.requestId, operation.reason);
     case "block":
       return blockRequest(current, operation.requestId, operation.reason);
     case "resume":
@@ -158,6 +161,34 @@ function activateRequest(
     replaceRequest(state.requests, after),
     [after],
     requestId,
+  );
+}
+
+function deferRequest(
+  state: WorkstreamRequestLifecycleState,
+  requestId: string,
+  reason: string,
+): WorkstreamRequestChangePlan {
+  requireActiveWorkstream(state.workstreamCard);
+  const before = requireCurrentRequest(state, requestId);
+  validateWorkstreamRequestTransition({ from: before.status, to: "queued" });
+  const normalizedReason = boundedLine(reason, "deferral reason", 400);
+  const after: WorkstreamRequest = {
+    ...cloneRequest(before),
+    status: "queued",
+  };
+  const workstreamCard = cloneCard(state.workstreamCard);
+  workstreamCard.currentRequest = null;
+  workstreamCard.currentFocus = "Choose or create the next request. Deferred "
+    + requestId + ": " + normalizedReason;
+  workstreamCard.blockers = withoutRequestBlocker(workstreamCard.blockers, requestId);
+  return buildPlan(
+    state,
+    "defer",
+    requestId,
+    workstreamCard,
+    replaceRequest(state.requests, after),
+    [after],
   );
 }
 

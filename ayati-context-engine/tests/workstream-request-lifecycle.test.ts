@@ -130,6 +130,79 @@ describe("workstream request lifecycle planner", () => {
     ]), { kind: "activate", requestId: "R-0001" }), "WORKSTREAM_REQUEST_STATE_INVALID");
   });
 
+  it("defers the current request without changing its contract or outcome", () => {
+    const state = activeState();
+    state.requests[0]!.outcome = "Implementation is partially verified.";
+    state.workstreamCard.blockers = ["A separate durable blocker."];
+    const originalRequest = structuredClone(state.requests[0]!);
+
+    const plan = planWorkstreamRequestChange(state, {
+      kind: "defer",
+      requestId: "R-0001",
+      reason: "A newly authorized request should run first.",
+    });
+
+    expect(plan).toMatchObject({
+      operation: "defer",
+      primaryRequestId: "R-0001",
+      changedRequests: [{
+        id: "R-0001",
+        status: "queued",
+        outcome: "Implementation is partially verified.",
+      }],
+      workstreamCardAfter: {
+        status: "active",
+        currentRequest: null,
+        currentFocus: "Choose or create the next request. Deferred R-0001: "
+          + "A newly authorized request should run first.",
+        blockers: ["A separate durable blocker."],
+      },
+    });
+    expect(plan.changedRequests[0]).toEqual({
+      ...originalRequest,
+      status: "queued",
+    });
+    expect(plan.writes.map((write) => write.path)).toEqual([
+      "requests/R-0001-initial-request.md",
+      "workstream.md",
+    ]);
+
+    const reactivated = planWorkstreamRequestChange({
+      expectedHead: plan.expectedHead,
+      workstreamCard: plan.workstreamCardAfter,
+      requests: plan.requestsAfter,
+    }, { kind: "activate", requestId: "R-0001" });
+    expect(reactivated).toMatchObject({
+      activatedRequestId: "R-0001",
+      changedRequests: [{
+        id: "R-0001",
+        status: "active",
+        outcome: "Implementation is partially verified.",
+      }],
+      workstreamCardAfter: { currentRequest: "R-0001" },
+    });
+  });
+
+  it("rejects deferring anything except the current active request", () => {
+    for (const status of ["queued", "blocked", "done", "dropped"] as const) {
+      expectCode(() => planWorkstreamRequestChange(requestState([
+        request("R-0001", status, "Not active"),
+      ]), {
+        kind: "defer",
+        requestId: "R-0001",
+        reason: "Another request should run first.",
+      }), "WORKSTREAM_REQUEST_STATE_INVALID");
+    }
+
+    const nonCurrent = activeState();
+    nonCurrent.requests.push(request("R-0002", "queued", "Queued request"));
+    expectCode(() => planWorkstreamRequestChange(nonCurrent, {
+      kind: "defer",
+      requestId: "R-0002",
+      reason: "Another request should run first.",
+    }), "WORKSTREAM_REQUEST_STATE_INVALID");
+  });
+
   it("blocks the current request, clears current_request, and records one blocker", () => {
     const plan = planWorkstreamRequestChange(activeState(), {
       kind: "block",

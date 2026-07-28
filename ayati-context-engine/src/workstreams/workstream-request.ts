@@ -130,7 +130,8 @@ export function validateWorkstreamRequestTransition(input: {
   if (input.from === input.to) return;
   const allowed = (input.from === "queued" && (input.to === "active" || input.to === "dropped"))
     || (input.from === "active"
-      && (input.to === "blocked" || input.to === "done" || input.to === "dropped"))
+      && (input.to === "queued" || input.to === "blocked"
+        || input.to === "done" || input.to === "dropped"))
     || (input.from === "blocked" && (input.to === "active" || input.to === "dropped"))
     || (input.from === "done" && input.to === "active" && input.explicitReopen === true);
   if (!allowed) {
