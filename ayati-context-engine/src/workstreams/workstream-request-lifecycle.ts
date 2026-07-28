@@ -31,6 +31,19 @@ export type WorkstreamRequestLifecycleOperation =
     }
   | { kind: "activate"; requestId: string }
   | { kind: "defer"; requestId: string; reason: string }
+  | {
+      kind: "defer_and_create";
+      currentRequestId: string;
+      deferReason: string;
+      newRequest: {
+        title: string;
+        request: string;
+        acceptance: string[];
+        constraints: string[];
+        source: WorkstreamRequestSource;
+        createdAt: string;
+      };
+    }
   | { kind: "block"; requestId: string; reason: string }
   | { kind: "resume"; requestId: string }
   | {
@@ -59,6 +72,7 @@ export interface WorkstreamRequestChangePlan {
   workstreamId: string;
   primaryRequestId: string;
   activatedRequestId?: string;
+  deferralReason?: string;
   completionVerification?: "verified" | "user_accepted";
   workstreamCardBefore: WorkstreamCard;
   workstreamCardAfter: WorkstreamCard;
@@ -81,6 +95,8 @@ export function planWorkstreamRequestChange(
       return activateRequest(current, operation.requestId);
     case "defer":
       return deferRequest(current, operation.requestId, operation.reason);
+    case "defer_and_create":
+      return deferAndCreateRequest(current, operation);
     case "block":
       return blockRequest(current, operation.requestId, operation.reason);
     case "resume":
@@ -182,7 +198,7 @@ function deferRequest(
   workstreamCard.currentFocus = "Choose or create the next request. Deferred "
     + requestId + ": " + normalizedReason;
   workstreamCard.blockers = withoutRequestBlocker(workstreamCard.blockers, requestId);
-  return buildPlan(
+  const plan = buildPlan(
     state,
     "defer",
     requestId,
@@ -190,6 +206,52 @@ function deferRequest(
     replaceRequest(state.requests, after),
     [after],
   );
+  return { ...plan, deferralReason: normalizedReason };
+}
+
+function deferAndCreateRequest(
+  state: WorkstreamRequestLifecycleState,
+  operation: Extract<WorkstreamRequestLifecycleOperation, { kind: "defer_and_create" }>,
+): WorkstreamRequestChangePlan {
+  requireActiveWorkstream(state.workstreamCard);
+  if (operation.newRequest.source === "agent_proposal") {
+    invalid("Agent proposals must begin queued and cannot be activated implicitly.");
+  }
+  const before = requireCurrentRequest(state, operation.currentRequestId);
+  validateWorkstreamRequestTransition({ from: before.status, to: "queued" });
+  const normalizedReason = boundedLine(operation.deferReason, "deferral reason", 400);
+  const deferred: WorkstreamRequest = {
+    ...cloneRequest(before),
+    status: "queued",
+  };
+  const created: WorkstreamRequest = {
+    schema: "ayati.request/v2",
+    id: nextRequestId(state.requests.map((request) => request.id)),
+    title: operation.newRequest.title,
+    status: "active",
+    createdAt: operation.newRequest.createdAt,
+    source: operation.newRequest.source,
+    request: operation.newRequest.request,
+    acceptance: [...operation.newRequest.acceptance],
+    constraints: [...operation.newRequest.constraints],
+    outcome: "Not completed yet.",
+  };
+  renderWorkstreamRequest(created);
+  const workstreamCard = activateWorkstreamCard(state.workstreamCard, created);
+  workstreamCard.blockers = withoutRequestBlocker(
+    workstreamCard.blockers,
+    operation.currentRequestId,
+  );
+  const plan = buildPlan(
+    state,
+    "defer_and_create",
+    operation.currentRequestId,
+    workstreamCard,
+    [...replaceRequest(state.requests, deferred), created],
+    [deferred, created],
+    created.id,
+  );
+  return { ...plan, deferralReason: normalizedReason };
 }
 
 function blockRequest(

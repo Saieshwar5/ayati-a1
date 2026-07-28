@@ -145,6 +145,7 @@ describe("workstream request lifecycle planner", () => {
     expect(plan).toMatchObject({
       operation: "defer",
       primaryRequestId: "R-0001",
+      deferralReason: "A newly authorized request should run first.",
       changedRequests: [{
         id: "R-0001",
         status: "queued",
@@ -200,6 +201,63 @@ describe("workstream request lifecycle planner", () => {
       kind: "defer",
       requestId: "R-0002",
       reason: "Another request should run first.",
+    }), "WORKSTREAM_REQUEST_STATE_INVALID");
+  });
+
+  it("atomically defers the current request and creates the next active request", () => {
+    const state = activeState();
+    state.requests[0]!.outcome = "The initial implementation is partially verified.";
+    state.requests.push(request("R-0002", "done", "Earlier completed work"));
+    const original = structuredClone(state);
+
+    const plan = planWorkstreamRequestChange(state, {
+      kind: "defer_and_create",
+      currentRequestId: "R-0001",
+      deferReason: "The newly authorized contact form should run first.",
+      newRequest: newRequestInput("Add contact form"),
+    });
+
+    expect(state).toEqual(original);
+    expect(plan).toMatchObject({
+      operation: "defer_and_create",
+      primaryRequestId: "R-0001",
+      activatedRequestId: "R-0003",
+      deferralReason: "The newly authorized contact form should run first.",
+      changedRequests: [
+        { id: "R-0001", status: "queued", outcome: original.requests[0]!.outcome },
+        { id: "R-0003", status: "active", source: "user", outcome: "Not completed yet." },
+      ],
+      workstreamCardAfter: {
+        status: "active",
+        currentRequest: "R-0003",
+        currentFocus: "Complete R-0003: Add contact form.",
+      },
+    });
+    expect(plan.changedRequests[0]).toEqual({ ...original.requests[0]!, status: "queued" });
+    expect(plan.requestsAfter.filter((request) => request.status === "active")
+      .map((request) => request.id)).toEqual(["R-0003"]);
+    expect(plan.writes.map((write) => write.path)).toEqual([
+      "requests/R-0001-initial-request.md",
+      "requests/R-0003-add-contact-form.md",
+      "workstream.md",
+    ]);
+  });
+
+  it("rejects an unauthorized or mismatched atomic request switch", () => {
+    expectCode(() => planWorkstreamRequestChange(activeState(), {
+      kind: "defer_and_create",
+      currentRequestId: "R-0001",
+      deferReason: "Try an agent-selected replacement.",
+      newRequest: newRequestInput("Agent idea", "agent_proposal"),
+    }), "WORKSTREAM_REQUEST_STATE_INVALID");
+
+    const state = activeState();
+    state.requests.push(request("R-0002", "queued", "Different queued request"));
+    expectCode(() => planWorkstreamRequestChange(state, {
+      kind: "defer_and_create",
+      currentRequestId: "R-0002",
+      deferReason: "Target the wrong request.",
+      newRequest: newRequestInput("New work"),
     }), "WORKSTREAM_REQUEST_STATE_INVALID");
   });
 
@@ -508,6 +566,17 @@ function request(id: string, status: WorkstreamRequest["status"], title: string)
     acceptance: ["The requested outcome is verified."],
     constraints: [],
     outcome: status === "done" ? "The request is complete." : "Not completed yet.",
+  };
+}
+
+function newRequestInput(title: string, source: WorkstreamRequest["source"] = "user") {
+  return {
+    title,
+    request: "Complete " + title.toLowerCase() + ".",
+    acceptance: ["The requested outcome is verified."],
+    constraints: [],
+    source,
+    createdAt: "2026-07-17T13:00:00+05:30",
   };
 }
 
