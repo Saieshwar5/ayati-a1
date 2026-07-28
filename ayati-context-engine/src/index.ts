@@ -11,6 +11,7 @@ export * from "./services/sqlite-context-engine-service.js";
 export * from "./services/workstream-catalog-rebuild-service.js";
 export * from "./workstreams/workstream-card.js";
 export * from "./workstreams/workstream-commit-metadata.js";
+export * from "./workstreams/workstream-progress.js";
 export * from "./workstreams/workstream-resource-manifest.js";
 export * from "./workstreams/workstream-repository-layout.js";
 export * from "./workstreams/workstream-repository-validator.js";
