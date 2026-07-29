@@ -6,6 +6,7 @@ import { buildPromptVerifiedOutcomes } from "./run-verified-outcome-context.js";
 import type { PromptVerifiedOutcomes } from "./run-verified-outcome-context.js";
 import type { CapabilitySurfaceResult } from "./capabilities/contracts.js";
 import { buildAgentContextPack } from "./context-pack.js";
+import { buildBoundWorkstreamPromptContext } from "./bound-workstream-prompt-context.js";
 import { projectAgentPromptContext } from "./prompt-context.js";
 import { buildVirtualModeCard } from "./virtual-mode.js";
 import { getActiveFailures } from "./failure-lifecycle.js";
@@ -137,6 +138,9 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
         workstreamBound: state.harnessContext.contextEngine?.current.routing?.status === "bound",
         hotContextAvailable: state.hotContext.available.length > 0,
       }),
+      boundWorkstream: buildBoundWorkstreamPromptContext(
+        state.harnessContext.contextEngine,
+      ),
       workState: progress,
       toolCalls,
       verifiedOutcomes,
@@ -175,6 +179,7 @@ function buildToolsContext(input: {
 
 function buildRunContext(input: {
   mode: NonNullable<PromptRunContext["mode"]>;
+  boundWorkstream?: PromptRunContext["boundWorkstream"];
   workState?: PromptProgressState;
   toolCalls?: PromptToolCalls;
   verifiedOutcomes?: PromptVerifiedOutcomes;
@@ -182,6 +187,9 @@ function buildRunContext(input: {
 }): PromptRunContext {
   return {
     mode: input.mode,
+    ...(input.boundWorkstream
+      ? { boundWorkstream: input.boundWorkstream }
+      : {}),
     ...(input.workState ? { workState: input.workState } : {}),
     ...(input.toolCalls ? { toolCalls: input.toolCalls } : {}),
     ...(input.verifiedOutcomes

@@ -277,6 +277,23 @@ describe("prepared main-context admission", () => {
       requestId: "R-BOUND",
     };
     state.context.run = {
+      boundWorkstream: {
+        id: "W-BOUND",
+        title: "Bound project",
+        purpose: "Own the verified target.",
+        summary: "The request is ready to execute.",
+        lifecycleStatus: "active",
+        blockers: [],
+        request: {
+          id: "R-BOUND",
+          title: "Write the result",
+          status: "active",
+          request: "Write result.txt.",
+          acceptance: ["result.txt is verified."],
+          constraints: [],
+        },
+        recentProgress: [],
+      },
       mode: {
         active: "execute",
         revision: 3,
@@ -345,6 +362,9 @@ describe("prepared main-context admission", () => {
       requestId: "R-BOUND",
     });
     expect(finalState.context.run?.mode).toMatchObject({ active: "execute", revision: 3 });
+    expect(finalState.context.run?.boundWorkstream).toEqual(
+      state.context.run.boundWorkstream,
+    );
     expect(finalState.context.run?.workState?.importantContext).toContainEqual(
       expect.objectContaining({ ref: "run:RUN-1:step:1:call:route-1" }),
     );

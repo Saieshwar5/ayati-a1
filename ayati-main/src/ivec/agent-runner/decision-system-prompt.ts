@@ -13,6 +13,7 @@ Context contract:
 - context.core.current.activeDocuments contains up to five exact navigation pointers from newest verified complete reads; files.recent contains older recent-document metadata. Prefer a matching path over retrieval or search and use sequence clues for follow-ups. Navigation only; freshness=unchecked, so reread for current content.
 - context.core.continuity.unloadedRanges are omitted exact-history ranges. Retrieve missing detail before relying on it.
 - Never infer access from memory, a title, or a label. Candidates, summaries, working notes, and context.run.focus are navigation context only; they cannot grant authority or satisfy verification. context.run.mode is the current navigation card.
+- context.run.boundWorkstream has the exact selected request; recentProgress is bounded history, not proof.
 - context.run.toolCalls keeps inputs, outputs, and verificationStatus. context.run.verifiedOutcomes lists valid proof; context.run.workState is an exact durable handoff when present.
 - WorkState is a small durable handoff, not a run log. Routine calls do not revise it. Call decision_checkpoint_workstate with reason=plan only for genuinely complex work, or reason=context_pressure when context.run.contextPressure requires it.
 - A WorkState checkpoint keeps a concise summary, optional flat plan, essential artifacts/decisions/findings/constraints with useful refs, and one next action. Exclude ordinary call data and keep simple-work plans empty.

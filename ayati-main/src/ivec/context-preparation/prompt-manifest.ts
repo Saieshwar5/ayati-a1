@@ -42,6 +42,16 @@ export function buildPromptContextManifest(input: {
   }
   if (context.tools) addPart(parts, "work.tool_state", "work", "exact", context.tools, []);
   if (context.harness) addPart(parts, "work.harness", "work", "hot", context.harness, []);
+  if (context.run?.boundWorkstream) {
+    addPart(
+      parts,
+      "work.run.bound_workstream",
+      "work",
+      "exact",
+      context.run.boundWorkstream,
+      boundWorkstreamRefs(context.run.boundWorkstream),
+    );
+  }
   if (context.run?.workState) {
     addPart(parts, "work.run.work_state", "work", "exact", context.run.workState, workStateRefs(context.run.workState));
   }
@@ -193,6 +203,21 @@ function workStateRefs(
       ? [`artifact:${item.value}`]
       : []),
   ]) ?? [];
+}
+
+function boundWorkstreamRefs(
+  workstream: NonNullable<
+    NonNullable<AgentPromptStateView["context"]["run"]>["boundWorkstream"]
+  >,
+): string[] {
+  return [
+    `workstream:${workstream.id}`,
+    `request:${workstream.request.id}`,
+    ...(workstream.activeRequest
+      ? [`request:${workstream.activeRequest.id}`]
+      : []),
+    ...workstream.recentProgress.map((progress) => `run:${progress.runId}`),
+  ];
 }
 
 function toolCallRefs(

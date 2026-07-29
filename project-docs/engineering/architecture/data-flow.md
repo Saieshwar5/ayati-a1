@@ -16,8 +16,10 @@
 
 The service returns slow stream continuity and fast run context separately.
 The daemon maps them into core, hot, tools, harness, and run prompt lanes.
-Authoritative workstream details and resource cards are not model-facing lanes
-or Hot Context sources. Hot Context initially contains catalog metadata only.
+After binding, the run lane contains the exact selected request, distilled
+workstream context, and up to five selected-request progress summaries.
+Complete workstream documents and resource cards are not model-facing lanes or
+Hot Context sources. Hot Context initially contains catalog metadata only.
 A transient `context.retrieve` decision may mount one or more advertised
 entries for the rest of that run. `workstreams.recent` is
 prepared from creation/open/binding metadata and remains absent from the prompt

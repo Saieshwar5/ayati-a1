@@ -1,12 +1,16 @@
 import type { AgentContextPack } from "./context-pack.js";
+import type { PromptBoundWorkstreamContext } from "./bound-workstream-prompt-context.js";
 import type { PromptToolCalls } from "./run-tool-call-context.js";
 import type { PromptVerifiedOutcomes } from "./run-verified-outcome-context.js";
 import type { AgentStateView } from "./state-view.js";
 import type { RunFocusSummary } from "../context-preparation/types.js";
 import type { VirtualModeCard } from "./virtual-mode.js";
 
+export type { PromptBoundWorkstreamContext } from "./bound-workstream-prompt-context.js";
+
 export interface PromptRunContext {
   mode?: VirtualModeCard;
+  boundWorkstream?: PromptBoundWorkstreamContext;
   workState?: PromptRunWorkStateContext;
   toolCalls?: PromptToolCalls;
   verifiedOutcomes?: PromptVerifiedOutcomes;
@@ -110,6 +114,7 @@ function compactRunContext(
   if (!run) return undefined;
   const compacted: PromptRunContext = {
     ...(run.mode ? { mode: run.mode } : {}),
+    ...(run.boundWorkstream ? { boundWorkstream: run.boundWorkstream } : {}),
     ...(run.workState ? { workState: run.workState } : {}),
     ...(run.toolCalls ? {
       toolCalls: options.preserveProjectionMetadata

@@ -178,6 +178,13 @@ Changes should prove the relevant invariants:
     unfinished requests. An exact historical-request read returns its final
     outcome and at most five recent progress entries without binding the run
     or reopening the request.
+42. Every bound primary-model prompt contains the exact selected request
+    contract and distilled workstream context. A different active request is
+    identified without replacing the selected request; progress is limited to
+    the five newest selected-request summaries. Binding/request mismatches fail
+    closed, while resource locators, commits, raw logs, unrelated requests, and
+    complete history stay outside the prompt. Context-pressure projection
+    preserves this lane exactly.
 
 ## Prompt and Harness Coverage
 

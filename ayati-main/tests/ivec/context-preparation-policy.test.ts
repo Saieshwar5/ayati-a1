@@ -111,6 +111,15 @@ describe("parallel context preparation policy", () => {
     expect(first.parts.find((part) => part.id === "work.run.work_state")).toMatchObject({
       retention: "exact",
     });
+    expect(first.parts.find((part) => part.id === "work.run.bound_workstream")).toMatchObject({
+      lane: "work",
+      retention: "exact",
+      sourceRefs: [
+        "request:R-0001",
+        "run:RUN-EARLIER",
+        "workstream:W-20260729-0001",
+      ],
+    });
     expect(first.parts.find((part) => part.id === "work.run.verified_outcomes")).toMatchObject({
       lane: "work",
       retention: "exact",
@@ -145,6 +154,28 @@ function promptState(): AgentPromptStateView {
       }),
       hot: emptyHotContextProjection(),
       run: {
+        boundWorkstream: {
+          id: "W-20260729-0001",
+          title: "Lumen Finch Website",
+          purpose: "Build and maintain the website.",
+          summary: "The initial files exist.",
+          lifecycleStatus: "active",
+          blockers: [],
+          request: {
+            id: "R-0001",
+            title: "Create the initial website",
+            status: "active",
+            request: "Create the website.",
+            acceptance: ["The website works."],
+            constraints: [],
+          },
+          recentProgress: [{
+            runId: "RUN-EARLIER",
+            outcome: "incomplete",
+            summary: "Created the files.",
+            validation: "Browser validation remains.",
+          }],
+        },
         workState: {
           status: "in_progress",
           summary: "Continue safely.",

@@ -119,6 +119,24 @@ function boundContext(runId: string, text: string, workingDirectory?: string): H
           acceptance: ["one-run.txt exists and is verified."],
           constraints: [],
         },
+        selectedRequest: {
+          id: "R-0001",
+          title: "Create one-run.txt",
+          status: "active",
+          request: text,
+          acceptance: ["one-run.txt exists and is verified."],
+          constraints: [],
+          lifecycleNote: "Selected for the current run.",
+        },
+        recentProgress: [{
+          runId: "RUN-EARLIER",
+          outcome: "incomplete",
+          summary: "Prepared the output location.",
+          validationSummary: "The requested file remains.",
+          nextAction: text,
+          commit: "abc123",
+          finalizedAt: "2026-07-19T09:00:00.000Z",
+        }],
         resources: [workstreamResource(resourcePath)],
       },
     },
@@ -2068,6 +2086,36 @@ describe("agentLoop one-run lifecycle", () => {
       expect(secondInput.tools.map((tool) => tool.name)).toContain("decision_stop");
       expect(fourthInput.tools.map((tool) => tool.name)).toContain("write_files");
       expect(fourthInput.tools.map((tool) => tool.name)).toContain("decision_stop");
+      const fourthPromptText = fourthInput.messages
+        .find((message) => message.role === "user")?.content ?? "";
+      const fourthPrompt = extractStateView(fourthPromptText);
+      expect(fourthPrompt.context.run.boundWorkstream).toEqual({
+        id: "W-20260719-0001",
+        title: "One run file",
+        purpose: "Create one-run.txt",
+        summary: "Create and verify the requested file.",
+        lifecycleStatus: "active",
+        blockers: [],
+        nextAction: "Create one-run.txt",
+        request: {
+          id: "R-0001",
+          title: "Create one-run.txt",
+          status: "active",
+          request: "Create one-run.txt",
+          acceptance: ["one-run.txt exists and is verified."],
+          constraints: [],
+          lifecycleNote: "Selected for the current run.",
+        },
+        recentProgress: [{
+          runId: "RUN-EARLIER",
+          outcome: "incomplete",
+          summary: "Prepared the output location.",
+          validation: "The requested file remains.",
+          next: "Create one-run.txt",
+        }],
+      });
+      expect(JSON.stringify(fourthPrompt.context.run.boundWorkstream)).not.toContain(dataDir);
+      expect(JSON.stringify(fourthPrompt.context.run.boundWorkstream)).not.toContain("abc123");
     } finally {
       cleanup(dataDir);
     }

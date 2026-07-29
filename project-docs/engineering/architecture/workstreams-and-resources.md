@@ -241,6 +241,20 @@ After binding, activation loads:
 - relevant resource bindings;
 - any provisional lifecycle plan.
 
+The next primary-model decision receives a bounded
+`context.run.boundWorkstream` projection built from that activation state. Its
+`request` is always the exact request selected by the immutable run binding,
+not an older workstream current request. If another request is active, only
+its identity, title, and active status appear as `activeRequest`. The
+projection includes distilled purpose, summary, focus, blockers, next action,
+and at most five newest progress summaries for the selected request.
+
+Projection fails closed when the route, loaded workstream, selected request,
+or persisted run binding disagree. The selected request contract keeps every
+acceptance criterion and constraint. Descriptive workstream/progress fields
+are size-bounded; resource locators, commit SHAs, raw logs, all request files,
+and complete historical progress remain outside the prompt.
+
 Older progress, completed requests, commits, resources, and exact run evidence
 remain searchable on demand. Request FTS contributes matching request
 identities and lifecycle states—including `done` and `dropped`—to workstream

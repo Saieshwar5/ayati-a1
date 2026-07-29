@@ -94,15 +94,41 @@ describe("buildAgentStateView", () => {
     expect(JSON.stringify(activeDocuments)).not.toContain("document-6.txt");
   });
 
-  it("keeps active workstream and resources authoritative but outside the prompt projection", () => {
+  it("projects the bound request contract while keeping resource details outside the prompt", () => {
     const context = createBoundContext();
     const state = createLoopState({ context });
 
     const view = buildAgentStateView(state);
+    const prompt = projectAgentStateViewForPrompt(view);
 
     expect(view.context).not.toHaveProperty("work");
     expect(view.context).not.toHaveProperty("resources");
     expect(view.context.run).not.toHaveProperty("workState");
+    expect(prompt.context.run?.boundWorkstream).toEqual({
+      id: "W-20260719-0001",
+      title: "Agent context redesign",
+      purpose: "Separate stream continuity from run execution state.",
+      summary: "The V6 context lanes are implemented.",
+      lifecycleStatus: "active",
+      blockers: [],
+      nextAction: "Verify the design.",
+      request: {
+        id: "R-0001",
+        title: "Implement V6 context",
+        status: "active",
+        request: "Implement the approved context plan.",
+        acceptance: ["Stream and run context are separate."],
+        constraints: [],
+        lifecycleNote: "Continue the selected request.",
+      },
+      recentProgress: [{
+        runId: "RUN-EARLIER",
+        outcome: "incomplete",
+        summary: "Implemented the context lanes.",
+        validation: "Runtime wiring remains.",
+        next: "Wire the prompt projection.",
+      }],
+    });
     expect(context.workstream).toMatchObject({
       workstreamId: "W-20260719-0001",
       currentRequest: { id: "R-0001", status: "active" },
@@ -111,6 +137,7 @@ describe("buildAgentStateView", () => {
       kind: "filesystem",
       path: "/tmp/ayati-project",
     });
+    expect(JSON.stringify(prompt)).not.toContain("/tmp/ayati-project");
 
     state.workState = {
       status: "in_progress",
@@ -613,6 +640,24 @@ function createBoundContext(): ContextEngineMachineContext {
       acceptance: ["Stream and run context are separate."],
       constraints: [],
     },
+    selectedRequest: {
+      id: "R-0001",
+      title: "Implement V6 context",
+      status: "active",
+      request: "Implement the approved context plan.",
+      acceptance: ["Stream and run context are separate."],
+      constraints: [],
+      lifecycleNote: "Continue the selected request.",
+    },
+    recentProgress: [{
+      runId: "RUN-EARLIER",
+      outcome: "incomplete",
+      summary: "Implemented the context lanes.",
+      validationSummary: "Runtime wiring remains.",
+      nextAction: "Wire the prompt projection.",
+      commit: "abc123",
+      finalizedAt: "2026-07-19T09:00:00.000Z",
+    }],
     resources: [workstreamResource()],
   };
   return context;

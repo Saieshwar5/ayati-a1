@@ -237,20 +237,25 @@ Prompt context uses explicit bounded lanes:
   can ground an exact read-only investigation path but never authority;
 - `tools`: current capability surface;
 - `harness`: compact unresolved repair feedback;
-- `run`: WorkState, current calls, a compact `verifiedOutcomes` catalog, the
-  virtual-mode card, pressure state, and an optional disposable anchored focus
-  summary that is navigation context only. Tool calls retain useful inputs,
-  outputs, purposes, execution status, and one verification-status scalar;
-  detailed verification records and completion evidence remain internal.
-  Validation status and its exact checklist appear in the mode card; the model
-  selects kind and subject from `verifiedOutcomes` instead of copying
-  tool-call evidence into a completion transaction.
+- `run`: the exact selected-request contract and distilled workstream context
+  for a bound run, WorkState, current calls, a compact `verifiedOutcomes`
+  catalog, the virtual-mode card, pressure state, and an optional disposable
+  anchored focus summary that is navigation context only. The bound-workstream
+  projection identifies a different active request when necessary and carries
+  at most five progress summaries for the selected request. Tool calls retain
+  useful inputs, outputs, purposes, execution status, and one
+  verification-status scalar; detailed verification records and completion
+  evidence remain internal. Validation status and its exact checklist appear
+  in the mode card; the model selects kind and subject from
+  `verifiedOutcomes` instead of copying tool-call evidence into a completion
+  transaction.
 
-Current workstream details and resource cards are not prompt lanes or Hot
-Context entries. The agent obtains current ownership and resource facts
-through read-only routing/resource tools. Routing evidence stays in
-current-run tool calls, and resource enforcement continues to use exact
-Context Engine state.
+Full workstream documents and resource cards are not prompt lanes or Hot
+Context entries. The bounded run projection omits resource locators, commit
+metadata, raw logs, all other request files, and complete progress history.
+The agent obtains current ownership and resource facts through read-only
+routing/resource tools. Routing evidence stays in current-run tool calls, and
+resource enforcement continues to use exact Context Engine state.
 
 Do not expose context-repository paths, database paths, run storage paths,
 idempotency journals, observation authority fields, or deferred mutation.

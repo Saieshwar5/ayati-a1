@@ -82,9 +82,12 @@ The model receives an explicit bounded projection:
   explicitly mounted for this run;
 - `context.tools`: current capability surface;
 - `context.harness`: compact unresolved repair feedback;
-- `context.run`: material WorkState when present, current-run calls, a compact
-  `verifiedOutcomes` catalog, the run-scoped mode card, pressure state, and an
-  optional `focus` overlay. The overlay is context only and is never
+- `context.run`: on a bound run, `boundWorkstream` with distilled project
+  context, the exact selected request, an optional different active-request
+  identity, and at most five selected-request progress summaries; material
+  WorkState when present; current-run calls; a compact `verifiedOutcomes`
+  catalog; the run-scoped mode card; pressure state; and an optional `focus`
+  overlay. The overlay and prior progress are context only and are never
   verification or completion evidence. Tool calls keep useful exact inputs
   and outputs plus a scalar verification status; full verification machinery
   remains in the journal. The mode card exposes the current validation
@@ -92,7 +95,8 @@ The model receives an explicit bounded projection:
   values instead of copying current-call evidence identifiers.
 
 Internal database paths, context-repository paths, observation authority
-fields, idempotency data, and recovery journals are not model-facing.
+fields, resource locators, commit metadata, raw logs, idempotency data, and
+recovery journals are not model-facing.
 
 ## Core Capsule
 
@@ -230,7 +234,8 @@ workspace/resource admission still applies, and it cannot ground resolve,
 execute, mutation, or completion.
 
 Current workstream details and current resource cards are intentionally not
-Hot Context sources. The agent obtains exact current workstream, ownership,
+Hot Context sources. A bound run receives the selected contract and distilled
+workstream fields directly; the agent obtains complete workstream, ownership,
 resource, and file state through the relevant read-only tools when the task
 requires it.
 
@@ -331,9 +336,10 @@ Durable ownership remains explicit:
 Every primary decision starts from a structured prompt manifest. Parts carry a
 stable id, `system`/`session`/`work` lane, retention class, source refs, and a
 local estimate. System/safety instructions, selected native tool schemas,
-current input identity/content, routing state, material WorkState, failures,
-the completion-only verified-outcome catalog, and the latest six main calls
-are always rebuilt from current authoritative state.
+current input identity/content, routing state, bound selected-request context,
+material WorkState, failures, the completion-only verified-outcome catalog,
+and the latest six main calls are always rebuilt from current authoritative
+state.
 
 The manager identifies a stable source prefix by canonical hashes and
 message/step watermarks. At 55K in the default profile, or when current input
@@ -349,13 +355,13 @@ growth is allowed. Changed sources, bases, lanes, refs, or policy versions make
 the candidate stale without changing authoritative state.
 
 Generation may span observation, binding, or execution, but a candidate never
-owns navigation state. The current mode card, current input, binding/resource
-authority, WorkState, failures, completion evidence, artifacts, and routing
-evidence references are rebuilt or retained exactly at adoption. A candidate
-prepared before binding may therefore summarize an unchanged older prefix,
-but it cannot restore an unbound mode or replace newly mounted execute
-authority. Finalization closes the lane; late results are recorded and
-discarded.
+owns navigation state. The current mode card, current input, bound selected
+request, binding/resource authority, WorkState, failures, completion evidence,
+artifacts, and routing evidence references are rebuilt or retained exactly at
+adoption. A candidate prepared before binding may therefore summarize an
+unchanged older prefix, but it cannot restore an unbound mode, replace the
+selected request, or replace newly mounted execute authority. Finalization
+closes the lane; late results are recorded and discarded.
 
 ## Durable Continuity and Pressure Checkpoints
 
@@ -390,9 +396,10 @@ When an eligible durable checkpoint cannot recover enough space, the runtime
 may summarize only covered older prompt material into `context.run.focus`.
 Every statement cites a valid message, step, call, evidence, or artifact ref;
 the complete summary is limited to 1,600 estimated tokens and one repair.
-Current input, WorkState, binding/resources, unresolved failures, and
-completion evidence are never source material. Covered exact prompt material
-is replaced, while new calls/steps append as an exact tail.
+Current input, the bound selected-request context, WorkState,
+binding/resources, unresolved failures, and completion evidence are never
+source material. Covered exact prompt material is replaced, while new
+calls/steps append as an exact tail.
 
 The overlay lasts only for the current run. Finalization, interruption, or
 restart discards it. The next run starts from the canonical stream checkpoint
