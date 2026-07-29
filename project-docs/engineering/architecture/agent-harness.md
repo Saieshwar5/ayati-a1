@@ -379,8 +379,10 @@ Successful finalization writes the terminal `run_completed` state. A truthful
 pause or failure writes `run_paused`. When a later run explicitly continues
 the same active workstream request, its material prior WorkState is restored
 as an `in_progress` `continuation` state. An untouched initial WorkState is
-omitted from the model-facing prompt; material WorkState is projected with
-compact active-workstream metadata.
+omitted from the model-facing prompt. A material WorkState projects only its
+status, summary, optional plan, important context, and next action.
+`context.run.boundWorkstream` is the single prompt owner of workstream and
+request identity.
 
 Immediately before a successful terminal state is built, the runtime converts
 at most four passed final-validation checks into `importantContext` receipts.

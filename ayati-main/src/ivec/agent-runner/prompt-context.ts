@@ -33,12 +33,6 @@ export interface PromptRunWorkStateContext {
   plan?: import("../types.js").WorkPlanItem[];
   importantContext?: import("../types.js").ImportantContextItem[];
   nextAction?: string;
-  activeWorkstream?: {
-    workstreamId: string;
-    title: string;
-    requestId?: string;
-    requestTitle?: string;
-  };
 }
 
 export interface PromptHarnessContext {

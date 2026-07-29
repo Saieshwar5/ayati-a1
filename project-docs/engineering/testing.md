@@ -183,8 +183,9 @@ Changes should prove the relevant invariants:
     identified without replacing the selected request; progress is limited to
     the five newest selected-request summaries. Binding/request mismatches fail
     closed, while resource locators, commits, raw logs, unrelated requests, and
-    complete history stay outside the prompt. Context-pressure projection
-    preserves this lane exactly.
+    complete history stay outside the prompt. WorkState does not repeat
+    workstream or request identity. Context-pressure projection preserves the
+    bound-workstream lane exactly.
 
 ## Prompt and Harness Coverage
 

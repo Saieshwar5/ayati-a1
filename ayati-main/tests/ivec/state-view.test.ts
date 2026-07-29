@@ -155,15 +155,65 @@ describe("buildAgentStateView", () => {
       afterStep: 0,
       updateReason: "plan",
     };
-    expect(buildAgentStateView(state).context.run?.workState).toMatchObject({
+    const materialPrompt = projectAgentStateViewForPrompt(
+      buildAgentStateView(state),
+    );
+    expect(materialPrompt.context.run?.workState).toMatchObject({
       status: "in_progress",
-      activeWorkstream: {
-        workstreamId: "W-20260719-0001",
-        title: "Agent context redesign",
-        requestId: "R-0001",
-        requestTitle: "Implement V6 context",
-      },
+      summary: "The contract is complete and runtime wiring remains.",
+      nextAction: "Wire the runtime.",
     });
+    expect(materialPrompt.context.run?.workState)
+      .not.toHaveProperty("activeWorkstream");
+    expect(materialPrompt.context.run?.boundWorkstream?.request.id)
+      .toBe("R-0001");
+  });
+
+  it("keeps selected and active request identities only in boundWorkstream", () => {
+    const context = createBoundContext();
+    context.current.routing = {
+      status: "bound",
+      workstreamId: "W-20260719-0001",
+      requestId: "R-0002",
+      branch: "work/W-20260719-0001",
+    };
+    context.workstream!.selectedRequest = {
+      id: "R-0002",
+      title: "Validate the runtime",
+      status: "queued",
+      request: "Validate the context runtime.",
+      acceptance: ["The runtime tests pass."],
+      constraints: [],
+      lifecycleNote: "Selected for this run.",
+    };
+    const state = createLoopState({ context });
+    state.workState = {
+      status: "in_progress",
+      summary: "Preparing runtime validation.",
+      plan: [],
+      importantContext: [],
+      nextAction: "Run the focused tests.",
+    };
+    state.workStateRuntime = {
+      revision: 1,
+      afterStep: 0,
+      updateReason: "continuation",
+    };
+
+    const prompt = projectAgentStateViewForPrompt(buildAgentStateView(state));
+
+    expect(prompt.context.run?.boundWorkstream).toMatchObject({
+      request: { id: "R-0002", status: "queued" },
+      activeRequest: { id: "R-0001", status: "active" },
+    });
+    expect(prompt.context.run?.workState)
+      .not.toHaveProperty("activeWorkstream");
+    expect(JSON.stringify(prompt.context.run?.workState)).not.toContain(
+      "R-0001",
+    );
+    expect(JSON.stringify(prompt.context.run?.workState)).not.toContain(
+      "R-0002",
+    );
   });
 
   it("groups loaded Hot Context, tool state, harness feedback, and fast run state into distinct lanes", () => {

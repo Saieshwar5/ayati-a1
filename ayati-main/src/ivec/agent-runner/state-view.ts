@@ -350,7 +350,6 @@ function buildProgressView(state: LoopState): PromptProgressState | undefined {
   const nextAction = workState.nextAction?.trim()
     ? truncate(workState.nextAction, 320)
     : undefined;
-  const workstream = state.harnessContext.contextEngine?.workstream;
 
   return {
     status: workState.status,
@@ -358,20 +357,6 @@ function buildProgressView(state: LoopState): PromptProgressState | undefined {
     ...(plan.length > 0 ? { plan } : {}),
     ...(importantContext.length > 0 ? { importantContext } : {}),
     ...(nextAction ? { nextAction } : {}),
-    ...(workstream
-      ? {
-          activeWorkstream: {
-            workstreamId: workstream.workstreamId,
-            title: workstream.title,
-            ...(workstream.currentRequest
-              ? {
-                  requestId: workstream.currentRequest.id,
-                  requestTitle: workstream.currentRequest.title,
-                }
-              : {}),
-          },
-        }
-      : {}),
   };
 }
 
