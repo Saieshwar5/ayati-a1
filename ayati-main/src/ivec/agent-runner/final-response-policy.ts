@@ -15,6 +15,8 @@ import {
 const FILE_MUTATION_TOOL_NAMES = new Set([
   "patch_files",
   "write_files",
+  "copy",
+  "set_permissions",
   "delete",
   "move",
   "create_directory",

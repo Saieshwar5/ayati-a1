@@ -9,7 +9,6 @@ import {
   initializeSharedWorkstreamRepositoryState,
 } from "../repositories/workstream-repository-state-records.js";
 import {
-  resourceIdForLocator,
   resourceLocatorKey,
 } from "../repositories/resource-records.js";
 import {
@@ -277,13 +276,16 @@ interface RebuildResource {
 function insertResource(database: ContextDatabase, item: RebuildResource): void {
   const resource = item.entry;
   const locatorKey = resourceLocatorKey(resource.locator);
+  const metadataStatus = resource.metadataStatus ?? "enriched";
+  const describedVersionKey = resource.describedVersionKey
+    ?? (metadataStatus === "enriched" ? resource.version.key : null);
   database.prepare([
     "INSERT INTO resources(",
     "resource_id, kind, origin, locator_kind, locator_key, locator_json, display_name,",
     "description, aliases_json, metadata_status, described_version_key, media_type, size_bytes,",
     "content_hash, current_version_key, current_version_json, availability, metadata_json,",
     "created_by_run_id, last_verified_run_id, last_verified_at, created_at, updated_at",
-    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'enriched', ?, ?, ?, ?, ?, ?, ?, '{}',",
+    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,",
     "NULL, NULL, NULL, ?, ?)",
   ].join(" ")).run(
     resource.resourceId,
@@ -295,13 +297,19 @@ function insertResource(database: ContextDatabase, item: RebuildResource): void 
     resource.displayName,
     resource.description,
     JSON.stringify(resource.aliases),
-    resource.version.key,
+    metadataStatus,
+    describedVersionKey,
     resource.mediaType ?? null,
     resource.version.sizeBytes ?? null,
     resource.version.sha256 ?? null,
     resource.version.key,
     JSON.stringify(resource.version),
     resource.availability,
+    JSON.stringify({
+      ...(resource.formerLocators
+        ? { formerLocators: resource.formerLocators }
+        : {}),
+    }),
     item.createdAt,
     item.updatedAt,
   );
@@ -313,7 +321,10 @@ function insertResource(database: ContextDatabase, item: RebuildResource): void 
     resource.displayName,
     resource.description,
     resource.aliases.join("\n"),
-    locatorKey,
+    [
+      locatorKey,
+      ...(resource.formerLocators ?? []).map(resourceLocatorKey),
+    ].join(" "),
   );
 }
 
@@ -391,6 +402,7 @@ function catalogFailures(
   const workstreamIds = new Set<string>();
   const runIds = new Set<string>();
   const resources = new Map<string, { locatorKey: string; kind: string }>();
+  const locatorOwners = new Map<string, string>();
   const sharedRoots = new Set(repositories.map((repository) => repository.repositoryPath));
   const sharedHeads = new Set(repositories.map((repository) => repository.repositoryHead));
   if (sharedRoots.size > 1 || sharedHeads.size > 1) {
@@ -419,17 +431,16 @@ function catalogFailures(
     for (const resource of repository.resources) {
       try {
         const locatorKey = resourceLocatorKey(resource.locator);
-        const expectedId = resource.locator.kind === "managed_blob"
-          ? resource.locator.resourceId
-          : resourceIdForLocator(locatorKey);
-        if (expectedId !== resource.resourceId) {
-          throw new Error("Resource identity does not match its durable locator.");
-        }
         const existing = resources.get(resource.resourceId);
         if (existing && (existing.locatorKey !== locatorKey || existing.kind !== resource.kind)) {
           throw new Error("Resource identity has conflicting metadata across workstreams.");
         }
+        const locatorOwner = locatorOwners.get(locatorKey);
+        if (locatorOwner && locatorOwner !== resource.resourceId) {
+          throw new Error("Resource locator has conflicting durable identities across workstreams.");
+        }
         resources.set(resource.resourceId, { locatorKey, kind: resource.kind });
+        locatorOwners.set(locatorKey, resource.resourceId);
       } catch (error) {
         failures.push({
           contextRepositoryPath: repository.contextRepositoryPath,

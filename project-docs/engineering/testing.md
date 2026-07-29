@@ -109,13 +109,12 @@ Changes should prove the relevant invariants:
     and unbound runs when read scope is `machine`; omitted search roots remain
     workspace-local, host permission failures return no content, and
     non-regular devices are not normal files.
-25. Directory mutation authority includes canonical descendants but not
-    siblings or symbolic-link escapes. With mutation scope `workspace`, every
-    direct file mutation, move endpoint, process/Python declared effect, and
-    mutable database destination is rejected outside the configured workspace
-    before resource lookup, preparation, or execution. Relative traversal and
-    symbolic-link escapes fail at the same boundary. Read-only references and
-    `allowExternalPath` never become mutation authority.
+25. A focused filesystem call uses one runtime-derived destination root.
+    Canonical descendants are allowed, siblings and symbolic-link escapes are
+    rejected, and a copy source is read-only. Workspace-relative paths resolve
+    once beneath the configured workspace; external absolute destinations
+    require an exact routed bound resource. Process/Python and other broad
+    effects retain resource-scoped preparation.
 26. Explicit create-new ownership survives a focused clarification; ambiguity
     without a binding does not consume the single binding attempt.
 27. File-content validation rejects a silently substituted source.
@@ -167,9 +166,9 @@ Changes should prove the relevant invariants:
     step remains failed, and denial cannot satisfy any success outcome.
 35. Filesystem policy defaults and environment overrides are strict and
     model-independent: machine reads do not grant binding or mutation
-    authority, workspace mutation still requires all existing workstream and
-    verification gates, and `bound_resource` can be restored only by operator
-    configuration.
+    authority, focused filesystem mutation still requires workstream binding,
+    a selected root, containment, and target-local verification, and
+    `bound_resource` can be restored only by operator configuration.
 36. Requests use only `queued`, `active`, `blocked`, `done`, and `dropped`.
     At most one is active per workstream; `done` and `dropped` are terminal.
     Incomplete and failed runs do not rewrite the request file. Contract
@@ -211,8 +210,8 @@ Changes should prove the relevant invariants:
     it. The model treats workspace aliases and relative output destinations as
     this location without rediscovery or repeating the root in a creation
     call. Creation declares exact typed workspace-relative targets; the runtime
-    derives canonical absolute paths, current-run routing evidence, and exact
-    resource identities. Normal binding, resource, containment, and
+    derives canonical absolute roots and current-run routing evidence without
+    pre-registering a missing resource. Normal binding, containment, and
     verification gates remain required.
 44. `decision_resolve_create` exposes no creation `kind`, absolute mutation
     scope, resource id, or evidence field. Its native schema deeply validates
@@ -222,6 +221,18 @@ Changes should prove the relevant invariants:
     observed workstream, request lifecycle choice, and exact routed resource
     IDs. The runtime derives paths, mutable ownership, mutation scope,
     repository HEAD, and evidence, and rejects stale or mismatched state.
+45. `create_directory`, `write_files`, `patch_files`, `copy`, `move`,
+    `delete`, and `set_permissions` report exact completed, unchanged,
+    partial, and failed target effects. The verifier re-observes only declared
+    targets and reported parent/cleanup paths, rejects stale preconditions, and
+    never accepts tool prose as mutation truth.
+46. Verified filesystem effects enter resource lifecycle finalization
+    independently of the larger run outcome. Create/restore, modify,
+    permission change, move, copy, and delete preserve the correct identities,
+    former locators, tombstones, versions, and fallback/enriched metadata.
+47. Chat and system-event entry share one FIFO agent-run queue. A later input
+    cannot prepare or execute while an earlier run still owns target-local
+    verification, and shutdown drains the queue.
 
 ## Prompt and Harness Coverage
 

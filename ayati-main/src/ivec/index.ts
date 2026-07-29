@@ -14,6 +14,7 @@ import {
   type SystemEventIntentMetadata,
   type SystemEventTrustTier,
 } from "../core/contracts/plugin.js";
+import { AgentRunQueue } from "./agent-run-queue.js";
 import type { ChatTurnRuntime } from "./chat-turn-runtime.js";
 import type { SystemEventRuntime } from "./system-event-runtime.js";
 import type {
@@ -35,6 +36,7 @@ export class IVecEngine {
   private readonly nowProvider: () => Date;
   private readonly chatTurnRuntime?: ChatTurnRuntime;
   private readonly systemEventRuntime?: SystemEventRuntime;
+  private readonly runQueue = new AgentRunQueue();
   private staticSystemTokens = 0;
   private staticTokensReady = false;
 
@@ -59,6 +61,7 @@ export class IVecEngine {
   }
 
   async stop(): Promise<void> {
+    await this.runQueue.drain();
     await this.chatTurnRuntime?.drain();
     if (this.provider) {
       await this.provider.stop();
@@ -85,7 +88,10 @@ export class IVecEngine {
         devWarn("Ignored system_event because no system event runtime is configured.");
         return;
       }
-      void this.systemEventRuntime.processSystemEvent({ clientId, event: systemEvent }).catch((err) => {
+      const systemEventRuntime = this.systemEventRuntime;
+      void this.enqueueRun("system_event", clientId, async () => {
+        await systemEventRuntime.processSystemEvent({ clientId, event: systemEvent });
+      }).catch((err) => {
         devError("Unhandled system_event processing failure:", err);
       });
       return;
@@ -98,12 +104,15 @@ export class IVecEngine {
       devWarn("Ignored chat message because no chat turn runtime is configured.");
       return;
     }
+    const chatTurnRuntime = this.chatTurnRuntime;
 
-    void this.chatTurnRuntime.processChat({
-      clientId,
-      content: msg.content,
-      attachments: msg.attachments ?? [],
-      uiContext: msg.uiContext,
+    void this.enqueueRun("chat", clientId, async () => {
+      await chatTurnRuntime.processChat({
+        clientId,
+        content: msg.content,
+        attachments: msg.attachments ?? [],
+        uiContext: msg.uiContext,
+      });
     }).catch((err) => {
       devError("Unhandled chat processing failure:", err);
     });
@@ -114,7 +123,28 @@ export class IVecEngine {
       devWarn("Ignored system event because no system event runtime is configured.");
       return;
     }
-    await this.systemEventRuntime.processSystemEvent({ clientId, event });
+    const systemEventRuntime = this.systemEventRuntime;
+    await this.enqueueRun("system_event", clientId, async () => {
+      await systemEventRuntime.processSystemEvent({ clientId, event });
+    });
+  }
+
+  private async enqueueRun(
+    source: "chat" | "system_event",
+    clientId: string,
+    work: () => Promise<void>,
+  ): Promise<void> {
+    const queued = this.runQueue.isBusy();
+    const position = this.runQueue.size() + 1;
+    if (queued) {
+      devLog(`[${clientId}] ${source} queued behind an active agent run position=${position}`);
+    }
+    await this.runQueue.enqueue(async () => {
+      if (queued) {
+        devLog(`[${clientId}] ${source} started after waiting for the global agent run queue`);
+      }
+      await work();
+    });
   }
 
   private toSystemEvent(data: unknown): AyatiSystemEvent | null {

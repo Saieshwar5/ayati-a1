@@ -883,6 +883,7 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
       operational: false,
       capabilities: [],
       targets: [],
+      mutationScopes: [],
     },
     hotContext: {
       available: [],

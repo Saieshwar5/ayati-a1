@@ -28,10 +28,20 @@ export interface ObservedResource {
 
 export async function observeResource(
   locator: ResourcePublicLocator,
-  input: { at: string; kind?: ResourceKind; managedBlobPath?: string },
+  input: {
+    at: string;
+    kind?: ResourceKind;
+    managedBlobPath?: string;
+    directoryMode?: "fingerprint" | "shallow";
+  },
 ): Promise<ObservedResource> {
   if (locator.kind === "filesystem") {
-    return await observeFilesystem(locator.path, input.at, input.kind);
+    return await observeFilesystem(
+      locator.path,
+      input.at,
+      input.kind,
+      input.directoryMode,
+    );
   }
   if (locator.kind === "managed_blob") {
     if (!input.managedBlobPath) {
@@ -99,6 +109,7 @@ async function observeFilesystem(
   inputPath: string,
   at: string,
   kindHint?: ResourceKind,
+  directoryMode: "fingerprint" | "shallow" = "fingerprint",
 ): Promise<ObservedResource> {
   const path = requireAbsoluteFilesystemPath(inputPath);
   const stat = await lstat(path).catch((error: NodeJS.ErrnoException) => {
@@ -145,6 +156,30 @@ async function observeFilesystem(
   }
   if (!stat.isDirectory()) {
     throw invalidLocator("Filesystem resource must be a normal file or directory.", { path });
+  }
+  if (directoryMode === "shallow") {
+    const fingerprint = sha256([
+      canonicalPath,
+      String(stat.dev),
+      String(stat.ino),
+      String(stat.mode & 0o777),
+      String(stat.mtimeMs),
+    ].join("\u0000"));
+    return {
+      locator: { kind: "filesystem", path: canonicalPath },
+      kind: kindHint ?? "directory",
+      displayName: basename(canonicalPath),
+      version: {
+        key: "directory-entry:" + fingerprint,
+        observedAt: at,
+        exists: true,
+        kind: "directory",
+        fingerprint,
+        modifiedAt: stat.mtime.toISOString(),
+      },
+      mutationEligible: true,
+      warnings: [],
+    };
   }
   const git = await observeGitRepository(canonicalPath, at);
   if (git && (kindHint === undefined || kindHint === "git_repository" || kindHint === "directory")) {

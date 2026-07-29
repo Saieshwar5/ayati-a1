@@ -134,6 +134,51 @@ describe("current-run verification index", () => {
     });
   });
 
+  it("indexes copied paths and permission changes as typed outcomes", () => {
+    const copied = verifiedCall(1, "copy", [
+      pathEvidence(
+        "/workspace/site/logo-link",
+        true,
+        "symlink",
+        1,
+        "copy",
+        "mutated",
+      ),
+    ], "copy-call");
+    const permissions = verifiedCall(2, "set_permissions", [
+      pathEvidence(
+        "/workspace/site/run.sh",
+        true,
+        "file",
+        2,
+        "permissions",
+        "mutated",
+      ),
+    ], "permissions-call");
+
+    const index = buildCurrentRunVerificationIndex({
+      runId: RUN_ID,
+      calls: [copied, permissions],
+    });
+
+    expect(index.outcomes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "path.copied",
+        subject: "/workspace/site/logo-link",
+        actualKind: "symlink",
+      }),
+      expect.objectContaining({
+        kind: "file.permissions_set",
+        subject: "/workspace/site/run.sh",
+      }),
+    ]));
+    expect(findLatestVerifiedOutcomeForCheck(index, {
+      kind: "path.copied",
+      subject: "/workspace/site/logo-link",
+      expectedKind: "symlink",
+    })).toBeDefined();
+  });
+
   it("separates failed and unverifiable calls without creating outcomes", () => {
     const failed = verifiedCall(1, "read_files", []);
     failed.status = "failed";
@@ -286,6 +331,32 @@ describe("current-run verification index", () => {
       exists: true,
       source: { callId: "call-a" },
     });
+  });
+
+  it("projects an unchanged desired-state write as verified existence, not a write claim", () => {
+    const path = "/tmp/already-current.txt";
+    const call = verifiedCall(1, "write_files", [
+      pathEvidence(path, true, "file", 1, "write", "observed", "unchanged"),
+    ]);
+
+    const index = buildCurrentRunVerificationIndex({
+      runId: RUN_ID,
+      calls: [call],
+    });
+
+    expect(findLatestVerifiedOutcomeForCheck(index, {
+      kind: "path.exists",
+      subject: path,
+      expectedKind: "file",
+    })).toMatchObject({
+      kind: "path.exists",
+      summary: `Confirmed ${path} exists.`,
+      change: "observed",
+    });
+    expect(findLatestVerifiedOutcomeForCheck(index, {
+      kind: "file.written",
+      subject: path,
+    })).toBeUndefined();
   });
 
   it("invalidates a complete read after a later exact mutation and restores it after rereading", () => {
@@ -762,10 +833,11 @@ function verifiedCall(
 function pathEvidence(
   path: string,
   exists: boolean,
-  actualKind: "file" | "directory",
+  actualKind: "file" | "directory" | "symlink",
   step: number,
   operation: Extract<FilesystemCompletionEvidence, { kind: "path_state" }>["operation"] = "inspect",
   change: "observed" | "mutated" = "observed",
+  writeStatus?: "created" | "replaced" | "unchanged",
 ): FilesystemCompletionEvidence {
   return {
     kind: "path_state",
@@ -774,6 +846,7 @@ function pathEvidence(
     actualKind,
     change,
     operation,
+    ...(writeStatus ? { writeStatus } : {}),
     tool: operation === "write"
       ? "write_files"
       : operation === "delete"

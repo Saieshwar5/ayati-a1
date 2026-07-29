@@ -101,7 +101,9 @@ export const TOOL_TAXONOMY: Readonly<Record<string, ToolTaxonomyEntry>> = buildT
   write_files: workspaceMutation(["workstream_mutation"], "run", WORKSTREAM_BOUND_ONLY),
   patch_files: workspaceMutation(["workstream_mutation"], "run", WORKSTREAM_BOUND_ONLY),
   create_directory: workspaceMutation(["workstream_mutation"], "one_step", WORKSTREAM_BOUND_ONLY),
-  move: workspaceMutation(["workstream_mutation"], "one_step", WORKSTREAM_BOUND_ONLY),
+  copy: workspaceMutation(["workstream_mutation"], "one_step", WORKSTREAM_BOUND_ONLY),
+  set_permissions: workspaceMutation(["workstream_mutation"], "one_step", WORKSTREAM_BOUND_ONLY),
+  move: destructive(["workstream_mutation"], "one_step", WORKSTREAM_BOUND_ONLY),
   delete: destructive(["workstream_mutation"], "one_step", WORKSTREAM_BOUND_ONLY),
 
   process_run: workspaceMutation(["command_execution", "verification"], "run", WORKSTREAM_BOUND_ONLY),

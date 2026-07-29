@@ -88,7 +88,8 @@ describe("edit target recovery policy", () => {
     expect(second.repairCode).toBe("R_EDIT_ESCALATE_TO_GUARDED_REWRITE");
     expect(second.repair?.allowedNextActions.join("\n")).toContain("files=[{path:");
     expect(second.repair?.allowedNextActions.join("\n")).toContain("mode:\"full\"");
-    expect(second.repair?.allowedNextActions.join("\n")).toContain("baseSha256");
+    expect(second.repair?.allowedNextActions.join("\n")).toContain("complete desired content");
+    expect(second.repair?.allowedNextActions.join("\n")).not.toContain("baseSha256");
     expect(second.repair?.allowedNextActions.join("\n")).toContain("Do not use process execution for file mutation.");
   });
 

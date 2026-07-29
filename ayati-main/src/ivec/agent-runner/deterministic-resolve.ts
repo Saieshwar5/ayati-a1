@@ -32,6 +32,7 @@ export type DeterministicResolveGateResult =
       kind: "resolved";
       attempted: true;
       toolNames: string[];
+      mutationRoots: string[];
       outcome: Extract<DeterministicWorkstreamBindingOutcome, { status: "resolved" }>;
     }
   | {
@@ -204,7 +205,15 @@ export async function dispatchDeterministicResolveGate(input: {
     outcome: summarizeBindingOutcome(outcome),
   });
   if (outcome.status === "resolved") {
-    return { kind: "resolved", attempted: true, toolNames, outcome };
+    return {
+      kind: "resolved",
+      attempted: true,
+      toolNames,
+      mutationRoots: input.request.binding.kind === "create"
+        ? workspaceTargetResolution.targets.map((target) => target.absolutePath)
+        : activationAuthority?.filesystemPaths ?? [],
+      outcome,
+    };
   }
   if (outcome.status === "needs_user_input") {
     return { kind: "needs_user_input", attempted: false, toolNames, outcome };

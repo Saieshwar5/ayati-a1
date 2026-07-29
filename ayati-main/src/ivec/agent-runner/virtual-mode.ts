@@ -1,5 +1,6 @@
 import type {
   ModeTransitionValidationCheck,
+  ResourceMetadataProposal,
   ValidationCheckResult,
   ValidationCheckStatus,
 } from "./task-validation-contracts.js";
@@ -7,6 +8,7 @@ import type {
 export type {
   FileReadValidationScope,
   ModeTransitionValidationCheck,
+  ResourceMetadataProposal,
   TaskValidationOutcomeKind,
   ValidationCheckResult,
   ValidationCheckStatus,
@@ -65,6 +67,7 @@ export interface ValidationModeProgress {
   returnMode: Exclude<VirtualModeName, "validation" | "context.retrieve">;
   status: ValidationCheckStatus;
   checks: ValidationCheckResult[];
+  resourceMetadata?: ResourceMetadataProposal[];
 }
 
 export interface ContextRetrieveModeProgress {
@@ -73,6 +76,7 @@ export interface ContextRetrieveModeProgress {
     purpose?: string;
     capabilities: string[];
     targets: string[];
+    mutationScopes: string[];
     enteredAtIteration?: number;
   };
 }
@@ -86,6 +90,7 @@ export interface ModeTransitionRequest {
   mutationScopes?: ModeTransitionMutationScope[];
   workspaceTargets?: import("../workstream-binding/contracts.js").WorkstreamWorkspaceTarget[];
   validationChecks?: ModeTransitionValidationCheck[];
+  resourceMetadata?: ResourceMetadataProposal[];
   /**
    * Compatibility input for journaled/tests calls created before typed mode
    * references. The native model schema no longer exposes this field.
@@ -106,6 +111,7 @@ export interface VirtualModeState {
   purpose?: string;
   capabilities: string[];
   targets: string[];
+  mutationScopes: string[];
   enteredAtIteration?: number;
   validation?: ValidationModeProgress;
   contextRetrieve?: ContextRetrieveModeProgress;
@@ -166,6 +172,7 @@ export function createEntryVirtualModeState(): VirtualModeState {
     operational: false,
     capabilities: [],
     targets: [],
+    mutationScopes: [],
   };
 }
 
@@ -238,6 +245,7 @@ export function applyVirtualModeTransition(
     purpose: normalizeText(request.purpose),
     capabilities: normalizeStrings(request.capabilities),
     targets: modeTransitionTargetValues(request),
+    mutationScopes: modeTransitionMutationScopeValues(request),
     enteredAtIteration: iteration,
     ...(validation ? { validation } : {}),
     ...(contextRetrieve ? { contextRetrieve } : {}),
@@ -256,6 +264,7 @@ export function recordVirtualResolveVisit(
     purpose: normalizeText(request.purpose),
     capabilities: normalizeStrings(request.capabilities),
     targets: modeTransitionTargetValues(request),
+    mutationScopes: modeTransitionMutationScopeValues(request),
     enteredAtIteration: iteration,
   };
 }
@@ -297,6 +306,10 @@ export function buildVirtualModeCard(
       validation: {
         ...current.validation,
         checks: current.validation.checks.map((check) => ({ ...check })),
+        resourceMetadata: (current.validation.resourceMetadata ?? []).map((metadata) => ({
+          ...metadata,
+          aliases: [...metadata.aliases],
+        })),
       },
     } : {}),
     ...(current.contextRetrieve ? {
@@ -320,6 +333,7 @@ export function restoreVirtualModeAfterContextRetrieval(
     operational: current.operational,
     capabilities: [...previous.capabilities],
     targets: [...previous.targets],
+    mutationScopes: [...(previous.mutationScopes ?? [])],
     ...(previous.purpose ? { purpose: previous.purpose } : {}),
     ...(previous.enteredAtIteration !== undefined
       ? { enteredAtIteration: previous.enteredAtIteration }
@@ -334,7 +348,11 @@ export function identicalVirtualModeRequest(
   return state.active === request.to
     && normalizeText(state.purpose ?? "") === normalizeText(request.purpose)
     && equalStrings(state.capabilities, request.capabilities)
-    && equalStrings(state.targets, modeTransitionTargetValues(request));
+    && equalStrings(state.targets, modeTransitionTargetValues(request))
+    && equalStrings(
+      state.mutationScopes ?? [],
+      modeTransitionMutationScopeValues(request),
+    );
 }
 
 export function modeTransitionReferenceValues(request: ModeTransitionRequest): string[] {
@@ -416,6 +434,10 @@ function createValidationModeProgress(
       ...check,
       status: "pending",
     })),
+    resourceMetadata: (request.resourceMetadata ?? []).map((metadata) => ({
+      ...metadata,
+      aliases: [...metadata.aliases],
+    })),
   };
 }
 
@@ -428,6 +450,7 @@ function createContextRetrieveModeProgress(
       ...(previous.purpose ? { purpose: previous.purpose } : {}),
       capabilities: [...previous.capabilities],
       targets: [...previous.targets],
+      mutationScopes: [...(previous.mutationScopes ?? [])],
       ...(previous.enteredAtIteration !== undefined
         ? { enteredAtIteration: previous.enteredAtIteration }
         : {}),

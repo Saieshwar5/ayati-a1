@@ -8,7 +8,7 @@ describe("filesystemSkill", () => {
   });
 
   it("exports the reliable filesystem tools", () => {
-    expect(filesystemSkill.tools).toHaveLength(10);
+    expect(filesystemSkill.tools).toHaveLength(12);
 
     const names = filesystemSkill.tools.map((t) => t.name);
     expect(names).toContain("inspect_paths");
@@ -20,7 +20,9 @@ describe("filesystemSkill", () => {
     expect(names).toContain("delete");
     expect(names).toContain("list_directory");
     expect(names).toContain("create_directory");
+    expect(names).toContain("copy");
     expect(names).toContain("move");
+    expect(names).toContain("set_permissions");
     expect(names).toContain("find_files");
     expect(names).toContain("search_in_files");
   });

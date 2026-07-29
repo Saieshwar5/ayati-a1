@@ -329,12 +329,16 @@ async function dispatchResolveTransition(input: {
     capabilitySurfaceManager: input.capabilitySurfaceManager,
     toolContext: input.toolContext,
   });
-  input.state.virtualMode = applyVirtualModeTransition(
+  const executeState = applyVirtualModeTransition(
     input.state.virtualMode,
     input.request,
     "execute",
     input.iteration,
   );
+  if (binding.kind === "resolved" && binding.mutationRoots.length > 0) {
+    executeState.mutationScopes = [...binding.mutationRoots];
+  }
+  input.state.virtualMode = executeState;
   input.state.lastCapabilitySurface = loadResult;
   return {
     kind: "resolved",
@@ -658,6 +662,14 @@ function validateTypedModeInputs(request: ModeTransitionRequest): VirtualModeRep
       ["Remove validationChecks or transition to validation after the responsibility appears fulfilled."],
     );
   }
+  if (request.to !== "validation" && (request.resourceMetadata?.length ?? 0) > 0) {
+    return repair(
+      "MODE_INPUT_INVALID",
+      "Resource metadata proposals are valid only in validation mode.",
+      request.resourceMetadata?.map((metadata) => metadata.path) ?? [],
+      ["Remove resourceMetadata or provide it with exact validation checks."],
+    );
+  }
   if (request.to === "validation") {
     const issue = validateTaskValidationRequest(request.validationChecks);
     if (issue) {
@@ -670,6 +682,20 @@ function validateTypedModeInputs(request: ModeTransitionRequest): VirtualModeRep
         issue.allowedNextActions,
       );
     }
+    const validationSubjects = new Set(
+      (request.validationChecks ?? []).map((check) => check.subject),
+    );
+    const unmatchedMetadata = (request.resourceMetadata ?? [])
+      .filter((metadata) => !validationSubjects.has(metadata.path))
+      .map((metadata) => metadata.path);
+    if (unmatchedMetadata.length > 0) {
+      return repair(
+        "MODE_INPUT_INVALID",
+        "Resource metadata must refer to an exact path named by validationChecks.",
+        unmatchedMetadata,
+        ["Remove unmatched metadata or add the exact verified path to validationChecks."],
+      );
+    }
   }
 
   const invalidPaths = [
@@ -679,6 +705,7 @@ function validateTypedModeInputs(request: ModeTransitionRequest): VirtualModeRep
     ...(request.mutationScopes ?? [])
       .filter((scope) => scope.kind === "filesystem")
       .map((scope) => scope.path),
+    ...(request.resourceMetadata ?? []).map((metadata) => metadata.path),
   ].filter((path) => !requireAbsolutePath(path).ok);
   if (invalidPaths.length > 0) {
     return repair(

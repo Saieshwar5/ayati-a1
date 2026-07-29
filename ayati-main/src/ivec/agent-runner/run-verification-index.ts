@@ -502,8 +502,12 @@ function verifiedFactOutcome(input: {
 function pathOutcomeKind(
   evidence: Extract<FilesystemCompletionEvidence, { kind: "path_state" }>,
 ): RunVerifiedPathOutcomeKind {
-  if (evidence.operation === "write") return "file.written";
+  if (evidence.operation === "write") {
+    return evidence.writeStatus === "unchanged" ? "path.exists" : "file.written";
+  }
   if (evidence.operation === "patch") return "file.patched";
+  if (evidence.operation === "copy") return "path.copied";
+  if (evidence.operation === "permissions") return "file.permissions_set";
   if (evidence.operation === "create") return "directory.created";
   if (evidence.operation === "move") {
     return evidence.exists ? "path.moved_to" : "path.moved_from";
@@ -519,6 +523,8 @@ function pathOutcomeSummary(
   switch (kind) {
     case "file.written": return `Wrote ${subject}.`;
     case "file.patched": return `Patched ${subject}.`;
+    case "path.copied": return `Copied the path to ${subject}.`;
+    case "file.permissions_set": return `Set file permissions on ${subject}.`;
     case "directory.created": return `Created directory ${subject}.`;
     case "path.moved_from": return `Moved the prior path from ${subject}.`;
     case "path.moved_to": return `Moved the path to ${subject}.`;

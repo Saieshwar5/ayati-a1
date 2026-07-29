@@ -8,20 +8,26 @@ describe("tool context projectors", () => {
     const projection = projectToolCallForPressure(call({
       tool: "write_files",
       input: {
-        files: [{ path: "src/new.ts", content: "x".repeat(20_000), baseSha256: "old-hash" }],
-        createDirs: true,
+        files: [{ path: "/workspace/src/new.ts", content: "x".repeat(20_000) }],
+        createParents: true,
       },
       projectionMetadata: {
-        filesWritten: 1,
-        totalBytes: 20_000,
-        files: [{ filePath: "src/new.ts", bytesWritten: 20_000, sha256: "new-hash" }],
+        filesChanged: 1,
+        filesUnchanged: 0,
+        bytesWritten: 20_000,
+        files: [{
+          path: "/workspace/src/new.ts",
+          status: "created",
+          sizeBytes: 20_000,
+          sha256: "new-hash",
+        }],
       },
     }), "summary");
 
     expect(projection.projectorId).toBe("filesystem_write_v1");
     expect(projection.call.input).toEqual({
-      createDirs: true,
-      files: [{ path: "src/new.ts", baseSha256: "old-hash" }],
+      createParents: true,
+      files: [{ path: "/workspace/src/new.ts" }],
     });
     expect(projection.call.purpose).toBe("Inspect the source file before editing it.");
     expect(projection.call.summary).toContain("new-hash");

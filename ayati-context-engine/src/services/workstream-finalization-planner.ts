@@ -116,6 +116,13 @@ export async function prepareWorkstreamFinalization(input: {
     throw recovery("Finalization request no longer matches the run binding.");
   }
 
+  await input.resourceCatalog.applyVerifiedFilesystemEffects({
+    runId: request.runId,
+    workstreamId: request.workstreamId,
+    requestId: request.boundRequestId,
+    effects: request.completion.effects ?? [],
+    at: request.at,
+  });
   const bindings = await input.resourceCatalog.admitCompletionResources({
     runId: request.runId,
     workstreamId: request.workstreamId,
@@ -260,8 +267,15 @@ function renderResourceManifest(
       description: binding.resource.description,
       aliases: binding.resource.aliases,
       locator: binding.resource.locator,
+      ...(binding.resource.formerLocators
+        ? { formerLocators: binding.resource.formerLocators }
+        : {}),
       version: binding.resource.version,
       availability: binding.resource.availability,
+      metadataStatus: binding.resource.metadataStatus,
+      ...(binding.resource.describedVersionKey
+        ? { describedVersionKey: binding.resource.describedVersionKey }
+        : {}),
       ...(binding.resource.mediaType ? { mediaType: binding.resource.mediaType } : {}),
       ...(binding.lastUsedAt ? { lastUsedAt: binding.lastUsedAt } : {}),
     })),

@@ -12,7 +12,7 @@ describe("stable decision system prompt", () => {
     expect(prompt).not.toContain("workstream_resolve");
     expect(prompt).toContain("enter workstream.route first");
     expect(prompt).toContain("workstream.route is the only path from unbound mutation intent to resolve");
-    expect(prompt).toContain("Resolve controls remain unavailable until one of those tools succeeds");
+    expect(prompt).toContain("Resolve controls remain unavailable until one succeeds");
     expect(prompt).toContain("decision_resolve_create");
     expect(prompt).not.toContain("decision_transition_mode");
     expect(prompt).toContain("decision_stop");
@@ -31,7 +31,7 @@ describe("stable decision system prompt", () => {
     expect(prompt).toContain("context_load");
     expect(prompt).toContain("context.core.current.input");
     expect(prompt).toContain("context.core.continuity.recentExact");
-    expect(prompt).toContain("seq as authoritative chronological identity");
+    expect(prompt).toContain("seq is authoritative chronological identity");
     expect(prompt).toContain("adjacency alone never creates a reply binding");
     expect(prompt).toContain("nearest earlier semantically compatible assistant event");
     expect(prompt).toContain("attachmentRefs belong only to the exact user event");
@@ -85,12 +85,14 @@ describe("stable decision system prompt", () => {
     expect(prompt).toContain("tool.call_succeeded with an exact callId");
     expect(prompt).toContain("tool.call_denied requires the exact callId and denialCode");
     expect(prompt).toContain("never proves a read or mutation succeeded");
-    expect(prompt).toContain("Other OS-readable absolute paths remain read-only");
+    expect(prompt).toContain("other OS-readable absolute paths remain read-only");
     expect(prompt).toContain("omitted search roots, and working directories use it");
     expect(prompt).toContain("never search or ask for it");
     expect(prompt).toContain("filename-only or relative outputs");
-    expect(prompt).toContain("no resource authority or completion evidence");
-    expect(prompt).toContain("mutations stay inside workspaceRoot");
+    expect(prompt).toContain("It grants no authority or completion evidence");
+    expect(prompt).toContain("selected destination root");
+    expect(prompt).toContain("registers resources after verified success");
+    expect(prompt).toContain("write_files takes complete desired UTF-8 content");
     expect(prompt).toContain("without repeating work");
     expect(prompt).toContain("completed result, not a blocker");
     expect(prompt).not.toContain('"path": "/absolute/resource/path/index.html"');

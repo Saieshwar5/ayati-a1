@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -88,6 +88,34 @@ export async function createBoundWorkstream(
     ...(input?.initialRequest ? { initialRequest: input.initialRequest } : {}),
     ...(input?.resources ? { resources: input.resources } : {}),
     at: "2026-07-19T10:01:00+05:30",
+  });
+}
+
+export async function createBoundWorkstreamWithMutableDirectory(
+  fixture: WorkstreamServiceFixture,
+  input?: Parameters<typeof createBoundWorkstream>[1],
+): Promise<SelectedWorkstreamForRunResponse> {
+  const outputPath = join(fixture.root, "workspace", "explicit-test-output");
+  await mkdir(outputPath, { recursive: true });
+  const inspected = await fixture.service.inspectResourceForRun({
+    requestId: `REQ-${fixture.prepared.run.runId}-inspect-output`,
+    runId: fixture.prepared.run.runId,
+    locator: { kind: "filesystem", path: outputPath },
+    kind: "directory",
+    origin: "agent_discovered",
+    displayName: "explicit-test-output",
+    description: "Explicit mutable output directory for this test.",
+    aliases: [input?.title ?? "test output", "primary output"],
+    at: "2026-07-19T10:00:30+05:30",
+  });
+  return await createBoundWorkstream(fixture, {
+    ...input,
+    resources: [{
+      resourceId: inspected.resource.resourceId,
+      role: "primary",
+      access: "mutate",
+      primary: true,
+    }],
   });
 }
 

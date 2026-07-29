@@ -144,14 +144,13 @@ describe("callAgentDecision", () => {
     expect(systemPrompt).toContain("enter workstream.route first");
     expect(systemPrompt).toContain("workstream.route is the only path from unbound mutation intent to resolve");
     expect(systemPrompt).toContain(
-      "use decision_resolve_activate with the exact observed workstream, request lifecycle choice, and resourceIds",
+      "decision_resolve_activate names the observed workstream, request choice, and returned resourceIds",
     );
     expect(systemPrompt).toContain(
-      "Use decision_resolve_create when routing supports a distinct new owner",
+      "decision_resolve_create declares each new output as {kind, relativePath}",
     );
-    expect(systemPrompt).toContain("declare each planned output as {kind, relativePath}");
     expect(systemPrompt).toContain(
-      "The deterministic gate rechecks state, binds once, enters execute mechanically, and refreshes context",
+      "The gate rechecks, binds once, enters execute mechanically, and refreshes context",
     );
     expect(systemPrompt).toContain("Old-mode tools do not remain available");
     expect(systemPrompt).toContain("enter task:validation");
@@ -193,9 +192,8 @@ describe("callAgentDecision", () => {
     expect(systemPrompt).toContain("context.run.workState");
     expect(systemPrompt).toContain("context.run.toolCalls");
     expect(systemPrompt).toContain("context.run.verifiedOutcomes");
-    expect(systemPrompt).toContain("context.run.focus are navigation context only");
-    expect(systemPrompt).toContain("cannot grant authority or satisfy verification");
-    expect(systemPrompt).toContain("context.run.mode is the current navigation card");
+    expect(systemPrompt).toContain("context.run.focus aid navigation but grant no access or verification");
+    expect(systemPrompt).toContain("context.run.mode is current");
     expect(systemPrompt).not.toContain("context.scratch");
     expect(systemPrompt).not.toContain("context.run.progress");
     expect(systemPrompt).not.toContain("context.run.feedback");

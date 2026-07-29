@@ -147,6 +147,7 @@ export function buildModeTransitionControlTools(
       {
         ...commonProperties(capabilities.validation),
         validationChecks: validationCheckArraySchema(),
+        resourceMetadata: resourceMetadataArraySchema(),
       },
       ["purpose", "capabilities", "validationChecks"],
     ));
@@ -345,7 +346,7 @@ function mutationScopeArraySchema(): Record<string, unknown> {
     type: "array",
     minItems: 1,
     maxItems: 8,
-    description: "Exact authoritative resources that may own mutation. Filesystem values are canonical absolute roots.",
+    description: "Exact destinations selected for this mutation. Filesystem values are canonical absolute roots; resource ids name an existing resource when identity matters.",
     items: objectSchema({
       kind: {
         type: "string",
@@ -355,7 +356,7 @@ function mutationScopeArraySchema(): Record<string, unknown> {
         type: "string",
         minLength: 1,
         maxLength: 2000,
-        description: "Canonical absolute filesystem root or exact resource id selected by kind.",
+        description: "Canonical absolute destination root or exact existing resource id selected by kind.",
       },
     }, ["kind", "value"]),
   };
@@ -381,7 +382,7 @@ function validationCheckArraySchema(): Record<string, unknown> {
       },
       expectedKind: {
         type: "string",
-        enum: ["file", "directory", "either"],
+        enum: ["file", "directory", "symlink", "either"],
         description: "Optional filesystem path-kind constraint. Omit for non-filesystem outcomes.",
       },
       searchScope: searchScopeSchema(),
@@ -393,6 +394,41 @@ function validationCheckArraySchema(): Record<string, unknown> {
         description: "Required only for tool.call_denied. Copy the exact stable denial code from current-run verification.",
       },
     }, ["kind", "subject"]),
+  };
+}
+
+function resourceMetadataArraySchema(): Record<string, unknown> {
+  return {
+    type: "array",
+    maxItems: 32,
+    description: "Optional semantic metadata for important durable filesystem resources named by validationChecks. The runtime owns identity, kind, path, version, and lifecycle.",
+    items: objectSchema({
+      path: {
+        type: "string",
+        minLength: 1,
+        maxLength: 2000,
+        description: "Exact canonical absolute resource path also named by a validation check.",
+      },
+      displayName: {
+        type: "string",
+        minLength: 1,
+        maxLength: 500,
+        description: "Short human-readable resource name.",
+      },
+      description: {
+        type: "string",
+        minLength: 1,
+        maxLength: 2000,
+        description: "Stable semantic purpose of this resource, not a restatement of its path or latest operation.",
+      },
+      aliases: {
+        type: "array",
+        maxItems: 16,
+        uniqueItems: true,
+        items: { type: "string", minLength: 1, maxLength: 500 },
+        description: "Useful human search names; do not repeat the absolute path.",
+      },
+    }, ["path", "displayName", "description", "aliases"]),
   };
 }
 

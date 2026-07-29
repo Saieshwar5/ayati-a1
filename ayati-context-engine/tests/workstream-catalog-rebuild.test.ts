@@ -4,7 +4,7 @@ import { ContextDatabase } from "../src/database/database.js";
 import { WorkstreamDiscoveryService } from "../src/services/workstream-discovery-service.js";
 import { rebuildWorkstreamCatalog } from "../src/services/workstream-catalog-rebuild-service.js";
 import {
-  createBoundWorkstream,
+  createBoundWorkstreamWithMutableDirectory,
   createWorkstreamServiceFixture,
   workState,
   type WorkstreamServiceFixture,
@@ -38,7 +38,7 @@ describe("workstream catalog rebuild", () => {
         repositoryHealth: "ready",
         resources: [{
           resourceId: source.resourceId,
-          origin: "agent_created",
+          origin: "agent_discovered",
           role: "primary",
           access: "mutate",
           primary: true,
@@ -92,7 +92,7 @@ describe("workstream catalog rebuild", () => {
       role: "primary",
       access: "mutate",
       is_primary: 1,
-      origin: "agent_created",
+      origin: "agent_discovered",
       locator_kind: "filesystem",
     });
     expect(new WorkstreamDiscoveryService(database, () => NOW)
@@ -126,12 +126,12 @@ async function createRebuildSource(name: string): Promise<{
 }> {
   const fixture = await createWorkstreamServiceFixture(name, "Create a durable analysis workspace.");
   fixtures.push(fixture);
-  const selected = await createBoundWorkstream(fixture, {
+  const selected = await createBoundWorkstreamWithMutableDirectory(fixture, {
     title: "Solar Research",
     objective: "Analyze home solar options and retain durable evidence.",
   });
   const resource = selected.resourceBindings.find((binding) => binding.primary)?.resource;
-  if (!resource) throw new Error("Expected managed primary output resource.");
+  if (!resource) throw new Error("Expected explicit primary output resource.");
   await fixture.service.finalizeRun({
     requestId: `REQ-${name}-finalize`,
     runId: fixture.prepared.run.runId,

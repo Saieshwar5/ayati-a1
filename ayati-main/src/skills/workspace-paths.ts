@@ -109,10 +109,13 @@ export function resolveWorkspaceMutationPath(
   } = {},
 ): WorkspaceMutationPathResult {
   const normalized = pathValue.trim();
-  const root = ensureWorkspaceRootSync(options.root);
-  const resolvedPath = isAbsolute(normalized)
+  const root = resolve(options.root ?? getWorkspaceRoot());
+  const candidatePath = isAbsolute(normalized)
     ? resolve(normalized)
-    : resolveWorkspacePath(normalized, root);
+    : resolve(root, stripWorkspaceAliasPrefix(normalized, root));
+  const resolvedPath = !isAbsolute(normalized) && !isWithinWorkspace(candidatePath, root)
+    ? root
+    : candidatePath;
 
   if (isAbsolute(normalized) && !isWithinWorkspace(resolvedPath, root) && options.allowExternalPath !== true) {
     const operation = options.operation ?? "filesystem mutation";

@@ -30,7 +30,7 @@ describe("workstream context reading", () => {
       objective: "Develop TypeScript skill through durable daily practice.",
       summary: "The workstream is initialized; no request work is complete yet.",
       currentRequest: { id: "R-0001", status: "active" },
-      resources: [{ role: "primary", access: "mutate", primary: true }],
+      resources: [],
     });
     expect(result.context).not.toHaveProperty("importantPaths");
     expect(result.context).not.toHaveProperty("workingDirectory");
@@ -57,7 +57,7 @@ describe("workstream context reading", () => {
       "WHERE workstream_id = ? AND run_id = ? AND access_kind = 'opened'",
     ].join(" ")).get(selected.workstream.workstreamId, fixture.prepared.run.runId))
       .toEqual({ count: 1 });
-    expect(first.context?.resources).toHaveLength(1);
+    expect(first.context?.resources).toEqual([]);
   });
 
   it("opens one completed request and its bounded recent progress without reopening it", async () => {

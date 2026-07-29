@@ -598,7 +598,7 @@ describe("executeAgentAction verification gates", () => {
     }
   });
 
-  it("keeps contract-backed filesystem proof in verification while leaving WorkState unchanged", async () => {
+  it("keeps structural write proof in verification while leaving physical hashes to the scoped verifier", async () => {
     const runPath = makeTmpDir();
     const outputPath = join(runPath, "created.txt");
     try {
@@ -618,7 +618,7 @@ describe("executeAgentAction verification gates", () => {
         contract: "tool_result_v2",
       });
       expect(result.verifyOutput.artifacts).toContain(outputPath);
-      expect(result.verifyOutput.newFacts.some((fact) => fact.includes("Read-back hash verified"))).toBe(true);
+      expect(result.verifyOutput.newFacts.some((fact) => fact.includes("Read-back hash verified"))).toBe(false);
       expect(result.nextWorkState).toEqual(emptyWorkState());
       expect(existsSync(outputPath)).toBe(true);
     } finally {

@@ -50,6 +50,8 @@ export type RunVerifiedPathOutcomeKind =
   | "path.missing"
   | "file.written"
   | "file.patched"
+  | "path.copied"
+  | "file.permissions_set"
   | "directory.created"
   | "path.moved_from"
   | "path.moved_to"
@@ -60,7 +62,7 @@ export interface RunVerifiedPathOutcome extends RunVerifiedOutcomeBase {
   kind: RunVerifiedPathOutcomeKind;
   subject: string;
   exists: boolean;
-  actualKind?: "file" | "directory";
+  actualKind?: "file" | "directory" | "symlink";
   change: "observed" | "mutated";
   operation:
     | "inspect"
@@ -70,7 +72,9 @@ export interface RunVerifiedPathOutcome extends RunVerifiedOutcomeBase {
     | "write"
     | "patch"
     | "create"
+    | "copy"
     | "move"
+    | "permissions"
     | "delete";
   requestedPath?: string;
 }

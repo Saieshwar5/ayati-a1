@@ -150,7 +150,11 @@ describe("model-facing workstream and resource routing", () => {
 
   it("finds and opens durable work without binding the run", async () => {
     const candidate = workstreamCandidate();
-    const findWorkstreams = vi.fn(async () => ({ workstreams: [candidate] }));
+    const findWorkstreams = vi.fn(async () => ({
+      workstreams: [candidate],
+      outcome: "matches_found" as const,
+      catalogCount: 1,
+    }));
     const readWorkstream = vi.fn(async () => ({
       workstream: workstream(),
       context: workstreamContext(),
@@ -168,7 +172,13 @@ describe("model-facing workstream and resource routing", () => {
       }, executionContext("open"));
 
     expect(found.ok).toBe(true);
-    expect(found.v2?.structuredContent).toMatchObject({ count: 1, workstreams: [candidate] });
+    expect(found.v2?.structuredContent).toMatchObject({
+      outcome: "matches_found",
+      count: 1,
+      catalogCount: 1,
+      recommendedAction: "inspect_or_continue",
+      workstreams: [candidate],
+    });
     expect(opened.ok).toBe(true);
     expect(findWorkstreams).toHaveBeenCalledWith(expect.objectContaining({
       query: "website",
@@ -180,6 +190,36 @@ describe("model-facing workstream and resource routing", () => {
       workstreamRequestId: "R-0002",
       runId: "RUN-1",
     }));
+  });
+
+  it("makes an empty workstream catalog an explicit create-new routing result", async () => {
+    const findWorkstreams = vi.fn(async () => ({
+      workstreams: [],
+      outcome: "catalog_empty" as const,
+      catalogCount: 0,
+    }));
+    const service = { findWorkstreams } as unknown as ContextEngineService;
+    const tool = createGitContextSkill({ service }).tools
+      .find((candidate) => candidate.name === "git_context_find_workstreams")!;
+
+    const result = await tool.execute({
+      query: "Lumen Finch website",
+      paths: ["/home/user/workspace/lumen-finch"],
+    }, executionContext("find-empty"));
+
+    expect(result.ok).toBe(true);
+    expect(result.v2).toMatchObject({
+      code: "GIT_CONTEXT_WORKSTREAM_CATALOG_EMPTY",
+      structuredContent: {
+        outcome: "catalog_empty",
+        workstreams: [],
+        count: 0,
+        catalogCount: 0,
+        recommendedAction: "create_workstream",
+        reason: "The durable workstream catalog is empty.",
+      },
+    });
+    expect(result.v2?.message).toContain("Create a new workstream");
   });
 
   it("registers an existing path as a resource without selecting ownership", async () => {

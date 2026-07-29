@@ -240,7 +240,7 @@ describe("workstream binding coordinator", () => {
     expect(createWorkstreamForRun).not.toHaveBeenCalled();
   });
 
-  it("honors an explicit create-new choice and never promotes references into mutation scope", async () => {
+  it("honors an explicit create-new choice without pre-registering missing resources", async () => {
     const findWorkstreams = vi.fn(async () => ({ workstreams: [candidate("definite")] }));
     const inspectResourceForRun = vi.fn(async () => ({
       mutationEligible: true,
@@ -299,18 +299,12 @@ describe("workstream binding coordinator", () => {
       kind: "created_workstream",
     });
     expect(findWorkstreams).not.toHaveBeenCalled();
-    expect(inspectResourceForRun).toHaveBeenCalledOnce();
-    expect(inspectResourceForRun).toHaveBeenCalledWith(expect.objectContaining({
-      locator: { kind: "filesystem", path: "/tmp/site" },
-      kind: "directory",
-    }));
-    expect(inspectResourceForRun).not.toHaveBeenCalledWith(expect.objectContaining({
-      locator: { kind: "filesystem", path: "/tmp/requirements.md" },
-    }));
+    expect(inspectResourceForRun).not.toHaveBeenCalled();
+    expect(createWorkstreamForRun).toHaveBeenCalledOnce();
+    expect(createWorkstreamForRun.mock.calls[0]?.[0]).not.toHaveProperty("resources");
   });
 
-  it("inspects a typed workspace target and binds the runtime-derived resource", async () => {
-    const resourceId = "RES-ABCDEF0123456789ABCDEF01";
+  it("uses a typed workspace target as execution authority without registering it as a resource", async () => {
     const createWorkstreamForRun = vi.fn(async () => ({
       run: {
         runId: "RUN-1",
@@ -326,13 +320,7 @@ describe("workstream binding coordinator", () => {
       getAgentContext: vi.fn()
         .mockResolvedValueOnce(agentContext(false))
         .mockResolvedValueOnce(agentContext(true)),
-      inspectResourceForRun: vi.fn(async () => ({
-        mutationEligible: true,
-        resource: {
-          resourceId,
-          version: { exists: false, kind: "unversioned" },
-        },
-      })),
+      inspectResourceForRun: vi.fn(),
       createWorkstreamForRun,
     } as unknown as ContextEngineService;
     const coordinator = createWorkstreamBindingCoordinator({
@@ -362,18 +350,9 @@ describe("workstream binding coordinator", () => {
     });
 
     expect(result).toMatchObject({ status: "resolved", kind: "created_workstream" });
-    expect(createWorkstreamForRun).toHaveBeenCalledWith(expect.objectContaining({
-      resources: [{
-        resourceId,
-        role: "primary",
-        access: "mutate",
-        primary: true,
-      }],
-    }));
-    expect(service.inspectResourceForRun).toHaveBeenCalledWith(expect.objectContaining({
-      locator: { kind: "filesystem", path: "/tmp/notes.md" },
-      kind: "file",
-    }));
+    expect(createWorkstreamForRun).toHaveBeenCalledOnce();
+    expect(createWorkstreamForRun.mock.calls[0]?.[0]).not.toHaveProperty("resources");
+    expect(service.inspectResourceForRun).not.toHaveBeenCalled();
   });
 
   it("carries a create-new answer across runs from the durable exact conversation", async () => {

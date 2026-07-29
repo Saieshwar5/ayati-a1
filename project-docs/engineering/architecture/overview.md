@@ -52,7 +52,12 @@ context SQLite and context-only Git writes. The daemon depends on its typed
    after binding, and mounts authoritative context before a fresh decision.
    Mode changes replace the exact capability surface.
 6. The shared action executor runs calls and deterministically verifies each
-   result. `recordRunStep` persists each ordered step, its calls, and
+   result. Narrow `create_directory`, `write_files`, `patch_files`, `copy`,
+   `move`, `delete`, and `set_permissions` calls use the absolute destination
+   root selected in execute mode and target-local effect verification; they do
+   not require a resource row, mutation lease, or whole-project snapshot before
+   execution. `recordRunStep`
+   persists each ordered step, its calls, and
    verification without revising WorkState. The model creates a sparse
    WorkState checkpoint only for a material plan or context pressure; terminal
    finalization and exact-request continuation update it deterministically. A
@@ -68,8 +73,9 @@ context SQLite and context-only Git writes. The daemon depends on its typed
    commit's fresh Context Engine projection replaces the loop projection
    before prompt rebuild.
 8. `finalizeRun` closes the run, appends the immutable assistant message,
-   verifies resource effects, appends one request-scoped progress entry for a
-   bound run, and commits reduced workstream continuity.
+   records verified filesystem and resource-scoped effects, appends one
+   request-scoped progress entry for a bound run, registers verified outputs,
+   and commits reduced workstream continuity.
 9. Only after durable acknowledgement does the transport receive its terminal
    response envelope.
 
@@ -122,6 +128,8 @@ container, and the stream is never used as an action log.
 
 Workstream Git never contains deliverables. The resource catalog points to
 real files, directories, URLs, databases, repositories, and external objects.
+A new workstream may initially have no resources; successful validation and
+finalization add the files actually produced.
 
 Important entry points:
 

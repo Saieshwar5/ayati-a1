@@ -5,9 +5,11 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ContextEngineService, WorkstreamResourceBinding } from "ayati-context-engine";
@@ -15,6 +17,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createResourceScopedToolExecutor } from "../../src/app/resource-scoped-tool-executor.js";
 import { createToolExecutor, type ToolExecutor } from "../../src/skills/tool-executor.js";
 import { createDirectoryTool } from "../../src/skills/builtins/filesystem/create-directory.js";
+import { copyTool } from "../../src/skills/builtins/filesystem/copy.js";
 import { deleteTool } from "../../src/skills/builtins/filesystem/delete.js";
 import { findFilesTool } from "../../src/skills/builtins/filesystem/find-files.js";
 import { inspectPathsTool } from "../../src/skills/builtins/filesystem/inspect-paths.js";
@@ -23,6 +26,7 @@ import { moveTool } from "../../src/skills/builtins/filesystem/move.js";
 import { patchFilesTool } from "../../src/skills/builtins/filesystem/patch-files.js";
 import { readFilesTool } from "../../src/skills/builtins/filesystem/read-files.js";
 import { searchInFilesTool } from "../../src/skills/builtins/filesystem/search-in-files.js";
+import { setPermissionsTool } from "../../src/skills/builtins/filesystem/set-permissions.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
 import { createContextSkill } from "../../src/skills/builtins/context/index.js";
 import {
@@ -609,6 +613,280 @@ describe("resource-scoped tool executor", () => {
     expect(service.prepareResourceMutation).not.toHaveBeenCalled();
   });
 
+  it("creates a project and files inside a selected absolute destination without pre-registering resources", async () => {
+    const workspace = tempDirectory("ayati-simple-mutation-workspace-");
+    const externalParent = tempDirectory("ayati-simple-mutation-external-");
+    const site = join(externalParent, "lumen-finch");
+    const service = serviceFor(boundActiveContext([]));
+    const executor = createResourceScopedToolExecutor({
+      base: createToolExecutor([createDirectoryTool, writeFilesTool]),
+      contextEngine: service,
+      workspaceRoot: workspace,
+    });
+    const context = {
+      ...executionContext("R-1", "call-create-site"),
+      filesystemMutationRoots: [site],
+    };
+
+    const written = await executor.execute("write_files", {
+      files: [
+        { path: join(site, "index.html"), content: "<h1>Lumen Finch</h1>\n" },
+        { path: join(site, "styles.css"), content: "body { color: navy; }\n" },
+        { path: join(site, "script.js"), content: "console.log(\"ready\");\n" },
+      ],
+      createParents: true,
+    }, {
+      ...context,
+      callId: "call-write-site",
+    });
+
+    expect(written, JSON.stringify(written)).toMatchObject({ ok: true });
+    expect(readFileSync(join(site, "index.html"), "utf-8")).toContain("Lumen Finch");
+    expect(readFileSync(join(site, "styles.css"), "utf-8")).toContain("navy");
+    expect(readFileSync(join(site, "script.js"), "utf-8")).toContain("ready");
+    expect(written.meta?.["filesystemMutationVerification"]).toMatchObject({
+      strategy: "target_local",
+      verified: true,
+      targetCount: 3,
+    });
+    expect(service.prepareResourceMutation).not.toHaveBeenCalled();
+    expect(service.verifyResourceMutation).not.toHaveBeenCalled();
+  });
+
+  it("moves and deletes inside a selected root with target-local verification", async () => {
+    const workspace = tempDirectory("ayati-targeted-move-workspace-");
+    const site = directoryInside(workspace, "site");
+    const source = join(site, "before.txt");
+    const destination = join(site, "after.txt");
+    const deleteTarget = join(site, "delete.txt");
+    writeFileSync(source, "move me\n", "utf-8");
+    writeFileSync(deleteTarget, "delete me\n", "utf-8");
+    const service = serviceFor(boundActiveContext([]));
+    const executor = createResourceScopedToolExecutor({
+      base: createToolExecutor([moveTool, deleteTool]),
+      contextEngine: service,
+      workspaceRoot: workspace,
+    });
+    const context = {
+      ...executionContext("R-1", "call-move"),
+      filesystemMutationRoots: [site],
+    };
+
+    const moved = await executor.execute("move", {
+      source,
+      destination,
+      overwrite: false,
+    }, context);
+    const deleted = await executor.execute("delete", {
+      path: deleteTarget,
+      recursive: false,
+    }, {
+      ...context,
+      callId: "call-delete",
+    });
+
+    expect(moved).toMatchObject({
+      ok: true,
+      meta: {
+        filesystemMutationVerification: {
+          strategy: "target_local",
+          verified: true,
+          targetCount: 2,
+        },
+      },
+    });
+    expect(deleted).toMatchObject({
+      ok: true,
+      meta: {
+        filesystemMutationVerification: {
+          strategy: "target_local",
+          verified: true,
+          targetCount: 1,
+        },
+      },
+    });
+    expect(existsSync(source)).toBe(false);
+    expect(readFileSync(destination, "utf-8")).toBe("move me\n");
+    expect(existsSync(deleteTarget)).toBe(false);
+    expect(service.prepareResourceMutation).not.toHaveBeenCalled();
+    expect(service.verifyResourceMutation).not.toHaveBeenCalled();
+  });
+
+  it("copies from a read-only external source and sets permissions only inside the selected root", async () => {
+    const workspace = tempDirectory("ayati-targeted-copy-workspace-");
+    const outside = tempDirectory("ayati-targeted-copy-source-");
+    const site = directoryInside(workspace, "site");
+    const source = join(outside, "source.txt");
+    const destination = join(site, "copied.txt");
+    writeFileSync(source, "copy me\n", "utf-8");
+    const service = serviceFor(boundActiveContext([]));
+    const executor = createResourceScopedToolExecutor({
+      base: createToolExecutor([copyTool, setPermissionsTool]),
+      contextEngine: service,
+      workspaceRoot: workspace,
+    });
+    const context = {
+      ...executionContext("R-1", "call-copy"),
+      filesystemMutationRoots: [site],
+    };
+
+    const copied = await executor.execute("copy", {
+      source,
+      destination,
+    }, context);
+    const permissions = await executor.execute("set_permissions", {
+      files: [{ path: destination, mode: "640" }],
+    }, {
+      ...context,
+      callId: "call-permissions",
+    });
+
+    expect(copied).toMatchObject({
+      ok: true,
+      meta: {
+        filesystemMutationVerification: {
+          verified: true,
+          targetCount: 2,
+        },
+      },
+    });
+    expect(permissions).toMatchObject({
+      ok: true,
+      meta: {
+        filesystemMutationVerification: {
+          verified: true,
+          targetCount: 1,
+        },
+      },
+    });
+    expect(readFileSync(source, "utf-8")).toBe("copy me\n");
+    expect(readFileSync(destination, "utf-8")).toBe("copy me\n");
+    expect(statSync(destination).mode & 0o777).toBe(0o640);
+    expect(service.prepareResourceMutation).not.toHaveBeenCalled();
+  });
+
+  it("verifies selected-root calls from declared targets without scanning siblings", async () => {
+    const workspace = tempDirectory("ayati-targeted-unexpected-workspace-");
+    const site = directoryInside(workspace, "site");
+    const target = join(site, "index.html");
+    const unexpected = join(site, "unexpected.txt");
+    const execute = vi.fn(async () => {
+      writeFileSync(target, "<h1>Expected</h1>\n", "utf-8");
+      writeFileSync(unexpected, "undeclared\n", "utf-8");
+      return {
+        ok: true,
+        v2: {
+          transportOk: true,
+          operationStatus: "succeeded" as const,
+          code: "FILES_APPLIED",
+          message: "Files written.",
+          structuredContent: {
+            files: [{
+              path: target,
+              status: "created",
+              sha256: createHash("sha256")
+                .update("<h1>Expected</h1>\n", "utf8")
+                .digest("hex"),
+            }],
+          },
+        },
+      };
+    });
+    const service = serviceFor(boundActiveContext([]));
+    const executor = createResourceScopedToolExecutor({
+      base: baseExecutor(execute, ["write_files"]),
+      contextEngine: service,
+      workspaceRoot: workspace,
+    });
+
+    const result = await executor.execute("write_files", {
+      files: [{ path: target, content: "<h1>Expected</h1>\n" }],
+    }, {
+      ...executionContext("R-1", "call-unexpected-write"),
+      filesystemMutationRoots: [site],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.v2?.code).toBe("FILES_APPLIED");
+    expect(result.meta?.["filesystemMutationVerification"]).toMatchObject({
+      strategy: "target_local",
+      verified: true,
+      unexpectedPaths: [],
+      parentChangedPathCount: 0,
+      gitChangedPathCount: 0,
+    });
+    expect(execute.mock.calls[0]?.[2]).toMatchObject({
+      filesystemTargetPreconditions: [{
+        path: target,
+        expected: { kind: "missing" },
+      }],
+    });
+    expect(service.prepareResourceMutation).not.toHaveBeenCalled();
+  });
+
+  it("resolves relative paths against the workspace and rejects paths outside the selected destination", async () => {
+    const workspace = tempDirectory("ayati-simple-scope-workspace-");
+    const site = directoryInside(workspace, "site");
+    const sibling = directoryInside(workspace, "sibling");
+    const execute = vi.fn(async () => ({ ok: true, output: "should not run" }));
+    const service = serviceFor(boundActiveContext([]));
+    const executor = createResourceScopedToolExecutor({
+      base: baseExecutor(execute, ["write_files"]),
+      contextEngine: service,
+      workspaceRoot: workspace,
+    });
+    const context = {
+      ...executionContext(),
+      filesystemMutationRoots: [site],
+    };
+
+    const relativeResult = await executor.execute("write_files", {
+      files: [{ path: "index.html", content: "invalid" }],
+    }, context);
+    const outsideResult = await executor.execute("write_files", {
+      files: [{ path: join(sibling, "index.html"), content: "invalid" }],
+    }, context);
+
+    expect(relativeResult.v2?.code).toBe("PATH_OUTSIDE_SELECTED_MUTATION_ROOT");
+    expect(outsideResult.v2?.code).toBe("PATH_OUTSIDE_SELECTED_MUTATION_ROOT");
+    expect(execute).not.toHaveBeenCalled();
+    expect(service.prepareResourceMutation).not.toHaveBeenCalled();
+  });
+
+  it("rejects duplicate canonical targets before selected-root execution", async () => {
+    const workspace = tempDirectory("ayati-canonical-duplicate-workspace-");
+    const site = directoryInside(workspace, "site");
+    const real = directoryInside(site, "real");
+    const alias = join(site, "alias");
+    symlinkSync(real, alias, "dir");
+    const execute = vi.fn(async () => ({ ok: true, output: "should not run" }));
+    const service = serviceFor(boundActiveContext([]));
+    const executor = createResourceScopedToolExecutor({
+      base: baseExecutor(execute, ["write_files"]),
+      contextEngine: service,
+      workspaceRoot: workspace,
+    });
+
+    const result = await executor.execute("write_files", {
+      files: [
+        { path: join(real, "same.txt"), content: "first" },
+        { path: join(alias, "same.txt"), content: "second" },
+      ],
+    }, {
+      ...executionContext("R-1", "call-canonical-duplicate"),
+      filesystemMutationRoots: [site],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.v2?.code).toBe("DUPLICATE_TARGET_PATH");
+    expect(result.v2?.error).toMatchObject({
+      category: "conflict",
+      retryable: true,
+      target: join(real, "same.txt"),
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("prepares and verifies exact mutation targets for a bound resource", async () => {
     const workspace = tempDirectory("ayati-workspace-");
     const site = directoryInside(workspace, "site");
@@ -621,8 +899,7 @@ describe("resource-scoped tool executor", () => {
 
     const result = await executor.execute("write_files", {
       files: [{ path: join(site, "index.html"), content: "<h1>Aurora Coffee</h1>" }],
-      createDirs: true,
-      allowExternalPath: true,
+      createParents: true,
     }, executionContext());
 
     expect(result.ok).toBe(true);
@@ -849,8 +1126,7 @@ describe("resource-scoped tool executor", () => {
         input: {
           executable: "node",
           args: ["server.js"],
-          cwd: workspace,
-          targets: [{ path: join(outside, "server.log"), kind: "file" }],
+          cwd: outside,
         },
       },
       {
@@ -891,6 +1167,52 @@ describe("resource-scoped tool executor", () => {
     expect(execute).not.toHaveBeenCalled();
     expect(service.getAgentContext).not.toHaveBeenCalled();
     expect(service.prepareResourceMutation).not.toHaveBeenCalled();
+  });
+
+  it("scopes process sessions without pretending their future writes are snapshot-verified", async () => {
+    const workspace = tempDirectory("ayati-process-session-workspace-");
+    const site = directoryInside(workspace, "site");
+    const execute = vi.fn(async () => ({
+      ok: true,
+      v2: {
+        transportOk: true,
+        operationStatus: "succeeded" as const,
+        code: "PROCESS_SESSION_ACTION_COMPLETE",
+        message: "Process session action completed.",
+      },
+    }));
+    const service = serviceFor(boundActiveContext([
+      binding("RES-SITE", site),
+    ]));
+    const executor = createResourceScopedToolExecutor({
+      base: baseExecutor(execute, ["process_start", "process_send_input"]),
+      contextEngine: service,
+      workspaceRoot: workspace,
+    });
+
+    const started = await executor.execute("process_start", {
+      executable: "node",
+      args: ["server.js"],
+    }, executionContext("R-1", "call-session-start"));
+    const sent = await executor.execute("process_send_input", {
+      sessionId: "PROC-1",
+      input: "continue\n",
+    }, executionContext("R-1", "call-session-input"));
+
+    expect(started.ok).toBe(true);
+    expect(sent.ok).toBe(true);
+    expect(execute).toHaveBeenCalledWith(
+      "process_start",
+      expect.objectContaining({ cwd: site }),
+      expect.objectContaining({
+        resourceScope: expect.objectContaining({
+          authorityPath: site,
+          resourceId: "RES-SITE",
+        }),
+      }),
+    );
+    expect(service.prepareResourceMutation).not.toHaveBeenCalled();
+    expect(service.verifyResourceMutation).not.toHaveBeenCalled();
   });
 
   it("requires explicit targets for process mutations and scopes their cwd", async () => {
@@ -1004,7 +1326,7 @@ describe("resource-scoped tool executor", () => {
 
     const result = await executor.execute("write_files", {
       files: [{ path: target, content: "operator enabled\n" }],
-      createDirs: false,
+      createParents: false,
     }, executionContext("R-1", "call-configured-external"));
 
     expect(result.ok).toBe(true);

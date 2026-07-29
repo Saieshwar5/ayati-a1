@@ -77,8 +77,20 @@ remain automatic runtime work; do not use context retrieval for them.
   Creation names typed workspace-relative targets. The deterministic gate
   performs no model call, runs once, and makes binding immutable. The next
   mutation decision is always fresh.
-- `execute` retains existing resource containment, mutation preparation,
-  deterministic verification, and safe parallelism enforcement.
+- `execute` derives one selected filesystem destination root from the
+  workspace targets or activated resources. Creation, write, patch, copy,
+  move, explicit permission changes, and explicitly requested deletion stay
+  inside that root and receive target-local deterministic verification. A
+  `copy` source is read-only; its destination remains contained. Verified
+  effects become resources during finalization without requiring the model to
+  invent resource permission data.
+- Filesystem mutation paths may be relative to `context.run.workspaceRoot` or
+  canonical absolute paths inside the selected destination root. Follow a
+  destination and layout named by the user; otherwise reuse the related
+  project directory or create one named project directory under the workspace.
+- For `write_files`, provide complete desired UTF-8 content and optional
+  parent creation. Do not invent file hashes, resource IDs, permission tokens,
+  or confirmation fields; deterministic execution derives preconditions.
 - Once the responsibility appears fulfilled, enter `validation` with
   `task:validation` and only the few typed outcomes that decide completion.
   Copy each exact subject from current-run deterministic verification.

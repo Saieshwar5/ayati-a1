@@ -10,7 +10,6 @@ import type {
   DeterministicWorkstreamBindingRequest,
   DeterministicWorkstreamBindingOutcome,
   WorkstreamBindingCoordinator,
-  WorkstreamResourceBindingProposal,
 } from "./contracts.js";
 
 export interface WorkstreamBindingCoordinatorOptions {
@@ -239,15 +238,12 @@ async function createWorkstream(
   }
 
   const now = (options.now ?? (() => new Date()))().toISOString();
-  const resources = await resolveCreationResources(options, request, now);
-  if ("status" in resources) return resources;
   const selected = await options.service.createWorkstreamForRun({
     requestId: `${options.runId}:deterministic-bind`,
     runId: options.runId,
     title: request.proposal.title,
     objective: request.proposal.objective,
     initialRequest: request.proposal.initialRequest,
-    ...(resources.bindings.length > 0 ? { resources: resources.bindings } : {}),
     at: now,
   });
   const context = await options.service.getAgentContext({
@@ -269,67 +265,6 @@ async function createWorkstream(
     requestId: binding.requestId,
     context: buildContextEngineProjection(context),
   };
-}
-
-async function resolveCreationResources(
-  options: WorkstreamBindingCoordinatorOptions,
-  request: DeterministicWorkstreamBindingRequest,
-  at: string,
-): Promise<
-  | { bindings: WorkstreamResourceBindingProposal[] }
-  | Extract<DeterministicWorkstreamBindingOutcome, { status: "failed" }>
-> {
-  if (request.proposal.kind !== "create") {
-    return failed("WORKSTREAM_BINDING_PROPOSAL_INVALID", "Expected creation resources.", false);
-  }
-  if (request.workspaceTargets.length === 0) {
-    return failed(
-      "WORKSTREAM_BINDING_TARGET_REQUIRED",
-      "New workstream creation requires at least one validated workspace target.",
-      false,
-    );
-  }
-  const bindings = new Map<string, WorkstreamResourceBindingProposal>();
-  for (const [index, target] of request.workspaceTargets.entries()) {
-    const locator = { kind: "filesystem" as const, path: target.absolutePath };
-    const inspected = await options.service.inspectResourceForRun({
-      requestId: `${options.runId}:deterministic-bind:inspect:${index + 1}`,
-      runId: options.runId,
-      locator,
-      kind: target.kind,
-      origin: "user_reference",
-      at,
-    });
-    if (!inspected.mutationEligible) {
-      return failed(
-        "WORKSTREAM_BINDING_RESOURCE_NOT_MUTABLE",
-        `The requested resource cannot be bound for mutation: ${displayLocator(locator)}.`,
-        false,
-      );
-    }
-    if (
-      inspected.resource.version.exists
-      && !resourceVersionMatchesTarget(
-        inspected.resource.version.kind,
-        target.kind,
-      )
-    ) {
-      return failed(
-        "WORKSTREAM_BINDING_RESOURCE_KIND_MISMATCH",
-        `The existing workspace target is not a ${target.kind}: ${target.relativePath}.`,
-        false,
-      );
-    }
-    if (!bindings.has(inspected.resource.resourceId)) {
-      bindings.set(inspected.resource.resourceId, {
-        resourceId: inspected.resource.resourceId,
-        role: "primary",
-        access: "mutate",
-        primary: bindings.size === 0,
-      });
-    }
-  }
-  return { bindings: [...bindings.values()].slice(0, 8) };
 }
 
 function resolvedFromCurrent(
@@ -357,19 +292,6 @@ function requestRoute(
   decision: Extract<DeterministicWorkstreamBindingRequest["proposal"], { kind: "activate" }>["requestDecision"],
 ): WorkstreamRequestRoute {
   return structuredClone(decision);
-}
-
-function displayLocator(locator: { kind: "filesystem"; path: string }): string {
-  return locator.path;
-}
-
-function resourceVersionMatchesTarget(
-  actual: "file" | "directory" | "git" | "url" | "external" | "unversioned",
-  expected: "file" | "directory",
-): boolean {
-  return expected === "directory"
-    ? actual === "directory" || actual === "git"
-    : actual === "file";
 }
 
 function isStrongCandidate(candidate: WorkstreamCandidate): boolean {

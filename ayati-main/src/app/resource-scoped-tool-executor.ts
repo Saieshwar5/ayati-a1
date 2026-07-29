@@ -25,11 +25,19 @@ import {
   DEFAULT_FILESYSTEM_ACCESS_POLICY,
   isMachineFilesystemReadTool,
   resolveWorkspaceMutationInput,
+  selectFilesystemMutationRoot,
   scopeToolInput,
+  usesSelectedFilesystemMutationRoot,
   validateMachineReadPaths,
   validateWorkspaceMutationPaths,
   type FilesystemAccessPolicy,
 } from "./filesystem-access-policy.js";
+import {
+  attachFilesystemMutationVerification,
+  FilesystemMutationPreparationError,
+  prepareFilesystemMutationVerification,
+  verifyFilesystemMutation,
+} from "./filesystem-mutation-verifier.js";
 import { resourceScopeFailure as scopeFailure } from "./resource-scope-failure.js";
 
 export function createResourceScopedToolExecutor(input: {
@@ -89,6 +97,9 @@ class ResourceScopedToolExecutor implements ToolExecutor {
   ): Promise<ToolResult> {
     const taxonomy = getToolTaxonomy(toolName);
     const definition = this.base.definitions(context).find((tool) => tool.name === toolName);
+    const selectedFilesystemMutation = taxonomy?.effect !== "read_only"
+      && usesSelectedFilesystemMutationRoot(toolName)
+      && Boolean(context?.filesystemMutationRoots?.length);
     if (
       !taxonomy
       || taxonomy.effect === "context_mutation"
@@ -129,6 +140,7 @@ class ResourceScopedToolExecutor implements ToolExecutor {
     if (
       taxonomy.effect !== "read_only"
       && this.filesystemAccess.mutationScope === "workspace"
+      && !selectedFilesystemMutation
     ) {
       const pathFailure = await validateWorkspaceMutationPaths({
         toolName,
@@ -216,6 +228,75 @@ class ResourceScopedToolExecutor implements ToolExecutor {
       });
     }
 
+    if (selectedFilesystemMutation) {
+      const selected = await selectFilesystemMutationRoot({
+        toolName,
+        value: executionInput,
+        roots: context.filesystemMutationRoots ?? [],
+      });
+      if ("failure" in selected) {
+        return scopeFailure(
+          selected.failure.code,
+          selected.failure.message,
+          selected.failure.target,
+        );
+      }
+      const scopedInput = scopeToolInput(
+        toolName,
+        executionInput,
+        selected.selection.executionRootPath,
+      );
+      let preparedVerification;
+      try {
+        preparedVerification = await prepareFilesystemMutationVerification(
+          toolName,
+          scopedInput,
+        );
+      } catch (error) {
+        const message = error instanceof Error
+          ? error.message
+          : "Target-local filesystem verification could not be prepared.";
+        return filesystemVerificationPreparationFailure(
+          message,
+          error instanceof FilesystemMutationPreparationError
+            ? {
+                code: error.code,
+                target: error.target,
+              }
+            : undefined,
+        );
+      }
+      const result = await this.base.execute(toolName, scopedInput, {
+        ...context,
+        ...(preparedVerification
+          ? {
+              filesystemTargetPreconditions:
+                preparedVerification.targetPreconditions,
+            }
+          : {}),
+        resourceScope: {
+          kind: "mutation_root",
+          rootPath: selected.selection.executionRootPath,
+          authorityPath: selected.selection.authorityPath,
+          authorityKind: selected.selection.authorityKind,
+          workstreamId: binding.workstreamId,
+        },
+      });
+      if (!preparedVerification) return result;
+      try {
+        const verification = await verifyFilesystemMutation(
+          preparedVerification,
+          result,
+        );
+        return attachFilesystemMutationVerification(result, verification);
+      } catch (error) {
+        const message = error instanceof Error
+          ? error.message
+          : "Target-local filesystem verification failed.";
+        return filesystemVerificationFailure(result, message);
+      }
+    }
+
     const filesystemBindings = workstream.resources?.filter(hasFilesystemLocator) ?? [];
     if (filesystemBindings.length === 0) {
       return scopeFailure(
@@ -267,6 +348,9 @@ class ResourceScopedToolExecutor implements ToolExecutor {
         "WORKSTREAM_RESOURCE_MUTATION_DENIED",
         "The selected resource is bound read-only. Bind it with mutate access before changing it.",
       );
+    }
+    if (toolName === "process_start" || toolName === "process_send_input") {
+      return await this.base.execute(toolName, scopedInput, scopedContext);
     }
 
     const targets = await mutationTargets(toolName, scopedInput, filesystemBindings);
@@ -569,4 +653,79 @@ function isWithin(parent: string, candidate: string): boolean {
 
 function mutationFailure(result: ToolResult, message: string): ToolResult {
   return { ...result, ok: false, error: [result.error, message].filter(Boolean).join(" ") };
+}
+
+function filesystemVerificationPreparationFailure(
+  message: string,
+  known?: {
+    code:
+      | "DUPLICATE_TARGET_PATH"
+      | "WRITE_TARGET_NOT_REGULAR_FILE"
+      | "PATCH_TARGET_NOT_REGULAR_FILE";
+    target: string;
+  },
+): ToolResult {
+  const code = known?.code ?? "FILESYSTEM_MUTATION_VERIFICATION_UNAVAILABLE";
+  const category = code === "DUPLICATE_TARGET_PATH"
+    ? "conflict"
+    : code === "WRITE_TARGET_NOT_REGULAR_FILE"
+      || code === "PATCH_TARGET_NOT_REGULAR_FILE"
+      ? "semantic"
+      : "validation";
+  return {
+    ok: false,
+    error: message,
+    v2: {
+      transportOk: true,
+      operationStatus: "failed",
+      code,
+      message,
+      error: {
+        category,
+        code,
+        message,
+        retryable: code === "DUPLICATE_TARGET_PATH",
+        recoverable: true,
+        ...(known ? { target: known.target } : {}),
+        suggestedNextActions: [
+          code === "DUPLICATE_TARGET_PATH"
+            ? "Keep one entry for each canonical absolute target path and retry."
+            : "Inspect the canonical target path and retry only after resolving the verification problem.",
+        ],
+      },
+    },
+  };
+}
+
+function filesystemVerificationFailure(result: ToolResult, detail: string): ToolResult {
+  const message = `Filesystem mutation verification failed after execution: ${detail}`;
+  return {
+    ...result,
+    ok: false,
+    error: [result.error, message].filter(Boolean).join(" "),
+    v2: {
+      transportOk: result.v2?.transportOk ?? true,
+      operationStatus: "failed",
+      code: "FILESYSTEM_MUTATION_VERIFICATION_FAILED",
+      message,
+      ...(result.v2?.structuredContent !== undefined
+        ? { structuredContent: result.v2.structuredContent }
+        : {}),
+      ...(result.v2?.artifacts ? { artifacts: result.v2.artifacts } : {}),
+      diagnostics: {
+        ...result.v2?.diagnostics,
+        verificationError: detail,
+      },
+      error: {
+        category: "unknown",
+        code: "FILESYSTEM_MUTATION_VERIFICATION_FAILED",
+        message,
+        retryable: false,
+        recoverable: true,
+        suggestedNextActions: [
+          "Inspect the affected paths before making another mutation.",
+        ],
+      },
+    },
+  };
 }

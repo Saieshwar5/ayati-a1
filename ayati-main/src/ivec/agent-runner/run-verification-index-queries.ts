@@ -96,6 +96,8 @@ export function findLatestVerifiedOutcomeForCheck(
     if (
       check.kind === "file.written"
       || check.kind === "file.patched"
+      || check.kind === "path.copied"
+      || check.kind === "file.permissions_set"
       || check.kind === "directory.created"
       || check.kind === "path.moved_from"
       || check.kind === "path.moved_to"

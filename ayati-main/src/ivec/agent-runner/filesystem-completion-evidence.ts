@@ -22,28 +22,53 @@ export function deriveFilesystemCompletionEvidence(
   const structured = asRecord(call.result?.structuredContent);
   if (!structured) return [];
 
+  let evidence: FilesystemCompletionEvidence[];
   switch (call.tool) {
     case "read_files":
-      return readFileEvidence(call, step, structured);
+      evidence = readFileEvidence(call, step, structured);
+      break;
     case "inspect_paths":
-      return inspectPathEvidence(call, step, structured);
+      evidence = inspectPathEvidence(call, step, structured);
+      break;
     case "find_files":
-      return findFileEvidence(call, step, structured);
+      evidence = findFileEvidence(call, step, structured);
+      break;
     case "list_directory":
-      return singlePresentPathEvidence(call, step, structured, "dirPath", "directory", "list", "observed");
+      evidence = singlePresentPathEvidence(
+        call,
+        step,
+        structured,
+        "dirPath",
+        "directory",
+        "list",
+        "observed",
+      );
+      break;
     case "write_files":
-      return fileMutationEvidence(call, step, structured, "write");
+      evidence = fileMutationEvidence(call, step, structured, "write");
+      break;
     case "patch_files":
-      return fileMutationEvidence(call, step, structured, "patch");
+      evidence = fileMutationEvidence(call, step, structured, "patch");
+      break;
     case "create_directory":
-      return singlePresentPathEvidence(call, step, structured, "dirPath", "directory", "create", "mutated");
+      evidence = createDirectoryEvidence(call, step, structured);
+      break;
+    case "copy":
+      evidence = copyEvidence(call, step, structured);
+      break;
     case "move":
-      return moveEvidence(call, step, structured);
+      evidence = moveEvidence(call, step, structured);
+      break;
+    case "set_permissions":
+      evidence = permissionEvidence(call, step, structured);
+      break;
     case "delete":
-      return deleteEvidence(call, step, structured);
+      evidence = deleteEvidence(call, step, structured);
+      break;
     default:
       return [];
   }
+  return attachMutationTransitions(evidence, call);
 }
 
 function readFileEvidence(
@@ -220,7 +245,13 @@ function fileMutationEvidence(
   operation: "write" | "patch",
 ): FilesystemCompletionEvidence[] {
   return recordArray(structured["files"]).flatMap((entry) => {
-    const path = canonicalPath(entry["filePath"] ?? entry["requestedPath"]);
+    if (operation === "write" && entry["status"] === "failed") return [];
+    if (operation === "patch" && entry["status"] !== "patched") return [];
+    const path = canonicalPath(
+      operation === "write"
+        ? entry["path"] ?? entry["filePath"] ?? entry["requestedPath"]
+        : entry["filePath"] ?? entry["requestedPath"],
+    );
     if (!path) return [];
     return [{
       kind: "path_state",
@@ -228,12 +259,25 @@ function fileMutationEvidence(
       ...(readString(entry["requestedPath"]) ? { requestedPath: readString(entry["requestedPath"]) } : {}),
       exists: true,
       actualKind: "file",
-      change: "mutated",
+      change: operation === "write" && entry["status"] === "unchanged"
+        ? "observed"
+        : "mutated",
       operation,
+      ...(operation === "write" && writeStatus(entry["status"])
+        ? { writeStatus: writeStatus(entry["status"]) }
+        : {}),
       tool: call.tool,
       ...callReference(call, step),
     }];
   });
+}
+
+function writeStatus(
+  value: unknown,
+): "created" | "replaced" | "unchanged" | undefined {
+  return value === "created" || value === "replaced" || value === "unchanged"
+    ? value
+    : undefined;
 }
 
 function singlePresentPathEvidence(
@@ -260,6 +304,67 @@ function singlePresentPathEvidence(
     tool: call.tool,
     ...callReference(call, step),
   }];
+}
+
+function createDirectoryEvidence(
+  call: ActToolCallRecord,
+  step: number,
+  structured: Record<string, unknown>,
+): FilesystemCompletionEvidence[] {
+  const path = canonicalPath(structured["dirPath"]);
+  const status = structured["status"];
+  if (!path || (status !== "created" && status !== "already_exists")) return [];
+  return [{
+    kind: "path_state",
+    path,
+    ...(readString(structured["requestedPath"])
+      ? { requestedPath: readString(structured["requestedPath"]) }
+      : {}),
+    exists: true,
+    actualKind: "directory",
+    change: status === "created" ? "mutated" : "observed",
+    operation: status === "created" ? "create" : "inspect",
+    tool: call.tool,
+    ...callReference(call, step),
+  }];
+}
+
+function copyEvidence(
+  call: ActToolCallRecord,
+  step: number,
+  structured: Record<string, unknown>,
+): FilesystemCompletionEvidence[] {
+  if (structured["status"] !== "copied") return [];
+  const source = canonicalPath(
+    structured["source"] ?? structured["requestedSource"],
+  );
+  const destination = canonicalPath(
+    structured["destination"] ?? structured["requestedDestination"],
+  );
+  const actualKind = filesystemKind(structured["kind"]);
+  const reference = callReference(call, step);
+  return [
+    ...(source ? [{
+      kind: "path_state" as const,
+      path: source,
+      exists: true,
+      ...(actualKind ? { actualKind } : {}),
+      change: "observed" as const,
+      operation: "inspect" as const,
+      tool: call.tool,
+      ...reference,
+    }] : []),
+    ...(destination ? [{
+      kind: "path_state" as const,
+      path: destination,
+      exists: true,
+      ...(actualKind ? { actualKind } : {}),
+      change: "mutated" as const,
+      operation: "copy" as const,
+      tool: call.tool,
+      ...reference,
+    }] : []),
+  ];
 }
 
 function moveEvidence(
@@ -296,14 +401,39 @@ function moveEvidence(
   ];
 }
 
+function permissionEvidence(
+  call: ActToolCallRecord,
+  step: number,
+  structured: Record<string, unknown>,
+): FilesystemCompletionEvidence[] {
+  return recordArray(structured["files"]).flatMap((entry) => {
+    if (entry["status"] !== "changed" && entry["status"] !== "unchanged") {
+      return [];
+    }
+    const path = canonicalPath(entry["path"]);
+    if (!path) return [];
+    return [{
+      kind: "path_state",
+      path,
+      exists: true,
+      actualKind: "file",
+      change: entry["status"] === "changed" ? "mutated" : "observed",
+      operation: "permissions",
+      tool: call.tool,
+      ...callReference(call, step),
+    }];
+  });
+}
+
 function deleteEvidence(
   call: ActToolCallRecord,
   step: number,
   structured: Record<string, unknown>,
 ): FilesystemCompletionEvidence[] {
-  if (structured["deleted"] !== true) return [];
   const path = canonicalPath(structured["targetPath"] ?? structured["requestedPath"]);
   if (!path) return [];
+  const status = structured["status"];
+  if (status !== "deleted" && status !== "already_absent") return [];
   const actualKind = filesystemKind(structured["kind"]);
   return [{
     kind: "path_state",
@@ -313,8 +443,8 @@ function deleteEvidence(
       : {}),
     exists: false,
     ...(actualKind ? { actualKind } : {}),
-    change: "mutated",
-    operation: "delete",
+    change: status === "deleted" ? "mutated" : "observed",
+    operation: status === "deleted" ? "delete" : "inspect",
     tool: call.tool,
     ...callReference(call, step),
   }];
@@ -328,6 +458,48 @@ function callReference(
     step,
     ...(call.callId ? { callId: call.callId } : {}),
   };
+}
+
+function attachMutationTransitions(
+  evidence: FilesystemCompletionEvidence[],
+  call: ActToolCallRecord,
+): FilesystemCompletionEvidence[] {
+  const verification = asRecord(call.meta?.["filesystemMutationVerification"]);
+  if (verification?.["verified"] !== true) return evidence;
+  const targets = recordArray(verification["targets"]);
+  if (targets.length === 0) return evidence;
+  const byPath = new Map(targets.flatMap((target) => {
+    const path = canonicalPath(target["path"]);
+    return path ? [[path, target] as const] : [];
+  }));
+  return evidence.map((item): FilesystemCompletionEvidence => {
+    if (item.kind !== "path_state") return item;
+    const transition = byPath.get(resolve(item.path));
+    if (!transition) return item;
+    const beforeKind = targetStateKind(transition["before"]);
+    const afterKind = targetStateKind(transition["after"]);
+    const beforeSha256 = readString(transition["beforeSha256"]);
+    const afterSha256 = readString(transition["afterSha256"]);
+    return {
+      ...item,
+      ...(beforeKind ? { beforeKind } : {}),
+      ...(afterKind ? { afterKind } : {}),
+      ...(beforeSha256 ? { beforeSha256 } : {}),
+      ...(afterSha256 ? { afterSha256 } : {}),
+    };
+  });
+}
+
+function targetStateKind(
+  value: unknown,
+): "missing" | "file" | "directory" | "symlink" | "other" | undefined {
+  return value === "missing"
+    || value === "file"
+    || value === "directory"
+    || value === "symlink"
+    || value === "other"
+    ? value
+    : undefined;
 }
 
 function readCoverage(value: unknown): FilesystemReadCoverage {
@@ -350,8 +522,12 @@ function readMode(value: unknown): FilesystemReadMode | undefined {
     : undefined;
 }
 
-function filesystemKind(value: unknown): "file" | "directory" | undefined {
-  return value === "file" || value === "directory" ? value : undefined;
+function filesystemKind(
+  value: unknown,
+): "file" | "directory" | "symlink" | undefined {
+  return value === "file" || value === "directory" || value === "symlink"
+    ? value
+    : undefined;
 }
 
 function canonicalPath(value: unknown): string | undefined {

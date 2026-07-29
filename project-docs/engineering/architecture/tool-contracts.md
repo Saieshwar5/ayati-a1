@@ -104,11 +104,11 @@ inside, symbolic-link escapes are rejected, and `allowExternalPath` cannot
 override policy.
 
 Inside-workspace location is necessary, not sufficient. Mutation still
-requires immutable workstream binding, a resource bound with
-`access: "mutate"`, exact targets, mutation-journal preparation, and
-post-operation verification. The optional operator value
-`mutationScope=bound_resource` restores the older bound-resource boundary
-without changing the executor.
+requires immutable workstream binding, an exact selected destination, declared
+targets, and post-operation verification. Narrow selected-root filesystem
+mutation does not require a pre-created resource row or per-file mutate
+binding. The optional operator value `mutationScope=bound_resource` restores
+the older resource-scoped mutation journal for deployments that require it.
 
 Mode transitions keep search subjects, read-only references, existing routed
 resource IDs, bound execute mutation scopes, and new `workspaceTargets` in
@@ -132,12 +132,93 @@ only those resources. Mutation directory containment is checked on canonical
 paths, including missing future children through their nearest existing
 ancestor, and rejects symbolic-link escapes.
 
-Process and Python mutation-capable calls declare an inside-workspace working
-directory and exact inside-workspace effect targets. Mutable database calls
-declare an inside-workspace database destination, and dataset promotion
-declares an inside-workspace target database. Calls without enough declared
-target information fail closed. Long-running processes cannot receive
-open-ended filesystem access. Unexpected changes fail verification.
+Selected-root `create_directory`, `write_files`, `patch_files`, `copy`, `move`,
+`delete`, and `set_permissions` calls use bounded target-local effect
+verification. The executor captures the exact declared target entries,
+executes the focused tool, and checks the status-specific target transitions.
+The tool implementation itself has no general command surface: it can change
+only its explicit target paths and any requested missing destination parents.
+Reported parent creation and deferred delete-cleanup paths are checked
+separately. The generic verifier does not scan siblings, walk the whole
+project, or query repository-wide Git state.
+
+That division is deliberate. It avoids a 20,000-entry or 512-MB project
+snapshot for a one-file edit while keeping the important proof local:
+before-state preconditions, atomic replacement where possible, truthful
+partial outcomes, and final target state. The daemon-wide FIFO run queue
+prevents two Ayati runs from interleaving these operations. External programs
+that write independently remain outside this in-process guarantee.
+
+`write_files` is a desired-state UTF-8 text operation. Its model-facing input
+contains only canonical absolute paths, complete desired content, and optional
+`createParents` (default `true`). The runtime supplies target preconditions
+internally; the model never copies resource ids, permission tokens, or content
+hashes into the call. Missing files become `created`, different regular files
+become `replaced`, and matching files succeed as `unchanged`.
+
+Changed content is staged in an exclusively created temporary file in the
+destination directory, every target is rechecked against its captured
+before-state, and each staged file is renamed into place. One file replacement
+is atomic, but a multi-file call is not a filesystem transaction. If a later
+rename fails, the result reports the committed and failed paths exactly; the
+same desired-state call can be retried because already-current files become
+`unchanged`. The target-local verifier owns the final physical content hash
+check, so the generic tool contract does not read and hash every file again.
+
+`patch_files` applies ordered exact text or line patches to existing bounded
+UTF-8 files. The runtime supplies before-state preconditions internally. The
+tool rejects stale targets, duplicate canonical paths, symbolic links, hard
+links, oversized inputs, and invalid UTF-8 before replacement. Approximate
+whitespace or punctuation matches are diagnostics only; they never authorize
+a mutation. Patched content is staged beside each target with its existing
+mode, every target is rechecked, and replacements are renamed sequentially.
+The result reports each committed or failed file, including partial calls, and
+the target-local verifier owns the single final physical hash and metadata
+check. Patch instructions are not generally idempotent, so a partial call is
+never advertised as safe for automatic identical retry.
+
+`create_directory` accepts one absolute directory path. Existing directories
+return `already_exists`; a non-directory at the path is a conflict. Recursive
+creation reports every parent that now exists because of the call. If only
+some parents are created before failure, the result is `partial` and names
+them.
+
+`copy` accepts one source and one missing destination. The source is read-only
+and may be outside the selected destination root. Files, directories, and
+symbolic links are copied without following the final symbolic link. The tool
+stages beside the destination, verifies a bounded deterministic fingerprint,
+then renames the staged entry into place. It never overwrites an existing
+destination.
+
+`move` accepts one contained source and destination and is classified as
+destructive because success removes the source. A same-filesystem move uses
+rename. A cross-filesystem move copies to a staged destination, verifies it,
+rechecks that the source has not changed, and only then removes the source. If
+source removal fails, the result explicitly reports
+`copied_but_source_retained`; it never claims that the move completed.
+
+`delete` uses final-entry semantics: deleting a symbolic link unlinks the link,
+not its target. Missing targets return `already_absent`. A directory requires
+explicit recursive intent. Recursive deletion first renames the target to a
+private sibling, making the requested path absent atomically, and then removes
+the private entry. Cleanup failure returns `cleanup_pending` with the exact
+remaining path.
+
+`set_permissions` changes exact octal modes on up to 16 regular files. It
+rejects symbolic links and hard-linked files, rechecks each before state,
+preserves content and inode identity, and reports changed, unchanged, or
+failed status per file. Like other multi-target calls, it executes
+sequentially and reports a truthful partial result.
+
+Finite `process_run` and Python mutation-capable calls declare an
+inside-workspace working directory and exact inside-workspace effect targets.
+Mutable database calls declare an inside-workspace database destination, and
+dataset promotion declares an inside-workspace target database. Calls without
+enough declared target information fail closed. Background `process_start`
+and `process_send_input` do not accept filesystem target claims because their
+effects can outlive a single tool result; they cannot provide focused
+filesystem completion evidence. Use focused filesystem tools for mutations
+and bounded `process_run` for commands whose completion can be checked.
 
 These declarations are Ayati's authorization contract, not an operating-system
 sandbox around arbitrary native or Python code. A deployment requiring
@@ -206,6 +287,12 @@ a workstream or resource target:
 - `system_health` returns a bounded snapshot of CPU load, memory availability,
   the volume containing Ayati's data root, system uptime, and Ayati process
   memory.
+
+For `system_time`, local, machine-local, and Ayati-local requests omit the
+timezone argument and use Ayati's configured timezone. The model supplies an
+IANA timezone only when the user explicitly requests that timezone or a
+particular location. Tool-schema examples must not introduce an unrelated
+timezone into an otherwise local request.
 
 They are exposed through the targetless `system:time` and `system:health`
 capabilities in `observe.investigate`. `system_health` accepts no caller path

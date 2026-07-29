@@ -19,6 +19,11 @@ import { latestActiveFailure } from "./failure-lifecycle.js";
 import { isFilesystemTaskValidationOutcomeKind } from "./task-validation-contracts.js";
 import { validationModePassed } from "./validation-mode.js";
 import {
+  filesystemResourceAliases,
+  filesystemResourceContextByPath,
+  filesystemResourceDescription,
+} from "./filesystem-resource-context.js";
+import {
   workStateBlockers,
   workStateEvidenceRefs,
   workStateFindings,
@@ -86,6 +91,7 @@ export function buildRunResources(state: LoopState): AgentResourceRecord[] {
       description: resource.description,
       aliases: resource.aliases,
       locator: resource.locator,
+      metadataStatus: resource.metadataStatus,
     } satisfies AgentResourceRecord)),
     ...(state.preparedAttachmentRecords ?? []).map(attachmentRecordToResource),
     ...(state.managedFiles ?? []).map((file): AgentResourceRecord => ({
@@ -97,6 +103,7 @@ export function buildRunResources(state: LoopState): AgentResourceRecord[] {
       description: `User-provided file ${file.originalName}.`,
       aliases: [file.originalName, file.fileId],
       locator: { kind: "filesystem", path: absolutePath(file.storagePath) },
+      metadataStatus: "enriched",
     })),
     ...(state.managedDirectories ?? []).map((directory): AgentResourceRecord => ({
       resourceId: stableResourceId(absolutePath(directory.rootPath)),
@@ -107,6 +114,7 @@ export function buildRunResources(state: LoopState): AgentResourceRecord[] {
       description: `User-provided directory ${directory.name}.`,
       aliases: [directory.name, directory.directoryId],
       locator: { kind: "filesystem", path: absolutePath(directory.rootPath) },
+      metadataStatus: "enriched",
     })),
     ...buildGeneratedResources(state),
     ...buildVerifiedCompletionResources(state),
@@ -123,7 +131,15 @@ export function buildVerifiedCompletionResources(state: LoopState): AgentResourc
   }
 
   const generatedArtifacts = generatedArtifactPaths(state);
-  return validation.checks.flatMap((check) => {
+  const writeStatuses = desiredWriteStatusByPath(state);
+  const resourceContext = filesystemResourceContextByPath(state);
+  const metadataByPath = new Map(
+    (validation.resourceMetadata ?? []).map((metadata) => [
+      absolutePath(metadata.path),
+      metadata,
+    ]),
+  );
+  const validated = validation.checks.flatMap((check) => {
     if (!isFilesystemTaskValidationOutcomeKind(check.kind)) {
       return [];
     }
@@ -139,18 +155,120 @@ export function buildVerifiedCompletionResources(state: LoopState): AgentResourc
     ) {
       return [];
     }
-    const displayName = path.split("/").pop() || path;
+    const pathContext = resourceContext.get(path);
+    const existing = existingFilesystemResource(state, path)
+      ?? (
+        pathContext?.sourcePath
+          ? existingFilesystemResource(state, pathContext.sourcePath)
+          : undefined
+      );
+    const writeStatus = writeStatuses.get(path);
+    const resourceKind = kind === "symlink" ? "file" : kind;
+    const metadata = metadataByPath.get(path);
+    const displayName = metadata?.displayName
+      ?? existing?.displayName
+      ?? (path.split("/").pop() || path);
+    const origin = pathContext?.disposition === "created"
+      ? "agent_created"
+      : pathContext?.disposition === "existing"
+        || pathContext?.disposition === "moved"
+        ? existing?.origin ?? "agent_discovered"
+      : writeStatus === "created"
+      ? "agent_created"
+      : writeStatus
+        ? existing?.origin ?? "agent_discovered"
+        : "agent_created";
     return [{
-      resourceId: stableResourceId(path),
+      resourceId: existing?.resourceId ?? stableResourceId(path),
       role: "deliverable",
-      kind,
-      origin: "agent_created",
+      kind: resourceKind,
+      origin,
       displayName,
-      description: `Validated ${kind} deliverable ${displayName}.`,
-      aliases: [displayName],
+      description: metadata?.description
+        ?? filesystemResourceDescription({
+          path,
+          displayName,
+          kind: resourceKind,
+          context: pathContext,
+          existingDescription: existing?.description,
+          validated: true,
+        }),
+      aliases: filesystemResourceAliases(
+        path,
+        displayName,
+        [
+          ...(existing?.aliases ?? []),
+          ...(metadata?.aliases ?? []),
+        ],
+        pathContext?.sourcePath,
+      ),
       locator: { kind: "filesystem", path },
+      metadataStatus: metadata
+        ? "enriched"
+        : existing?.metadataStatus ?? "fallback",
     } satisfies AgentResourceRecord];
   });
+  const directoryCounts = new Map<string, {
+    count: number;
+    hasCreatedChild: boolean;
+    hasKnownWriteStatus: boolean;
+  }>();
+  for (const resource of validated) {
+    if (resource.kind !== "file" || resource.locator.kind !== "filesystem") continue;
+    const parent = dirname(resource.locator.path);
+    const current = directoryCounts.get(parent) ?? {
+      count: 0,
+      hasCreatedChild: false,
+      hasKnownWriteStatus: false,
+    };
+    const writeStatus = writeStatuses.get(resource.locator.path);
+    directoryCounts.set(parent, {
+      count: current.count + 1,
+      hasCreatedChild: current.hasCreatedChild
+        || writeStatus === "created",
+      hasKnownWriteStatus: current.hasKnownWriteStatus || Boolean(writeStatus),
+    });
+  }
+  const projectDirectories = [...directoryCounts.entries()]
+    .filter(([, value]) => value.count >= 2)
+    .map(([path, value]): AgentResourceRecord => {
+      const existing = existingFilesystemResource(state, path);
+      const metadata = metadataByPath.get(path);
+      const displayName = metadata?.displayName
+        ?? existing?.displayName
+        ?? (path.split("/").pop() || path);
+      const origin = existing?.origin
+        ?? (
+          value.hasCreatedChild || !value.hasKnownWriteStatus
+            ? "agent_created"
+            : "agent_discovered"
+        );
+      return {
+        resourceId: existing?.resourceId ?? stableResourceId(path),
+        role: "deliverable",
+        kind: "directory",
+        origin,
+        displayName,
+        description: metadata?.description
+          ?? existing?.description
+          ?? (origin === "agent_created"
+            ? `Validated project directory ${displayName}.`
+            : `Validated existing project directory ${displayName}.`),
+        aliases: filesystemResourceAliases(
+          path,
+          displayName,
+          [
+            ...(existing?.aliases ?? []),
+            ...(metadata?.aliases ?? []),
+          ],
+        ),
+        locator: { kind: "filesystem", path },
+        metadataStatus: metadata
+          ? "enriched"
+          : existing?.metadataStatus ?? "fallback",
+      };
+    });
+  return dedupeResources([...projectDirectories, ...validated]);
 }
 
 function toWorkstreamSummaryStatus(status: WorkState["status"]): AgentWorkstreamSummaryRecord["workstreamStatus"] {
@@ -283,24 +401,53 @@ function buildAttachmentNames(preparedAttachments: PreparedAttachmentSummary[] |
 
 function buildGeneratedResources(state: LoopState): AgentResourceRecord[] {
   const artifacts = generatedArtifactPaths(state);
+  const writeStatuses = desiredWriteStatusByPath(state);
+  const resourceContext = filesystemResourceContextByPath(state);
   const resources: AgentResourceRecord[] = [];
   const directoryCounts = new Map<string, number>();
 
   for (const artifact of artifacts) {
+    const writeStatus = writeStatuses.get(artifact);
+    const pathContext = resourceContext.get(artifact);
+    if (
+      pathContext?.disposition === "existing"
+      || (writeStatus && writeStatus !== "created")
+    ) {
+      continue;
+    }
     const kind = inferPathAssetKind(artifact);
+    const movedResource = pathContext?.sourcePath
+      ? existingFilesystemResource(state, pathContext.sourcePath)
+      : undefined;
+    const displayName = movedResource?.displayName
+      ?? (artifact.split("/").pop() || artifact);
     if (kind === "file") {
       const parent = dirname(artifact);
       directoryCounts.set(parent, (directoryCounts.get(parent) ?? 0) + 1);
     }
     resources.push({
-      resourceId: stableResourceId(artifact),
+      resourceId: movedResource?.resourceId ?? stableResourceId(artifact),
       role: "output",
       kind,
-      origin: "agent_created",
-      displayName: artifact.split("/").pop() || artifact,
-      description: `Agent-created ${kind} ${artifact.split("/").pop() || artifact}.`,
-      aliases: [artifact.split("/").pop() || artifact],
+      origin: pathContext?.disposition === "moved"
+        ? movedResource?.origin ?? "agent_discovered"
+        : "agent_created",
+      displayName,
+      description: filesystemResourceDescription({
+        path: artifact,
+        displayName,
+        kind,
+        context: pathContext,
+        existingDescription: movedResource?.description,
+      }),
+      aliases: filesystemResourceAliases(
+        artifact,
+        displayName,
+        movedResource?.aliases,
+        pathContext?.sourcePath,
+      ),
       locator: { kind: "filesystem", path: artifact },
+      metadataStatus: movedResource?.metadataStatus ?? "fallback",
     });
   }
 
@@ -315,8 +462,12 @@ function buildGeneratedResources(state: LoopState): AgentResourceRecord[] {
       origin: "agent_created",
       displayName: directoryPath.split("/").pop() || directoryPath,
       description: `Agent-created directory ${directoryPath.split("/").pop() || directoryPath}.`,
-      aliases: [directoryPath.split("/").pop() || directoryPath],
+      aliases: filesystemResourceAliases(
+        directoryPath,
+        directoryPath.split("/").pop() || directoryPath,
+      ),
       locator: { kind: "filesystem", path: directoryPath },
+      metadataStatus: "fallback",
     });
   }
 
@@ -331,12 +482,64 @@ function generatedArtifactPaths(state: LoopState): string[] {
     .map((artifact) => absolutePath(artifact));
 }
 
+function desiredWriteStatusByPath(
+  state: LoopState,
+): Map<string, "created" | "replaced" | "unchanged"> {
+  const statuses = new Map<string, "created" | "replaced" | "unchanged">();
+  for (const call of state.toolContext?.toolCalls ?? []) {
+    for (const evidence of call.completionEvidence ?? []) {
+      if (
+        evidence.kind !== "path_state"
+        || evidence.operation !== "write"
+        || !evidence.writeStatus
+      ) {
+        continue;
+      }
+      const path = absolutePath(evidence.path);
+      const current = statuses.get(path);
+      statuses.set(
+        path,
+        current === "created" ? current : evidence.writeStatus,
+      );
+    }
+  }
+  return statuses;
+}
+
+function existingFilesystemResource(
+  state: LoopState,
+  path: string,
+): AgentResourceRecord | undefined {
+  const resolvedPath = absolutePath(path);
+  for (const binding of state.harnessContext?.contextEngine?.workstream?.resources ?? []) {
+    const resource = binding.resource;
+    if (
+      resource.locator.kind !== "filesystem"
+      || absolutePath(resource.locator.path) !== resolvedPath
+    ) {
+      continue;
+    }
+    return {
+      resourceId: resource.resourceId,
+      role: binding.role,
+      kind: resource.kind,
+      origin: resource.origin,
+      displayName: resource.displayName,
+      description: resource.description,
+      aliases: resource.aliases,
+      locator: resource.locator,
+      metadataStatus: resource.metadataStatus,
+    };
+  }
+  return undefined;
+}
+
 function validatesGeneratedArtifact(
   validationPath: string,
-  kind: "file" | "directory",
+  kind: "file" | "directory" | "symlink",
   generatedArtifacts: string[],
 ): boolean {
-  if (kind === "file") {
+  if (kind === "file" || kind === "symlink") {
     return generatedArtifacts.includes(validationPath);
   }
   return generatedArtifacts.some((artifact) => (
@@ -366,9 +569,9 @@ function attachmentRecordToResource(
     description: `User-provided ${kind} ${record.summary.displayName}.`,
     aliases: [record.summary.displayName, record.summary.documentId],
     locator: { kind: "filesystem", path },
+    metadataStatus: "enriched",
   };
 }
-
 function dedupeResources(resources: AgentResourceRecord[]): AgentResourceRecord[] {
   const output = new Map<string, AgentResourceRecord>();
   for (const resource of resources) {
@@ -376,7 +579,6 @@ function dedupeResources(resources: AgentResourceRecord[]): AgentResourceRecord[
   }
   return [...output.values()];
 }
-
 function inferPathAssetKind(path: string): "file" | "directory" {
   if (/\.(?:html|css|js|jsx|ts|tsx|json|md|txt|py|sql|csv|pdf|png|jpg|jpeg|svg)$/i.test(path)) {
     return "file";

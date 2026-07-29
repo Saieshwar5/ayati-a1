@@ -77,9 +77,7 @@ function collectStructuredTargetEvidence(
 ): TargetEvidence[] {
   const evidence: TargetEvidence[] = [];
   addExtractedTargets(evidence, state.userMessage);
-  if (/\bdefault workspace\b|\bayati(?:['’]s)? workspace\b/i.test(state.userMessage)) {
-    addFilesystemEvidence(evidence, resolve(getWorkspaceRoot()), "directory");
-  }
+  addFilesystemEvidence(evidence, resolve(getWorkspaceRoot()), "directory");
   for (const target of state.virtualMode.targets) addExactEvidence(evidence, target);
   for (const resource of state.harnessContext.contextEngine?.ingressResources ?? []) {
     addResourceTargets(evidence, resource, true);

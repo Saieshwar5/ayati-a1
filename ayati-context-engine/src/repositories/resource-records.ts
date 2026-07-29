@@ -40,6 +40,7 @@ interface ResourceRow {
   current_version_key: string;
   current_version_json: string;
   availability: ResourceAvailability;
+  metadata_json: string;
   created_at: string;
   updated_at: string;
 }
@@ -126,7 +127,12 @@ export function upsertResource(
   const locatorKey = resourceLocatorKey(locator);
   const existing = readResourceRowByLocator(database, locatorKey);
   const resourceId = existing?.resource_id
-    ?? (locator.kind === "managed_blob" ? locator.resourceId : resourceIdForLocator(locatorKey));
+    ?? availableResourceId(
+      database,
+      locator.kind === "managed_blob" ? locator.resourceId : resourceIdForLocator(locatorKey),
+      locatorKey,
+      input.admission.admissionId,
+    );
   if (existing && existing.kind !== input.admission.kind) {
     throw new ContextEngineServiceError({
       code: "RESOURCE_CONFLICT",
@@ -143,10 +149,13 @@ export function upsertResource(
   const suppliedAliases = normalizeAliases(input.admission.aliases ?? []);
   const fallback = fallbackMetadata(input.admission.kind, displayName, locator);
   const description = suppliedDescription ?? existing?.description ?? fallback.description;
-  const aliases = suppliedAliases.length > 0
-    ? suppliedAliases
-    : existing
-      ? parseStringArray(existing.aliases_json, existing.resource_id)
+  const aliases = existing
+    ? normalizeAliases([
+        ...parseStringArray(existing.aliases_json, existing.resource_id),
+        ...suppliedAliases,
+      ])
+    : suppliedAliases.length > 0
+      ? suppliedAliases
       : fallback.aliases;
   const enriched = Boolean(suppliedDescription || suppliedAliases.length > 0);
   const metadataStatus = enriched
@@ -156,7 +165,7 @@ export function upsertResource(
       ? "enriched"
       : existing?.metadata_status === "enriched"
         ? "stale"
-        : "fallback";
+        : existing?.metadata_status ?? "fallback";
   const describedVersionKey = enriched
     ? input.admission.version.key
     : existing?.described_version_key ?? null;
@@ -334,6 +343,7 @@ export function readWorkstreamResourceDiscoveryIndex(
         resource.description,
         ...resource.aliases,
         resourceLocatorKey(resource.locator),
+        ...(resource.formerLocators ?? []).map(resourceLocatorKey),
       ].join(" ")).join("\n"),
     });
   }
@@ -702,12 +712,13 @@ function resourceSelect(alias?: string): string {
     "resource_id", "kind", "origin", "locator_kind", "locator_key", "locator_json",
     "display_name", "description", "aliases_json", "metadata_status", "described_version_key",
     "media_type", "size_bytes", "content_hash", "current_version_key", "current_version_json",
-    "availability", "created_at", "updated_at",
+    "availability", "metadata_json", "created_at", "updated_at",
   ].map((field) => prefix + field).join(", ");
   return "SELECT " + fields;
 }
 
 function resourceRef(row: ResourceRow): ResourceRef {
+  const metadata = parseResourceMetadata(row.metadata_json);
   return {
     resourceId: row.resource_id,
     kind: row.kind,
@@ -716,6 +727,9 @@ function resourceRef(row: ResourceRow): ResourceRef {
     description: row.description,
     aliases: parseStringArray(row.aliases_json, row.resource_id),
     locator: JSON.parse(row.locator_json) as ResourcePublicLocator,
+    ...(metadata.formerLocators && metadata.formerLocators.length > 0
+      ? { formerLocators: metadata.formerLocators }
+      : {}),
     version: JSON.parse(row.current_version_json) as ResourceVersion,
     availability: row.availability,
     metadataStatus: row.metadata_status,
@@ -726,14 +740,16 @@ function resourceRef(row: ResourceRow): ResourceRef {
   };
 }
 
-function refreshResourceSearch(database: ContextDatabase, resourceId: string): void {
+export function refreshResourceSearch(database: ContextDatabase, resourceId: string): void {
   const row = database.prepare([
-    "SELECT display_name, description, aliases_json, locator_key FROM resources WHERE resource_id = ?",
+    "SELECT display_name, description, aliases_json, locator_key, metadata_json",
+    "FROM resources WHERE resource_id = ?",
   ].join(" ")).get(resourceId) as {
     display_name: string;
     description: string;
     aliases_json: string;
     locator_key: string;
+    metadata_json: string;
   } | undefined;
   if (!row) return;
   database.prepare("DELETE FROM resource_search WHERE resource_id = ?").run(resourceId);
@@ -745,7 +761,11 @@ function refreshResourceSearch(database: ContextDatabase, resourceId: string): v
     row.display_name,
     row.description,
     parseStringArray(row.aliases_json, resourceId).join(" "),
-    row.locator_key,
+    [
+      row.locator_key,
+      ...(parseResourceMetadata(row.metadata_json).formerLocators ?? [])
+        .map(resourceLocatorKey),
+    ].join(" "),
   );
 }
 
@@ -888,6 +908,63 @@ function normalizeAliases(values: string[]): string[] {
     .map((value) => value.trim().replace(/\s+/g, " "))
     .filter((value) => value.length > 0 && value.length <= 500))]
     .sort((left, right) => left.localeCompare(right));
+}
+
+interface ResourceMetadata {
+  formerLocators?: ResourcePublicLocator[];
+  [key: string]: unknown;
+}
+
+function parseResourceMetadata(value: string): ResourceMetadata {
+  const parsed = JSON.parse(value) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const record = parsed as Record<string, unknown>;
+  const formerLocators = Array.isArray(record["formerLocators"])
+    ? record["formerLocators"].filter(isResourcePublicLocator)
+    : [];
+  return {
+    ...record,
+    ...(formerLocators.length > 0 ? { formerLocators } : {}),
+  };
+}
+
+function isResourcePublicLocator(value: unknown): value is ResourcePublicLocator {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const locator = value as Record<string, unknown>;
+  if (locator["kind"] === "filesystem") {
+    return typeof locator["path"] === "string";
+  }
+  if (locator["kind"] === "managed_blob") {
+    return typeof locator["resourceId"] === "string";
+  }
+  if (locator["kind"] === "url") return typeof locator["url"] === "string";
+  return locator["kind"] === "external"
+    && typeof locator["provider"] === "string"
+    && typeof locator["externalId"] === "string";
+}
+
+function availableResourceId(
+  database: ContextDatabase,
+  preferred: string,
+  locatorKey: string,
+  discriminator: string,
+): string {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const candidate = attempt === 0
+      ? preferred
+      : resourceIdForLocator(
+          [locatorKey, discriminator, String(attempt)].join("\u0000"),
+        );
+    const row = database.prepare(
+      "SELECT locator_key FROM resources WHERE resource_id = ?",
+    ).get(candidate) as { locator_key: string } | undefined;
+    if (!row || row.locator_key === locatorKey) return candidate;
+  }
+  throw new ContextEngineServiceError({
+    code: "RESOURCE_CONFLICT",
+    message: "Could not allocate a stable resource identity for the locator.",
+    details: { locatorKey },
+  });
 }
 
 function parseStringArray(value: string, resourceId: string): string[] {

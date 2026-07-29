@@ -14,6 +14,7 @@ import { validateWorkstreamRepository } from "../src/workstreams/workstream-repo
 import {
   boundRequestAcceptance,
   createBoundWorkstream,
+  createBoundWorkstreamWithMutableDirectory,
   createWorkstreamServiceFixture,
   workState,
   type WorkstreamServiceFixture,
@@ -116,13 +117,13 @@ describe("workstream-bound run finalization", () => {
           outcome: "done",
         }],
       },
-      resourceManifest: { resources: [{ role: "primary", access: "mutate" }] },
+      resourceManifest: { resources: [] },
     });
   });
 
   it("keeps one canonical primary binding when completion reuses its directory as a deliverable", async () => {
     const fixture = await createFixture("canonical-primary-resource");
-    const selected = await createBoundWorkstream(fixture, {
+    const selected = await createBoundWorkstreamWithMutableDirectory(fixture, {
       title: "Canonical Website",
       objective: "Keep one stable resource identity across requests and completion.",
     });
@@ -234,7 +235,7 @@ describe("workstream-bound run finalization", () => {
 
   it("records verified real-file mutation but commits only context files exactly once", async () => {
     const fixture = await createFixture("verified-mutation");
-    const selected = await createBoundWorkstream(fixture, {
+    const selected = await createBoundWorkstreamWithMutableDirectory(fixture, {
       title: "Verified Website",
       objective: "Create a verified website file in the real output resource.",
     });

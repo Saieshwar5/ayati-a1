@@ -76,6 +76,7 @@ import {
   buildWorkstreamSummaryRecord,
 } from "./run-result.js";
 import { completeWorkStateHandoff } from "./work-state/terminal-handoff.js";
+import { buildVerifiedResourceEffects } from "./verified-resource-effects.js";
 import { workStateFindings } from "./work-state/selectors.js";
 import {
   buildFinalFeedbackWarnings,
@@ -1293,6 +1294,7 @@ function buildLoopResult(
     result.workstreamSummary = buildWorkstreamSummaryRecord(state, content, input.status, responseKind, input.completion);
     result.resources = buildRunResources(state);
     result.verifiedCompletionResources = buildVerifiedCompletionResources(state);
+    result.verifiedResourceEffects = buildVerifiedResourceEffects(state);
   }
 
   return result;

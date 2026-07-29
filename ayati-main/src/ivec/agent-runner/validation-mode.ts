@@ -74,17 +74,17 @@ function evaluateCheck(
 
 function filesystemActualKind(
   outcome: RunVerifiedOutcome,
-): "file" | "directory" | undefined {
+): "file" | "directory" | "symlink" | undefined {
   if (outcome.family === "filesystem_read") return "file";
   return outcome.family === "filesystem_path" ? outcome.actualKind : undefined;
 }
 
 function expectedKindMatches(
   expected: ValidationExpectedPathKind,
-  actual: "file" | "directory" | undefined,
+  actual: "file" | "directory" | "symlink" | undefined,
 ): boolean {
   return expected === "either"
-    ? actual === "file" || actual === "directory"
+    ? actual === "file" || actual === "directory" || actual === "symlink"
     : expected === actual;
 }
 
@@ -113,7 +113,7 @@ function setPassed(
   check: ValidationCheckResult,
   outcome: RunVerifiedOutcome,
   message: string,
-  actualKind?: "file" | "directory",
+  actualKind?: "file" | "directory" | "symlink",
 ): void {
   check.status = "passed";
   check.tool = outcome.source.tool;
@@ -134,7 +134,7 @@ function setPassed(
 function setFailed(
   check: ValidationCheckResult,
   message: string,
-  actualKind?: "file" | "directory",
+  actualKind?: "file" | "directory" | "symlink",
 ): void {
   check.status = "failed";
   check.message = message;

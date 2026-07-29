@@ -3,6 +3,7 @@ import { isAbsolute, resolve } from "node:path";
 import type {
   ResourceAvailability,
   ResourceKind,
+  ResourceMetadataStatus,
   ResourceOrigin,
   ResourcePublicLocator,
   ResourceRole,
@@ -24,8 +25,11 @@ export interface WorkstreamResourceManifestEntry {
   description: string;
   aliases: string[];
   locator: ResourcePublicLocator;
+  formerLocators?: ResourcePublicLocator[];
   version: ResourceVersion;
   availability: ResourceAvailability;
+  metadataStatus?: ResourceMetadataStatus;
+  describedVersionKey?: string;
   mediaType?: string;
   lastUsedAt?: string;
 }
@@ -119,13 +123,23 @@ function validateEntry(value: unknown): WorkstreamResourceManifestEntry {
     || !Array.isArray(value["aliases"])
     || !value["aliases"].every((item) => typeof item === "string")
     || !isLocator(value["locator"])
+    || (value["formerLocators"] !== undefined
+      && (!Array.isArray(value["formerLocators"])
+        || !value["formerLocators"].every(isLocator)))
     || !isVersion(value["version"])
     || !isAvailability(value["availability"])
+    || (value["metadataStatus"] !== undefined
+      && !isMetadataStatus(value["metadataStatus"]))
+    || (value["describedVersionKey"] !== undefined
+      && typeof value["describedVersionKey"] !== "string")
     || (value["mediaType"] !== undefined && typeof value["mediaType"] !== "string")) {
     invalid("Workstream resource manifest contains an invalid resource entry.");
   }
   const requestIds = [...new Set((value["requestIds"] as string[]).map(requireRequestId))].sort();
   const aliases = [...new Set((value["aliases"] as string[]).map(normalizeText).filter(Boolean))].sort();
+  const formerLocators = uniqueLocators(
+    (value["formerLocators"] as ResourcePublicLocator[] | undefined) ?? [],
+  );
   const lastUsedAt = value["lastUsedAt"];
   if (lastUsedAt !== undefined
     && (typeof lastUsedAt !== "string" || !Number.isFinite(Date.parse(lastUsedAt)))) {
@@ -143,8 +157,15 @@ function validateEntry(value: unknown): WorkstreamResourceManifestEntry {
     description: requiredText(value["description"], "description", 2_000),
     aliases,
     locator: value["locator"] as ResourcePublicLocator,
+    ...(formerLocators.length > 0 ? { formerLocators } : {}),
     version: structuredClone(value["version"] as ResourceVersion),
     availability: value["availability"] as ResourceAvailability,
+    ...(value["metadataStatus"]
+      ? { metadataStatus: value["metadataStatus"] as ResourceMetadataStatus }
+      : {}),
+    ...(value["describedVersionKey"]
+      ? { describedVersionKey: value["describedVersionKey"] as string }
+      : {}),
     ...(value["mediaType"]
       ? { mediaType: requiredText(value["mediaType"], "media type", 500) }
       : {}),
@@ -174,6 +195,22 @@ function isResourceRole(value: unknown): value is ResourceRole {
 function isAvailability(value: unknown): value is ResourceAvailability {
   return value === "available" || value === "missing" || value === "changed"
     || value === "deleted" || value === "unverified";
+}
+
+function isMetadataStatus(value: unknown): value is ResourceMetadataStatus {
+  return value === "fallback" || value === "enriched" || value === "stale";
+}
+
+function uniqueLocators(values: ResourcePublicLocator[]): ResourcePublicLocator[] {
+  const seen = new Set<string>();
+  const output: ResourcePublicLocator[] = [];
+  for (const locator of values) {
+    const key = JSON.stringify(locator);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(structuredClone(locator));
+  }
+  return output;
 }
 
 function isLocator(value: unknown): value is ResourcePublicLocator {

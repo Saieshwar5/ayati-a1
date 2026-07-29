@@ -5,7 +5,7 @@ const DURABLE_INTENT = /\b(?:i want|we want|i need|we need|let(?:'|’)s|please 
 const OBSERVATION_ONLY = [
   /\bread[- ]only\b/,
   /\bonly\s+(?:inspect|read|search|find|locate|list|view|show)\b/,
-  /\b(?:do not|don't|never)\s+(?:modify|change|edit|write|create|save)(?:\s+(?:anything|files?|the\s+(?:file|directory|workspace)))?\b/,
+  /\b(?:do not|don't|never)\s+(?:modify|change|edit|write|create|save)(?:\s+(?:anything|any\s+files?|files?|the\s+(?:file|directory|workspace))\b|(?=\s*[.!?]?\s*$))/,
   /\bwithout\s+(?:modifying|changing|editing|writing|creating|saving)(?:\s+anything)?\b/,
   /\bmake\s+no\s+changes\b/,
   /\bno\s+(?:file|filesystem|workspace)\s+changes\b/,

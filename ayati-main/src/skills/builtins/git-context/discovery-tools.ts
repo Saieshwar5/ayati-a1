@@ -2,6 +2,7 @@ import type {
   ContextEngineService,
   ResourceKind,
   ResourceRole,
+  WorkstreamDiscoveryOutcome,
   WorkstreamDiscoveryView,
 } from "ayati-context-engine";
 import type { ToolDefinition, ToolExecutionContext, ToolResult } from "../../types.js";
@@ -38,7 +39,7 @@ function findWorkstreamsTool(service: ContextEngineService): ToolDefinition {
       },
       additionalProperties: false,
     },
-    outputSchema: listOutputSchema("workstreams"),
+    outputSchema: workstreamListOutputSchema(),
     annotations: readAnnotations(),
     resultContract: succeededContract(),
     async execute(input, context): Promise<ToolResult> {
@@ -62,10 +63,18 @@ function findWorkstreamsTool(service: ContextEngineService): ToolDefinition {
           ...(limit ? { limit } : {}),
           streamId,
         });
+        const guidance = workstreamDiscoveryGuidance(result.outcome);
         return okJsonResult({
-          code: "GIT_CONTEXT_WORKSTREAMS_FOUND",
-          message: `Found ${result.workstreams.length} durable workstream candidate(s).`,
-          structuredContent: { workstreams: result.workstreams, count: result.workstreams.length },
+          code: workstreamDiscoveryCode(result.outcome),
+          message: guidance.message,
+          structuredContent: {
+            outcome: result.outcome,
+            workstreams: result.workstreams,
+            count: result.workstreams.length,
+            catalogCount: result.catalogCount,
+            recommendedAction: guidance.recommendedAction,
+            reason: guidance.reason,
+          },
         });
       } catch (error) {
         return discoveryError(errorMessage(error));
@@ -406,6 +415,65 @@ function listOutputSchema(field: string): Record<string, unknown> {
     properties: { [field]: { type: "array", items: { type: "object" } }, count: { type: "integer" } },
     required: [field, "count"],
     additionalProperties: false,
+  };
+}
+
+function workstreamListOutputSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      outcome: { enum: ["catalog_empty", "no_match", "matches_found"] },
+      workstreams: { type: "array", items: { type: "object" } },
+      count: { type: "integer" },
+      catalogCount: { type: "integer" },
+      recommendedAction: { enum: ["create_workstream", "inspect_or_continue"] },
+      reason: { type: "string" },
+    },
+    required: [
+      "outcome",
+      "workstreams",
+      "count",
+      "catalogCount",
+      "recommendedAction",
+      "reason",
+    ],
+    additionalProperties: false,
+  };
+}
+
+function workstreamDiscoveryCode(
+  outcome: WorkstreamDiscoveryOutcome,
+): string {
+  if (outcome === "catalog_empty") return "GIT_CONTEXT_WORKSTREAM_CATALOG_EMPTY";
+  if (outcome === "no_match") return "GIT_CONTEXT_WORKSTREAMS_NOT_FOUND";
+  return "GIT_CONTEXT_WORKSTREAMS_FOUND";
+}
+
+function workstreamDiscoveryGuidance(
+  outcome: WorkstreamDiscoveryOutcome,
+): {
+  message: string;
+  recommendedAction: "create_workstream" | "inspect_or_continue";
+  reason: string;
+} {
+  if (outcome === "catalog_empty") {
+    return {
+      message: "No durable workstreams exist. Create a new workstream when this request needs mutation.",
+      recommendedAction: "create_workstream",
+      reason: "The durable workstream catalog is empty.",
+    };
+  }
+  if (outcome === "no_match") {
+    return {
+      message: "No durable workstream matches this request or destination. Create a new workstream when this is independent mutation work.",
+      recommendedAction: "create_workstream",
+      reason: "The catalog contains workstreams, but none matched this search.",
+    };
+  }
+  return {
+    message: "Found one or more durable workstream candidates. Inspect or continue the appropriate owner.",
+    recommendedAction: "inspect_or_continue",
+    reason: "One or more workstreams matched this search.",
   };
 }
 

@@ -101,6 +101,28 @@ describe("focused process tools", () => {
     expect(result.v2?.code).toBe("ABSOLUTE_PATH_REQUIRED");
   });
 
+  it("rejects mutation targets on background process sessions", async () => {
+    const started = await processStartTool.execute({
+      executable: "node",
+      args: ["server.js"],
+      targets: [{ path: "/tmp/server.log", kind: "file" }],
+    });
+    const sent = await processSendInputTool.execute({
+      sessionId: "PROC-UNKNOWN",
+      input: "continue\n",
+      targets: [{ path: "/tmp/output.txt", kind: "file" }],
+    });
+
+    expect(started.ok).toBe(false);
+    expect(started.v2?.code).toBe(
+      "PROCESS_SESSION_MUTATION_TARGETS_UNSUPPORTED",
+    );
+    expect(sent.ok).toBe(false);
+    expect(sent.v2?.code).toBe(
+      "PROCESS_SESSION_MUTATION_TARGETS_UNSUPPORTED",
+    );
+  });
+
   it.runIf(supportsSubprocessOutput)("separates process input, polling, and stopping", async () => {
     const temp = await mkdtemp(join(tmpdir(), "ayati-process-session-"));
     try {

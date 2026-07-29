@@ -24,6 +24,7 @@ export const RUN_FINALIZATION_LIMITS = {
   },
   completion: {
     maximumResources: 256,
+    maximumResourceEffects: 512,
     maximumItems: 256,
     missingChars: 1_024,
     failureChars: 2_000,

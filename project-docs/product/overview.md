@@ -48,6 +48,12 @@ progress ledger, and a generated resource projection. Deliverables remain in
 the user-visible workspace or at the path the user selected. Ayati does not
 initialize Git for ordinary output unless the user asks for it.
 
+Filesystem work uses canonical absolute paths. The agent follows an explicit
+user destination, reuses a clearly related project directory, or creates one
+named directory under `<AYATI_ROOT_DIR>/workspace/`. Ordinary directory and
+file creation does not require a resource record first; verified outputs are
+added to the resource catalog during finalization.
+
 Primary value:
 
 - A local-first autonomous agent with composable capabilities.
@@ -58,8 +64,10 @@ Primary value:
   amendment, a new bounded outcome in the same project, and a new workstream.
 - One immutable progress entry and one recoverable shared-repository commit
   for every finalized workstream-bound run.
-- Safe mutation through immutable workstream binding plus exact resource
-  scopes and deterministic before/after verification.
+- Safe filesystem mutation through immutable workstream ownership, an exact
+  selected destination root, containment checks, and deterministic tool
+  verification. Existing-resource and destructive operations retain stronger
+  resource-scoped controls.
 - A resource catalog that lets the agent find resources from workstreams and
   workstreams from resources.
 - A simple default output location at `<AYATI_ROOT_DIR>/workspace/` when the

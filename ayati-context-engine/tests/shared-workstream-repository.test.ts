@@ -20,7 +20,7 @@ afterEach(async () => {
 });
 
 describe("workstream context repository creation", () => {
-  it("materializes one shared context repository and a separate default output resource", async () => {
+  it("materializes one shared context repository without pre-registering a missing output", async () => {
     const fixture = await createWorkstreamServiceFixture("create-layout");
     fixtures.push(fixture);
 
@@ -64,13 +64,8 @@ describe("workstream context repository creation", () => {
         outcome: "incomplete",
       }),
     ]);
-    const primary = selected.resourceBindings.find((binding) => binding.primary);
-    expect(primary).toMatchObject({ role: "primary", access: "mutate" });
-    expect(primary?.resource.locator).toMatchObject({ kind: "filesystem" });
-    if (primary?.resource.locator.kind !== "filesystem") throw new Error("Expected filesystem output.");
-    expect(dirname(primary.resource.locator.path)).toBe(join(fixture.root, "workspace"));
-    expect(primary.resource.locator.path).not.toBe(selected.workstream.contextRepositoryPath);
-    await expect(access(primary.resource.locator.path)).resolves.toBeUndefined();
+    expect(selected.resourceBindings).toEqual([]);
+    await expect(access(join(fixture.root, "workspace"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("replays creation without allocating another run, workstream, or output", async () => {
@@ -89,7 +84,7 @@ describe("workstream context repository creation", () => {
     expect(fixture.database.prepare("SELECT COUNT(*) AS count FROM workstreams").get())
       .toEqual({ count: 1 });
     expect(fixture.database.prepare("SELECT COUNT(*) AS count FROM workstream_resources").get())
-      .toEqual({ count: 1 });
+      .toEqual({ count: 0 });
     expect(fixture.database.prepare("SELECT COUNT(*) AS count FROM runs").get())
       .toEqual({ count: 1 });
   });

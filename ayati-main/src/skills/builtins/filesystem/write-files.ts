@@ -1,30 +1,23 @@
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { createHash, randomUUID } from "node:crypto";
-import { basename, dirname, join } from "node:path";
-import type { ToolDefinition, ToolResult, ToolResultV2 } from "../../types.js";
-import { resolveWorkspaceMutationPath } from "../../workspace-paths.js";
-import { externalWorkspacePathError } from "./external-path-policy.js";
-import { MAX_WRITE_FILES, validateWriteFilesInput } from "./validators.js";
-
-interface PreparedWrite {
-  requestedPath: string;
-  filePath: string;
-  tempPath: string;
-  content: string;
-  baseSha256?: string;
-}
-
-interface MovedWrite {
-  requestedPath: string;
-  filePath: string;
-  bytesWritten: number;
-  sha256: string;
-  previousSha256?: string;
-}
+import type {
+  ArtifactRef,
+  ToolDefinition,
+  ToolResult,
+  ToolStructuredError,
+} from "../../types.js";
+import type { WriteFilesResult } from "./types.js";
+import {
+  MAX_WRITE_FILES,
+  MAX_WRITE_TOTAL_BYTES,
+  validateWriteFilesInput,
+} from "./validators.js";
+import {
+  executeWriteFilesOperation,
+  type WriteFilesOperationFailure,
+} from "./write-files-operation.js";
 
 export const writeFilesTool: ToolDefinition = {
   name: "write_files",
-  description: "Write multiple files as one serialized batch. New files can be created directly; overwriting an existing file requires files[].baseSha256 from a recent read result.",
+  description: "Make one or more UTF-8 text files match the requested content. Each file replacement is atomic, already-current files succeed unchanged, and a partially completed call can be retried safely.",
   inputSchema: {
     type: "object",
     required: ["files"],
@@ -33,52 +26,67 @@ export const writeFilesTool: ToolDefinition = {
         type: "array",
         minItems: 1,
         maxItems: MAX_WRITE_FILES,
-        description: `Files to write. Use up to ${MAX_WRITE_FILES} files per call; split larger writes into another write_files call.`,
+        description: `One to ${MAX_WRITE_FILES} files whose combined UTF-8 content is at most ${MAX_WRITE_TOTAL_BYTES} bytes.`,
         items: {
           type: "object",
           required: ["path", "content"],
           properties: {
             path: {
               type: "string",
-              description: "Path inside one mutable resource bound to the active workstream. Prefer a path relative to context.run.workspaceRoot; canonical absolute workspace paths are also accepted.",
+              description: "File path relative to context.run.workspaceRoot, or a canonical absolute path inside the selected destination root.",
             },
-            content: { type: "string", description: "Content to write." },
-            baseSha256: {
+            content: {
               type: "string",
-              description: "Required when overwriting an existing file. Use the sha256 returned by a recent full read of the same file.",
+              description: "Complete desired UTF-8 file content.",
             },
           },
           additionalProperties: false,
         },
       },
-      createDirs: {
+      createParents: {
         type: "boolean",
-        description: "Create parent directories if they don't exist (default: false).",
+        description: "Create missing parent directories. Defaults to true.",
       },
     },
     additionalProperties: false,
   },
   outputSchema: {
     type: "object",
-    required: ["filesWritten", "totalBytes", "files"],
+    required: [
+      "filesRequested",
+      "filesChanged",
+      "filesUnchanged",
+      "filesFailed",
+      "bytesWritten",
+      "files",
+    ],
     properties: {
-      filesWritten: { type: "integer" },
-      totalBytes: { type: "integer" },
+      filesRequested: { type: "integer" },
+      filesChanged: { type: "integer" },
+      filesUnchanged: { type: "integer" },
+      filesFailed: { type: "integer" },
+      bytesWritten: { type: "integer" },
       files: {
         type: "array",
         items: {
           type: "object",
-          required: ["requestedPath", "filePath", "bytesWritten", "sha256"],
+          required: ["path", "status", "sizeBytes", "sha256"],
           properties: {
-            requestedPath: { type: "string" },
-            filePath: { type: "string" },
-            bytesWritten: { type: "integer" },
+            path: { type: "string" },
+            status: {
+              type: "string",
+              enum: ["created", "replaced", "unchanged", "failed"],
+            },
+            sizeBytes: { type: "integer" },
             sha256: { type: "string" },
-            previousSha256: { type: "string" },
+            errorCode: { type: "string" },
+            errorMessage: { type: "string" },
           },
+          additionalProperties: false,
         },
       },
     },
+    additionalProperties: false,
   },
   annotations: {
     domain: "filesystem",
@@ -95,451 +103,224 @@ export const writeFilesTool: ToolDefinition = {
     successWhen: [
       { id: "operation_succeeded", kind: "tool_status", status: "succeeded" },
       {
-        id: "files_written_matches_request",
+        id: "files_result_matches_request",
         kind: "json_path_count_equals",
         path: "$.result.structuredContent.files",
         equalsPath: "$.input.files",
       },
       {
-        id: "written_paths_exist",
-        kind: "all_paths_exist",
-        path: "$.result.structuredContent.files[*].filePath",
-      },
-      {
-        id: "written_hashes_match",
-        kind: "written_hashes_match",
-        outputFilesPath: "$.result.structuredContent.files[*]",
-        inputFilesPath: "$.input.files[*]",
+        id: "files_requested_matches_request",
+        kind: "json_path_number_equals_count",
+        path: "$.result.structuredContent.filesRequested",
+        equalsPath: "$.input.files",
       },
     ],
     artifacts: [
-      { kind: "file", path: "$.result.structuredContent.files[*].filePath" },
-    ],
-    progressFacts: [
-      {
-        kind: "file_written",
-        path: "$.result.structuredContent.files[*].filePath",
-        message: "File written by write_files.",
-      },
+      { kind: "file", path: "$.result.structuredContent.files[*].path" },
     ],
   },
   errorContract: {
     codes: {
-      DUPLICATE_TARGET_PATH: {
-        category: "conflict",
-        retryable: true,
-        recoverable: true,
-        suggestedNextActions: ["Remove duplicate target paths from files and retry."],
-      },
-      PARENT_DIR_MISSING: {
-        category: "missing_path",
-        retryable: true,
-        recoverable: true,
-        suggestedNextActions: ["Retry write_files with createDirs=true or create the parent directory first."],
-      },
-      EXISTING_FILE_REQUIRES_BASE_SHA256: {
-        category: "conflict",
-        retryable: true,
-        recoverable: true,
-        suggestedNextActions: ["Read the full current file first, then retry write_files with files[].baseSha256 from that read result."],
-      },
-      WRITE_PRECONDITION_FAILED: {
-        category: "conflict",
-        retryable: true,
-        recoverable: true,
-        suggestedNextActions: ["Re-read the current file, rebuild the complete replacement from that content, then retry with the new baseSha256."],
-      },
-      BATCH_WRITE_FAILED: {
-        category: "unknown",
-        retryable: false,
-        recoverable: true,
-        suggestedNextActions: ["Inspect diagnostics and retry only after resolving the filesystem error."],
-      },
+      WRITE_INPUT_LIMIT_EXCEEDED: recoverableError("validation", false),
+      WRITE_INPUT_INVALID: recoverableError("validation", true),
+      DUPLICATE_TARGET_PATH: recoverableError("conflict", true),
+      PATH_OUTSIDE_SELECTED_MUTATION_ROOT: recoverableError("permission", false),
+      WRITE_PARENT_MISSING: recoverableError("missing_path", true),
+      WRITE_CONFLICT: recoverableError("conflict", true),
+      WRITE_TARGET_NOT_REGULAR_FILE: recoverableError("semantic", false),
+      WRITE_HARDLINK_UNSUPPORTED: recoverableError("semantic", false),
+      WRITE_PERMISSION_DENIED: recoverableError("permission", false),
+      WRITE_READ_ONLY_FILESYSTEM: recoverableError("permission", false),
+      WRITE_STORAGE_FULL: recoverableError("transient", true),
+      WRITE_INVALID_PATH: recoverableError("semantic", false),
+      WRITE_TEMPORARY_FAILURE: recoverableError("transient", true),
+      WRITE_PARTIAL: recoverableError("conflict", true),
+      WRITE_FAILED: recoverableError("unknown", false),
     },
   },
   async execute(input, context): Promise<ToolResult> {
     const parsed = validateWriteFilesInput(input);
-    if ("ok" in parsed) return parsed;
+    if ("ok" in parsed) return normalizeValidationFailure(parsed);
 
     const start = Date.now();
-    const prepared: PreparedWrite[] = [];
-    const seenPaths = new Set<string>();
-
-    for (const file of parsed.files) {
-      const resolved = resolveWorkspaceMutationPath(file.path, {
-        allowExternalPath: parsed.allowExternalPath,
-        operation: "write_files",
-        root: context?.resourceScope?.rootPath,
-      });
-      if (!resolved.ok) return externalWorkspacePathError(resolved);
-
-      const filePath = resolved.path;
-      if (seenPaths.has(filePath)) {
-        const durationMs = Date.now() - start;
-        const message = `Duplicate target path in batch: ${filePath}`;
-        return {
-          ok: false,
-          error: message,
-          meta: { durationMs, filePath },
-          v2: {
-            transportOk: true,
-            operationStatus: "failed",
-            code: "DUPLICATE_TARGET_PATH",
-            message,
-            structuredContent: {
-              filesRequested: parsed.files.length,
-              duplicatePath: filePath,
-            },
-            error: {
-              category: "conflict",
-              code: "DUPLICATE_TARGET_PATH",
-              message,
-              retryable: true,
-              recoverable: true,
-              target: filePath,
-              suggestedNextActions: ["Remove duplicate target paths from files and retry."],
-            },
-            diagnostics: { durationMs, filePath },
-          },
-        };
-      }
-      seenPaths.add(filePath);
-      prepared.push({
-        requestedPath: file.path,
-        filePath,
-        tempPath: buildTempPath(filePath),
-        content: file.content,
-        ...(file.baseSha256 ? { baseSha256: file.baseSha256 } : {}),
-      });
+    const operation = await executeWriteFilesOperation(parsed, context);
+    const durationMs = Date.now() - start;
+    if (!operation.ok) {
+      return failureResult(operation, durationMs);
     }
 
-    const tempPaths: string[] = [];
-    const moved: MovedWrite[] = [];
-
-    try {
-      const parentDirs = [...new Set(prepared.map((file) => dirname(file.filePath)))];
-      if (parsed.createDirs) {
-        for (const dir of parentDirs) {
-          await mkdir(dir, { recursive: true });
-        }
-      }
-
-      const preconditions = await verifyExistingFilePreconditions(prepared, start);
-      if (!preconditions.ok) {
-        return preconditions.result;
-      }
-
-      for (const file of prepared) {
-        await writeFile(file.tempPath, file.content, "utf-8");
-        tempPaths.push(file.tempPath);
-      }
-
-      const finalPreconditions = await verifyExistingFilePreconditions(prepared, start);
-      if (!finalPreconditions.ok) {
-        throw new GuardedWritePreconditionError(finalPreconditions.result);
-      }
-
-      for (const file of prepared) {
-        await rename(file.tempPath, file.filePath);
-        moved.push({
-          requestedPath: file.requestedPath,
-          filePath: file.filePath,
-          bytesWritten: Buffer.byteLength(file.content, "utf-8"),
-          sha256: sha256Text(file.content),
-          ...(file.baseSha256 ? { previousSha256: file.baseSha256 } : {}),
-        });
-      }
-
-      const totalBytes = moved.reduce((sum, file) => sum + file.bytesWritten, 0);
-      const structuredContent = {
-        filesWritten: moved.length,
-        totalBytes,
-        files: moved,
-      };
-      const durationMs = Date.now() - start;
-      return {
-        ok: true,
-        output: JSON.stringify(structuredContent, null, 2),
-        meta: {
-          durationMs,
-          filesWritten: moved.length,
-          totalBytes,
-          files: moved,
-        },
-        v2: {
-          transportOk: true,
-          operationStatus: "succeeded",
-          code: "FILES_WRITTEN",
-          message: `Wrote ${moved.length} file${moved.length === 1 ? "" : "s"}.`,
-          structuredContent,
-          artifacts: moved.map((file) => ({
-            kind: "file",
-            path: file.filePath,
-            label: file.requestedPath,
-            metadata: {
-              bytesWritten: file.bytesWritten,
-              sha256: file.sha256,
-            },
-          })),
-          diagnostics: {
-            durationMs,
-            filesWritten: moved.length,
-            totalBytes,
-          },
-        },
-      };
-    } catch (err) {
-      await Promise.all(
-        tempPaths.map((path) => rm(path, { force: true }).catch(() => undefined)),
-      );
-      if (err instanceof GuardedWritePreconditionError) {
-        return err.result;
-      }
-      const message = err instanceof Error ? err.message : "Unknown filesystem batch write error";
-      const durationMs = Date.now() - start;
-      const v2 = buildFailureResult(message, err, parsed.createDirs === true, prepared, moved, durationMs);
-      return {
-        ok: false,
-        error: moved.length > 0
-          ? `${message} (${moved.length}/${prepared.length} files were already moved into place)`
-          : message,
-        meta: {
-          durationMs,
-          filesRequested: prepared.length,
-          filesWritten: moved.length,
-          partial: moved.length > 0,
-          files: moved,
-        },
-        v2,
-      };
-    }
+    const code = operation.result.filesChanged === 0
+      ? "FILES_ALREADY_CURRENT"
+      : "FILES_APPLIED";
+    const message = successMessage(operation.result);
+    return {
+      ok: true,
+      output: JSON.stringify(operation.result, null, 2),
+      meta: resultDiagnostics(operation.result, durationMs),
+      v2: {
+        transportOk: true,
+        operationStatus: "succeeded",
+        code,
+        message,
+        structuredContent: operation.result,
+        artifacts: successfulArtifacts(operation.result),
+        diagnostics: resultDiagnostics(operation.result, durationMs),
+      },
+    };
   },
 };
 
-function buildTempPath(filePath: string): string {
-  return join(dirname(filePath), `.${basename(filePath)}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`);
-}
-
-function sha256Text(content: string): string {
-  return createHash("sha256").update(content, "utf-8").digest("hex");
-}
-
-async function verifyExistingFilePreconditions(
-  prepared: PreparedWrite[],
-  start: number,
-): Promise<{ ok: true } | { ok: false; result: ToolResult }> {
-  for (const file of prepared) {
-    const existing = await inspectExistingTarget(file.filePath);
-    if (existing.status === "missing") {
-      if (file.baseSha256) {
-        return {
-          ok: false,
-          result: preconditionFailure({
-            code: "WRITE_PRECONDITION_FAILED",
-            message: `write_files precondition failed for ${file.filePath}: expected baseSha256 ${file.baseSha256}, but the file does not exist.`,
-            target: file.filePath,
-            expected: file.baseSha256,
-            actual: "missing",
-            file,
-            filesRequested: prepared.length,
-            durationMs: Date.now() - start,
-          }),
-        };
-      }
-      continue;
-    }
-
-    if (existing.status === "not_file") {
-      return {
-        ok: false,
-        result: preconditionFailure({
-          code: "WRITE_PRECONDITION_FAILED",
-          message: `write_files precondition failed for ${file.filePath}: target exists but is not a regular file.`,
-          target: file.filePath,
-          expected: "regular file",
-          actual: existing.kind,
-          file,
-          filesRequested: prepared.length,
-          durationMs: Date.now() - start,
-        }),
-      };
-    }
-
-    if (!file.baseSha256) {
-      return {
-        ok: false,
-        result: preconditionFailure({
-          code: "EXISTING_FILE_REQUIRES_BASE_SHA256",
-          message: `write_files refused to overwrite existing file without baseSha256: ${file.filePath}`,
-          target: file.filePath,
-          expected: "files[].baseSha256",
-          actual: "missing",
-          file,
-          actualSha256: existing.sha256,
-          filesRequested: prepared.length,
-          durationMs: Date.now() - start,
-        }),
-      };
-    }
-
-    if (existing.sha256.toLowerCase() !== file.baseSha256.toLowerCase()) {
-      return {
-        ok: false,
-        result: preconditionFailure({
-          code: "WRITE_PRECONDITION_FAILED",
-          message: `write_files precondition failed for ${file.filePath}: file changed since the baseSha256 was read.`,
-          target: file.filePath,
-          expected: file.baseSha256,
-          actual: existing.sha256,
-          file,
-          actualSha256: existing.sha256,
-          filesRequested: prepared.length,
-          durationMs: Date.now() - start,
-        }),
-      };
-    }
-  }
-  return { ok: true };
-}
-
-async function inspectExistingTarget(filePath: string): Promise<
-  | { status: "missing" }
-  | { status: "not_file"; kind: string }
-  | { status: "file"; sha256: string }
-> {
-  try {
-    const info = await stat(filePath);
-    if (!info.isFile()) {
-      return { status: "not_file", kind: info.isDirectory() ? "directory" : "non-file" };
-    }
-    return { status: "file", sha256: sha256Text(await readFile(filePath, "utf-8")) };
-  } catch (err) {
-    const errno = err as NodeJS.ErrnoException;
-    if (errno.code === "ENOENT") {
-      return { status: "missing" };
-    }
-    throw err;
-  }
-}
-
-function preconditionFailure(input: {
-  code: "EXISTING_FILE_REQUIRES_BASE_SHA256" | "WRITE_PRECONDITION_FAILED";
-  message: string;
-  target: string;
-  expected: unknown;
-  actual: unknown;
-  file: PreparedWrite;
-  filesRequested: number;
-  durationMs: number;
-  actualSha256?: string;
-}): ToolResult {
-  const structuredContent = {
-    filesRequested: input.filesRequested,
-    filesWritten: 0,
-    target: input.target,
-    requestedPath: input.file.requestedPath,
-    baseSha256: input.file.baseSha256,
-    actualSha256: input.actualSha256,
+function failureResult(
+  failure: WriteFilesOperationFailure,
+  durationMs: number,
+): ToolResult {
+  const operationStatus = failure.result.filesChanged > 0 ? "partial" : "failed";
+  const error: ToolStructuredError = {
+    category: failure.category,
+    code: failure.code,
+    message: failure.message,
+    retryable: failure.retryable,
+    recoverable: failure.recoverable,
+    ...(failure.target ? { target: failure.target } : {}),
+    ...(failure.expected !== undefined ? { expected: failure.expected } : {}),
+    ...(failure.actual !== undefined ? { actual: failure.actual } : {}),
+    suggestedNextActions: suggestedNextActions(failure),
   };
-  const suggestedNextActions = input.code === "EXISTING_FILE_REQUIRES_BASE_SHA256"
-    ? ["Read the full current file first, then retry write_files with files[].baseSha256 from that read result."]
-    : ["Re-read the current file, rebuild the complete replacement from that content, then retry with the new baseSha256."];
-
+  const diagnostics = {
+    ...resultDiagnostics(failure.result, durationMs),
+    ...(failure.errnoCode ? { errnoCode: failure.errnoCode } : {}),
+  };
   return {
     ok: false,
-    error: input.message,
-    meta: {
-      durationMs: input.durationMs,
-      filePath: input.target,
-      filesRequested: input.filesRequested,
-      filesWritten: 0,
+    error: failure.message,
+    meta: diagnostics,
+    v2: {
+      transportOk: true,
+      operationStatus,
+      code: failure.code,
+      message: failure.message,
+      structuredContent: failure.result,
+      artifacts: successfulArtifacts(failure.result),
+      error,
+      diagnostics,
     },
+  };
+}
+
+function normalizeValidationFailure(result: ToolResult): ToolResult {
+  if (result.v2) return result;
+  const message = result.error ?? "Invalid write_files input.";
+  const isLimit = message.includes("at most") || message.includes("UTF-8 bytes");
+  const code = isLimit ? "WRITE_INPUT_LIMIT_EXCEEDED" : "WRITE_INPUT_INVALID";
+  return {
+    ...result,
     v2: {
       transportOk: true,
       operationStatus: "failed",
-      code: input.code,
-      message: input.message,
-      structuredContent,
+      code,
+      message,
       error: {
-        category: "conflict",
-        code: input.code,
-        message: input.message,
+        category: "validation",
+        code,
+        message,
         retryable: true,
         recoverable: true,
-        target: input.target,
-        expected: input.expected,
-        actual: input.actual,
-        suggestedNextActions,
-      },
-      diagnostics: {
-        durationMs: input.durationMs,
-        filePath: input.target,
-        filesRequested: input.filesRequested,
-        filesWritten: 0,
-        expected: input.expected,
-        actual: input.actual,
+        suggestedNextActions: [
+          isLimit
+            ? "Reduce the number or total UTF-8 size of files in this call."
+            : "Correct the write_files input and retry.",
+        ],
       },
     },
   };
 }
 
-class GuardedWritePreconditionError extends Error {
-  constructor(readonly result: ToolResult) {
-    super(result.error ?? "write_files precondition failed.");
-  }
+function resultDiagnostics(
+  result: WriteFilesResult,
+  durationMs: number,
+): Record<string, unknown> {
+  return {
+    durationMs,
+    filesRequested: result.filesRequested,
+    filesChanged: result.filesChanged,
+    filesUnchanged: result.filesUnchanged,
+    filesFailed: result.filesFailed,
+    bytesWritten: result.bytesWritten,
+  };
 }
 
-function buildFailureResult(
-  message: string,
-  err: unknown,
-  createDirs: boolean,
-  prepared: PreparedWrite[],
-  moved: MovedWrite[],
-  durationMs: number,
-): ToolResultV2 {
-  const errno = err as NodeJS.ErrnoException;
-  const parentTarget = prepared.length > 0 ? dirname(prepared[0]!.filePath) : undefined;
-  const parentMissing = errno.code === "ENOENT" && !createDirs;
-  const code = parentMissing ? "PARENT_DIR_MISSING" : "BATCH_WRITE_FAILED";
-  const operationStatus = moved.length > 0 ? "partial" : "failed";
-  const target = typeof errno.path === "string" ? errno.path : parentTarget;
+function successfulArtifacts(result: WriteFilesResult): ArtifactRef[] {
+  return result.files.flatMap((file) => (
+    file.status === "failed"
+      ? []
+      : [{
+          kind: "file" as const,
+          path: file.path,
+          label: file.path,
+          metadata: {
+            status: file.status,
+            sizeBytes: file.sizeBytes,
+            sha256: file.sha256,
+          },
+        }]
+  ));
+}
 
+function successMessage(result: WriteFilesResult): string {
+  if (result.filesChanged === 0) {
+    return `${result.filesUnchanged} file${result.filesUnchanged === 1 ? " is" : "s are"} already at the requested content.`;
+  }
+  const unchanged = result.filesUnchanged > 0
+    ? `; ${result.filesUnchanged} already current`
+    : "";
+  return `Applied requested content to ${result.filesChanged} file${result.filesChanged === 1 ? "" : "s"}${unchanged}.`;
+}
+
+function suggestedNextActions(failure: WriteFilesOperationFailure): string[] {
+  if (failure.code === "WRITE_PARTIAL") {
+    return [
+      "Retry the same write_files call; committed files will be reported unchanged and remaining files can complete.",
+    ];
+  }
+  if (failure.code === "WRITE_CONFLICT") {
+    return [
+      "Inspect the current target content, rebuild the desired content if necessary, and retry.",
+    ];
+  }
+  if (failure.code === "WRITE_PARENT_MISSING") {
+    return [
+      "Retry with createParents=true or create the intended parent directory first.",
+    ];
+  }
+  if (failure.code === "DUPLICATE_TARGET_PATH") {
+    return [
+      "Keep only one entry for each canonical absolute target path.",
+    ];
+  }
+  return [
+    failure.retryable
+      ? "Resolve the reported filesystem condition and retry the same desired-state write."
+      : "Inspect the reported target and choose a supported regular-file destination.",
+  ];
+}
+
+function recoverableError(
+  category: ToolStructuredError["category"],
+  retryable: boolean,
+): {
+  category: ToolStructuredError["category"];
+  retryable: boolean;
+  recoverable: boolean;
+  suggestedNextActions: string[];
+} {
   return {
-    transportOk: true,
-    operationStatus,
-    code,
-    message: moved.length > 0
-      ? `${message} (${moved.length}/${prepared.length} files were already moved into place)`
-      : message,
-    structuredContent: {
-      filesRequested: prepared.length,
-      filesWritten: moved.length,
-      partial: moved.length > 0,
-      files: moved,
-    },
-    artifacts: moved.map((file) => ({
-      kind: "file",
-      path: file.filePath,
-      label: file.requestedPath,
-      metadata: { bytesWritten: file.bytesWritten, sha256: file.sha256 },
-    })),
-    error: {
-      category: parentMissing ? "missing_path" : "unknown",
-      code,
-      message,
-      retryable: parentMissing,
-      recoverable: true,
-      ...(target ? { target } : {}),
-      suggestedNextActions: parentMissing
-        ? ["Retry write_files with createDirs=true or create the missing parent directory first."]
-        : ["Inspect diagnostics and retry only after resolving the filesystem error."],
-    },
-    diagnostics: {
-      durationMs,
-      filesRequested: prepared.length,
-      filesWritten: moved.length,
-      partial: moved.length > 0,
-      errnoCode: errno.code,
-    },
+    category,
+    retryable,
+    recoverable: true,
+    suggestedNextActions: [
+      retryable
+        ? "Resolve the reported condition and retry."
+        : "Inspect the target and choose a supported write.",
+    ],
   };
 }

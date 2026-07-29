@@ -7,7 +7,15 @@ const PROCESS_TOOLS = new Set([
   "process_send_input",
   "process_stop",
 ]);
-const WRITE_TOOLS = new Set(["write_files", "patch_files", "move", "delete", "create_directory"]);
+const WRITE_TOOLS = new Set([
+  "write_files",
+  "patch_files",
+  "copy",
+  "move",
+  "delete",
+  "create_directory",
+  "set_permissions",
+]);
 
 export function buildToolProjectionMetadata(tool: string, structuredContent: unknown): Record<string, unknown> | undefined {
   if (!isRecord(structuredContent)) {

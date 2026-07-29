@@ -623,6 +623,7 @@ describe("virtual mode runtime", () => {
       revision: 3,
       capabilities: ["file:write"],
       targets: ["output.txt"],
+      mutationScopes: ["/tmp/output.txt"],
     });
   });
 
@@ -714,6 +715,7 @@ describe("virtual mode runtime", () => {
       }),
     }));
     expect(current.virtualMode.targets).toEqual([resourceId]);
+    expect(current.virtualMode.mutationScopes).toEqual(["/tmp/balcony-herbs.md"]);
   });
 
   it("enters execute from ENTRY when the run is already authoritatively bound", async () => {

@@ -35,7 +35,7 @@ export function classifyErrorMessage(message: string): Pick<ToolStructuredError,
       code: "MISSING_PATH",
       retryable: true,
       recoverable: true,
-      suggestedNextActions: ["Create the missing parent path or retry with createDirs=true when supported."],
+      suggestedNextActions: ["Create the missing parent path or retry with createParents=true when supported."],
     };
   }
   if (normalized.includes("eacces") || normalized.includes("permission denied")) {
@@ -83,4 +83,3 @@ export function errnoToCategory(err: unknown): ToolErrorCategory {
       return "unknown";
   }
 }
-

@@ -6,6 +6,8 @@ export const TASK_VALIDATION_OUTCOME_KINDS = [
   "file.read_scope_satisfied",
   "file.written",
   "file.patched",
+  "path.copied",
+  "file.permissions_set",
   "directory.created",
   "path.moved_from",
   "path.moved_to",
@@ -28,7 +30,11 @@ export const TASK_VALIDATION_OUTCOME_KINDS = [
 export type TaskValidationOutcomeKind =
   typeof TASK_VALIDATION_OUTCOME_KINDS[number];
 
-export type ValidationExpectedPathKind = "file" | "directory" | "either";
+export type ValidationExpectedPathKind =
+  | "file"
+  | "directory"
+  | "symlink"
+  | "either";
 export type ValidationCheckStatus = "pending" | "passed" | "failed";
 
 export interface FileSearchValidationScope {
@@ -66,6 +72,18 @@ export interface ModeTransitionValidationCheck {
   denialCode?: string;
 }
 
+/**
+ * Bounded semantic metadata proposed by the model for one exact verified
+ * filesystem resource. Identity, locator, kind, version, and lifecycle remain
+ * deterministic runtime facts.
+ */
+export interface ResourceMetadataProposal {
+  path: string;
+  displayName: string;
+  description: string;
+  aliases: string[];
+}
+
 export interface ValidationCheckResult extends ModeTransitionValidationCheck {
   status: ValidationCheckStatus;
   actualKind?: Exclude<ValidationExpectedPathKind, "either">;
@@ -95,6 +113,8 @@ export function isFilesystemTaskValidationOutcomeKind(
     || kind === "file.read_scope_satisfied"
     || kind === "file.written"
     || kind === "file.patched"
+    || kind === "path.copied"
+    || kind === "file.permissions_set"
     || kind === "directory.created"
     || kind === "path.moved_from"
     || kind === "path.moved_to"

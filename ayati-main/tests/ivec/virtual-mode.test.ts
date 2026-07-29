@@ -158,6 +158,7 @@ describe("virtual mode graph", () => {
       operational: false,
       capabilities: [],
       targets: [],
+      mutationScopes: [],
     });
 
     const executing = mode("execute");
@@ -204,6 +205,7 @@ describe("virtual mode graph", () => {
       operational: false,
       capabilities: [],
       targets: [],
+      mutationScopes: [],
     });
   });
 

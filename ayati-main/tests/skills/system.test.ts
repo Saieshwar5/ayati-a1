@@ -8,6 +8,36 @@ import {
 const FIXED_NOW = new Date("2026-01-15T12:00:00.000Z");
 
 describe("system observation tools", () => {
+  it("grounds local-time requests in Ayati's configured timezone", async () => {
+    const skill = createSystemSkill({
+      defaultTimezone: "Asia/Kolkata",
+      healthRoot: "/tmp",
+      now: () => FIXED_NOW,
+      healthSample: async () => healthySample(),
+    });
+    const time = skill.tools.find((tool) => tool.name === "system_time");
+    if (!time) throw new Error("Missing system_time fixture.");
+
+    const contract = JSON.stringify({
+      description: time.description,
+      inputSchema: time.inputSchema,
+    });
+    expect(contract).toContain("omit timezone");
+    expect(contract).toContain("explicitly requested");
+    expect(contract).not.toContain("America/New_York");
+    expect(contract).not.toContain("Asia/Kolkata");
+
+    const local = await time.execute({});
+    expect(local.v2?.structuredContent).toMatchObject({
+      scope: "timezone:Asia/Kolkata",
+      timezone: "Asia/Kolkata",
+      localDate: "2026-01-15",
+      localTime: "17:30:00",
+      weekday: "thursday",
+      utcOffset: "+05:30",
+    });
+  });
+
   it("returns a deterministic timezone-aware time snapshot", async () => {
     const skill = createSystemSkill({
       defaultTimezone: "Asia/Kolkata",
@@ -42,7 +72,7 @@ describe("system observation tools", () => {
     }));
   });
 
-  it("uses the configured timezone and rejects invalid timezone input", async () => {
+  it("accepts an explicit timezone and rejects invalid timezone input", async () => {
     const skill = createSystemSkill({
       defaultTimezone: "Asia/Kolkata",
       healthRoot: "/tmp",
@@ -51,13 +81,6 @@ describe("system observation tools", () => {
     });
     const time = skill.tools.find((tool) => tool.name === "system_time");
     if (!time) throw new Error("Missing system_time fixture.");
-
-    const configured = await time.execute({});
-    expect(configured.v2?.structuredContent).toMatchObject({
-      timezone: "Asia/Kolkata",
-      localTime: "17:30:00",
-      utcOffset: "+05:30",
-    });
 
     const invalid = await time.execute({ timezone: "Not/A_Timezone" });
     expect(invalid).toMatchObject({

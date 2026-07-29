@@ -76,12 +76,14 @@ There is exactly one `.git/` beneath `workstreams/`; `W-*` directories are
 normal directories, never nested repositories. The shared repository contains
 only Ayati-managed context files.
 
-If the user gives no destination, output goes under
-`<ayati-root>/workspace/`. An existing path inside that workspace keeps its
-location. Under the default policy, an existing path outside it may be read
-but cannot become a mutation target. Deliverables, source trees, media,
-downloads, databases, secrets, raw transcripts, and private attachment bytes
-never enter context Git.
+Destination selection follows one policy: honor the exact user path and
+layout; otherwise reuse the clearly related project directory; otherwise
+create one named directory beneath `<ayati-root>/workspace/`. Relative
+filesystem mutation paths resolve beneath that workspace. A canonical
+absolute destination outside it is mutable only when an exact routed resource
+establishes it as the selected bound project root. Deliverables, source trees,
+media, downloads, databases, secrets, raw transcripts, and private attachment
+bytes never enter context Git.
 
 ## Workstream lifecycle
 
@@ -354,10 +356,12 @@ Progress rules:
 stable resource identity once, including its locator, role, access, aliases,
 request relationships, version, and availability. It is not manually edited.
 
-## Resources and mutation authority
+## Resources and filesystem mutation
 
 The resource catalog is the shared identity layer for agent streams and
-workstreams. Resources are useful in both directions:
+workstreams. A resource has a stable `RES-*` identity, kind, origin, real
+locator, display metadata, availability and version observations, and
+workstream/request relationships. Resources are useful in both directions:
 
 ```text
 workstream -> resources needed for continuation
@@ -368,11 +372,36 @@ Ingress attachments are admitted before routing. Uploaded bytes are copied
 once into content-addressed immutable storage; referenced files remain at
 their canonical path.
 
-Binding establishes durable ownership but does not itself authorize mutation.
-Before a mutating tool runs, Ayati resolves each target against a mutable bound
-resource, records an exact pre-observation, executes, then records and verifies
-the exact post-observation. Directory resources authorize canonical
-descendants, not siblings or symbolic-link escapes.
+Binding establishes durable task ownership but does not by itself authorize a
+filesystem call. For `create_directory`, `write_files`, `patch_files`, `copy`,
+`move`, `delete`, and `set_permissions`, the runtime derives one selected
+destination root from the new-workstream targets or exact routed resources.
+Every target in the call must remain inside that root; a copy source may be
+read-only elsewhere. Relative paths resolve once beneath
+`context.run.workspaceRoot`, while absolute paths must already be inside the
+selected root.
+
+A new workstream may have no resources. Missing output paths are not
+pre-registered merely to manufacture permission. The executor observes only
+the declared targets, runs the tool, and verifies status-specific existence,
+kind, content, identity, mode, created-parent, and cleanup effects. Broader
+process, Python, database, and legacy resource operations retain the stronger
+resource-scoped preparation journal.
+
+Finalization admits independently verified filesystem effects even when the
+larger run is incomplete or failed. Lifecycle is deterministic:
+
+- create registers a resource or restores a tombstone;
+- modify and permission changes preserve resource identity;
+- move preserves identity, changes the locator, and retains the former locator
+  for search;
+- copy creates a separate destination identity;
+- delete preserves a searchable `deleted` tombstone.
+
+Semantic metadata is explicitly `fallback`, `enriched`, or `stale`. The model
+may propose bounded display metadata only for exact validation-backed outputs;
+the runtime owns identity, kind, locator, version, availability, and lifecycle.
+`resources.json` remains a generated projection of that catalog.
 
 ## SQLite V9 responsibilities
 
@@ -415,7 +444,7 @@ unrelated workstream commit never makes another workstream stale.
 Every bound run uses one journaled finalization:
 
 1. verify immutable run/workstream/request binding and deterministic mutation
-   evidence;
+   evidence, then apply verified filesystem lifecycle effects;
 2. finalize the run-local WorkState;
 3. determine request lifecycle effect separately from run outcome;
 4. apply any provisional route plan;
@@ -445,6 +474,10 @@ criterion requires explicit user acceptance.
 
 Git and SQLite cannot share one physical transaction. The finalization journal
 bridges that boundary with the run id:
+
+Selected-root filesystem calls use bounded target-local verification persisted
+with their run steps instead of a pre-created resource lease or whole-project
+snapshot. Resource-scoped operations continue using their mutation journals.
 
 - before a Git commit, recovery accepts only journal-listed paths whose
   content is the recorded before-state or desired-state, removes only matching

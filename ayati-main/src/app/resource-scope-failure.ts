@@ -5,6 +5,7 @@ export type ResourceScopeFailureCode =
   | "WORKSTREAM_RESOURCE_MUTATION_DENIED"
   | "ABSOLUTE_PATH_REQUIRED"
   | "PATH_OUTSIDE_MUTATION_WORKSPACE"
+  | "PATH_OUTSIDE_SELECTED_MUTATION_ROOT"
   | "PATH_OUTSIDE_RESOURCE_SCOPE"
   | "PATH_OUTSIDE_WORKSPACE_ROOT"
   | "R_MUTATION_REQUIRES_WORKSTREAM_BINDING";
@@ -15,6 +16,7 @@ export function resourceScopeFailure(
   target?: string,
 ): ToolResult {
   const outsideMutationWorkspace = code === "PATH_OUTSIDE_MUTATION_WORKSPACE";
+  const outsideSelectedRoot = code === "PATH_OUTSIDE_SELECTED_MUTATION_ROOT";
   return {
     ok: false,
     error: message,
@@ -35,6 +37,8 @@ export function resourceScopeFailure(
             ? "Create or activate the correct workstream, then make a fresh mutation decision."
             : outsideMutationWorkspace
               ? "Choose an exact target inside the configured Ayati workspace."
+              : outsideSelectedRoot
+                ? "Use canonical absolute paths inside one selected destination root, or split the work into separate calls."
               : "Use an absolute path inside one resource bound to the active workstream.",
         ],
       },

@@ -13,6 +13,7 @@ import { validateWorkstreamRepository } from "../src/workstreams/workstream-repo
 import {
   boundRequestAcceptance,
   createBoundWorkstream,
+  createBoundWorkstreamWithMutableDirectory,
   createWorkstreamServiceFixture,
   workState,
   type WorkstreamServiceFixture,
@@ -467,7 +468,7 @@ async function createExistingWorkstream(
     "Start a long-lived learning workstream.",
   );
   fixtures.push(fixture);
-  const created = await createBoundWorkstream(fixture, {
+  const created = await createBoundWorkstreamWithMutableDirectory(fixture, {
     title: "Long-lived Learning",
     objective: "Learn one subject across many bounded lessons.",
   });

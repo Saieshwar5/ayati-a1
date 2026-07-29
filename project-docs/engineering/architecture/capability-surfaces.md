@@ -12,9 +12,10 @@ registered tools
 ```
 
 Capability selection is navigation, not authority. A capability may make a
-tool schema visible, but workstream binding, resource access, path containment,
-input validation, execution policy, and deterministic verification still
-decide whether a call can run and whether it succeeded.
+tool schema visible, but workstream binding, selected absolute destination
+containment, existing-resource access where applicable, input validation,
+execution policy, and deterministic verification still decide whether a call
+can run and whether it succeeded.
 
 ## Canonical Owners
 
@@ -63,7 +64,7 @@ Mode behavior:
 | `observe.investigate` | exact reads, inspection, queries, and targetless system observations | read-only evidence tools |
 | `workstream.route` | durable-owner discovery before unbound mutation | only workstream search/read and resource-owner lookup |
 | `resolve` | binding-required mutation responsibility | no lifecycle tools; the deterministic gate binds, then mounts the matching execute surface |
-| `execute` | bound mutation, verification, or bound control | only tools permitted by current workstream/resource authority |
+| `execute` | bound mutation, verification, or bound control | tools permitted by the bound workstream and selected destination or existing-resource policy |
 | `validation` | final typed task-outcome proof | no executable tools; queries the derived current-run verification index |
 
 A mode change replaces the full earlier surface. Tools do not accumulate
@@ -138,6 +139,18 @@ Core coverage is atomic:
 
 The model must choose fewer capabilities after `surface_too_large`. The
 runtime never guesses which required operation is expendable.
+
+Focused filesystem mutation is separated by intent:
+
+- `file:write` owns directory creation, desired-state writes, and exact
+  patches.
+- `file:copy` owns non-destructive file, directory, and symbolic-link copies.
+- `file:permissions` owns exact regular-file mode changes.
+- `file:move` and `file:delete` remain separate destructive capabilities so
+  their intent is explicit.
+
+This keeps each mounted schema small and prevents a broad catch-all filesystem
+tool from silently gaining unrelated effects.
 
 ## Recommendations
 

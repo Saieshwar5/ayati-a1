@@ -117,7 +117,7 @@ and `workstream.route` accepts search subjects with only
 workstream resolve uses exact routed resource IDs, while bound execute uses
 typed `mutationScopes`; new-workstream resolve uses typed `workspaceTargets`
 plus a bounded creation proposal. The runtime, not the model, derives existing
-activation paths, repository HEAD, mutation scope, and evidence. Each creation
+activation paths, repository HEAD, selected mutation roots, and evidence. Each creation
 target declares `kind: file | directory` and a portable `relativePath` beneath
 `context.run.workspaceRoot`; the model does not send the workspace root, an
 absolute creation path, a resource id, or a routing-evidence id.
@@ -128,11 +128,10 @@ canonical absolute path readable by the daemon's operating-system account;
 omitted search roots still default to `<AYATI_ROOT_DIR>/workspace/`. This
 machine-read path runs before workstream-resource enforcement and grants no
 binding or write authority. Direct filesystem mutation tools may receive a
-canonical absolute workspace path or a workspace-relative path. The execution
-wrapper resolves a relative path once beneath the configured workspace, then
-rejects traversal and symbolic-link escapes before resource lookup,
-preparation, or execution. Existing binding, mutable-resource, exact-target,
-and post-operation verification gates then run normally.
+canonical absolute path inside the selected destination root or a
+workspace-relative path. The execution wrapper resolves a relative path once
+beneath the configured workspace, then rejects traversal and symbolic-link
+escapes before preparation or execution.
 
 Every primary decision receives that exact configured absolute path once as
 `context.run.workspaceRoot`. The model treats “my workspace,” “the workspace,”
@@ -147,6 +146,22 @@ call path, read scope, existence, file type, readability, bounded returned
 content, and deterministic read result. `observe.locate` remains necessary
 when the exact path is unknown.
 
+The focused filesystem tools—`create_directory`, `write_files`, `patch_files`,
+`copy`, `move`, `delete`, and `set_permissions`—operate against one selected
+destination root. The root comes from runtime-resolved creation targets or
+exact routed resources; the model does not provide a permission token.
+`copy` may read an explicit source elsewhere, but only its selected-root
+destination may change. Target-local verification observes the exact declared
+entries and any created-parent or deferred-cleanup paths reported by the tool,
+without recursively snapshotting the whole project.
+
+`write_files` accepts complete desired UTF-8 content, derives current hashes
+and kinds internally, stages changed files beside their destinations, and
+atomically renames each file. Matching files return `unchanged`; a partially
+completed batch can safely retry already-satisfied paths. Other focused tools
+likewise distinguish completed, already-satisfied, partial, and failed
+effects instead of pretending a multi-path call is one filesystem transaction.
+
 Typical traces remain inside the one harness loop:
 
 ```text
@@ -160,6 +175,14 @@ ownership ambiguity: workstream.route -> search -> resolve(ambiguous) -> decisio
 mutation:    workstream.route -> search/read -> resolve -> execute -> validation(proof) -> direct response
 repair:      execute -> validation(failed) -> execute -> validation -> direct response
 ```
+
+## Single-Agent Run Serialization
+
+`IVecEngine` owns one in-memory FIFO queue shared by chat messages and system
+events. A queued input does not prepare a run until every earlier run finishes
+its full harness lifecycle. Shutdown drains active and queued work before
+stopping the provider. Ayati is a single-agent system, so deterministic run
+ordering is preferred over interleaved filesystem verification.
 
 A verified `find_files` call with multiple results adds a small factual
 `candidateSet` to that call's model-facing run context. It contains bounded
@@ -181,8 +204,8 @@ typed request-routing or workstream-creation proposal. Existing activation
 supplies the observed workstream, lifecycle choice, and exact routed resource
 IDs. The runtime derives their paths, ownership, mutation scope, repository
 HEAD, and evidence. Creation instead supplies typed `workspaceTargets`; the
-runtime derives their absolute paths, routing evidence, and resource
-identities. The deterministic gate performs at most one lifecycle binding
+runtime derives their absolute selected roots and routing evidence without
+pre-registering missing resources. The deterministic gate performs at most one lifecycle binding
 attempt, makes no model request, and requires a fresh primary decision after
 authoritative bound context is mounted.
 
@@ -223,7 +246,7 @@ decision_resolve_create({
   }
 })
 -> deterministic binding gate (zero model calls)
--> runtime resolves <workspaceRoot>/project/result.txt and derives evidence/resource identity
+-> runtime resolves <workspaceRoot>/project/result.txt and derives evidence plus the selected root
 -> automatic execute entry with a replaced capability surface
 -> refreshed authoritative context
 -> fresh main decision
@@ -240,7 +263,7 @@ The gate checks mutation intent, binding-required taxonomy, the one-attempt
 limit, and a successful current-run routing observation. For creation, it
 validates every target kind and portable relative path, resolves and
 canonicalizes it beneath the configured workspace, rejects traversal or
-symbolic-link escape, inspects that exact prospective resource, and searches
+symbolic-link escape, and searches
 again for a probable or definite owner. A strong owner returns
 `needs_user_input` unless the user explicitly selected a new independent
 workstream. Ambiguity performs no binding and does not consume the attempt.
@@ -250,8 +273,9 @@ HEAD, then rechecks candidate identity, request identity, mutable resource
 ownership, availability, and HEAD freshness against Context Engine state.
 
 Read-only references are never inspected or bound as mutation resources.
-For creation, only the exact resolved file or directory targets become
-prospective mutable resource bindings; the whole workspace is never bound.
+For creation, the exact resolved file or directory targets become selected
+mutation roots for the current run; missing targets are not pre-registered as
+resources, and the whole workspace is never bound.
 For activation, only exact routed resource IDs can establish the derived
 mutation scope. Directory resources authorize canonical descendants, not
 siblings or symbolic-link escapes.
@@ -335,10 +359,10 @@ read-only tools. `workstream.route` is narrower: only its three routing
 capabilities are eligible. A mode transition replaces the complete capability
 surface so tools from an earlier mode do not accumulate. Bounded
 self-transitions may adjust the surface; repeated identical transitions stop
-through no-progress protection. `execute` enforces the workspace-effect
-policy plus the existing bound-resource policy. Selecting a capability never
-authorizes its effect; resource-scoped validation still runs at execution
-time.
+through no-progress protection. `execute` enforces the selected-destination
+policy for focused filesystem operations and the existing bound-resource
+policy for other effects. Selecting a capability never authorizes its effect;
+the matching execution policy still runs at call time.
 
 `context.retrieve` exposes only `context_load` through `context:load`. Its
 receipt is audited, but full content is mounted directly in
@@ -553,10 +577,14 @@ marks its plan done, and removes the next action. The full assistant response
 remains in message history. WorkState instead preserves an existing meaningful
 checkpoint summary, derives a compact summary from completion receipts when
 available, or records a small direct-response handoff.
-Generated deliverables committed during finalization are derived from
-the intersection of passed filesystem validation subjects and artifacts
-actually produced by successful mutation steps; the model does not declare
-completion resources.
+Verified filesystem effects are projected independently from deterministic
+per-call completion evidence, so partial physical progress survives an
+incomplete or failed larger request. Generated deliverables remain the
+intersection of passed filesystem validation subjects and artifacts actually
+produced by successful mutation steps. The model may propose bounded semantic
+metadata only for those exact paths; resource identity, kind, locator,
+version, availability, and lifecycle remain deterministic. Missing semantic
+metadata stays an explicit fallback.
 
 `decision_stop` handles only non-successful terminal outcomes. It requires a
 usable user-facing clarification backed by current ambiguity for

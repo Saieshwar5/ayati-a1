@@ -24,6 +24,14 @@ describe("capability catalog", () => {
       coreTools: ["create_directory", "write_files", "patch_files"],
       allowedModes: ["resolve", "execute"],
     });
+    expect(catalog.get("file:copy")).toMatchObject({
+      coreTools: ["copy"],
+      allowedModes: ["resolve", "execute"],
+    });
+    expect(catalog.get("file:permissions")).toMatchObject({
+      coreTools: ["set_permissions"],
+      allowedModes: ["resolve", "execute"],
+    });
     expect(catalog.get("task:validation")).toMatchObject({
       coreTools: [],
       allowedModes: ["validation"],
@@ -97,6 +105,8 @@ describe("capability catalog", () => {
       "resource:ownership",
     ]);
     expect(capabilityEnum(resolveActivate)).toContain("file:write");
+    expect(capabilityEnum(resolveActivate)).toContain("file:copy");
+    expect(capabilityEnum(resolveActivate)).toContain("file:permissions");
     expect(capabilityEnum(resolveActivate)).not.toContain("file:read");
     expect(capabilityEnum(validation)).toEqual(["task:validation"]);
     expect(JSON.stringify(validation)).toContain("read_complete");

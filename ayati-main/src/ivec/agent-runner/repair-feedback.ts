@@ -246,9 +246,9 @@ function maybeEscalateEditRecovery(
     blockedTargets: repair.blockedTargets,
     allowedNextActions: [
       `Stop retrying the same patch_files target for ${filePath}.`,
-      `Call read_files with files=[{path:${JSON.stringify(filePath)}, mode:"full"}] to get complete content and sha256.`,
+      `Call read_files with files=[{path:${JSON.stringify(filePath)}, mode:"full"}] to get complete current content.`,
       "Prepare the complete replacement content from that full read.",
-      "Call write_files with files[].baseSha256 set to the sha256 returned by the full read.",
+      "Call write_files with the absolute path and complete desired content.",
       "Do not use process execution for file mutation.",
     ],
     operatorDetails: {
@@ -499,7 +499,7 @@ function buildEditRecoveryActions(recovery: EditTargetRecovery): string[] {
     actions.push(recovery.diagnostic.hint);
   }
   actions.push("Do not retry the same stale target string.");
-  actions.push("Use guarded write_files only after a full read returns sha256 and repeated precise patch/edit attempts still fail.");
+  actions.push("Use write_files with complete desired content when a full-file replacement is clearer than another precise patch attempt.");
   return actions;
 }
 

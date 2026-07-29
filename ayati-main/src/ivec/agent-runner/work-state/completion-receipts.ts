@@ -14,6 +14,7 @@ export const MAX_VALIDATION_COMPLETION_RECEIPTS = 4;
 const ARTIFACT_OUTCOMES = new Set<TaskValidationOutcomeKind>([
   "file.written",
   "file.patched",
+  "path.copied",
   "directory.created",
   "path.moved_to",
   "artifact.available",
@@ -91,6 +92,10 @@ function completionReceiptValue(check: ValidationCheckResult): string {
       return bounded(`Verified the written file ${subject}.`);
     case "file.patched":
       return bounded(`Verified the patched file ${subject}.`);
+    case "path.copied":
+      return bounded(`Verified the copied path ${subject}.`);
+    case "file.permissions_set":
+      return bounded(`Verified the requested permissions on ${subject}.`);
     case "directory.created":
       return bounded(`Verified the created directory ${subject}.`);
     case "path.moved_from":

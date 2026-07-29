@@ -57,6 +57,14 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     success: ["file:verify"],
     failure: ["file:read"],
   }),
+  capability("file:copy", "Copy one file, directory, or symbolic link.", "Use when an existing path should be duplicated without changing the source.", MUTATION, ["copy"], [], {
+    success: ["file:verify"],
+    failure: ["file:read"],
+  }),
+  capability("file:permissions", "Set exact permissions on regular files.", "Use only when the requested result requires explicit file mode changes.", MUTATION, ["set_permissions"], [], {
+    success: ["file:verify"],
+    failure: ["file:read"],
+  }),
   capability("file:verify", "Verify files and run bounded checks.", "Use after edits to inspect outputs and run relevant tests or builds.", EXECUTE, ["inspect_paths", "read_files", "process_run"]),
   capability(
     "task:validation",

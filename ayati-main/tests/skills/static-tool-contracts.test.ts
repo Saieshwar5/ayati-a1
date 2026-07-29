@@ -5,10 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { calculatorTool } from "../../src/skills/builtins/calculator/index.js";
 import databaseSkill from "../../src/skills/builtins/database/index.js";
 import { createDirectoryTool } from "../../src/skills/builtins/filesystem/create-directory.js";
+import { copyTool } from "../../src/skills/builtins/filesystem/copy.js";
 import { deleteTool } from "../../src/skills/builtins/filesystem/delete.js";
 import { moveTool } from "../../src/skills/builtins/filesystem/move.js";
 import { patchFilesTool } from "../../src/skills/builtins/filesystem/patch-files.js";
 import { readFilesTool } from "../../src/skills/builtins/filesystem/read-files.js";
+import { setPermissionsTool } from "../../src/skills/builtins/filesystem/set-permissions.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
 import { pulseTool } from "../../src/skills/builtins/pulse/index.js";
 import {
@@ -57,16 +59,25 @@ describe("static built-in tool contracts", () => {
       writeFilesTool,
       readFilesTool,
       patchFilesTool,
+      copyTool,
       moveTool,
+      setPermissionsTool,
       deleteTool,
     ]);
     const dir = join(tmp, "nested");
     const source = join(dir, "source.txt");
+    const copiedPath = join(dir, "copied.txt");
     const destination = join(dir, "destination.txt");
 
     const created = await executor.execute("create_directory", {
       path: dir,
-      allowExternalPath: true,
+    }, {
+      resourceScope: {
+        kind: "mutation_root",
+        rootPath: tmp,
+        authorityPath: tmp,
+        authorityKind: "directory",
+      },
     });
     expect(created.ok).toBe(true);
     expect(created.v2?.verification?.status).toBe("passed");
@@ -74,15 +85,21 @@ describe("static built-in tool contracts", () => {
 
     const written = await executor.execute("write_files", {
       files: [{ path: source, content: "alpha beta" }],
-      allowExternalPath: true,
+      createParents: true,
+    }, {
+      resourceScope: {
+        kind: "mutation_root",
+        rootPath: tmp,
+        authorityPath: tmp,
+        authorityKind: "directory",
+      },
     });
     expect(written.ok).toBe(true);
-    expect(written.v2?.code).toBe("FILES_WRITTEN");
+    expect(written.v2?.code).toBe("FILES_APPLIED");
     expect(written.v2?.verification?.assertions.map((assertion) => assertion.id)).toEqual([
       "operation_succeeded",
-      "files_written_matches_request",
-      "written_paths_exist",
-      "written_hashes_match",
+      "files_result_matches_request",
+      "files_requested_matches_request",
     ]);
 
     const read = await executor.execute("read_files", {
@@ -133,10 +150,44 @@ describe("static built-in tool contracts", () => {
     expect(patched.v2?.verification?.status).toBe("passed");
     expect(await readFile(source, "utf-8")).toBe("alpha gamma");
 
+    const copied = await executor.execute("copy", {
+      source,
+      destination: copiedPath,
+    }, {
+      resourceScope: {
+        kind: "mutation_root",
+        rootPath: tmp,
+        authorityPath: tmp,
+        authorityKind: "directory",
+      },
+    });
+    expect(copied.ok).toBe(true);
+    expect(copied.v2?.verification?.status).toBe("passed");
+    expect(await readFile(copiedPath, "utf-8")).toBe("alpha gamma");
+
+    const permissions = await executor.execute("set_permissions", {
+      files: [{ path: copiedPath, mode: "640" }],
+    }, {
+      resourceScope: {
+        kind: "mutation_root",
+        rootPath: tmp,
+        authorityPath: tmp,
+        authorityKind: "directory",
+      },
+    });
+    expect(permissions.ok).toBe(true);
+    expect(permissions.v2?.verification?.status).toBe("passed");
+
     const moved = await executor.execute("move", {
       source,
       destination,
-      allowExternalPath: true,
+    }, {
+      resourceScope: {
+        kind: "mutation_root",
+        rootPath: tmp,
+        authorityPath: tmp,
+        authorityKind: "directory",
+      },
     });
     expect(moved.ok).toBe(true);
     expect(moved.v2?.verification?.status).toBe("passed");
@@ -144,7 +195,13 @@ describe("static built-in tool contracts", () => {
 
     const deleted = await executor.execute("delete", {
       path: destination,
-      allowExternalPath: true,
+    }, {
+      resourceScope: {
+        kind: "mutation_root",
+        rootPath: tmp,
+        authorityPath: tmp,
+        authorityKind: "directory",
+      },
     });
     expect(deleted.ok).toBe(true);
     expect(deleted.v2?.verification?.status).toBe("passed");

@@ -24,6 +24,33 @@ afterEach(async () => {
 });
 
 describe("autonomous workstream discovery", () => {
+  it("distinguishes an empty catalog from a search with no matches", async () => {
+    const empty = await createWorkstreamServiceFixture(
+      "empty-discovery",
+      "Create the first durable workstream.",
+    );
+    fixtures.push(empty);
+
+    await expect(empty.service.findWorkstreams({
+      query: "lumen finch website",
+      limit: 10,
+    })).resolves.toEqual({
+      workstreams: [],
+      outcome: "catalog_empty",
+      catalogCount: 0,
+    });
+
+    const populated = await createDiscoveryFixture();
+    await expect(populated.fixture.service.findWorkstreams({
+      query: "unrelated lunar archive",
+      limit: 10,
+    })).resolves.toEqual({
+      workstreams: [],
+      outcome: "no_match",
+      catalogCount: 2,
+    });
+  });
+
   it("ranks exact resource ownership ahead of star, recency, and frequency", async () => {
     const state = await createDiscoveryFixture();
     await state.fixture.service.setWorkstreamStar({
@@ -46,6 +73,10 @@ describe("autonomous workstream discovery", () => {
         tier: "definite",
         reasons: expect.arrayContaining(["owned_resource"]),
       },
+    });
+    expect(found).toMatchObject({
+      outcome: "matches_found",
+      catalogCount: 2,
     });
     expect(found.workstreams.find((item) => item.workstreamId === state.researchWorkstreamId))
       .toMatchObject({ starred: true, boundRunsLast30Days: 1 });

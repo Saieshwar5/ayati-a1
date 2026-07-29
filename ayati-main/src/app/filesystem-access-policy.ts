@@ -1,4 +1,4 @@
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { ToolDefinition } from "../skills/types.js";
 import {
   canonicalizeAbsoluteFilesystemPath,
@@ -30,19 +30,39 @@ const DIRECT_FILESYSTEM_MUTATION_TOOLS = new Set([
   "write_files",
   "patch_files",
   "create_directory",
+  "copy",
   "move",
   "delete",
+  "set_permissions",
+]);
+
+const TARGET_VERIFIED_FILESYSTEM_MUTATION_TOOLS = new Set([
+  "write_files",
+  "patch_files",
+  "create_directory",
+  "copy",
+  "move",
+  "delete",
+  "set_permissions",
 ]);
 
 const PROCESS_MUTATION_TOOLS = new Set([
   "process_run",
-  "process_start",
 ]);
 
 export interface FilesystemAccessPolicyFailure {
-  code: "ABSOLUTE_PATH_REQUIRED" | "PATH_OUTSIDE_MUTATION_WORKSPACE";
+  code:
+    | "ABSOLUTE_PATH_REQUIRED"
+    | "PATH_OUTSIDE_MUTATION_WORKSPACE"
+    | "PATH_OUTSIDE_SELECTED_MUTATION_ROOT";
   message: string;
   target?: string;
+}
+
+export interface SelectedFilesystemMutationRoot {
+  executionRootPath: string;
+  authorityPath: string;
+  authorityKind: "file" | "directory";
 }
 
 export function loadFilesystemAccessPolicy(
@@ -73,6 +93,75 @@ export function isMachineFilesystemReadTool(
     && MACHINE_FILESYSTEM_READ_TOOLS.has(toolName)
     && definition?.annotations?.domain === "filesystem"
     && definition.annotations.readOnly;
+}
+
+export function usesSelectedFilesystemMutationRoot(toolName: string): boolean {
+  return TARGET_VERIFIED_FILESYSTEM_MUTATION_TOOLS.has(toolName);
+}
+
+export async function selectFilesystemMutationRoot(input: {
+  toolName: string;
+  value: unknown;
+  roots: string[];
+}): Promise<
+  | { selection: SelectedFilesystemMutationRoot }
+  | { failure: FilesystemAccessPolicyFailure }
+> {
+  const roots: string[] = [];
+  for (const root of input.roots) {
+    const required = requireAbsoluteFilesystemPath(root, "mutationScopes[].path");
+    if (!required.ok) {
+      return {
+        failure: {
+          code: required.code,
+          message: required.message,
+          target: root,
+        },
+      };
+    }
+    roots.push(await canonicalizeAbsoluteFilesystemPath(required.absolutePath));
+  }
+
+  const paths: string[] = [];
+  for (const path of collectMutationPolicyPaths(input.toolName, input.value)) {
+    const required = requireAbsoluteFilesystemPath(path);
+    if (!required.ok) {
+      return {
+        failure: {
+          code: required.code,
+          message: required.message,
+          target: path,
+        },
+      };
+    }
+    paths.push(await canonicalizeAbsoluteFilesystemPath(required.absolutePath));
+  }
+
+  const selected = roots
+    .sort((left, right) => right.length - left.length)
+    .find((root) => paths.every((path) => isWithin(root, path)));
+  if (!selected) {
+    const target = paths[0];
+    return {
+      failure: {
+        code: "PATH_OUTSIDE_SELECTED_MUTATION_ROOT",
+        message: "Every path in one filesystem mutation call must stay inside one selected absolute destination root.",
+        ...(target ? { target } : {}),
+      },
+    };
+  }
+  const authorityKind = input.toolName !== "create_directory"
+    && paths.length > 0
+    && paths.every((path) => path === selected)
+    ? "file"
+    : "directory";
+  return {
+    selection: {
+      executionRootPath: authorityKind === "file" ? dirname(selected) : selected,
+      authorityPath: selected,
+      authorityKind,
+    },
+  };
 }
 
 export function validateMachineReadPaths(
@@ -234,8 +323,14 @@ function collectMachineReadPaths(toolName: string, value: unknown): string[] {
 
 function collectMutationPolicyPaths(toolName: string, value: unknown): string[] {
   if (!isRecord(value)) return [];
+  if (toolName === "copy") {
+    return readDirectPaths(value, ["destination"]);
+  }
   if (DIRECT_FILESYSTEM_MUTATION_TOOLS.has(toolName)) {
     return collectToolPaths(value);
+  }
+  if (toolName === "process_start") {
+    return readDirectPaths(value, ["cwd"]);
   }
   if (PROCESS_MUTATION_TOOLS.has(toolName)) {
     return uniqueStrings([

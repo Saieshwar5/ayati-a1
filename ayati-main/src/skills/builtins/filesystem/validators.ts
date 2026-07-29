@@ -15,14 +15,19 @@ import type {
   ListDirectoryInput,
   CreateDirectoryInput,
   MoveInput,
+  CopyInput,
+  SetPermissionsInput,
   FindFilesInput,
   SearchInFilesInput,
 } from "./types.js";
 
 export const MAX_READ_FILES = 4;
-export const MAX_WRITE_FILES = 2;
-export const MAX_PATCH_FILES = 2;
+export const MAX_WRITE_FILES = 16;
+export const MAX_WRITE_TOTAL_BYTES = 256 * 1024;
+export const MAX_PATCH_FILES = 8;
 export const MAX_PATCHES_PER_FILE = 20;
+export const MAX_PATCH_INPUT_BYTES = 256 * 1024;
+export const MAX_PERMISSION_FILES = 16;
 
 function fail(msg: string): ToolResult {
   return { ok: false, error: `Invalid input: ${msg}` };
@@ -46,7 +51,7 @@ function absolutePath(value: string, field: string): string | ToolResult {
         retryable: true,
         recoverable: true,
         target: value,
-        suggestedNextActions: ["Use the absolute locator of the relevant bound filesystem resource and retry."],
+        suggestedNextActions: ["Use a canonical absolute filesystem path and retry."],
       },
     },
   };
@@ -58,10 +63,6 @@ function isObject(input: unknown): input is Record<string, unknown> {
 
 function isNonEmptyString(val: unknown): val is string {
   return typeof val === "string" && val.trim().length > 0;
-}
-
-function isSha256String(val: unknown): val is string {
-  return typeof val === "string" && /^[a-f0-9]{64}$/i.test(val);
 }
 
 function isPositiveInt(val: unknown): val is number {
@@ -194,48 +195,58 @@ export function validateInspectPathsInput(input: unknown): InspectPathsInput | T
 
 export function validateWriteFilesInput(input: unknown): WriteFilesInput | ToolResult {
   if (!isObject(input)) return fail("expected object.");
+  const unknownField = Object.keys(input).find((key) => (
+    key !== "files" && key !== "createParents"
+  ));
+  if (unknownField) return fail(`unknown field '${unknownField}'.`);
   const v = input as Partial<WriteFilesInput>;
   if (!Array.isArray(v.files) || v.files.length === 0) {
     return fail("files must be a non-empty array.");
   }
   if (v.files.length > MAX_WRITE_FILES) {
-    return fail(`files must contain at most ${MAX_WRITE_FILES} entries; split larger writes into multiple write_files calls.`);
+    return fail(`files must contain at most ${MAX_WRITE_FILES} entries.`);
   }
   const files: WriteFilesInputFile[] = [];
+  let totalBytes = 0;
   for (const [index, file] of v.files.entries()) {
     if (!isObject(file)) return fail(`files[${index}] must be an object.`);
+    const unknownFileField = Object.keys(file).find((key) => (
+      key !== "path" && key !== "content"
+    ));
+    if (unknownFileField) {
+      return fail(`files[${index}] contains unknown field '${unknownFileField}'.`);
+    }
     const candidate = file as Partial<WriteFilesInputFile>;
     if (!isNonEmptyString(candidate.path)) return fail(`files[${index}].path must be a non-empty string.`);
     const path = absolutePath(candidate.path, `files[${index}].path`);
     if (typeof path !== "string") return path;
     if (typeof candidate.content !== "string") return fail(`files[${index}].content must be a string.`);
-    if (candidate.baseSha256 !== undefined && !isSha256String(candidate.baseSha256)) {
-      return fail(`files[${index}].baseSha256 must be a 64-character sha256 hex string when provided.`);
-    }
+    totalBytes += Buffer.byteLength(candidate.content, "utf-8");
     files.push({
       path,
       content: candidate.content,
-      baseSha256: candidate.baseSha256?.toLowerCase(),
     });
   }
-  if (v.createDirs !== undefined && typeof v.createDirs !== "boolean") {
-    return fail("createDirs must be a boolean.");
+  if (totalBytes > MAX_WRITE_TOTAL_BYTES) {
+    return fail(`files contain ${totalBytes} UTF-8 bytes; the maximum is ${MAX_WRITE_TOTAL_BYTES}.`);
   }
-  if (v.allowExternalPath !== undefined && typeof v.allowExternalPath !== "boolean") {
-    return fail("allowExternalPath must be a boolean.");
+  if (v.createParents !== undefined && typeof v.createParents !== "boolean") {
+    return fail("createParents must be a boolean.");
   }
-  const tokenErr = validateConfirmationToken(v.confirmationToken);
-  if (tokenErr) return tokenErr;
   return {
     files,
-    createDirs: v.createDirs,
-    allowExternalPath: v.allowExternalPath,
-    confirmationToken: v.confirmationToken,
+    createParents: v.createParents,
   };
 }
 
 export function validatePatchFilesInput(input: unknown): PatchFilesInput | ToolResult {
   if (!isObject(input)) return fail("expected object.");
+  const unknownField = Object.keys(input).find((key) => (
+    key !== "files"
+    && key !== "allowExternalPath"
+    && key !== "confirmationToken"
+  ));
+  if (unknownField) return fail(`unknown field '${unknownField}'.`);
   const v = input as Partial<PatchFilesInput>;
   if (!Array.isArray(v.files)) return fail("files must be an array.");
   if (v.files.length === 0) return fail("files must contain at least one file.");
@@ -249,8 +260,15 @@ export function validatePatchFilesInput(input: unknown): PatchFilesInput | ToolR
   if (tokenErr) return tokenErr;
 
   const files: PatchFilesInputFile[] = [];
+  let totalPatchBytes = 0;
   for (const [fileIndex, rawFile] of v.files.entries()) {
     if (!isObject(rawFile)) return fail(`files[${fileIndex}] must be an object.`);
+    const unknownFileField = Object.keys(rawFile).find((key) => (
+      key !== "path" && key !== "patches"
+    ));
+    if (unknownFileField) {
+      return fail(`files[${fileIndex}] contains unknown field '${unknownFileField}'.`);
+    }
     const file = rawFile as Partial<PatchFilesInputFile>;
     if (!isNonEmptyString(file.path)) return fail(`files[${fileIndex}].path must be a non-empty string.`);
     const path = absolutePath(file.path, `files[${fileIndex}].path`);
@@ -267,6 +285,17 @@ export function validatePatchFilesInput(input: unknown): PatchFilesInput | ToolR
       const patch = rawPatch as Partial<PatchFilesPatch>;
       if (!isPatchFilesPatchKind(patch.kind)) {
         return fail(`files[${fileIndex}].patches[${patchIndex}].kind must be one of replace_text, replace_all_text, insert_before, insert_after, or replace_lines.`);
+      }
+      const allowedFields = patch.kind === "replace_text" || patch.kind === "replace_all_text"
+        ? new Set(["kind", "find", "replace"])
+        : patch.kind === "insert_before" || patch.kind === "insert_after"
+          ? new Set(["kind", "anchor", "content"])
+          : new Set(["kind", "startLine", "endLine", "replace"]);
+      const unknownPatchField = Object.keys(rawPatch).find((key) => (
+        !allowedFields.has(key)
+      ));
+      if (unknownPatchField) {
+        return fail(`files[${fileIndex}].patches[${patchIndex}] contains unknown field '${unknownPatchField}' for ${patch.kind}.`);
       }
       if (patch.kind === "replace_text" || patch.kind === "replace_all_text") {
         if (typeof patch.find !== "string" || patch.find.length === 0) {
@@ -295,6 +324,22 @@ export function validatePatchFilesInput(input: unknown): PatchFilesInput | ToolR
         if (typeof patch.replace !== "string") {
           return fail(`files[${fileIndex}].patches[${patchIndex}].replace must be a string for replace_lines.`);
         }
+      }
+      totalPatchBytes += [
+        patch.find,
+        patch.replace,
+        patch.anchor,
+        patch.content,
+      ].reduce(
+        (sum, value) => sum + (
+          typeof value === "string"
+            ? Buffer.byteLength(value, "utf-8")
+            : 0
+        ),
+        0,
+      );
+      if (totalPatchBytes > MAX_PATCH_INPUT_BYTES) {
+        return fail(`patch text contains ${totalPatchBytes} UTF-8 bytes; the maximum is ${MAX_PATCH_INPUT_BYTES}.`);
       }
       patches.push({
         kind: patch.kind,
@@ -326,6 +371,10 @@ function isPatchFilesPatchKind(value: unknown): value is PatchFilesPatchKind {
 
 export function validateDeleteInput(input: unknown): DeleteInput | ToolResult {
   if (!isObject(input)) return fail("expected object.");
+  const unknownField = Object.keys(input).find((key) => (
+    key !== "path" && key !== "recursive"
+  ));
+  if (unknownField) return fail(`unknown field '${unknownField}'.`);
   const v = input as Partial<DeleteInput>;
   if (!isNonEmptyString(v.path)) return fail("path must be a non-empty string.");
   const path = absolutePath(v.path, "path");
@@ -333,16 +382,9 @@ export function validateDeleteInput(input: unknown): DeleteInput | ToolResult {
   if (v.recursive !== undefined && typeof v.recursive !== "boolean") {
     return fail("recursive must be a boolean.");
   }
-  if (v.allowExternalPath !== undefined && typeof v.allowExternalPath !== "boolean") {
-    return fail("allowExternalPath must be a boolean.");
-  }
-  const tokenErr = validateConfirmationToken(v.confirmationToken);
-  if (tokenErr) return tokenErr;
   return {
     path,
     recursive: v.recursive,
-    allowExternalPath: v.allowExternalPath,
-    confirmationToken: v.confirmationToken,
   };
 }
 
@@ -363,6 +405,10 @@ export function validateListDirectoryInput(input: unknown): ListDirectoryInput |
 
 export function validateCreateDirectoryInput(input: unknown): CreateDirectoryInput | ToolResult {
   if (!isObject(input)) return fail("expected object.");
+  const unknownField = Object.keys(input).find((key) => (
+    key !== "path" && key !== "recursive"
+  ));
+  if (unknownField) return fail(`unknown field '${unknownField}'.`);
   const v = input as Partial<CreateDirectoryInput>;
   if (!isNonEmptyString(v.path)) return fail("path must be a non-empty string.");
   const path = absolutePath(v.path, "path");
@@ -370,21 +416,21 @@ export function validateCreateDirectoryInput(input: unknown): CreateDirectoryInp
   if (v.recursive !== undefined && typeof v.recursive !== "boolean") {
     return fail("recursive must be a boolean.");
   }
-  if (v.allowExternalPath !== undefined && typeof v.allowExternalPath !== "boolean") {
-    return fail("allowExternalPath must be a boolean.");
-  }
-  const tokenErr = validateConfirmationToken(v.confirmationToken);
-  if (tokenErr) return tokenErr;
   return {
     path,
     recursive: v.recursive ?? true,
-    allowExternalPath: v.allowExternalPath,
-    confirmationToken: v.confirmationToken,
   };
 }
 
 export function validateMoveInput(input: unknown): MoveInput | ToolResult {
   if (!isObject(input)) return fail("expected object.");
+  const unknownField = Object.keys(input).find((key) => (
+    key !== "source"
+    && key !== "destination"
+    && key !== "overwrite"
+    && key !== "createParents"
+  ));
+  if (unknownField) return fail(`unknown field '${unknownField}'.`);
   const v = input as Partial<MoveInput>;
   if (!isNonEmptyString(v.source)) return fail("source must be a non-empty string.");
   if (!isNonEmptyString(v.destination)) return fail("destination must be a non-empty string.");
@@ -395,18 +441,84 @@ export function validateMoveInput(input: unknown): MoveInput | ToolResult {
   if (v.overwrite !== undefined && typeof v.overwrite !== "boolean") {
     return fail("overwrite must be a boolean.");
   }
-  if (v.allowExternalPath !== undefined && typeof v.allowExternalPath !== "boolean") {
-    return fail("allowExternalPath must be a boolean.");
+  if (v.createParents !== undefined && typeof v.createParents !== "boolean") {
+    return fail("createParents must be a boolean.");
   }
-  const tokenErr = validateConfirmationToken(v.confirmationToken);
-  if (tokenErr) return tokenErr;
   return {
     source,
     destination,
-    overwrite: v.overwrite,
-    allowExternalPath: v.allowExternalPath,
-    confirmationToken: v.confirmationToken,
+    overwrite: v.overwrite ?? false,
+    createParents: v.createParents ?? true,
   };
+}
+
+export function validateCopyInput(input: unknown): CopyInput | ToolResult {
+  if (!isObject(input)) return fail("expected object.");
+  const unknownField = Object.keys(input).find((key) => (
+    key !== "source"
+    && key !== "destination"
+    && key !== "createParents"
+  ));
+  if (unknownField) return fail(`unknown field '${unknownField}'.`);
+  const v = input as Partial<CopyInput>;
+  if (!isNonEmptyString(v.source)) return fail("source must be a non-empty string.");
+  if (!isNonEmptyString(v.destination)) return fail("destination must be a non-empty string.");
+  const source = absolutePath(v.source, "source");
+  if (typeof source !== "string") return source;
+  const destination = absolutePath(v.destination, "destination");
+  if (typeof destination !== "string") return destination;
+  if (v.createParents !== undefined && typeof v.createParents !== "boolean") {
+    return fail("createParents must be a boolean.");
+  }
+  return {
+    source,
+    destination,
+    createParents: v.createParents ?? true,
+  };
+}
+
+export function validateSetPermissionsInput(
+  input: unknown,
+): SetPermissionsInput | ToolResult {
+  if (!isObject(input)) return fail("expected object.");
+  const unknownField = Object.keys(input).find((key) => key !== "files");
+  if (unknownField) return fail(`unknown field '${unknownField}'.`);
+  const v = input as Partial<SetPermissionsInput>;
+  if (!Array.isArray(v.files) || v.files.length === 0) {
+    return fail("files must be a non-empty array.");
+  }
+  if (v.files.length > MAX_PERMISSION_FILES) {
+    return fail(`files must contain at most ${MAX_PERMISSION_FILES} entries.`);
+  }
+  const files: SetPermissionsInput["files"] = [];
+  for (const [index, raw] of v.files.entries()) {
+    if (!isObject(raw)) return fail(`files[${index}] must be an object.`);
+    const unknownFileField = Object.keys(raw).find((key) => (
+      key !== "path" && key !== "mode"
+    ));
+    if (unknownFileField) {
+      return fail(`files[${index}] contains unknown field '${unknownFileField}'.`);
+    }
+    const entry = raw as Partial<SetPermissionsInput["files"][number]>;
+    if (!isNonEmptyString(entry.path)) {
+      return fail(`files[${index}].path must be a non-empty string.`);
+    }
+    const path = absolutePath(entry.path, `files[${index}].path`);
+    if (typeof path !== "string") return path;
+    if (
+      typeof entry.mode !== "string"
+      || !/^(?:0?[0-7]{3})$/.test(entry.mode)
+    ) {
+      return fail(`files[${index}].mode must be a three-digit octal mode such as "755".`);
+    }
+    const normalizedMode = entry.mode.padStart(4, "0").slice(-3);
+    const numericMode = Number.parseInt(normalizedMode, 8);
+    if ((numericMode & 0o400) === 0) {
+      return fail(`files[${index}].mode must retain owner-read permission for verification.`);
+    }
+    files.push({ path, mode: normalizedMode });
+  }
+  return { files };
 }
 
 function validateSearchCommon(

@@ -162,7 +162,15 @@ export class WorkstreamDiscoveryService {
     const workstreams = input.query || (input.view && input.view !== "relevant")
       ? [...visible].sort(compareCandidates).slice(0, limit)
       : defaultShortlist(visible, Math.min(limit, ACTIVE_CONTEXT_LIMIT));
-    return { workstreams };
+    return {
+      workstreams,
+      outcome: workstreams.length > 0
+        ? "matches_found"
+        : rows.length === 0
+          ? "catalog_empty"
+          : "no_match",
+      catalogCount: rows.length,
+    };
   }
 
   recordAccess(input: {

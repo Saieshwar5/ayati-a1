@@ -65,6 +65,23 @@ describe("workspace paths", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it("keeps mutation path resolution pure until a mutation executes", async () => {
+    const root = `/tmp/ayati-pure-mutation-root-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const workspace = join(root, "workspace");
+    const target = join(workspace, "site", "index.html");
+    await rm(root, { recursive: true, force: true });
+    process.env["AYATI_ROOT_DIR"] = root;
+
+    expect(resolveWorkspaceMutationPath(target, {
+      operation: "write_files",
+    })).toMatchObject({
+      ok: true,
+      path: target,
+      workspaceRoot: workspace,
+    });
+    await expect(access(workspace)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("treats workspace aliases as the derived workspace root", () => {
     process.env["AYATI_ROOT_DIR"] = "/tmp/ayati-custom-root";
     const workspace = "/tmp/ayati-custom-root/workspace";

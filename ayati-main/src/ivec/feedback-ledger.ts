@@ -804,7 +804,7 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
       severity: "error",
       title: "Deterministic binding failed",
       details: "The typed binding proposal passed into the resolve gate but authoritative binding failed.",
-      recommendation: "Inspect proposal evidence, candidate HEAD, resource ownership, context revision, and the gate outcome.",
+      recommendation: "Inspect proposal evidence, the active run, candidate HEAD, resource ownership, and the gate outcome.",
     });
   }
 

@@ -2,7 +2,15 @@ import type { PromptRunToolCallContext } from "../run-tool-call-context.js";
 import { compactInputFields, projectStructuredCall, readMetadata } from "./shared.js";
 import type { ToolContextProjector } from "./types.js";
 
-const TOOLS = new Set(["write_files", "patch_files", "move", "delete", "create_directory"]);
+const TOOLS = new Set([
+  "write_files",
+  "patch_files",
+  "copy",
+  "move",
+  "delete",
+  "create_directory",
+  "set_permissions",
+]);
 
 export const filesystemWriteProjector: ToolContextProjector = {
   id: "filesystem_write_v1",
@@ -31,13 +39,18 @@ export const filesystemWriteProjector: ToolContextProjector = {
 function compactWriteInput(call: PromptRunToolCallContext): unknown {
   if (call.tool === "write_files") {
     return compactInputFields(call.input, {
-      keep: ["createDirs"],
-      arrayObjectFields: { files: ["path", "baseSha256"] },
+      keep: ["createParents"],
+      arrayObjectFields: { files: ["path"] },
     });
   }
   if (call.tool === "patch_files") {
     return compactInputFields(call.input, {
-      arrayObjectFields: { files: ["path", "baseSha256"] },
+      arrayObjectFields: { files: ["path"] },
+    });
+  }
+  if (call.tool === "set_permissions") {
+    return compactInputFields(call.input, {
+      arrayObjectFields: { files: ["path", "mode"] },
     });
   }
   return compactInputFields(call.input, {

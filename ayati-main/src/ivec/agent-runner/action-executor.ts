@@ -34,6 +34,7 @@ export interface AgentActionExecutionDeps {
   runRecorder: RunRecorder;
   runHandle: MemoryRunHandle;
   workstreamResources?: WorkstreamResourceBinding[];
+  filesystemMutationRoots?: string[];
   metrics?: RunMetrics;
 }
 
@@ -228,6 +229,9 @@ function validateActionPlan(deps: AgentActionExecutionDeps, action: AgentAction)
     runId: deps.runHandle.runId,
     sessionId: deps.runHandle.sessionId,
     ...(deps.workstreamResources?.length ? { workstreamResources: deps.workstreamResources } : {}),
+    ...(deps.filesystemMutationRoots?.length
+      ? { filesystemMutationRoots: deps.filesystemMutationRoots }
+      : {}),
     ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
   };
   for (const tool of action.allowedTools) {
@@ -325,6 +329,9 @@ async function executeToolCall(
     callId: call.id,
     sessionId: deps.runHandle.sessionId,
     ...(deps.workstreamResources?.length ? { workstreamResources: deps.workstreamResources } : {}),
+    ...(deps.filesystemMutationRoots?.length
+      ? { filesystemMutationRoots: deps.filesystemMutationRoots }
+      : {}),
     stepNumber,
     ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
   };

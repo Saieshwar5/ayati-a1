@@ -73,11 +73,13 @@ import type {
   ContextCheckpointRecord,
   ContextCheckpointSummary,
   ResourceKind,
+  ResourceMetadataStatus,
   ResourceOrigin,
   ResourcePublicLocator,
   ResourceRole,
   RunOutcome,
   RunStopReason,
+  VerifiedFilesystemResourceEffect,
 } from "ayati-context-engine";
 
 export type SystemEventApprovalState = "not_needed" | "pending" | "granted" | "rejected";
@@ -139,6 +141,7 @@ export interface AgentResourceRecord {
   description: string;
   aliases: string[];
   locator: ResourcePublicLocator;
+  metadataStatus?: ResourceMetadataStatus;
 }
 
 // --- State ---
@@ -455,6 +458,8 @@ export interface AgentLoopResult {
   resources?: AgentResourceRecord[];
   /** Generated filesystem resources confirmed by the passed validation mode. */
   verifiedCompletionResources?: AgentResourceRecord[];
+  /** Executor-verified filesystem changes, independent of semantic task validation. */
+  verifiedResourceEffects?: VerifiedFilesystemResourceEffect[];
   artifacts?: AgentArtifact[];
   workState?: WorkState;
   completedSteps?: StepSummary[];

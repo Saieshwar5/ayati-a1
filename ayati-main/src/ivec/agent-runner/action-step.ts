@@ -27,6 +27,7 @@ import {
 } from "./workstream-routing-evidence.js";
 import { deriveFilesystemCompletionEvidence } from "./filesystem-completion-evidence.js";
 import { toolCallVerificationPassed } from "./tool-call-verification.js";
+import { isAbsolute } from "node:path";
 
 const noopRunRecorder: RunRecorder = {
   recordToolCall(): void {
@@ -63,6 +64,8 @@ export async function executeActionStep(input: ExecuteActionStepInput): Promise<
   const workstreamResources = isWorkstreamBound(input.state)
     ? input.state.harnessContext.contextEngine?.workstream?.resources
     : undefined;
+  const filesystemMutationRoots = input.state.virtualMode.mutationScopes
+    .filter(isAbsolute);
   let execution = await executeAgentAction(
     {
       toolExecutor: input.deps.toolExecutor,
@@ -74,6 +77,7 @@ export async function executeActionStep(input: ExecuteActionStepInput): Promise<
       runHandle,
       metrics: input.metrics,
       workstreamResources,
+      filesystemMutationRoots,
     },
     input.decision.action,
     input.stepNumber,
@@ -95,6 +99,7 @@ export async function executeActionStep(input: ExecuteActionStepInput): Promise<
           runHandle,
           metrics: input.metrics,
           workstreamResources,
+          filesystemMutationRoots,
         },
         recovery.action,
         input.stepNumber,

@@ -70,6 +70,7 @@ describe("run finalization coordinator", () => {
           locator: { kind: "filesystem", path: "/ayati/workspace/site/index.html" },
           kind: "file",
           role: "deliverable",
+          displayName: "index.html",
           description: "Generated homepage",
           aliases: ["homepage"],
           verified: true,

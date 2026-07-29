@@ -18,7 +18,7 @@ export interface PromptVerifiedOutcomeSource {
 export interface PromptVerifiedOutcome {
   kind: TaskValidationOutcomeKind;
   subject: string;
-  actualKind?: "file" | "directory";
+  actualKind?: "file" | "directory" | "symlink";
   searchScope?: FileSearchValidationScope;
   readScope?: FileReadValidationScope;
   artifactKind?: string;

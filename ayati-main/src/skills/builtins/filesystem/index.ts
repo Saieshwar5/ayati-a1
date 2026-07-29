@@ -9,11 +9,13 @@ import { createDirectoryTool } from "./create-directory.js";
 import { moveTool } from "./move.js";
 import { findFilesTool } from "./find-files.js";
 import { searchInFilesTool } from "./search-in-files.js";
+import { copyTool } from "./copy.js";
+import { setPermissionsTool } from "./set-permissions.js";
 
 const filesystemSkill: SkillDefinition = {
   id: "filesystem",
   version: "1.0.0",
-  description: "File and directory operations — read, write, edit, delete, list, create, move, and search.",
+  description: "File and directory operations — read, write, edit, copy, move, delete, set permissions, list, create, and search.",
   tools: [
     inspectPathsTool,
     readFilesTool,
@@ -22,7 +24,9 @@ const filesystemSkill: SkillDefinition = {
     deleteTool,
     listDirectoryTool,
     createDirectoryTool,
+    copyTool,
     moveTool,
+    setPermissionsTool,
     findFilesTool,
     searchInFilesTool,
   ],

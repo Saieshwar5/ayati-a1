@@ -12,11 +12,11 @@ export function planLocalRecovery(action: AgentAction, toolCalls: ActToolCallRec
     return null;
   }
 
-  if (isParentDirectoryFailure(failed) && supportsCreateDirsRetry(failed)) {
-    const retryAction = withCreateDirs(action, failed.tool);
+  if (isParentDirectoryFailure(failed) && supportsCreateParentsRetry(failed)) {
+    const retryAction = withCreateParents(action, failed.tool);
     if (retryAction) {
       return {
-        reason: `${failed.tool} failed because a parent directory was missing; retrying with createDirs=true.`,
+        reason: `${failed.tool} failed because a parent directory was missing; retrying with createParents=true.`,
         action: retryAction,
       };
     }
@@ -27,7 +27,12 @@ export function planLocalRecovery(action: AgentAction, toolCalls: ActToolCallRec
 
 function isParentDirectoryFailure(call: ActToolCallRecord): boolean {
   const code = call.result?.code ?? call.code;
-  if (code === "PARENT_DIR_MISSING" || code === "MISSING_PATH" || code === "ENOENT") {
+  if (
+    code === "WRITE_PARENT_MISSING"
+    || code === "PARENT_DIR_MISSING"
+    || code === "MISSING_PATH"
+    || code === "ENOENT"
+  ) {
     return true;
   }
 
@@ -35,16 +40,20 @@ function isParentDirectoryFailure(call: ActToolCallRecord): boolean {
   return error.includes("enoent") || error.includes("no such file") || error.includes("parent director");
 }
 
-function supportsCreateDirsRetry(call: ActToolCallRecord): boolean {
+function supportsCreateParentsRetry(call: ActToolCallRecord): boolean {
   return call.tool === "write_files"
     && isRecord(call.input)
-    && call.input["createDirs"] !== true;
+    && call.input["createParents"] === false;
 }
 
-function withCreateDirs(action: AgentAction, failedTool: string): AgentAction | null {
+function withCreateParents(action: AgentAction, failedTool: string): AgentAction | null {
   let changed = false;
   const calls = action.calls.map((call) => {
-    if (call.tool !== failedTool || !isRecord(call.input) || call.input["createDirs"] === true) {
+    if (
+      call.tool !== failedTool
+      || !isRecord(call.input)
+      || call.input["createParents"] !== false
+    ) {
       return call;
     }
     changed = true;
@@ -52,7 +61,7 @@ function withCreateDirs(action: AgentAction, failedTool: string): AgentAction | 
       ...call,
       input: {
         ...call.input,
-        createDirs: true,
+        createParents: true,
       },
     };
   });

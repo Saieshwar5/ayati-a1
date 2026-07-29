@@ -32,7 +32,6 @@ interface ProcessStartInput {
   executable: string;
   args?: string[];
   cwd?: string;
-  targets?: ProcessMutationTargetInput[];
   waitMs?: number;
   maxOutputChars?: number;
 }
@@ -46,7 +45,6 @@ interface ProcessSendInputInput {
   sessionId: string;
   input: string;
   closeStdin?: boolean;
-  targets?: ProcessMutationTargetInput[];
 }
 
 interface ProcessMutationTargetInput {
@@ -493,6 +491,9 @@ function validateProcessStartInput(input: unknown): ProcessStartInput | ToolResu
   if (!input || typeof input !== "object") {
     return { ok: false, error: "Invalid input: expected object." };
   }
+  if (Object.prototype.hasOwnProperty.call(input, "targets")) {
+    return unsupportedProcessSessionMutationTargets();
+  }
   const v = input as Partial<ProcessStartInput>;
   if (typeof v.executable !== "string" || v.executable.trim().length === 0) {
     return { ok: false, error: "Invalid input: executable must be a non-empty string." };
@@ -505,8 +506,6 @@ function validateProcessStartInput(input: unknown): ProcessStartInput | ToolResu
   }
   const cwd = v.cwd === undefined ? undefined : validateAbsoluteShellPath(v.cwd, "cwd");
   if (cwd !== undefined && typeof cwd !== "string") return cwd;
-  const targets = validateProcessTargets(v.targets);
-  if (targets && "ok" in targets) return targets;
   if (v.waitMs !== undefined && (!Number.isFinite(v.waitMs) || v.waitMs < 0)) {
     return { ok: false, error: "Invalid input: waitMs must be a non-negative number." };
   }
@@ -517,7 +516,6 @@ function validateProcessStartInput(input: unknown): ProcessStartInput | ToolResu
     executable: v.executable.trim(),
     args: v.args,
     cwd,
-    targets,
     waitMs: v.waitMs,
     maxOutputChars: v.maxOutputChars,
   };
@@ -544,6 +542,9 @@ function validateProcessSendInput(input: unknown): ProcessSendInputInput | ToolR
   if (!input || typeof input !== "object") {
     return { ok: false, error: "Invalid input: expected object." };
   }
+  if (Object.prototype.hasOwnProperty.call(input, "targets")) {
+    return unsupportedProcessSessionMutationTargets();
+  }
   const v = input as Partial<ProcessSendInputInput>;
   if (typeof v.sessionId !== "string" || v.sessionId.trim().length === 0) {
     return { ok: false, error: "Invalid input: sessionId must be a non-empty string." };
@@ -554,14 +555,25 @@ function validateProcessSendInput(input: unknown): ProcessSendInputInput | ToolR
   if (v.closeStdin !== undefined && typeof v.closeStdin !== "boolean") {
     return { ok: false, error: "Invalid input: closeStdin must be a boolean when provided." };
   }
-  const targets = validateProcessTargets(v.targets);
-  if (targets && "ok" in targets) return targets;
   return {
     sessionId: v.sessionId.trim(),
     input: v.input,
     closeStdin: v.closeStdin,
-    targets,
   };
+}
+
+function unsupportedProcessSessionMutationTargets(): ToolResult {
+  return errorResult({
+    code: "PROCESS_SESSION_MUTATION_TARGETS_UNSUPPORTED",
+    message: "Background process sessions cannot claim deterministically verified filesystem mutation targets.",
+    category: "semantic",
+    retryable: false,
+    recoverable: true,
+    suggestedNextActions: [
+      "Use focused filesystem mutation tools for file changes.",
+      "Use process_run for a bounded command whose completion can be checked.",
+    ],
+  });
 }
 
 function validateProcessStopInput(input: unknown): ProcessStopInput | ToolResult {
@@ -845,7 +857,7 @@ function classifyProcessPolicy(command: string, source: "command" | "session"): 
     [/\bperl\b[\s\S]*(?:^|\s)-p?i(?:\b|['"=])/, "perl -pi", "in-place perl edits bypass patch_files/write_files contracts."],
     [/(^|[\s;|&])(?:[12])?>>\s*(?!&\d\b|\/dev\/null\b)\S+|(^|[\s;|&])(?:[12])?>\s*(?!&\d\b|\/dev\/null\b)\S+/, "shell redirection", "file redirection writes bypass filesystem tool contracts."],
     [/\btee\s+(?:-[a-zA-Z]+\s+)*[^\s|&;]+/, "tee file", "tee writes files outside filesystem tool contracts."],
-    [/\b(?:mv|cp|rm|touch|truncate|mkdir|chmod|chown)\b/, "filesystem mutation command", "filesystem mutations should use move/delete/create_directory or guarded file tools."],
+    [/\b(?:mv|cp|rm|touch|truncate|mkdir|chmod|chown)\b/, "filesystem mutation command", "filesystem mutations should use copy/move/delete/create_directory/set_permissions or guarded file tools."],
     [/\b(?:python|python3|node|ruby)\b[\s\S]*(?:writefilesync|writefile|write_text|open\s*\([^)]*['"]w|fs\.write)/i, "scripted file write", "scripted file writes bypass filesystem tool contracts."],
   ];
   for (const [pattern, label, reason] of mutationChecks) {
@@ -909,7 +921,7 @@ function processPolicyBlockedResult(
       recoverable: true,
       target: violation.pattern,
       suggestedNextActions: [
-        "Use filesystem tools instead: read_files, write_files with baseSha256, patch_files, move, delete, or create_directory.",
+        "Use focused filesystem tools instead: read_files, write_files, patch_files, copy, move, delete, create_directory, or set_permissions.",
         "Use process_run only for project execution that no focused domain tool owns.",
       ],
       structuredContent,
@@ -1061,10 +1073,10 @@ export const processStartTool: ToolDefinition = {
       executable: { type: "string", description: "Executable name or canonical absolute executable path. Shell command strings are not accepted." },
       args: { type: "array", items: { type: "string" }, description: "Arguments passed directly to the executable without shell parsing." },
       cwd: { type: "string", description: "Canonical absolute working directory. Omit to use the default Ayati workspace." },
-      targets: processMutationTargetsSchema,
       waitMs: { type: "number" },
       maxOutputChars: { type: "number" },
     },
+    additionalProperties: false,
   },
   outputSchema: genericObjectOutputSchema,
   annotations: processSessionAnnotations,
@@ -1196,8 +1208,8 @@ export const processSendInputTool: ToolDefinition = {
       sessionId: { type: "string" },
       input: { type: "string" },
       closeStdin: { type: "boolean" },
-      targets: processMutationTargetsSchema,
     },
+    additionalProperties: false,
   },
   outputSchema: genericObjectOutputSchema,
   annotations: processSessionAnnotations,

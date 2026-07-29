@@ -1,5 +1,4 @@
-import { lstat, mkdir, realpath } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import type {
   BindResourcesForRunRequest,
   BindResourcesForRunResponse,
@@ -12,6 +11,7 @@ import type {
   AgentStreamResourcesProjection,
   WorkstreamResourceBinding,
   WorkstreamCompletionRecord,
+  VerifiedFilesystemResourceEffect,
 } from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
 import {
@@ -38,7 +38,7 @@ import { readRunEvidence } from "../repositories/run-records.js";
 import { ManagedResourceStore } from "../resources/managed-resource-store.js";
 import { observeResource } from "../resources/resource-observation.js";
 import { canonicalizeWorkstreamResourceBindings } from "../resources/workstream-resource-binding-policy.js";
-import { workstreamSlug } from "../workstreams/workstream-repository-layout.js";
+import { applyVerifiedFilesystemResourceEffects } from "./verified-filesystem-resource-effect-service.js";
 
 export interface ResourceCatalogServiceOptions {
   database: ContextDatabase;
@@ -47,15 +47,12 @@ export interface ResourceCatalogServiceOptions {
 
 export class ResourceCatalogService {
   private readonly database: ContextDatabase;
-  private readonly rootDirectory: string;
-  private readonly outputRoot: string;
   private readonly store: ManagedResourceStore;
 
   constructor(options: ResourceCatalogServiceOptions) {
     this.database = options.database;
-    this.rootDirectory = resolve(options.rootDirectory);
-    this.outputRoot = join(this.rootDirectory, "workspace");
-    this.store = new ManagedResourceStore(join(this.rootDirectory, ".ayati", "resources"));
+    const rootDirectory = resolve(options.rootDirectory);
+    this.store = new ManagedResourceStore(join(rootDirectory, ".ayati", "resources"));
   }
 
   async normalizeIngressAdmissions(
@@ -228,76 +225,6 @@ export class ResourceCatalogService {
     }
   }
 
-  async ensureManagedOutput(input: {
-    runId: string;
-    workstreamId: string;
-    title: string;
-    at: string;
-  }): Promise<WorkstreamResourceBinding[]> {
-    const existing = readWorkstreamResourceBindings(this.database, input.workstreamId);
-    if (existing.some((binding) => binding.primary)) return existing;
-    this.requireBoundRun(input.runId, input.workstreamId);
-    await mkdir(this.outputRoot, { recursive: true });
-    const outputRoot = await realpath(this.outputRoot);
-    const path = join(outputRoot, input.workstreamId + "-" + workstreamSlug(input.title));
-    const state = await lstat(path).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return undefined;
-      throw error;
-    });
-    if (!state) {
-      await mkdir(path);
-    } else if (state.isSymbolicLink() || !state.isDirectory()) {
-      throw new ContextEngineServiceError({
-        code: "RESOURCE_LOCATOR_INVALID",
-        message: "Managed workstream output path is not a normal directory.",
-        details: { path },
-      });
-    }
-    const canonical = await realpath(path);
-    if (dirname(canonical) !== outputRoot) {
-      throw new ContextEngineServiceError({
-        code: "RESOURCE_LOCATOR_INVALID",
-        message: "Managed workstream output directory escaped its configured root.",
-        details: { path: canonical },
-      });
-    }
-    const observed = await observeResource({ kind: "filesystem", path: canonical }, {
-      at: input.at,
-      kind: "directory",
-    });
-    const admission: ObservedResourceAdmission = {
-      admissionId: "managed-output:" + input.runId,
-      kind: "directory",
-      origin: "agent_created",
-      locator: observed.locator,
-      displayName: basename(canonical),
-      description: "Primary user-visible output directory for " + input.title + ".",
-      aliases: [input.title, "primary output", "workspace"],
-      role: "reference",
-      version: observed.version,
-    };
-    return this.database.transaction(() => {
-      const { resource } = upsertResource(this.database, {
-        admission,
-        runId: input.runId,
-        at: input.at,
-      });
-      const run = this.requireBoundRun(input.runId, input.workstreamId);
-      return bindResourcesToWorkstream(this.database, {
-        runId: input.runId,
-        workstreamId: input.workstreamId,
-        requestId: run.workstreamBinding!.requestId,
-        bindings: [{
-          resourceId: resource.resourceId,
-          role: "primary",
-          access: "mutate",
-          primary: true,
-        }],
-        at: input.at,
-      });
-    });
-  }
-
   async admitCompletionResources(input: {
     runId: string;
     workstreamId: string;
@@ -317,6 +244,7 @@ export class ResourceCatalogService {
         const observed = await observeResource(entry.locator, {
           at: input.at,
           kind: entry.kind,
+          directoryMode: "shallow",
         });
         const existingForLocator = readResourceByLocator(this.database, observed.locator);
         const locatorResourceId = existingForLocator?.resourceId
@@ -339,9 +267,13 @@ export class ResourceCatalogService {
           kind: observed.kind,
           origin: "agent_created",
           locator: observed.locator,
-          displayName: observed.displayName,
-          description: entry.description,
-          aliases: entry.aliases,
+          displayName: entry.displayName ?? observed.displayName,
+          ...(entry.metadataStatus === undefined || entry.metadataStatus === "enriched"
+            ? {
+                description: entry.description,
+                aliases: entry.aliases,
+              }
+            : {}),
           role: "reference",
           version: observed.version,
           ...(observed.mediaType ? { mediaType: observed.mediaType } : {}),
@@ -386,6 +318,19 @@ export class ResourceCatalogService {
       }));
     }
     return readWorkstreamResourceBindings(this.database, input.workstreamId);
+  }
+
+  async applyVerifiedFilesystemEffects(input: {
+    runId: string;
+    workstreamId: string;
+    requestId: string;
+    effects: VerifiedFilesystemResourceEffect[];
+    at: string;
+  }): Promise<WorkstreamResourceBinding[]> {
+    return await applyVerifiedFilesystemResourceEffects({
+      database: this.database,
+      ...input,
+    });
   }
 
   readWorkstreamBindings(workstreamId: string): WorkstreamResourceBinding[] {

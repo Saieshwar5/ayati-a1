@@ -55,7 +55,7 @@ export type FilesystemCompletionEvidence =
       path: string;
       requestedPath?: string;
       exists: boolean;
-      actualKind?: "file" | "directory";
+      actualKind?: "file" | "directory" | "symlink";
       change: "observed" | "mutated";
       operation:
         | "inspect"
@@ -65,8 +65,15 @@ export type FilesystemCompletionEvidence =
         | "write"
         | "patch"
         | "create"
+        | "copy"
         | "move"
+        | "permissions"
         | "delete";
+      beforeKind?: "missing" | "file" | "directory" | "symlink" | "other";
+      afterKind?: "missing" | "file" | "directory" | "symlink" | "other";
+      beforeSha256?: string;
+      afterSha256?: string;
+      writeStatus?: "created" | "replaced" | "unchanged";
       tool: string;
       step: number;
       callId?: string;

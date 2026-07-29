@@ -911,12 +911,9 @@ export class SqliteContextEngineService implements ContextEngineService {
         at: input.at,
       });
     }
-    const resourceBindings = await this.resourceCatalog.ensureManagedOutput({
-      runId: input.runId,
-      workstreamId: result.workstream.workstreamId,
-      title: result.workstream.title,
-      at: input.at,
-    });
+    const resourceBindings = this.resourceCatalog.readWorkstreamBindings(
+      result.workstream.workstreamId,
+    );
     result = {
       ...result,
       resourceBindings,

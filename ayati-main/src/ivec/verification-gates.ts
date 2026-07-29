@@ -71,9 +71,11 @@ export function checkVerificationGates(actOutput: ActOutput): VerifyOutput | nul
 
 const DETERMINISTIC_SUCCESS_TOOLS = new Set([
   "create_directory",
+  "copy",
   "delete",
   "patch_files",
   "move",
+  "set_permissions",
   "write_files",
   "read_files",
   "list_directory",

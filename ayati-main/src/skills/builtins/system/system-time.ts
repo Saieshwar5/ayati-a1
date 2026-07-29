@@ -38,7 +38,8 @@ export function createSystemTimeTool(
     name: "system_time",
     description:
       "Get a fresh, timezone-aware date, time, weekday, UTC offset, and timestamp. "
-      + "Use an IANA timezone such as Asia/Kolkata or America/New_York; omit it to use Ayati's configured timezone.",
+      + "For local, machine-local, or Ayati-local time, omit timezone so Ayati's configured timezone is used. "
+      + "Set timezone only when the user explicitly requests a particular timezone or location.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -48,7 +49,8 @@ export function createSystemTimeTool(
           minLength: 1,
           maxLength: 100,
           description:
-            "Optional IANA timezone. Omit it to use Ayati's configured default timezone.",
+            "Optional IANA timezone for a timezone or location explicitly requested by the user. "
+            + "Omit it for local, machine-local, or Ayati-local time; Ayati's configured timezone will be used.",
         },
       },
     },
@@ -120,7 +122,7 @@ export function createSystemTimeTool(
           retryable: true,
           recoverable: true,
           suggestedNextActions: [
-            "Retry with a valid IANA timezone such as UTC, Asia/Kolkata, or America/New_York.",
+            "Retry with a valid explicitly requested IANA timezone, or omit timezone to use Ayati's configured local timezone.",
           ],
         });
       }

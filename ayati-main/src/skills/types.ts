@@ -1,19 +1,61 @@
 import type { AgentUiContext } from "../ui/context.js";
 import type { WorkstreamResourceBinding } from "ayati-context-engine";
 
+export type FilesystemTargetState =
+  | { kind: "missing" }
+  | {
+      kind: "file";
+      sizeBytes: number;
+      sha256: string;
+      mode: number;
+      linkCount: number;
+      device: number;
+      inode: number;
+    }
+  | {
+      kind: "directory";
+      mode: number;
+      device: number;
+      inode: number;
+    }
+  | {
+      kind: "symlink";
+      linkTarget?: string;
+      mode: number;
+      device: number;
+      inode: number;
+    }
+  | {
+      kind: "other";
+      mode: number;
+      device: number;
+      inode: number;
+    };
+
+export interface FilesystemTargetPrecondition {
+  /** Canonical absolute target path. */
+  path: string;
+  /** Deterministically observed target state before tool execution. */
+  expected: FilesystemTargetState;
+}
+
 export interface ToolExecutionContext {
   clientId?: string;
   runId?: string;
   callId?: string;
   sessionId?: string;
   workstreamResources?: WorkstreamResourceBinding[];
+  /** Canonical absolute destination roots selected for the current execute mode. */
+  filesystemMutationRoots?: string[];
+  /** Internal target states captured by the mutation verifier; never model-facing. */
+  filesystemTargetPreconditions?: FilesystemTargetPrecondition[];
   stepNumber?: number;
   uiContext?: AgentUiContext;
   resourceScope?: ToolResourceScope;
 }
 
 export interface ToolResourceScope {
-  kind: "workspace" | "resource" | "machine_read";
+  kind: "workspace" | "resource" | "machine_read" | "mutation_root";
   /** Directory used by filesystem and process tools for relative-path resolution. */
   rootPath: string;
   /** Exact filesystem authority retained by the resource-scoping wrapper. */

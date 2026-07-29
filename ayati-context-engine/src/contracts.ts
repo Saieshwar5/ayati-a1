@@ -161,6 +161,7 @@ export interface ResourceRef {
   description: string;
   aliases: string[];
   locator: ResourcePublicLocator;
+  formerLocators?: ResourcePublicLocator[];
   version: ResourceVersion;
   availability: ResourceAvailability;
   metadataStatus: ResourceMetadataStatus;
@@ -796,8 +797,15 @@ export interface FindWorkstreamsRequest {
   currentText?: string;
 }
 
+export type WorkstreamDiscoveryOutcome =
+  | "catalog_empty"
+  | "no_match"
+  | "matches_found";
+
 export interface FindWorkstreamsResponse {
   workstreams: WorkstreamCandidate[];
+  outcome: WorkstreamDiscoveryOutcome;
+  catalogCount: number;
 }
 
 export interface GetWorkstreamRequest {
@@ -1128,15 +1136,70 @@ export interface VerifyResourceMutationResponse {
   events: ResourceEvent[];
 }
 
+export interface VerifiedFilesystemResourceEffectState {
+  exists: boolean;
+  kind?: "file" | "directory";
+  sha256?: string;
+}
+
+interface VerifiedFilesystemResourceEffectBase {
+  effectId: string;
+  kind: "file" | "directory";
+  step: number;
+  callId?: string;
+  tool: string;
+  evidenceRef?: string;
+  before?: VerifiedFilesystemResourceEffectState;
+  after?: VerifiedFilesystemResourceEffectState;
+}
+
+export type VerifiedFilesystemResourceEffect =
+  | VerifiedFilesystemResourceEffectBase & {
+      operation: "created";
+      path: string;
+    }
+  | VerifiedFilesystemResourceEffectBase & {
+      operation: "modified";
+      path: string;
+    }
+  | VerifiedFilesystemResourceEffectBase & {
+      operation: "permissions_changed";
+      path: string;
+    }
+  | VerifiedFilesystemResourceEffectBase & {
+      operation: "deleted";
+      path: string;
+    }
+  | VerifiedFilesystemResourceEffectBase & {
+      operation: "copied";
+      sourcePath: string;
+      destinationPath: string;
+    }
+  | VerifiedFilesystemResourceEffectBase & {
+      operation: "moved";
+      sourcePath: string;
+      destinationPath: string;
+    };
+
 export interface WorkstreamCompletionRecord {
   accepted: boolean;
+  /**
+   * Independently verified physical changes made during the run.
+   *
+   * These are intentionally separate from `resources`: effects are executor
+   * facts that must survive an incomplete or failed overall task, while
+   * resources are semantic completion evidence selected during validation.
+   */
+  effects?: VerifiedFilesystemResourceEffect[];
   resources: Array<{
     resourceId?: ResourceId;
     locator?: ResourcePublicLocator;
     kind: ResourceKind;
     role: Extract<ResourceRole, "output" | "deliverable" | "evidence" | "asset">;
+    displayName?: string;
     description: string;
     aliases: string[];
+    metadataStatus?: ResourceMetadataStatus;
     verified: boolean;
   }>;
   missing: string[];
@@ -2167,6 +2230,10 @@ function isRunStepToolCallVerificationFailure(value: unknown): boolean {
 function isWorkstreamCompletionRecord(value: unknown): value is WorkstreamCompletionRecord {
   if (!isRecord(value)
     || typeof value["accepted"] !== "boolean"
+    || (value["effects"] !== undefined
+      && (!Array.isArray(value["effects"])
+        || value["effects"].length > RUN_FINALIZATION_LIMITS.completion.maximumResourceEffects
+        || !value["effects"].every(isVerifiedFilesystemResourceEffect)))
     || !Array.isArray(value["resources"])
     || value["resources"].length > RUN_FINALIZATION_LIMITS.completion.maximumResources
     || !value["resources"].every(isCompletionResource)
@@ -2213,13 +2280,52 @@ function isCompletionResource(value: unknown): boolean {
     && isResourceKind(value["kind"])
     && (value["role"] === "output" || value["role"] === "deliverable"
       || value["role"] === "evidence" || value["role"] === "asset")
+    && optionalBoundedString(value["displayName"], 500)
     && isBoundedString(value["description"], RUN_FINALIZATION_LIMITS.completion.descriptionChars)
     && isBoundedStringArray(
       value["aliases"],
       RUN_FINALIZATION_LIMITS.completion.maximumAliases,
       RUN_FINALIZATION_LIMITS.completion.aliasChars,
     )
+    && (value["metadataStatus"] === undefined
+      || value["metadataStatus"] === "fallback"
+      || value["metadataStatus"] === "enriched"
+      || value["metadataStatus"] === "stale")
     && typeof value["verified"] === "boolean";
+}
+
+function isVerifiedFilesystemResourceEffect(value: unknown): boolean {
+  if (!isRecord(value)
+    || !/^FRE-[0-9A-F]{24}$/.test(String(value["effectId"] ?? ""))
+    || (value["kind"] !== "file" && value["kind"] !== "directory")
+    || !Number.isSafeInteger(value["step"])
+    || Number(value["step"]) < 0
+    || !isBoundedString(value["tool"], 200)
+    || !optionalBoundedString(value["callId"], 200)
+    || !optionalBoundedString(value["evidenceRef"], 1_000)
+    || !isOptionalVerifiedFilesystemResourceEffectState(value["before"])
+    || !isOptionalVerifiedFilesystemResourceEffectState(value["after"])) {
+    return false;
+  }
+  if (value["operation"] === "created"
+    || value["operation"] === "modified"
+    || value["operation"] === "permissions_changed"
+    || value["operation"] === "deleted") {
+    return isBoundedString(value["path"], 8_192);
+  }
+  return (value["operation"] === "copied" || value["operation"] === "moved")
+    && isBoundedString(value["sourcePath"], 8_192)
+    && isBoundedString(value["destinationPath"], 8_192);
+}
+
+function isOptionalVerifiedFilesystemResourceEffectState(value: unknown): boolean {
+  return value === undefined
+    || (isRecord(value)
+      && typeof value["exists"] === "boolean"
+      && (value["kind"] === undefined
+        || value["kind"] === "file"
+        || value["kind"] === "directory")
+      && optionalBoundedString(value["sha256"], 100));
 }
 
 function isBoundedStringArray(

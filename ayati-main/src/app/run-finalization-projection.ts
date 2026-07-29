@@ -112,6 +112,11 @@ function buildWorkstreamCompletion(
         locator: resource.locator,
         kind: resource.kind,
         role: "deliverable" as const,
+        displayName: requiredText(
+          resource.displayName,
+          resource.kind === "directory" ? "Project directory" : "Deliverable",
+          500,
+        ),
         description: requiredText(
           resource.description,
           "Verified " + resource.kind + " deliverable.",
@@ -122,12 +127,17 @@ function buildWorkstreamCompletion(
           limits.aliasChars,
           limits.maximumAliases,
         ),
+        ...(resource.metadataStatus
+          ? { metadataStatus: resource.metadataStatus }
+          : {}),
         verified: true,
       }];
     })
     .slice(0, limits.maximumResources);
   return {
     accepted,
+    effects: (result.verifiedResourceEffects ?? [])
+      .slice(0, limits.maximumResourceEffects),
     resources,
     missing: result.outcome === "done" && !accepted
       ? ["Accepted deterministic workstream-completion evidence"]
