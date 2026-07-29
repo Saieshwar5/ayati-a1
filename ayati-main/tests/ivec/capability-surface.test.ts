@@ -158,11 +158,13 @@ describe("capability surface resolution", () => {
 
     const unbound = manager.getModeCapabilityOptions(state());
     expect(unbound["observe.locate"]).toContain("workstream:search");
+    expect(unbound["workstream.route"]).toContain("workstream:search");
     expect(unbound.resolve).toContain("file:write");
     expect(unbound.execute).not.toContain("file:write");
 
     const bound = manager.getModeCapabilityOptions(state(true));
     expect(bound["observe.locate"]).not.toContain("workstream:search");
+    expect(bound["workstream.route"]).not.toContain("workstream:search");
     expect(bound.execute).toContain("file:write");
   });
 

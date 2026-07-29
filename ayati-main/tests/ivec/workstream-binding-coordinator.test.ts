@@ -4,6 +4,7 @@ import { createWorkstreamBindingCoordinator } from "../../src/ivec/workstream-bi
 
 const NOW = "2026-07-22T12:00:00.000Z";
 const WORKSTREAM_ID = "W-20260722-0001";
+const RESOURCE_ID = "RES-0123456789ABCDEF01234567";
 const HEAD = "a".repeat(40);
 
 describe("workstream binding coordinator", () => {
@@ -24,6 +25,7 @@ describe("workstream binding coordinator", () => {
         .mockResolvedValueOnce(agentContext(false))
         .mockResolvedValueOnce(agentContext(true)),
       findWorkstreams: vi.fn(async () => ({ workstreams: [candidate("definite")] })),
+      getWorkstream: vi.fn(async () => mutableResourceContext()),
       activateWorkstreamForRun,
     } as unknown as ContextEngineService;
     const coordinator = createWorkstreamBindingCoordinator({
@@ -36,19 +38,19 @@ describe("workstream binding coordinator", () => {
 
     const result = await coordinator.bind({
       purpose: "Continue the exact workstream.",
-      referenceTargets: [WORKSTREAM_ID],
-      mutationScopes: [],
+      workspaceTargets: [],
+      routingEvidence: [],
+      expectedWorkstreamHead: HEAD,
       expectedContextRevision: "ctx:unbound",
       proposal: {
         kind: "activate",
         workstreamId: WORKSTREAM_ID,
-        expectedWorkstreamHead: HEAD,
         requestDecision: {
           kind: "continue_current",
           requestId: "R-0001",
           reason: "The user explicitly continued the active request.",
         },
-        evidence: ["run:RUN-1:step:1:call:read-owner"],
+        resourceIds: [RESOURCE_ID],
       },
     });
 
@@ -78,6 +80,56 @@ describe("workstream binding coordinator", () => {
     });
   });
 
+  it("rejects a routed resource that is no longer mutable before activation", async () => {
+    const activateWorkstreamForRun = vi.fn();
+    const service = {
+      getAgentContext: vi.fn(async () => agentContext(false)),
+      findWorkstreams: vi.fn(async () => ({ workstreams: [candidate("definite")] })),
+      getWorkstream: vi.fn(async () => ({
+        context: {
+          resources: [{
+            resource: {
+              resourceId: RESOURCE_ID,
+              availability: "available",
+            },
+            access: "read",
+          }],
+        },
+      })),
+      activateWorkstreamForRun,
+    } as unknown as ContextEngineService;
+    const coordinator = createWorkstreamBindingCoordinator({
+      service,
+      runId: "RUN-1",
+      streamId: "S-1",
+      currentInput: `Update ${WORKSTREAM_ID}.`,
+    });
+
+    const result = await coordinator.bind({
+      purpose: "Update the exact routed resource.",
+      workspaceTargets: [],
+      routingEvidence: ["run:RUN-1:step:1:call:find-resource"],
+      expectedWorkstreamHead: HEAD,
+      expectedContextRevision: "ctx:unbound",
+      proposal: {
+        kind: "activate",
+        workstreamId: WORKSTREAM_ID,
+        requestDecision: {
+          kind: "continue_current",
+          requestId: "R-0001",
+          reason: "Continue the active request.",
+        },
+        resourceIds: [RESOURCE_ID],
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "failed",
+      code: "WORKSTREAM_BINDING_RESOURCE_NOT_MUTABLE",
+    });
+    expect(activateWorkstreamForRun).not.toHaveBeenCalled();
+  });
+
   it("maps an explicit switch to the exact active request and binds the new request", async () => {
     const activateWorkstreamForRun = vi.fn(async () => ({
       run: {
@@ -95,6 +147,7 @@ describe("workstream binding coordinator", () => {
         .mockResolvedValueOnce(agentContext(false))
         .mockResolvedValueOnce(agentContext(true, "R-0002")),
       findWorkstreams: vi.fn(async () => ({ workstreams: [candidate("definite")] })),
+      getWorkstream: vi.fn(async () => mutableResourceContext()),
       activateWorkstreamForRun,
     } as unknown as ContextEngineService;
     const coordinator = createWorkstreamBindingCoordinator({
@@ -107,13 +160,13 @@ describe("workstream binding coordinator", () => {
 
     const result = await coordinator.bind({
       purpose: "Switch to the explicitly prioritized website request.",
-      referenceTargets: [WORKSTREAM_ID],
-      mutationScopes: [],
+      workspaceTargets: [],
+      routingEvidence: [],
+      expectedWorkstreamHead: HEAD,
       expectedContextRevision: "ctx:unbound",
       proposal: {
         kind: "activate",
         workstreamId: WORKSTREAM_ID,
-        expectedWorkstreamHead: HEAD,
         requestDecision: {
           kind: "defer_current_and_create",
           currentRequestId: "R-0001",
@@ -123,7 +176,7 @@ describe("workstream binding coordinator", () => {
           constraints: ["Preserve the existing design."],
           reason: "The user explicitly prioritized the contact form.",
         },
-        evidence: ["run:RUN-1:step:1:call:read-owner"],
+        resourceIds: [RESOURCE_ID],
       },
     });
 
@@ -163,8 +216,8 @@ describe("workstream binding coordinator", () => {
 
     const result = await coordinator.bind({
       purpose: "Bind website ownership.",
-      referenceTargets: ["website"],
-      mutationScopes: [],
+      workspaceTargets: [workspaceTarget("website", "/tmp/website", "directory")],
+      routingEvidence: ["run:RUN-1:step:1:call:find-owner"],
       expectedContextRevision: "ctx:unbound",
       proposal: {
         kind: "create",
@@ -176,8 +229,6 @@ describe("workstream binding coordinator", () => {
           acceptance: ["The website update is verified."],
           constraints: [],
         },
-        resources: [],
-        evidence: ["run:RUN-1:step:1:call:find-owner"],
       },
     });
 
@@ -193,7 +244,10 @@ describe("workstream binding coordinator", () => {
     const findWorkstreams = vi.fn(async () => ({ workstreams: [candidate("definite")] }));
     const inspectResourceForRun = vi.fn(async () => ({
       mutationEligible: true,
-      resource: { resourceId: "RES-0123456789ABCDEF01234567" },
+      resource: {
+        resourceId: "RES-0123456789ABCDEF01234567",
+        version: { exists: false, kind: "unversioned" },
+      },
     }));
     const createWorkstreamForRun = vi.fn(async () => ({
       run: {
@@ -224,8 +278,8 @@ describe("workstream binding coordinator", () => {
 
     const result = await coordinator.bind({
       purpose: "Create independent website ownership.",
-      referenceTargets: ["/tmp/requirements.md"],
-      mutationScopes: ["/tmp/site"],
+      workspaceTargets: [workspaceTarget("site", "/tmp/site", "directory")],
+      routingEvidence: ["run:RUN-1:step:1:call:find-owner"],
       expectedContextRevision: "ctx:unbound",
       proposal: {
         kind: "create",
@@ -237,8 +291,6 @@ describe("workstream binding coordinator", () => {
           acceptance: ["The website is verified."],
           constraints: ["Do not modify anything outside /tmp/site."],
         },
-        resources: [],
-        evidence: ["run:RUN-1:step:1:call:find-owner"],
       },
     });
 
@@ -250,13 +302,14 @@ describe("workstream binding coordinator", () => {
     expect(inspectResourceForRun).toHaveBeenCalledOnce();
     expect(inspectResourceForRun).toHaveBeenCalledWith(expect.objectContaining({
       locator: { kind: "filesystem", path: "/tmp/site" },
+      kind: "directory",
     }));
     expect(inspectResourceForRun).not.toHaveBeenCalledWith(expect.objectContaining({
       locator: { kind: "filesystem", path: "/tmp/requirements.md" },
     }));
   });
 
-  it("rechecks and binds a typed mutation resource without model-built binding details", async () => {
+  it("inspects a typed workspace target and binds the runtime-derived resource", async () => {
     const resourceId = "RES-ABCDEF0123456789ABCDEF01";
     const createWorkstreamForRun = vi.fn(async () => ({
       run: {
@@ -273,15 +326,12 @@ describe("workstream binding coordinator", () => {
       getAgentContext: vi.fn()
         .mockResolvedValueOnce(agentContext(false))
         .mockResolvedValueOnce(agentContext(true)),
-      findResources: vi.fn(async () => ({
-        resources: [{
-          resource: {
-            resourceId,
-            availability: "available",
-          },
-          workstreamIds: [],
-          roles: [],
-        }],
+      inspectResourceForRun: vi.fn(async () => ({
+        mutationEligible: true,
+        resource: {
+          resourceId,
+          version: { exists: false, kind: "unversioned" },
+        },
       })),
       createWorkstreamForRun,
     } as unknown as ContextEngineService;
@@ -295,8 +345,8 @@ describe("workstream binding coordinator", () => {
 
     const result = await coordinator.bind({
       purpose: "Create independent resource ownership.",
-      referenceTargets: [],
-      mutationScopes: [resourceId],
+      workspaceTargets: [workspaceTarget("notes.md", "/tmp/notes.md", "file")],
+      routingEvidence: ["run:RUN-1:step:1:call:find-owner"],
       expectedContextRevision: "ctx:unbound",
       proposal: {
         kind: "create",
@@ -308,8 +358,6 @@ describe("workstream binding coordinator", () => {
           acceptance: ["The resource update is verified."],
           constraints: [],
         },
-        resources: [],
-        evidence: ["run:RUN-1:step:1:call:find-owner"],
       },
     });
 
@@ -321,6 +369,10 @@ describe("workstream binding coordinator", () => {
         access: "mutate",
         primary: true,
       }],
+    }));
+    expect(service.inspectResourceForRun).toHaveBeenCalledWith(expect.objectContaining({
+      locator: { kind: "filesystem", path: "/tmp/notes.md" },
+      kind: "file",
     }));
   });
 
@@ -366,6 +418,13 @@ describe("workstream binding coordinator", () => {
         .mockResolvedValueOnce(unbound)
         .mockResolvedValueOnce(agentContext(true)),
       findWorkstreams,
+      inspectResourceForRun: vi.fn(async () => ({
+        mutationEligible: true,
+        resource: {
+          resourceId: "RES-ABCDEF0123456789ABCDEF01",
+          version: { exists: false, kind: "unversioned" },
+        },
+      })),
       createWorkstreamForRun,
     } as unknown as ContextEngineService;
     const coordinator = createWorkstreamBindingCoordinator({
@@ -378,8 +437,8 @@ describe("workstream binding coordinator", () => {
 
     const result = await coordinator.bind({
       purpose: "Apply the user's pending ownership choice.",
-      referenceTargets: [],
-      mutationScopes: [],
+      workspaceTargets: [workspaceTarget("site", "/tmp/site", "directory")],
+      routingEvidence: ["run:RUN-1:step:1:call:find-owner"],
       expectedContextRevision: "ctx:unbound",
       proposal: {
         kind: "create",
@@ -391,8 +450,6 @@ describe("workstream binding coordinator", () => {
           acceptance: ["The website is verified."],
           constraints: [],
         },
-        resources: [],
-        evidence: ["run:RUN-1:step:1:call:find-owner"],
       },
     });
 
@@ -415,8 +472,8 @@ describe("workstream binding coordinator", () => {
 
     const result = await coordinator.bind({
       purpose: "Bind notes output.",
-      referenceTargets: ["notes.md"],
-      mutationScopes: [],
+      workspaceTargets: [workspaceTarget("notes.md", "/tmp/notes.md", "file")],
+      routingEvidence: ["run:RUN-1:step:1:call:find-owner"],
       expectedContextRevision: "ctx:stale",
       proposal: {
         kind: "create",
@@ -428,8 +485,6 @@ describe("workstream binding coordinator", () => {
           acceptance: ["notes.md exists."],
           constraints: [],
         },
-        resources: [],
-        evidence: ["run:RUN-1:step:1:call:find-owner"],
       },
     });
 
@@ -441,6 +496,14 @@ describe("workstream binding coordinator", () => {
     expect(findWorkstreams).not.toHaveBeenCalled();
   });
 });
+
+function workspaceTarget(
+  relativePath: string,
+  absolutePath: string,
+  kind: "file" | "directory",
+) {
+  return { kind, relativePath, absolutePath };
+}
 
 function candidate(tier: "probable" | "definite") {
   return {
@@ -457,6 +520,20 @@ function candidate(tier: "probable" | "definite") {
     discovery: { tier, reasons: ["exact_workstream_id" as const] },
     starred: false,
     boundRunsLast30Days: 1,
+  };
+}
+
+function mutableResourceContext() {
+  return {
+    context: {
+      resources: [{
+        resource: {
+          resourceId: RESOURCE_ID,
+          availability: "available",
+        },
+        access: "mutate",
+      }],
+    },
   };
 }
 

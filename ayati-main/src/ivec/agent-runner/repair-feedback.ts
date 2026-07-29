@@ -27,7 +27,7 @@ import {
 } from "./failure-lifecycle.js";
 import { modeTransitionTargetValues } from "./virtual-mode.js";
 
-const UNBOUND_RUN_TOOL_REPAIR_MESSAGE = "The run is not bound to a workstream. Observe workstream ownership, then enter resolve with the exact binding-required capability, evidence-backed target, and typed binding proposal. Validate the deterministic gate's focused clarification if ownership remains unclear.";
+const UNBOUND_RUN_TOOL_REPAIR_MESSAGE = "The run is not bound to a workstream. Enter workstream.route and observe ownership; resolve controls become available after a successful current-run routing call. Then use the exact binding-required capability and a typed activation or creation proposal. Existing activation names exact routed resource IDs; the runtime derives authority and evidence. Creation needs typed workspace targets. Validate the deterministic gate's focused clarification if ownership remains unclear.";
 const REPEATED_REPAIR_FAILURE_THRESHOLD = 3;
 
 export function recordUnboundRunToolRepair(input: {

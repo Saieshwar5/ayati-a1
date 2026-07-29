@@ -448,6 +448,7 @@ describe.runIf(canBindTcpSocket())("UploadServer", () => {
       const chatTurnRuntime = createChatTurnRuntime({
         onReply: (clientId, data) => wsServer?.send(clientId, data),
         provider,
+        workspaceRoot: join(dataDir, "workspace"),
         chatContextRuntime: createReadyChatContextRuntime(),
         dataDir,
         documentStore,
@@ -560,6 +561,7 @@ describe.runIf(canBindTcpSocket())("UploadServer", () => {
       const chatTurnRuntime = createChatTurnRuntime({
         onReply: (clientId, data) => wsServer?.send(clientId, data),
         provider,
+        workspaceRoot: join(dataDir, "workspace"),
         chatContextRuntime: createReadyChatContextRuntime(),
         dataDir,
         documentStore,

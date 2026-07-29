@@ -7,19 +7,24 @@ import { requiresWorkstreamBinding } from "../../skills/tool-taxonomy.js";
 import type { LoopState } from "../types.js";
 import type {
   DeterministicWorkstreamBindingOutcome,
+  ResolvedWorkstreamWorkspaceTarget,
   WorkstreamBindingCoordinator,
   WorkstreamBindingProposal,
 } from "../workstream-binding/contracts.js";
+import { resolveWorkstreamWorkspaceTargets } from "../workstream-binding/workspace-targets.js";
 import { deriveTurnMutationConstraints } from "./turn-intent-policy.js";
 import {
   createVirtualModeRepair,
-  modeTransitionMutationScopeValues,
   modeTransitionReferenceValues,
   modeTransitionTargetValues,
   type ModeTransitionRequest,
   type VirtualModeRepair,
 } from "./virtual-mode.js";
 import { collectWorkstreamRoutingEvidence } from "./workstream-routing-evidence.js";
+import {
+  resolveWorkstreamActivationAuthority,
+  type WorkstreamActivationAuthority,
+} from "./workstream-activation-authority.js";
 
 export type DeterministicResolveGateResult =
   | { kind: "not_required"; attempted: false }
@@ -51,6 +56,7 @@ export type DeterministicResolveGateResult =
 export async function dispatchDeterministicResolveGate(input: {
   state: LoopState;
   request: ModeTransitionRequest;
+  workspaceRoot: string;
   toolNames: string[];
   coordinator?: WorkstreamBindingCoordinator;
   alreadyAttempted: boolean;
@@ -81,20 +87,6 @@ export async function dispatchDeterministicResolveGate(input: {
       ["Stay in an observation mode, or validate a read-only outcome."],
     );
   }
-  const outOfScope = await mutationScopesOutsideUserBoundary(
-    input.state,
-    input.request,
-    intent.scopePolicy,
-  );
-  if (outOfScope.length > 0) {
-    return rejected(
-      toolNames,
-      "MODE_MUTATION_INTENT_REQUIRED",
-      `Mutation scopes exceed the user's explicit boundary: ${outOfScope.join(", ")}.`,
-      outOfScope,
-      ["Use only mutationScopes inside the absolute path explicitly authorized by the user."],
-    );
-  }
   if (input.alreadyAttempted) {
     return rejected(
       toolNames,
@@ -119,27 +111,90 @@ export async function dispatchDeterministicResolveGate(input: {
       "MODE_BINDING_PROPOSAL_REQUIRED",
       "An unbound resolve transition requires one typed workstream/request binding proposal.",
       targets,
-      ["Observe workstream ownership, then retry resolve with an exact binding proposal."],
+      ["Enter workstream.route, observe ownership, then retry resolve with an exact binding proposal."],
     );
   }
 
-  const proposalRepair = validateBindingProposal(input.state, input.request.binding);
-  if (proposalRepair) {
-    return { kind: "rejected", attempted: false, toolNames, repair: proposalRepair };
+  const workspaceTargetResolution = input.request.binding.kind === "create"
+    ? await resolveWorkstreamWorkspaceTargets(
+        input.request.workspaceTargets ?? [],
+        input.workspaceRoot,
+      )
+    : { ok: true as const, targets: [] };
+  if (!workspaceTargetResolution.ok) {
+    return rejected(
+      toolNames,
+      "MODE_INPUT_INVALID",
+      workspaceTargetResolution.message,
+      workspaceTargetResolution.invalidTargets,
+      ["Use typed file or directory paths relative to context.run.workspaceRoot without '.', '..', or absolute prefixes."],
+    );
+  }
+  const routing = collectWorkstreamRoutingEvidence(input.state);
+  if (!routing.observed) {
+    return rejected(
+      toolNames,
+      "MODE_BINDING_PROPOSAL_UNVERIFIED",
+      "An unbound resolve transition requires a successful current-run workstream or resource routing observation.",
+      [],
+      ["Use workstream:search, workstream:read, or resource:ownership in workstream.route before resolve."],
+    );
+  }
+  let activationAuthority: WorkstreamActivationAuthority | undefined;
+  if (input.request.binding.kind === "activate") {
+    const resolved = resolveWorkstreamActivationAuthority({
+      state: input.state,
+      proposal: input.request.binding,
+      routing,
+    });
+    if (!resolved.ok) {
+      return {
+        kind: "rejected",
+        attempted: false,
+        toolNames,
+        repair: resolved.repair,
+      };
+    }
+    activationAuthority = resolved.authority;
   }
 
+  const boundaryTargets = input.request.binding.kind === "create"
+    ? workspaceTargetResolution.targets.map((target) => target.absolutePath)
+    : activationAuthority?.boundaryTargets ?? [];
+  const outOfScope = await mutationTargetsOutsideUserBoundary(
+    boundaryTargets,
+    intent.scopePolicy,
+  );
+  if (outOfScope.length > 0) {
+    return rejected(
+      toolNames,
+      "MODE_MUTATION_INTENT_REQUIRED",
+      `Mutation targets exceed the user's explicit boundary: ${outOfScope.join(", ")}.`,
+      outOfScope,
+      ["Use only exact routed resources or workspace targets inside the path explicitly authorized by the user."],
+    );
+  }
+
+  const mutationScopes = activationAuthority?.resourceIds ?? [];
+  const routingEvidence = activationAuthority?.routingEvidence ?? routing.references;
   input.onEvent?.("deterministic_binding_started", {
     tools: toolNames,
     purpose: input.request.purpose,
     referenceTargets: modeTransitionReferenceValues(input.request),
-    mutationScopes: modeTransitionMutationScopeValues(input.request),
-    proposal: summarizeProposal(input.request.binding),
+    mutationScopes: input.request.binding.kind === "create"
+      ? workspaceTargetResolution.targets.map((target) => target.absolutePath)
+      : mutationScopes,
+    workspaceTargets: workspaceTargetResolution.targets,
+    proposal: summarizeProposal(input.request.binding, workspaceTargetResolution.targets),
   });
   const outcome = await input.coordinator.bind({
     purpose: input.request.purpose,
-    referenceTargets: modeTransitionReferenceValues(input.request),
-    mutationScopes: modeTransitionMutationScopeValues(input.request),
+    workspaceTargets: workspaceTargetResolution.targets,
+    routingEvidence,
     proposal: input.request.binding,
+    ...(activationAuthority
+      ? { expectedWorkstreamHead: activationAuthority.expectedWorkstreamHead }
+      : {}),
     ...(input.state.harnessContext.contextEngine?.contextRevision
       ? { expectedContextRevision: input.state.harnessContext.contextEngine.contextRevision }
       : {}),
@@ -163,149 +218,6 @@ export function bindingRequiredToolNames(toolNames: string[]): string[] {
   )))];
 }
 
-function validateBindingProposal(
-  state: LoopState,
-  proposal: WorkstreamBindingProposal,
-): VirtualModeRepair | undefined {
-  const routing = collectWorkstreamRoutingEvidence(state);
-  if (!routing.observed) {
-    return createVirtualModeRepair(
-      "MODE_BINDING_PROPOSAL_UNVERIFIED",
-      "An unbound resolve transition requires a successful current-run workstream or resource routing observation.",
-      [],
-      ["Use workstream:search, workstream:read, or resource:ownership in an observation mode before resolve."],
-    );
-  }
-  const unknownEvidence = proposal.evidence.filter(
-    (reference) => !routing.references.includes(reference),
-  );
-  if (unknownEvidence.length > 0) {
-    return createVirtualModeRepair(
-      "MODE_BINDING_PROPOSAL_UNVERIFIED",
-      `Binding evidence references were not produced by current-run routing observations: ${unknownEvidence.join(", ")}.`,
-      unknownEvidence,
-      ["Use exact evidenceRef values returned by the routing tool calls."],
-    );
-  }
-  if (proposal.kind === "create") {
-    const knownResourceIds = new Set([
-      ...routing.resources.map((resource) => resource.resourceId),
-      ...(state.harnessContext.contextEngine?.ingressResources ?? []).map((resource) => resource.resourceId),
-    ]);
-    const unknownResources = proposal.resources
-      .map((resource) => resource.resourceId)
-      .filter((resourceId) => !knownResourceIds.has(resourceId));
-    if (unknownResources.length > 0) {
-      return createVirtualModeRepair(
-        "MODE_BINDING_PROPOSAL_UNVERIFIED",
-        `Creation resources were not returned by authoritative routing observation: ${unknownResources.join(", ")}.`,
-        unknownResources,
-        ["Find the resources first, or omit them and let the gate inspect exact path/URL targets."],
-      );
-    }
-    return undefined;
-  }
-
-  const observed = routing.workstreams.find(
-    (candidate) => candidate.workstreamId === proposal.workstreamId,
-  );
-  if (!observed) {
-    return createVirtualModeRepair(
-      "MODE_BINDING_PROPOSAL_UNVERIFIED",
-      `The proposed workstream was not returned by current-run workstream search/read evidence: ${proposal.workstreamId}.`,
-      [proposal.workstreamId],
-      ["Find or read the exact workstream before retrying resolve."],
-    );
-  }
-  if (!observed.head) {
-    return createVirtualModeRepair(
-      "MODE_BINDING_PROPOSAL_UNVERIFIED",
-      "The proposed workstream has no observed authoritative HEAD.",
-      [proposal.workstreamId],
-      ["Read the exact workstream and use its current HEAD."],
-    );
-  }
-  if (!observed.references.some((reference) => proposal.evidence.includes(reference))) {
-    return createVirtualModeRepair(
-      "MODE_BINDING_PROPOSAL_UNVERIFIED",
-      "The proposal does not cite the routing observation that produced the selected workstream.",
-      [proposal.workstreamId],
-      ["Include the exact evidenceRef from the selected candidate search/read call."],
-    );
-  }
-  if (observed?.head && observed.head !== proposal.expectedWorkstreamHead) {
-    return createVirtualModeRepair(
-      "MODE_BINDING_PROPOSAL_UNVERIFIED",
-      "The proposed workstream HEAD does not match the latest observed candidate.",
-      [proposal.workstreamId],
-      ["Read the exact workstream again and use its current HEAD."],
-    );
-  }
-  const exactReasons = new Set([
-    "exact_workstream_id",
-    "exact_resource_id",
-    "owned_resource",
-    "direct_continuation",
-  ]);
-  if (
-    observed
-    && !observed.inspected
-    && !observed.reasons.some((reason) => exactReasons.has(reason))
-  ) {
-    return createVirtualModeRepair(
-      "MODE_BINDING_PROPOSAL_UNVERIFIED",
-      "A semantic or recency workstream candidate must be inspected before binding.",
-      [proposal.workstreamId],
-      [
-        "Inspect the exact workstream and compare its request contracts before choosing a typed lifecycle operation.",
-      ],
-    );
-  }
-  const requestIds = requestDecisionEvidenceIds(proposal.requestDecision);
-  if (!requestIds) {
-    return createVirtualModeRepair(
-      "MODE_BINDING_PROPOSAL_UNVERIFIED",
-      "The binding proposal contains an unsupported request lifecycle operation.",
-      [],
-      ["Use one request lifecycle operation advertised by the current resolve schema."],
-    );
-  }
-  for (const requestId of requestIds) {
-    const explicitRequest = state.userMessage.includes(requestId);
-    if (!explicitRequest && !observed?.requestIds.includes(requestId)) {
-      return createVirtualModeRepair(
-        "MODE_BINDING_PROPOSAL_UNVERIFIED",
-        `The exact active request was not explicitly named or returned by workstream inspection: ${requestId}.`,
-        [requestId],
-        [
-          "Inspect the exact request and choose only a lifecycle operation permitted by its observed status.",
-        ],
-      );
-    }
-  }
-  return undefined;
-}
-
-function requestDecisionEvidenceIds(
-  decision: Extract<WorkstreamBindingProposal, { kind: "activate" }>["requestDecision"],
-): string[] | undefined {
-  switch (decision.kind) {
-    case "continue_current":
-    case "activate_existing":
-    case "resume_blocked":
-      return [decision.requestId];
-    case "amend_current":
-    case "defer_current_and_create":
-      return [decision.currentRequestId];
-    case "defer_current_and_activate_existing":
-      return [decision.currentRequestId, decision.nextRequestId];
-    case "create_and_activate":
-    case "create_queued":
-      return [];
-  }
-  return undefined;
-}
-
 function rejected(
   toolNames: string[],
   code: Parameters<typeof createVirtualModeRepair>[0],
@@ -321,17 +233,24 @@ function rejected(
   };
 }
 
-function summarizeProposal(proposal: WorkstreamBindingProposal): Record<string, unknown> {
+function summarizeProposal(
+  proposal: WorkstreamBindingProposal,
+  workspaceTargets: ResolvedWorkstreamWorkspaceTarget[],
+): Record<string, unknown> {
   return proposal.kind === "activate"
     ? {
         kind: proposal.kind,
         workstreamId: proposal.workstreamId,
         requestDecision: proposal.requestDecision.kind,
+        resourceIds: proposal.resourceIds,
       }
     : {
         kind: proposal.kind,
         title: proposal.title,
-        resourceCount: proposal.resources.length,
+        workspaceTargets: workspaceTargets.map((target) => ({
+          kind: target.kind,
+          relativePath: target.relativePath,
+        })),
       };
 }
 
@@ -366,9 +285,8 @@ function isWorkstreamBound(state: LoopState): boolean {
   return state.harnessContext.contextEngine?.current.routing?.status === "bound";
 }
 
-async function mutationScopesOutsideUserBoundary(
-  state: LoopState,
-  request: ModeTransitionRequest,
+async function mutationTargetsOutsideUserBoundary(
+  targets: string[],
   policy: ReturnType<typeof deriveTurnMutationConstraints>["scopePolicy"],
 ): Promise<string[]> {
   if (!policy.denyOutsideAllowedScopes || policy.allowedScopes.length === 0) return [];
@@ -383,11 +301,10 @@ async function mutationScopesOutsideUserBoundary(
     }))).filter((allowed): allowed is Awaited<
       ReturnType<typeof canonicalizeAbsoluteFilesystemPath>
     > => allowed !== undefined);
-  const decisions = await Promise.all(modeTransitionMutationScopeValues(request).map(async (scope) => {
-    const path = isAbsolute(scope) ? scope : resourcePath(state, scope);
-    if (!path) return { scope, outside: true };
+  const decisions = await Promise.all(targets.map(async (scope) => {
+    if (!isAbsolute(scope)) return { scope, outside: true };
     try {
-      const canonical = await canonicalizeAbsoluteFilesystemPath(path);
+      const canonical = await canonicalizeAbsoluteFilesystemPath(scope);
       return {
         scope,
         outside: !allowedScopes.some((allowed) => filesystemPathIsWithin(allowed, canonical)),
@@ -397,14 +314,4 @@ async function mutationScopesOutsideUserBoundary(
     }
   }));
   return decisions.filter((decision) => decision.outside).map((decision) => decision.scope);
-}
-
-function resourcePath(state: LoopState, resourceId: string): string | undefined {
-  const resources = [
-    ...(state.harnessContext.contextEngine?.ingressResources ?? []),
-    ...(state.harnessContext.contextEngine?.agentStream.resources ?? []),
-    ...(state.harnessContext.contextEngine?.workstream?.resources.map((binding) => binding.resource) ?? []),
-  ];
-  const resource = resources.find((candidate) => candidate.resourceId === resourceId);
-  return resource?.locator.kind === "filesystem" ? resource.locator.path : undefined;
 }

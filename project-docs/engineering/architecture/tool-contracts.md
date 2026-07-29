@@ -45,9 +45,10 @@ The executor owns effects, output validation, and verified-fact extraction.
 
 ## Host Paths and Resources
 
-Model-facing host paths are canonical absolute paths. Relative paths, `.`,
-`..`, and `~` are rejected rather than repaired. Syntax validation does not
-grant access.
+Read-only host references and existing mutation authority are canonical
+absolute paths. New-workstream outputs use typed workspace-relative targets,
+and direct filesystem mutation tools may use workspace-relative paths after
+binding. Syntax validation does not grant access.
 
 Absolute paths are not the correct representation for every path-like value.
 Ayati uses two deliberately separate contracts:
@@ -59,12 +60,19 @@ Ayati uses two deliberately separate contracts:
   resource. It is always paired with a resource id, uses a field named
   `relativePath`, and rejects absolute paths plus empty, `.` and `..`
   segments.
+- `WorkstreamWorkspaceTarget` identifies a prospective file or directory
+  beneath the configured workspace. It carries `kind: file | directory` and a
+  `relativePath`; it never carries the workspace root, a resource id, or an
+  evidence reference.
 
 Repository-relative names, archive members, completion assets, and mutation
-targets inside a bound resource therefore remain relative by design. Turning
-those values into host absolute paths would discard resource identity, reduce
-portability, and make containment harder to audit. A generic field named
-`path` must not silently switch between these two contracts.
+targets inside a bound resource can remain relative by design. For a
+new-workstream target, the resolve gate joins `relativePath` to the configured
+workspace, canonicalizes the result, and rejects absolute input, `.`, `..`,
+empty segments, and symbolic-link escape. For a direct filesystem mutation
+tool, the resource-scoped executor resolves a relative `path` against the
+workspace once before policy and resource checks. Read tools and other host
+path contracts remain absolute.
 
 The temporary operator-owned filesystem policy separates observation from
 mutation:
@@ -86,12 +94,14 @@ model-facing output bounds still apply. Searches with omitted roots default to
 `<AYATI_ROOT_DIR>/workspace/`; broader discovery requires explicit roots.
 
 Machine-read authority grants no workstream ownership or mutation authority.
-With `mutationScope=workspace`, every declared filesystem effect is
-canonicalized against `<AYATI_ROOT_DIR>/workspace/` before resource lookup,
-mutation preparation, temporary-file creation, or tool execution. External
+With `mutationScope=workspace`, each relative direct-filesystem effect is first
+resolved beneath `<AYATI_ROOT_DIR>/workspace/`; absolute effects remain
+unchanged, and other mutation-capable tools retain their declared absolute-path
+contracts. Every result is canonicalized before resource lookup, mutation
+preparation, temporary-file creation, or execution. External and traversal
 paths fail with `PATH_OUTSIDE_MUTATION_WORKSPACE`. Both move endpoints must be
-inside, and symbolic-link escapes are rejected. `allowExternalPath` is removed
-before execution and cannot override the operator policy.
+inside, symbolic-link escapes are rejected, and `allowExternalPath` cannot
+override policy.
 
 Inside-workspace location is necessary, not sufficient. Mutation still
 requires immutable workstream binding, a resource bound with
@@ -100,11 +110,27 @@ post-operation verification. The optional operator value
 `mutationScope=bound_resource` restores the older bound-resource boundary
 without changing the executor.
 
-Mode transitions keep search subjects, read-only references, and mutation
-scopes in separate typed fields. A reference path cannot become mutation
-authority merely because it is absolute. Mutation directory containment is
-checked on canonical paths, including missing future children through their
-nearest existing ancestor, and rejects symbolic-link escapes.
+Mode transitions keep search subjects, read-only references, existing routed
+resource IDs, bound execute mutation scopes, and new `workspaceTargets` in
+separate typed fields. A reference path cannot become mutation authority
+merely because it is absolute. The model-facing activation control accepts
+only the observed workstream, request lifecycle choice, and exact resource
+IDs; the runtime derives paths, ownership, mutation scope, repository HEAD,
+and evidence. The model-facing create control accepts only:
+
+```text
+purpose
+capabilities
+references?            # read-only context only
+workspaceTargets[]     # { kind, relativePath }
+binding                # title, objective, initialRequest contract
+```
+
+The runtime injects `kind: create`, derives current-run routing evidence,
+resolves absolute target paths, inspects exact resource identities, and binds
+only those resources. Mutation directory containment is checked on canonical
+paths, including missing future children through their nearest existing
+ancestor, and rejects symbolic-link escapes.
 
 Process and Python mutation-capable calls declare an inside-workspace working
 directory and exact inside-workspace effect targets. Mutable database calls
@@ -120,8 +146,9 @@ general-purpose execution tools.
 
 ## Workstream Controls
 
-The primary model may use these read-only observations after entering a
-matching observation mode:
+The primary model may use these read-only observations after entering
+`workstream.route` for mutation routing, or a matching observation mode for a
+read-only workstream question:
 
 - `git_context_find_workstreams`
 - `git_context_read_workstream`
@@ -150,13 +177,19 @@ Bound resource control:
 
 - `git_context_bind_resources`
 
-Reading never binds. When the main run enters `resolve` with a binding-required
-capability, evidence-backed mutation scope, and typed request-routing or
-workstream-creation proposal, the runtime validates current-run routing
-evidence and invokes one atomic Context Engine binding operation without a
-model call. It then enters `execute` mechanically before asking for a fresh
-decision. Routing an existing workstream must explicitly continue, amend,
-activate, resume, create, or atomically defer and switch its request.
+Reading never binds. An unbound mutation cannot move directly from `ENTRY` to
+`resolve`; it first enters `workstream.route`. That mode exposes only the
+three read-only routing capabilities above, and resolve controls remain absent
+until one of their tools succeeds in the current run. The runtime then
+validates the typed proposal and invokes one atomic Context Engine binding
+operation without a model call. Existing activation requires observed
+resource IDs and a lifecycle choice; the runtime derives and validates
+mutation scope, repository HEAD, and evidence. New creation requires typed
+workspace targets; the runtime derives their absolute paths, evidence
+references, and resource ids. It then enters `execute` mechanically before
+asking for a fresh decision. Routing an existing workstream must explicitly
+continue, amend, activate, resume, create, or atomically defer and switch its
+request.
 Replay identity derives from the existing run id and deterministic gate id.
 An ambiguity that performs no binding does not consume the mutation-safe
 binding attempt. An explicit create-new instruction or an exact follow-up

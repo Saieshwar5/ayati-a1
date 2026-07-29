@@ -9,6 +9,7 @@ import { buildAgentContextPack } from "./context-pack.js";
 import { buildBoundWorkstreamPromptContext } from "./bound-workstream-prompt-context.js";
 import { projectAgentPromptContext } from "./prompt-context.js";
 import { buildVirtualModeCard } from "./virtual-mode.js";
+import { collectWorkstreamRoutingEvidence } from "./workstream-routing-evidence.js";
 import { getActiveFailures } from "./failure-lifecycle.js";
 import { hasMaterialWorkState } from "./work-state/selectors.js";
 import type {
@@ -101,6 +102,7 @@ export interface AgentStateView {
 
 export interface AgentStateViewOptions {
   activeTools?: string[];
+  workspaceRoot?: string;
 }
 
 export function buildAgentStateView(state: LoopState, options: AgentStateViewOptions = {}): AgentStateView {
@@ -134,8 +136,10 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
       workingFeedback,
     }),
     run: buildRunContext({
+      workspaceRoot: options.workspaceRoot,
       mode: buildVirtualModeCard(state.virtualMode, {
         workstreamBound: state.harnessContext.contextEngine?.current.routing?.status === "bound",
+        routingObserved: collectWorkstreamRoutingEvidence(state).observed,
         hotContextAvailable: state.hotContext.available.length > 0,
       }),
       boundWorkstream: buildBoundWorkstreamPromptContext(
@@ -178,6 +182,7 @@ function buildToolsContext(input: {
 }
 
 function buildRunContext(input: {
+  workspaceRoot?: string;
   mode: NonNullable<PromptRunContext["mode"]>;
   boundWorkstream?: PromptRunContext["boundWorkstream"];
   workState?: PromptProgressState;
@@ -186,6 +191,7 @@ function buildRunContext(input: {
   contextPressure?: PromptRunContext["contextPressure"];
 }): PromptRunContext {
   return {
+    ...(input.workspaceRoot ? { workspaceRoot: input.workspaceRoot } : {}),
     mode: input.mode,
     ...(input.boundWorkstream
       ? { boundWorkstream: input.boundWorkstream }
@@ -285,7 +291,7 @@ function buildCapabilitySurfaceWorkingFeedback(
     source: "capability_surface",
     message: truncate(result.message, 360),
     retryHint: result.unavailable.some((entry) => entry.reason === "requires_workstream_binding")
-      ? "Use decision_resolve_activate or decision_resolve_create with the exact binding-required capability and evidence-backed mutation scope."
+      ? "Route ownership, then use decision_resolve_activate with exact observed resource IDs or decision_resolve_create with typed workspace targets."
       : result.missing.length > 0
       ? `Requested capabilities were not available: ${compactList(result.missing, 5, 80).join(", ")}. Choose an exact id from the capability catalog.`
       : "If the current capability surface is insufficient, use a bounded self-transition with different exact capability ids.",
@@ -301,7 +307,7 @@ function isToolValidationReason(reason: string): boolean {
 
 function buildFailureRetryHint(failureType: LoopState["failureHistory"][number]["failureType"], reason: string): string | undefined {
   if (reason.includes("No active workstream exists")) {
-    return "Enter resolve with the exact binding-required capability and evidence-backed target. Validate needs_user_input if ownership remains ambiguous.";
+    return "Route ownership, then enter resolve with observed activation authority or typed workspace creation targets. Validate needs_user_input if ownership remains ambiguous.";
   }
   if (failureType === "validation_error" || isToolValidationReason(reason)) {
     return "Retry the selected executable tool with all required schema fields. Do not use an empty input object.";

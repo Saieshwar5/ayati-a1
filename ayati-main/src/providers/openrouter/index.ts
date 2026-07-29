@@ -144,8 +144,30 @@ function toOpenRouterResponseTools(
     type: "function",
     name: toProviderToolName(tool.name, maps),
     description: tool.description,
-    parameters: tool.inputSchema,
+    parameters: toOpenRouterToolInputSchema(tool.inputSchema),
   }));
+}
+
+function toOpenRouterToolInputSchema(
+  schema: Record<string, unknown>,
+): Record<string, unknown> {
+  return stripUnsupportedOpenRouterSchemaKeywords(schema) as Record<string, unknown>;
+}
+
+function stripUnsupportedOpenRouterSchemaKeywords(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(stripUnsupportedOpenRouterSchemaKeywords);
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  const compiled: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (key === "uniqueItems") continue;
+    compiled[key] = stripUnsupportedOpenRouterSchemaKeywords(item);
+  }
+  return compiled;
 }
 
 function parseToolArguments(raw: string): unknown {

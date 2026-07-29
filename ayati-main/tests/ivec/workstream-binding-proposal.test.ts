@@ -2,14 +2,37 @@ import { describe, expect, it } from "vitest";
 import {
   normalizeWorkstreamBindingProposal,
   workstreamActivateProposalSchema,
+  workstreamCreateProposalSchema,
 } from "../../src/ivec/workstream-binding/proposal.js";
 
 describe("workstream binding proposal", () => {
+  it("keeps runtime-owned creation fields out of the model contract", () => {
+    const proposal = {
+      kind: "create" as const,
+      title: "Balcony herb notes",
+      objective: "Create and maintain the balcony herb notes.",
+      initialRequest: {
+        title: "Create herb notes",
+        request: "Create balcony-herbs.md.",
+        acceptance: ["balcony-herbs.md exists and contains the requested notes."],
+        constraints: [],
+      },
+    };
+
+    expect(normalizeWorkstreamBindingProposal(proposal)).toEqual(proposal);
+    const schema = workstreamCreateProposalSchema();
+    expect(schema["required"]).toEqual(["title", "objective", "initialRequest"]);
+    expect(schema["properties"]).toEqual(expect.not.objectContaining({
+      kind: expect.anything(),
+      resources: expect.anything(),
+      evidence: expect.anything(),
+    }));
+  });
+
   it("normalizes and advertises an explicit request switch", () => {
     const proposal = {
       kind: "activate",
       workstreamId: "W-20260722-0001",
-      expectedWorkstreamHead: "a".repeat(40),
       requestDecision: {
         kind: "defer_current_and_create",
         currentRequestId: "R-0001",
@@ -19,7 +42,7 @@ describe("workstream binding proposal", () => {
         constraints: [],
         reason: "The user explicitly prioritized the contact form.",
       },
-      evidence: ["run:RUN-1:step:1:call:read-owner"],
+      resourceIds: ["RES-0123456789ABCDEF01234567"],
     };
 
     expect(normalizeWorkstreamBindingProposal(proposal)).toEqual(proposal);
@@ -27,11 +50,29 @@ describe("workstream binding proposal", () => {
       ...proposal,
       requestDecision: { ...proposal.requestDecision, currentRequestId: "invalid" },
     })).toBeUndefined();
+    expect(normalizeWorkstreamBindingProposal({
+      ...proposal,
+      resourceIds: ["invalid"],
+    })).toBeUndefined();
 
-    const properties = workstreamActivateProposalSchema()["properties"] as Record<
+    const schema = workstreamActivateProposalSchema();
+    expect(schema["required"]).toEqual([
+      "workstreamId",
+      "requestDecision",
+      "resourceIds",
+    ]);
+    const properties = schema["properties"] as Record<
       string,
       Record<string, unknown>
     >;
+    expect(properties).not.toHaveProperty("kind");
+    expect(properties).not.toHaveProperty("expectedWorkstreamHead");
+    expect(properties).not.toHaveProperty("evidence");
+    expect(properties["resourceIds"]).toMatchObject({
+      type: "array",
+      minItems: 1,
+      maxItems: 8,
+    });
     expect(properties["requestDecision"]?.["description"]).toEqual(
       expect.stringContaining("separate outcome"),
     );

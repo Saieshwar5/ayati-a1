@@ -77,9 +77,11 @@ normal directories, never nested repositories. The shared repository contains
 only Ayati-managed context files.
 
 If the user gives no destination, output goes under
-`<ayati-root>/workspace/`. If the user names an existing path, the resource
-stays there. Deliverables, source trees, media, downloads, databases, secrets,
-raw transcripts, and private attachment bytes never enter context Git.
+`<ayati-root>/workspace/`. An existing path inside that workspace keeps its
+location. Under the default policy, an existing path outside it may be read
+but cannot become a mutation target. Deliverables, source trees, media,
+downloads, databases, secrets, raw transcripts, and private attachment bytes
+never enter context Git.
 
 ## Workstream lifecycle
 
@@ -174,8 +176,14 @@ project, subject, or resource boundary.
 
 Workstream selection and request selection are separate decisions.
 
-During routing, the model observes SQLite-backed candidates and exact resource
-owners using read-only tools. Evidence priority is:
+For an unbound mutation, the model first enters `workstream.route`. That
+read-only mode exposes only workstream search/read and resource-owner lookup.
+The first successful current-run routing call makes `resolve` available;
+direct `ENTRY -> resolve` is prohibited. General read-only questions about
+workstreams may still use the ordinary observation modes without binding.
+
+Within routing, the model observes SQLite-backed candidates and exact resource
+owners. Evidence priority is:
 
 1. explicit workstream id;
 2. exact resource id or owned path;
@@ -219,6 +227,41 @@ The model supplies semantic intent and a human-readable reason. Deterministic
 runtime code verifies exact identities, current states, evidence references,
 resource ownership, repository state, the transition, the one-active-request
 invariant, and immutable run binding.
+
+New-workstream creation deliberately uses a smaller contract than existing
+activation:
+
+```text
+decision_resolve_create({
+  purpose,
+  capabilities,
+  workspaceTargets: [
+    { kind: "file", relativePath: "balcony-herbs.md" }
+    // or { kind: "directory", relativePath: "balcony-herbs" }
+  ],
+  binding: {
+    title,
+    objective,
+    initialRequest: { title, request, acceptance, constraints }
+  }
+})
+```
+
+The model declares what exact file or directory the user wants, relative to
+the already projected workspace. It does not repeat `workspaceRoot`, invent a
+resource id, choose a creation operation kind, or copy routing evidence. The
+runtime validates the relative path, resolves it beneath the configured
+workspace, rejects traversal and symbolic-link escape, derives current-run
+routing evidence, inspects the exact prospective resource, and then creates
+the workstream with `R-0001`. Only those exact targets are bound; the whole
+workspace is not.
+
+Existing-workstream activation remains different: the model selects an
+observed workstream/request lifecycle operation and exact existing resource
+IDs returned by current-run routing. The runtime derives and rechecks paths,
+mutable ownership, mutation scope, repository HEAD, and evidence. This
+distinction lets creation name a path that does not exist yet without
+weakening activation authority.
 
 Routing lifecycle changes are journaled as a provisional plan before
 execution. The current run sees the projected post-route request context, but

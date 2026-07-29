@@ -188,7 +188,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     source: "runner.workstream_binding",
     message: "Mutation requires the current run to be bound to a workstream.",
     allowedNextActions: [
-      "Enter resolve with the exact binding-required capability and an evidence-backed target.",
+      "Route ownership, then enter resolve with observed activation authority or typed workspace creation targets.",
       "After binding refreshes the context, make a fresh mutation decision.",
       "Do not defer, retain, or replay the rejected mutation call.",
     ],
@@ -200,7 +200,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     source: "runner.guard",
     message: "No active workstream exists yet. Normal work tools cannot run before workstream binding.",
     allowedNextActions: [
-      "Observe workstream ownership, then enter resolve with the exact capability and typed binding proposal.",
+      "Enter workstream.route, observe ownership, then use the available resolve control with the exact capability and typed binding proposal.",
       "After authoritative bound context is mounted, make a fresh decision instead of replaying an earlier mutation.",
       "If the deterministic gate reports ambiguity, validate its focused clarification.",
     ],
@@ -212,7 +212,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     source: "runner.guard",
     message: "A workstream-scoped executable action reached the runner before workstream binding existed.",
     allowedNextActions: [
-      "Observe ownership, then enter resolve with the executable capability and an evidence-backed binding proposal.",
+      "Enter workstream.route, observe ownership, then enter resolve with the executable capability and an evidence-backed binding proposal.",
       "Make a fresh executable decision only after the runtime mounts authoritative bound context.",
     ],
     modelFacing: true,
@@ -224,7 +224,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     message: "The current pending turn is not bound to a workstream.",
     allowedNextActions: [
       "Enter an observation mode for read-only evidence gathering.",
-      "For mutation, observe ownership and enter resolve with the exact capability and typed proposal.",
+      "For mutation, enter workstream.route, observe ownership, and then use the available resolve control.",
       "Validate the deterministic gate's focused question if workstream ownership is ambiguous.",
     ],
     modelFacing: true,

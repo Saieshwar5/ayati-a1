@@ -23,11 +23,11 @@ export const moveTool: ToolDefinition = {
     properties: {
       source: {
         type: "string",
-        description: "Absolute path of the source file or directory.",
+        description: "Source path relative to context.run.workspaceRoot, or a canonical absolute path inside it.",
       },
       destination: {
         type: "string",
-        description: "Absolute destination path.",
+        description: "Destination path relative to context.run.workspaceRoot, or a canonical absolute path inside it.",
       },
       overwrite: {
         type: "boolean",

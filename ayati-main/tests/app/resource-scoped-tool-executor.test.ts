@@ -741,7 +741,37 @@ describe("resource-scoped tool executor", () => {
     expect(result.error).toContain("requires recovery");
   });
 
-  it("requires absolute paths before preparing mutation authority", async () => {
+  it("resolves workspace-relative mutation paths before authority checks", async () => {
+    const workspace = tempDirectory("ayati-workspace-");
+    const site = directoryInside(workspace, "site");
+    const target = join(site, "nested", "index.html");
+    const execute = vi.fn(async () => ({ ok: true, output: "written" }));
+    const service = serviceFor(boundActiveContext([binding("RES-SITE", site)]));
+    const executor = createResourceScopedToolExecutor({
+      base: baseExecutor(execute, ["write_files"]),
+      contextEngine: service,
+      workspaceRoot: workspace,
+    });
+
+    const result = await executor.execute("write_files", {
+      files: [{ path: "site/nested/index.html", content: "valid" }],
+    }, executionContext());
+
+    expect(result.ok).toBe(true);
+    expect(execute).toHaveBeenCalledWith(
+      "write_files",
+      { files: [{ path: target, content: "valid" }] },
+      expect.objectContaining({
+        resourceScope: expect.objectContaining({
+          resourceId: "RES-SITE",
+          authorityPath: site,
+        }),
+      }),
+    );
+    expect(service.prepareResourceMutation).toHaveBeenCalledOnce();
+  });
+
+  it("rejects workspace-relative mutation paths that escape the workspace", async () => {
     const workspace = tempDirectory("ayati-workspace-");
     const site = directoryInside(workspace, "site");
     const execute = vi.fn(async () => ({ ok: true, output: "should not run" }));
@@ -753,11 +783,11 @@ describe("resource-scoped tool executor", () => {
     });
 
     const result = await executor.execute("write_files", {
-      files: [{ path: "nested/index.html", content: "invalid" }],
+      files: [{ path: "../outside.txt", content: "invalid" }],
     }, executionContext());
 
     expect(result.ok).toBe(false);
-    expect(result.v2?.code).toBe("ABSOLUTE_PATH_REQUIRED");
+    expect(result.v2?.code).toBe("PATH_OUTSIDE_MUTATION_WORKSPACE");
     expect(execute).not.toHaveBeenCalled();
     expect(service.prepareResourceMutation).not.toHaveBeenCalled();
   });

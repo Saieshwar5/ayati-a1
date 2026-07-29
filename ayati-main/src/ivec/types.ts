@@ -497,6 +497,8 @@ export interface AgentContextCheckpointCoordinator {
 
 export interface AgentLoopDeps {
   provider: LlmProvider;
+  /** Exact runtime-configured Ayati workspace root projected into each primary decision. */
+  workspaceRoot?: string;
   toolExecutor?: ToolExecutor;
   capabilitySurfaceManager?: CapabilitySurfaceManager;
   hotContextRuntime?: HotContextRuntime;

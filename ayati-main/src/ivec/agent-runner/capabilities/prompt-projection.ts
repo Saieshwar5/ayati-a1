@@ -7,6 +7,7 @@ import type { CapabilityCatalog } from "./catalog.js";
 import { recommendNextCapabilities } from "./recommendations.js";
 import type { ModeCapabilityOptions } from "./contracts.js";
 import type { ToolRegistry } from "./registry.js";
+import { collectWorkstreamRoutingEvidence } from "../workstream-routing-evidence.js";
 
 export function buildCapabilityPromptProjection(input: {
   state: LoopState;
@@ -18,6 +19,7 @@ export function buildCapabilityPromptProjection(input: {
   const workstreamBound = input.state.harnessContext.contextEngine?.current.routing?.status === "bound";
   const allowedModes = allowedVirtualModeTransitions(input.state.virtualMode, {
     workstreamBound,
+    routingObserved: collectWorkstreamRoutingEvidence(input.state).observed,
   });
   const availableTools = input.registry.nameSet();
   const cards = input.catalog

@@ -86,6 +86,7 @@ describe("agent-stream checkpoint projection", () => {
       mode: "stream_checkpoint",
       unresolvedPressureStreak: 2,
     });
+    expect(promptState.context.run?.workspaceRoot).toBe("/opt/ayati/runtime/workspace");
     expect(JSON.stringify(promptState)).not.toContain("sha256:checkpoint-source");
   });
 });
@@ -118,6 +119,7 @@ function baseStateView(): AgentStateView {
       }),
       hot: emptyHotContextProjection(),
       run: {
+        workspaceRoot: "/opt/ayati/runtime/workspace",
         workState: {
           status: "in_progress",
           summary: "Run-local work remains exact.",

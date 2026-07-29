@@ -302,7 +302,7 @@ async function runContextToolSelectionCase(config: RuntimeScaleConfig): Promise<
     }),
     await measureOperation("project_capability_catalog", async () => {
       const cards = capabilityCatalog.cardsForModes(
-        ["observe.locate", "observe.investigate", "resolve", "execute"],
+        ["observe.locate", "observe.investigate", "workstream.route", "resolve", "execute"],
         toolRegistry.nameSet(),
       );
       if (cards.length === 0) {

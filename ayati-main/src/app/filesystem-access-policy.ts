@@ -119,6 +119,58 @@ export async function validateWorkspaceMutationPaths(input: {
   return undefined;
 }
 
+/**
+ * Direct filesystem mutation paths may be relative to the configured
+ * workspace. Resolve them once before resource selection and containment
+ * checks so every later gate sees the same absolute target. Absolute paths
+ * remain unchanged and are still rejected when they fall outside policy.
+ */
+export function resolveWorkspaceMutationInput(
+  toolName: string,
+  value: unknown,
+  workspaceRoot: string,
+): unknown {
+  if (!DIRECT_FILESYSTEM_MUTATION_TOOLS.has(toolName) || !isRecord(value)) {
+    return value;
+  }
+  const input = structuredClone(value);
+  const resolvePath = (path: unknown): unknown => {
+    if (!isNonEmptyString(path)) return path;
+    const normalized = path.trim();
+    if (
+      isAbsolute(normalized)
+      || normalized === "~"
+      || normalized.startsWith("~/")
+      || normalized.startsWith("~\\")
+      || /^file:/i.test(normalized)
+      || /^[A-Za-z]:[\\/]/.test(normalized)
+    ) {
+      return normalized;
+    }
+    return resolve(workspaceRoot, normalized);
+  };
+  for (const key of PATH_KEYS) {
+    if (key in input) input[key] = resolvePath(input[key]);
+  }
+  for (const key of STRING_ARRAY_PATH_KEYS) {
+    if (Array.isArray(input[key])) {
+      input[key] = (input[key] as unknown[]).map(resolvePath);
+    }
+  }
+  for (const key of OBJECT_ARRAY_PATH_KEYS) {
+    if (!Array.isArray(input[key])) continue;
+    input[key] = (input[key] as unknown[]).map((entry) => {
+      if (!isRecord(entry)) return entry;
+      const record = { ...entry };
+      for (const pathKey of ENTRY_PATH_KEYS) {
+        if (pathKey in record) record[pathKey] = resolvePath(record[pathKey]);
+      }
+      return record;
+    });
+  }
+  return input;
+}
+
 export function collectToolPaths(value: unknown): string[] {
   if (!isRecord(value)) return [];
   const direct = PATH_KEYS.map((key) => value[key])

@@ -29,6 +29,7 @@ import { inspectPathsTool } from "../../src/skills/builtins/filesystem/inspect-p
 import { createGitContextSkill } from "../../src/skills/builtins/git-context/index.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
+import { getWorkspaceRoot } from "../../src/skills/workspace-paths.js";
 import { contextEngineFixture } from "../fixtures/agent-context.js";
 import { nativeDecisionFixture } from "../ivec/native-decision-fixture.js";
 
@@ -89,13 +90,13 @@ function createSingleLoopMutationProvider(outputPath: string): LlmProvider {
     },
     start: vi.fn(),
     stop: vi.fn(),
-    generateTurn: vi.fn(async (input): Promise<LlmTurnOutput> => {
+    generateTurn: vi.fn(async (): Promise<LlmTurnOutput> => {
       decision++;
       if (decision === 1) {
         return nativeDecisionFixture({
           kind: "transition_mode",
           request: {
-            to: "observe.locate",
+            to: "workstream.route",
             purpose: "Check durable ownership before creating the requested file.",
             capabilities: ["workstream:search"],
             targets: [outputPath],
@@ -120,14 +121,16 @@ function createSingleLoopMutationProvider(outputPath: string): LlmProvider {
         });
       }
       if (decision === 3) {
-        const evidenceRef = extractLatestEvidenceRef(input);
         return nativeDecisionFixture({
           kind: "transition_mode",
           request: {
             to: "resolve",
             purpose: "Bind the requested output before creating it.",
             capabilities: ["file:write"],
-            targets: [outputPath],
+            workspaceTargets: [{
+              kind: "file",
+              relativePath: "one-run.txt",
+            }],
             binding: {
               kind: "create",
               title: "One run file",
@@ -138,8 +141,6 @@ function createSingleLoopMutationProvider(outputPath: string): LlmProvider {
                 acceptance: ["one-run.txt exists with the requested content."],
                 constraints: [],
               },
-              resources: [],
-              evidence: [evidenceRef],
             },
           },
         });
@@ -186,14 +187,6 @@ function createSingleLoopMutationProvider(outputPath: string): LlmProvider {
       throw new Error("No queued provider response.");
     }),
   };
-}
-
-function extractLatestEvidenceRef(input: LlmTurnInput): string {
-  const content = input.messages.map((message) => message.content).join("\n");
-  const matches = [...content.matchAll(/"evidenceRef"\s*:\s*"([^"]+)"/g)];
-  const evidenceRef = matches.at(-1)?.[1];
-  if (!evidenceRef) throw new Error("Routing evidenceRef missing from the main-loop decision context.");
-  return evidenceRef;
 }
 
 function createSystemEventPolicy(): SystemEventPolicyConfig {
@@ -363,6 +356,7 @@ function createEngine(options: TestEngineOptions = {}): IVecEngine {
   const chatTurnRuntime = createChatTurnRuntime({
     onReply: options.onReply,
     provider,
+    workspaceRoot: options.workspaceRoot ?? getWorkspaceRoot(),
     toolExecutor: options.toolExecutor,
     loopConfig: options.loopConfig,
     now: options.now,
@@ -374,6 +368,7 @@ function createEngine(options: TestEngineOptions = {}): IVecEngine {
   const systemEventRuntime = createSystemEventRuntime({
     onReply: options.onReply,
     provider,
+    workspaceRoot: options.workspaceRoot ?? getWorkspaceRoot(),
     systemEventContextRuntime,
     toolExecutor: options.toolExecutor,
     loopConfig: options.loopConfig,
@@ -543,6 +538,7 @@ describe("IVecEngine one-run integration", () => {
 
   it("finalizes request-like direct response text as completed", async () => {
     const dataDir = makeTmpDir();
+    const workspaceRoot = join(dataDir, "configured-workspace");
     const response = "Could you please send me the report whenever you have a chance?";
     try {
       const provider = createProvider([
@@ -550,13 +546,21 @@ describe("IVecEngine one-run integration", () => {
       ]);
       const onReply = vi.fn();
       const runtime = createContextRuntime(createPreparedTurn({ role: "user", runId: "R-direct" }));
-      const engine = createEngine({ onReply, provider, dataDir, chatContextRuntime: runtime });
+      const engine = createEngine({
+        onReply,
+        provider,
+        workspaceRoot,
+        dataDir,
+        chatContextRuntime: runtime,
+      });
 
       await engine.start();
       engine.handleMessage("c1", { type: "chat", content: "Rewrite this politely: Send me the report now." });
 
       await vi.waitFor(() => expect(onReply).toHaveBeenCalledOnce());
       expect(provider.generateTurn).toHaveBeenCalledOnce();
+      expect(JSON.stringify(vi.mocked(provider.generateTurn).mock.calls[0]?.[0]))
+        .toContain(workspaceRoot);
       expect(runtime.recordRunStep).not.toHaveBeenCalled();
       expect(runtime.finalizeRun).toHaveBeenCalledOnce();
       expect(runtime.finalizeRun).toHaveBeenCalledWith(expect.objectContaining({
@@ -641,7 +645,10 @@ describe("IVecEngine one-run integration", () => {
             to: "resolve",
             purpose: "Bind the exact output target before creating it.",
             capabilities: ["file:write"],
-            targets: [outputPath],
+            workspaceTargets: [{
+              kind: "file",
+              relativePath: "must-not-exist.txt",
+            }],
             binding: {
               kind: "create",
               title: "Create requested output",
@@ -652,18 +659,13 @@ describe("IVecEngine one-run integration", () => {
                 acceptance: ["The requested output file exists."],
                 constraints: [],
               },
-              resources: [],
-              evidence: ["run:R-unbound-write:step:1:call:missing-routing-observation"],
             },
           },
         },
         {
-          kind: "stop",
-          request: {
-            outcome: "failed",
-            summary: "Workstream resolution was unavailable before mutation.",
-            response: "I could not safely create the file because workstream resolution is unavailable.",
-          },
+          kind: "reply",
+          status: "completed",
+          message: "I could not safely create the file because workstream routing was not performed.",
         },
       ]);
       const onReply = vi.fn();
@@ -720,6 +722,7 @@ describe("IVecEngine one-run integration", () => {
     const engine = createEngine({
       onReply,
       provider,
+      workspaceRoot: workingDirectory,
       dataDir,
       chatContextRuntime: runtime,
       contextEngineService: service,
@@ -768,6 +771,9 @@ describe("IVecEngine one-run integration", () => {
       expect(startWorkstreamResolution).not.toHaveBeenCalled();
       expect(createWorkstreamForRun).toHaveBeenCalledOnce();
       expect(provider.generateTurn).toHaveBeenCalledTimes(6);
+      for (const [turnInput] of vi.mocked(provider.generateTurn).mock.calls) {
+        expect(JSON.stringify(turnInput)).toContain(workingDirectory);
+      }
       const terminalReplyIndex = onReply.mock.calls.findIndex(([, response]) => (
         response as { type?: string }
       ).type === "reply");
@@ -815,17 +821,20 @@ describe("IVecEngine one-run integration", () => {
 
   it("finalizes an unbound system event exactly once", async () => {
     const dataDir = makeTmpDir();
+    const workspaceRoot = join(dataDir, "configured-workspace");
     try {
       const runtime = createContextRuntime(createPreparedTurn({
         role: "system_event",
         runId: "R-system-direct",
       }));
       const onReply = vi.fn();
+      const provider = createProvider([
+        { kind: "reply", status: "completed", message: "Health notes are current." },
+      ]);
       const engine = createEngine({
         onReply,
-        provider: createProvider([
-          { kind: "reply", status: "completed", message: "Health notes are current." },
-        ]),
+        provider,
+        workspaceRoot,
         dataDir,
         systemEventContextRuntime: runtime,
         systemEventPolicy: createSystemEventPolicy(),
@@ -835,6 +844,8 @@ describe("IVecEngine one-run integration", () => {
       await engine.handleSystemEvent("c1", pulseEvent("system-direct"));
 
       expect(runtime.prepareSystemEventTurn).toHaveBeenCalledOnce();
+      expect(JSON.stringify(vi.mocked(provider.generateTurn).mock.calls[0]?.[0]))
+        .toContain(workspaceRoot);
       expect(runtime.recordRunStep).not.toHaveBeenCalled();
       expect(runtime.finalizeRun).toHaveBeenCalledOnce();
       expect(runtime.finalizeRun).toHaveBeenCalledWith(expect.objectContaining({

@@ -86,6 +86,7 @@ describe("tool taxonomy", () => {
     expect(getToolPurpose("process_stop")).toBe("control");
     expect(getToolPurpose("attachment_restore")).toBe("control");
     expect(isNativeControlToolName("decision_enter_observe_investigate")).toBe(true);
+    expect(isNativeControlToolName("decision_enter_workstream_route")).toBe(true);
     expect(isNativeControlToolName("decision_resolve_create")).toBe(true);
     expect(isNativeControlToolName("decision_transition_mode")).toBe(false);
     expect(isNativeControlToolName("decision_stop")).toBe(true);

@@ -54,7 +54,7 @@ describe("repair policy", () => {
       },
     });
     expect(signal.allowedNextActions).toEqual([
-      "Observe workstream ownership, then enter resolve with the exact capability and typed binding proposal.",
+      "Enter workstream.route, observe ownership, then use the available resolve control with the exact capability and typed binding proposal.",
       "After authoritative bound context is mounted, make a fresh decision instead of replaying an earlier mutation.",
       "If the deterministic gate reports ambiguity, validate its focused clarification.",
     ]);

@@ -127,7 +127,10 @@ function hasMaterialUncertainty(state: LoopState): boolean {
   if (
     /\b(?:it|this|that|these|those|them|the file|the folder|the directory)\b/i.test(state.userMessage)
     && !/(?:^|\s)\/[^\s]+/.test(state.userMessage)
-    && state.virtualMode.active === "observe.locate"
+    && (
+      state.virtualMode.active === "observe.locate"
+      || state.virtualMode.active === "workstream.route"
+    )
   ) {
     return true;
   }

@@ -40,7 +40,7 @@ export const writeFilesTool: ToolDefinition = {
           properties: {
             path: {
               type: "string",
-              description: "Absolute file path inside one mutable filesystem resource bound to the active workstream.",
+              description: "Path inside one mutable resource bound to the active workstream. Prefer a path relative to context.run.workspaceRoot; canonical absolute workspace paths are also accepted.",
             },
             content: { type: "string", description: "Content to write." },
             baseSha256: {

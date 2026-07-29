@@ -141,11 +141,18 @@ describe("callAgentDecision", () => {
       "Known absolute path: use observe.investigate/file:read; skip pre-checks",
     );
     expect(systemPrompt).toContain("read_files validates it; other targets need grounding");
+    expect(systemPrompt).toContain("enter workstream.route first");
+    expect(systemPrompt).toContain("workstream.route is the only path from unbound mutation intent to resolve");
     expect(systemPrompt).toContain(
-      "Use decision_resolve_activate or decision_resolve_create only for explicit mutation-permitting intent",
+      "use decision_resolve_activate with the exact observed workstream, request lifecycle choice, and resourceIds",
     );
-    expect(systemPrompt).toContain("The deterministic gate rechecks the proposal");
-    expect(systemPrompt).toContain("It makes no model request");
+    expect(systemPrompt).toContain(
+      "Use decision_resolve_create when routing supports a distinct new owner",
+    );
+    expect(systemPrompt).toContain("declare each planned output as {kind, relativePath}");
+    expect(systemPrompt).toContain(
+      "The deterministic gate rechecks state, binds once, enters execute mechanically, and refreshes context",
+    );
     expect(systemPrompt).toContain("Old-mode tools do not remain available");
     expect(systemPrompt).toContain("enter task:validation");
     expect(systemPrompt).toContain("A passed validation mode unlocks the direct final response");
@@ -585,8 +592,14 @@ describe("callAgentDecision", () => {
         content: "{\"kind\":\"act\",\"action\":{\"mode\":\"single\",\"allowedTools\":[\"read_files\"],\"calls\":[{\"id\":\"call-new\",\"t",
       })
       .mockResolvedValueOnce({
-        type: "assistant",
-        content: "Repaired",
+        type: "tool_calls",
+        calls: [{
+          id: "call-repaired",
+          name: "read_files",
+          input: {
+            purpose: "Read the requested file through the native tool.",
+          },
+        }],
       });
     const countInputTokens = vi.fn()
       .mockResolvedValueOnce({ provider: "fake-provider", model: "test-model", inputTokens: 101_000, exact: true })
@@ -1245,8 +1258,6 @@ describe("callAgentDecision", () => {
         acceptance: ["The requested command completes."],
         constraints: [],
       },
-      resources: [],
-      evidence: ["run:RUN-1:step:1:call:find-owner"],
     };
     const { provider, generateTurn } = createProvider([
       JSON.stringify(badAction),
@@ -1256,7 +1267,7 @@ describe("callAgentDecision", () => {
           to: "resolve",
           purpose: "Bind the project before executing a command.",
           capabilities: ["process:command"],
-          targets: ["/tmp/project"],
+          workspaceTargets: [{ kind: "directory", relativePath: "project" }],
           binding,
         },
       }),
@@ -1281,7 +1292,7 @@ describe("callAgentDecision", () => {
         to: "resolve",
         purpose: "Bind the project before executing a command.",
         capabilities: ["process:command"],
-        mutationScopes: [{ kind: "filesystem", path: "/tmp/project" }],
+        workspaceTargets: [{ kind: "directory", relativePath: "project" }],
         binding,
       },
       workingNotes: undefined,
@@ -1443,29 +1454,73 @@ describe("callAgentDecision", () => {
     const resolveCreateSchema = tools
       .find((tool) => tool.name === "decision_resolve_create")
       ?.inputSchema;
+    const resolveActivateSchema = tools
+      .find((tool) => tool.name === "decision_resolve_activate")
+      ?.inputSchema;
+    const activateProperties = resolveActivateSchema?.["properties"] as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(resolveActivateSchema?.["required"]).toEqual([
+      "purpose",
+      "capabilities",
+      "binding",
+    ]);
+    expect(activateProperties).not.toHaveProperty("references");
+    expect(activateProperties).not.toHaveProperty("mutationScopes");
+    const activateBindingProperties = (
+      activateProperties["binding"]["properties"] as Record<string, unknown>
+    );
+    expect(activateBindingProperties).toMatchObject({
+      workstreamId: { type: "string" },
+      requestDecision: { oneOf: expect.any(Array) },
+      resourceIds: {
+        type: "array",
+        minItems: 1,
+        maxItems: 8,
+      },
+    });
+    expect(activateBindingProperties).not.toHaveProperty("kind");
+    expect(activateBindingProperties).not.toHaveProperty("expectedWorkstreamHead");
+    expect(activateBindingProperties).not.toHaveProperty("evidence");
     const resolveProperties = resolveCreateSchema?.["properties"] as Record<string, Record<string, unknown>>;
     expect(resolveCreateSchema?.["required"]).toEqual([
       "purpose",
       "capabilities",
-      "mutationScopes",
+      "workspaceTargets",
       "binding",
     ]);
-    expect(resolveProperties["mutationScopes"]).toMatchObject({
+    expect(resolveProperties["workspaceTargets"]).toMatchObject({
       type: "array",
       minItems: 1,
       maxItems: 8,
     });
-    expect(resolveProperties["binding"]).toMatchObject({
-      type: "object",
-      properties: expect.objectContaining({ kind: { const: "create" } }),
+    expect(resolveProperties).not.toHaveProperty("references");
+    expect(resolveProperties).not.toHaveProperty("mutationScopes");
+    expect(resolveProperties["binding"]).toMatchObject({ type: "object" });
+    const bindingProperties = (
+      resolveProperties["binding"]["properties"] as Record<string, unknown>
+    );
+    expect(bindingProperties["title"]).toMatchObject({
+      type: "string",
+      minLength: 1,
+      maxLength: 120,
     });
+    expect(bindingProperties["objective"]).toMatchObject({
+      type: "string",
+      minLength: 1,
+      maxLength: 2000,
+    });
+    expect(bindingProperties["initialRequest"]).toMatchObject({ type: "object" });
+    expect(bindingProperties).not.toHaveProperty("kind");
+    expect(bindingProperties).not.toHaveProperty("resources");
+    expect(bindingProperties).not.toHaveProperty("evidence");
     expect(generateTurn.mock.calls[0]?.[0]?.toolChoice).toBe("auto");
     expect(generateTurn.mock.calls[0]?.[0]?.parallelToolCalls).toBe(false);
   });
 
   it("parses an exact typed binding proposal from the native transition control", async () => {
-    const binding = {
-      kind: "create" as const,
+    const modelBinding = {
       title: "Create notes",
       objective: "Create and verify notes.md.",
       initialRequest: {
@@ -1474,8 +1529,6 @@ describe("callAgentDecision", () => {
         acceptance: ["notes.md exists."],
         constraints: [],
       },
-      resources: [],
-      evidence: ["run:RUN-1:step:1:call:find-owner"],
     };
     const { provider } = createNativeToolProvider([{
       type: "tool_calls",
@@ -1485,8 +1538,8 @@ describe("callAgentDecision", () => {
         input: {
           purpose: "Bind notes.md before creating it.",
           capabilities: ["file:write"],
-          mutationScopes: [{ kind: "filesystem", value: "/tmp/notes.md" }],
-          binding,
+          workspaceTargets: [{ kind: "file", relativePath: "notes.md" }],
+          binding: modelBinding,
         },
       }],
     }]);
@@ -1497,7 +1550,167 @@ describe("callAgentDecision", () => {
       toolDefinitions: [],
     })).resolves.toMatchObject({
       kind: "transition_mode",
-      request: { to: "resolve", binding },
+      request: {
+        to: "resolve",
+        workspaceTargets: [{ kind: "file", relativePath: "notes.md" }],
+        binding: { kind: "create", ...modelBinding },
+      },
+    });
+  });
+
+  it("parses activation without model-authored paths, HEAD, or evidence", async () => {
+    const modelBinding = {
+      workstreamId: "W-20260729-0001",
+      requestDecision: {
+        kind: "create_and_activate",
+        title: "Add rosemary guidance",
+        request: "Add rosemary guidance to the existing herb note.",
+        acceptance: ["The herb note contains rosemary sunlight and watering guidance."],
+        constraints: ["Keep the existing content."],
+        reason: "This is a separate outcome in the existing herb-note workstream.",
+      },
+      resourceIds: ["RES-0123456789ABCDEF01234567"],
+    };
+    const { provider } = createNativeToolProvider([{
+      type: "tool_calls",
+      calls: [{
+        id: "transition-activate",
+        name: "decision_resolve_activate",
+        input: {
+          purpose: "Activate the herb-note workstream for the requested update.",
+          capabilities: ["file:write"],
+          binding: modelBinding,
+        },
+      }],
+    }]);
+
+    await expect(callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+    })).resolves.toMatchObject({
+      kind: "transition_mode",
+      request: {
+        to: "resolve",
+        binding: {
+          kind: "activate",
+          ...modelBinding,
+        },
+      },
+    });
+  });
+
+  it("repairs an incomplete nested create-request contract before graph dispatch", async () => {
+    const validBinding = {
+      title: "Create notes",
+      objective: "Create and verify notes.md.",
+      initialRequest: {
+        title: "Create notes",
+        request: "Create notes.md.",
+        acceptance: ["notes.md exists."],
+        constraints: [],
+      },
+    };
+    const { provider, generateTurn } = createNativeToolProvider([
+      {
+        type: "tool_calls",
+        calls: [{
+          id: "transition-incomplete",
+          name: "decision_resolve_create",
+          input: {
+            purpose: "Bind notes.md before creating it.",
+            capabilities: ["file:write"],
+            workspaceTargets: [{ kind: "file", relativePath: "notes.md" }],
+            binding: {
+              ...validBinding,
+              initialRequest: {
+                title: "Create notes",
+                acceptance: ["notes.md exists."],
+                constraints: [],
+              },
+            },
+          },
+        }],
+      },
+      {
+        type: "tool_calls",
+        calls: [{
+          id: "transition-repaired",
+          name: "decision_resolve_create",
+          input: {
+            purpose: "Bind notes.md before creating it.",
+            capabilities: ["file:write"],
+            workspaceTargets: [{ kind: "file", relativePath: "notes.md" }],
+            binding: validBinding,
+          },
+        }],
+      },
+    ]);
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+    });
+
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+    expect(generateTurn.mock.calls[1]?.[0]?.messages.at(-1)?.content).toContain(
+      "binding.initialRequest.request",
+    );
+    expect(decision).toMatchObject({
+      kind: "transition_mode",
+      request: {
+        to: "resolve",
+        workspaceTargets: [{ kind: "file", relativePath: "notes.md" }],
+        binding: { kind: "create", ...validBinding },
+      },
+    });
+  });
+
+  it("repairs an unsafe workspace-relative target before graph dispatch", async () => {
+    const binding = {
+      title: "Create notes",
+      objective: "Create and verify notes.md.",
+      initialRequest: {
+        title: "Create notes",
+        request: "Create notes.md.",
+        acceptance: ["notes.md exists."],
+        constraints: [],
+      },
+    };
+    const createCall = (relativePath: string) => ({
+      type: "tool_calls" as const,
+      calls: [{
+        id: `transition-${relativePath}`,
+        name: "decision_resolve_create",
+        input: {
+          purpose: "Bind notes.md before creating it.",
+          capabilities: ["file:write"],
+          workspaceTargets: [{ kind: "file", relativePath }],
+          binding,
+        },
+      }],
+    });
+    const { provider, generateTurn } = createNativeToolProvider([
+      createCall("notes/.."),
+      createCall("notes.md"),
+    ]);
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+    });
+
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+    expect(generateTurn.mock.calls[1]?.[0]?.messages.at(-1)?.content).toContain(
+      "workspaceTargets.0.relativePath",
+    );
+    expect(decision).toMatchObject({
+      kind: "transition_mode",
+      request: {
+        workspaceTargets: [{ kind: "file", relativePath: "notes.md" }],
+      },
     });
   });
 

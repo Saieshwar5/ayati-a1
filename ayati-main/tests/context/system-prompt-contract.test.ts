@@ -13,7 +13,10 @@ describe("system prompt contract", () => {
     expect(prompt).toContain("bounded `State view` described by the current decision protocol");
     expect(prompt).toContain("Dynamic run-scoped harness feedback");
     expect(prompt).toContain("Candidates and summaries never grant ownership");
-    expect(prompt).toContain("destination-specific mode control");
+    expect(prompt).toContain("Before any unbound mutation, enter");
+    expect(prompt).toContain("`workstream.route`");
+    expect(prompt).toContain("Direct `ENTRY -> resolve` is unavailable");
+    expect(prompt).toContain("controls remain hidden until one of those routing tools succeeds");
     expect(prompt).toContain("decision_resolve_create");
     expect(prompt).not.toContain("decision_transition_mode");
     expect(prompt).toContain("observe.locate");

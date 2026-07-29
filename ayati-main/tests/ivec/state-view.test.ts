@@ -9,6 +9,21 @@ import { contextEngineFixture } from "../fixtures/agent-context.js";
 const AT = "2026-07-19T10:00:00.000Z";
 
 describe("buildAgentStateView", () => {
+  it("projects the exact configured workspace root once as run navigation context", () => {
+    const workspaceRoot = "/opt/ayati/runtime/workspace";
+    const view = buildAgentStateView(createLoopState({ context: createContext() }), {
+      workspaceRoot,
+    });
+    const prompt = projectAgentStateViewForPrompt(view);
+
+    expect(view.context.run?.workspaceRoot).toBe(workspaceRoot);
+    expect(prompt.context.run?.workspaceRoot).toBe(workspaceRoot);
+    expect(JSON.stringify(prompt).match(/\/opt\/ayati\/runtime\/workspace/g)).toHaveLength(1);
+    expect(prompt.context.core.current).not.toHaveProperty("workspaceRoot");
+    expect(prompt.context.run?.workState).toBeUndefined();
+    expect(prompt.context.run?.boundWorkstream).toBeUndefined();
+  });
+
   it("projects the Core Capsule without always-present work or resource lanes", () => {
     const context = createContext();
     context.workstreamCandidates = [{

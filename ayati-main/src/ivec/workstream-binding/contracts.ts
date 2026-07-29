@@ -17,6 +17,15 @@ export interface WorkstreamResourceBindingProposal {
   primary?: boolean;
 }
 
+export interface WorkstreamWorkspaceTarget {
+  kind: "file" | "directory";
+  relativePath: string;
+}
+
+export interface ResolvedWorkstreamWorkspaceTarget extends WorkstreamWorkspaceTarget {
+  absolutePath: string;
+}
+
 export type WorkstreamRequestDecision =
   | {
       kind: "continue_current" | "activate_existing" | "resume_blocked";
@@ -65,24 +74,22 @@ export type WorkstreamBindingProposal =
   | {
       kind: "activate";
       workstreamId: string;
-      expectedWorkstreamHead: string;
       requestDecision: WorkstreamRequestDecision;
-      evidence: string[];
+      resourceIds: string[];
     }
   | {
       kind: "create";
       title: string;
       objective: string;
       initialRequest: WorkstreamRequestDefinition;
-      resources: WorkstreamResourceBindingProposal[];
-      evidence: string[];
     };
 
 export interface DeterministicWorkstreamBindingRequest {
   purpose: string;
-  referenceTargets: string[];
-  mutationScopes: string[];
+  workspaceTargets: ResolvedWorkstreamWorkspaceTarget[];
+  routingEvidence: string[];
   proposal: WorkstreamBindingProposal;
+  expectedWorkstreamHead?: string;
   expectedContextRevision?: string;
 }
 

@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   ContextInputLimitError,
   ContextRunCapacityError,
@@ -6,6 +6,7 @@ import {
 import { devLog } from "../../shared/index.js";
 import { prepareIncomingAttachments } from "../../documents/attachment-preparer.js";
 import type { SessionInputHandle } from "../../memory/types.js";
+import { getWorkspaceRoot } from "../../skills/workspace-paths.js";
 import type {
   AgentLoopDeps,
   AgentLoopResult,
@@ -134,6 +135,7 @@ export async function runAgentLoop(
   resolvedConfig?: LoopConfig,
 ): Promise<AgentLoopResult> {
   const config: LoopConfig = resolvedConfig ?? { ...DEFAULT_LOOP_CONFIG, ...deps.config };
+  const workspaceRoot = resolve(deps.workspaceRoot ?? getWorkspaceRoot());
   const inputHandle = resolveInputHandle(deps);
   const runHandle = deps.runHandle;
   const metrics = createRunMetrics();
@@ -359,6 +361,7 @@ export async function runAgentLoop(
     });
     const stateView = buildAgentStateView(state, {
       activeTools: selectedTools.map((tool) => tool.name),
+      workspaceRoot,
     });
     const capabilityPolicy = deriveWorkstreamBindingCapabilityPolicy(state);
     const graphActive = isVirtualGraphActive(state.virtualMode);
@@ -369,6 +372,7 @@ export async function runAgentLoop(
         value === "context.retrieve"
         || value === "observe.locate"
         || value === "observe.investigate"
+        || value === "workstream.route"
         || value === "resolve"
         || value === "execute"
         || value === "validation"
@@ -690,6 +694,7 @@ export async function runAgentLoop(
       const transition = await dispatchVirtualModeTransition({
         state,
         request: decision.request,
+        workspaceRoot,
         iteration: state.iteration,
         toolDefinitions: deps.toolDefinitions,
         capabilitySurfaceManager: deps.capabilitySurfaceManager,
@@ -1245,13 +1250,17 @@ function applyAuthoritativeContextToLoop(input: {
   context: NonNullable<AgentLoopDeps["harnessContext"]>["contextEngine"];
   activeTools: string[];
 }): ReturnType<typeof buildAgentStateView> {
-  if (!input.context) return buildAgentStateView(input.state, { activeTools: input.activeTools });
+  const stateViewOptions = {
+    activeTools: input.activeTools,
+    workspaceRoot: resolve(input.deps.workspaceRoot ?? getWorkspaceRoot()),
+  };
+  if (!input.context) return buildAgentStateView(input.state, stateViewOptions);
   input.deps.harnessContext = {
     ...(input.deps.harnessContext ?? {}),
     contextEngine: input.context,
   };
   syncHarnessContext(input.state, input.deps, input.inputHandle);
-  return buildAgentStateView(input.state, { activeTools: input.activeTools });
+  return buildAgentStateView(input.state, stateViewOptions);
 }
 
 function describeActionInputValue(value: unknown): string {

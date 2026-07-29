@@ -91,7 +91,7 @@ export const patchFilesTool: ToolDefinition = {
           properties: {
             path: {
               type: "string",
-              description: "Absolute path of the file to patch.",
+              description: "File path relative to context.run.workspaceRoot, or a canonical absolute path inside it.",
             },
             patches: {
               type: "array",

@@ -42,6 +42,9 @@ export function buildPromptContextManifest(input: {
   }
   if (context.tools) addPart(parts, "work.tool_state", "work", "exact", context.tools, []);
   if (context.harness) addPart(parts, "work.harness", "work", "hot", context.harness, []);
+  if (context.run?.workspaceRoot) {
+    addPart(parts, "work.run.workspace_root", "work", "exact", context.run.workspaceRoot, []);
+  }
   if (context.run?.boundWorkstream) {
     addPart(
       parts,

@@ -80,6 +80,11 @@ export class CapabilitySurfaceManager {
         "observe.investigate",
         state,
       ),
+      "workstream.route": this.filterAvailableCapabilities(
+        available["workstream.route"],
+        "workstream.route",
+        state,
+      ),
       resolve: this.filterAvailableCapabilities(available.resolve, "resolve", state),
       execute: this.filterAvailableCapabilities(available.execute, "execute", state),
       validation: this.filterAvailableCapabilities(available.validation, "validation", state),

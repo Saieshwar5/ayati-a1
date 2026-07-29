@@ -69,7 +69,7 @@ export function createCapabilitySurfaceNoProgressFailure(
       blockedTargets: evaluation.repeatedTargets,
       allowedNextActions: [
         "Use a tool that is already visible instead of repeating the same mode transition.",
-        "For a binding-required capability, submit one evidence-backed proposal to the deterministic resolve gate before making a fresh decision.",
+        "For a binding-required capability, route first, then submit one schema-valid activation or creation proposal to the deterministic resolve gate.",
         "After workstream binding, make a fresh decision before calling mutation tools.",
       ],
     },
@@ -95,7 +95,7 @@ function buildNoProgressMessage(
 ): string {
   const repeated = repeatedTargets.map(displayTarget);
   if (result.unavailable.some((entry) => entry.reason === "requires_workstream_binding")) {
-    return `Repeated capability transitions made no progress because ${repeated.join(", ")} requires workstream binding. Submit one evidence-backed proposal to the deterministic resolve gate, then make a fresh mutation decision only after authoritative bound context is mounted.`;
+    return `Repeated capability transitions made no progress because ${repeated.join(", ")} requires workstream binding. Route ownership and submit one schema-valid activation or creation proposal to the deterministic resolve gate, then make a fresh mutation decision only after authoritative bound context is mounted.`;
   }
   if (result.unavailable.some((entry) => entry.reason === "not_available_after_workstream_binding")) {
     return `Repeated capability transitions made no progress because ${repeated.join(", ")} is not available after workstream binding. Continue with the bound execute capabilities instead of requesting routing controls again.`;

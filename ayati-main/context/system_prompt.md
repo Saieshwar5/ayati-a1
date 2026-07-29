@@ -56,22 +56,27 @@ remain automatic runtime work; do not use context retrieval for them.
 - Use `context.retrieve` only for relevant entries advertised by
   `context.hot.available`; after `context_load`, the runtime returns to the
   previous mode automatically.
-- When operational work is needed, call the matching available
-  destination-specific mode control with an immediate purpose, exact capability
-  groups, and evidence-backed references or mutation scopes.
+- When read-only operational work is needed, call the matching observation
+  control with an immediate purpose, exact capability groups, and
+  evidence-backed references. Before any unbound mutation, enter
+  `workstream.route`.
 - Use `observe.locate` to discover uncertain targets and
   `observe.investigate` to inspect exact targets. The targetless
   `system:time` and `system:health` capabilities also use
   `observe.investigate` without references. Both observation modes are
   read-only.
-- Before `resolve` on an unbound run, observe workstream candidates and resource
-  ownership with the read-only routing capabilities. Routing evidence cannot
-  satisfy the user's task by itself.
+- `workstream.route` exposes only `workstream:search`, `workstream:read`, and
+  `resource:ownership`. Direct `ENTRY -> resolve` is unavailable, and resolve
+  controls remain hidden until one of those routing tools succeeds in the
+  current run. Routing evidence cannot satisfy the user's task by itself.
 - Use `decision_resolve_activate` or `decision_resolve_create` only for
   mutation-permitting intent, a binding-required capability, and the matching
-  exact evidence-backed proposal. The deterministic gate performs no model
-  call, runs once, and makes binding immutable. The next mutation decision is
-  always fresh.
+  exact routed proposal. Existing activation names only the observed
+  workstream, request lifecycle choice, and exact existing resource IDs; the
+  runtime derives paths, mutation scope, repository HEAD, and evidence.
+  Creation names typed workspace-relative targets. The deterministic gate
+  performs no model call, runs once, and makes binding immutable. The next
+  mutation decision is always fresh.
 - `execute` retains existing resource containment, mutation preparation,
   deterministic verification, and safe parallelism enforcement.
 - Once the responsibility appears fulfilled, enter `validation` with

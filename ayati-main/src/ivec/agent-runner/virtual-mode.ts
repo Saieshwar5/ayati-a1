@@ -17,6 +17,7 @@ export const VIRTUAL_MODE_NAMES = [
   "context.retrieve",
   "observe.locate",
   "observe.investigate",
+  "workstream.route",
   "execute",
   "validation",
 ] as const;
@@ -83,6 +84,7 @@ export interface ModeTransitionRequest {
   subjects?: string[];
   references?: ModeTransitionReference[];
   mutationScopes?: ModeTransitionMutationScope[];
+  workspaceTargets?: import("../workstream-binding/contracts.js").WorkstreamWorkspaceTarget[];
   validationChecks?: ModeTransitionValidationCheck[];
   /**
    * Compatibility input for journaled/tests calls created before typed mode
@@ -148,10 +150,11 @@ export interface VirtualModeRepair {
 }
 
 export const VIRTUAL_MODE_GRAPH: Readonly<Record<VirtualModeSource, readonly VirtualModeTransitionTarget[]>> = {
-  ENTRY: ["context.retrieve", "observe.locate", "observe.investigate", "resolve"],
+  ENTRY: ["context.retrieve", "observe.locate", "observe.investigate", "workstream.route"],
   "context.retrieve": [],
-  "observe.locate": ["context.retrieve", "observe.locate", "observe.investigate", "resolve", "validation"],
-  "observe.investigate": ["context.retrieve", "observe.locate", "observe.investigate", "resolve", "validation"],
+  "observe.locate": ["context.retrieve", "observe.locate", "observe.investigate", "workstream.route", "validation"],
+  "observe.investigate": ["context.retrieve", "observe.locate", "observe.investigate", "workstream.route", "validation"],
+  "workstream.route": ["context.retrieve", "workstream.route", "resolve"],
   execute: ["context.retrieve", "execute", "observe.locate", "observe.investigate", "validation"],
   validation: ["observe.locate", "observe.investigate"],
 };
@@ -176,12 +179,15 @@ export function isVirtualGraphActive(state: VirtualModeState | undefined): boole
 
 export function allowedVirtualModeTransitions(
   state: VirtualModeState | undefined,
-  options: { workstreamBound: boolean },
+  options: {
+    workstreamBound: boolean;
+    routingObserved?: boolean;
+  },
 ): VirtualModeTransitionTarget[] {
   const source = virtualModeSource(state);
   const allowed = [...VIRTUAL_MODE_GRAPH[source]];
   if (options.workstreamBound && source === "ENTRY") {
-    return allowed.filter((mode) => mode !== "resolve").concat("execute");
+    return allowed.filter((mode) => mode !== "workstream.route").concat("execute");
   }
   if (
     options.workstreamBound
@@ -191,7 +197,13 @@ export function allowedVirtualModeTransitions(
       || source === "validation"
     )
   ) {
-    return allowed.filter((mode) => mode !== "resolve").concat("execute");
+    return allowed.filter((mode) => mode !== "workstream.route").concat("execute");
+  }
+  if (options.workstreamBound && source === "workstream.route") {
+    return ["execute"];
+  }
+  if (source === "workstream.route" && options.routingObserved !== true) {
+    return allowed.filter((mode) => mode !== "resolve");
   }
   return allowed;
 }
@@ -199,7 +211,10 @@ export function allowedVirtualModeTransitions(
 export function isVirtualModeTransitionAllowed(
   state: VirtualModeState | undefined,
   to: VirtualModeTransitionTarget,
-  options: { workstreamBound: boolean },
+  options: {
+    workstreamBound: boolean;
+    routingObserved?: boolean;
+  },
 ): boolean {
   return allowedVirtualModeTransitions(state, options).includes(to);
 }
@@ -249,6 +264,7 @@ export function buildVirtualModeCard(
   state: VirtualModeState | undefined,
   options: {
     workstreamBound: boolean;
+    routingObserved?: boolean;
     hotContextAvailable?: boolean;
   },
 ): VirtualModeCard {
@@ -333,10 +349,28 @@ export function modeTransitionMutationScopeValues(request: ModeTransitionRequest
     : [];
 }
 
+export function modeTransitionWorkspaceTargetValues(
+  request: ModeTransitionRequest,
+): string[] {
+  return normalizeStrings(
+    (request.workspaceTargets ?? []).map((target) => target.relativePath),
+  );
+}
+
+export function modeTransitionActivationResourceValues(
+  request: ModeTransitionRequest,
+): string[] {
+  return request.binding?.kind === "activate"
+    ? normalizeStrings(request.binding.resourceIds)
+    : [];
+}
+
 export function modeTransitionEvidenceTargetValues(request: ModeTransitionRequest): string[] {
   const typed = normalizeStrings([
     ...modeTransitionReferenceValues(request),
     ...modeTransitionMutationScopeValues(request),
+    ...modeTransitionWorkspaceTargetValues(request),
+    ...modeTransitionActivationResourceValues(request),
     ...(request.validationChecks ?? []).map((check) => check.subject),
   ]);
   return typed.length > 0 ? typed : normalizeStrings(request.targets ?? []);

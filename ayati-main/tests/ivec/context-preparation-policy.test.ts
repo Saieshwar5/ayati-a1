@@ -111,6 +111,12 @@ describe("parallel context preparation policy", () => {
     expect(first.parts.find((part) => part.id === "work.run.work_state")).toMatchObject({
       retention: "exact",
     });
+    expect(first.parts.find((part) => part.id === "work.run.workspace_root")).toMatchObject({
+      lane: "work",
+      retention: "exact",
+      content: "/opt/ayati/runtime/workspace",
+      sourceRefs: [],
+    });
     expect(first.parts.find((part) => part.id === "work.run.bound_workstream")).toMatchObject({
       lane: "work",
       retention: "exact",
@@ -154,6 +160,7 @@ function promptState(): AgentPromptStateView {
       }),
       hot: emptyHotContextProjection(),
       run: {
+        workspaceRoot: "/opt/ayati/runtime/workspace",
         boundWorkstream: {
           id: "W-20260729-0001",
           title: "Lumen Finch Website",

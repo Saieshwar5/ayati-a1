@@ -20,6 +20,7 @@ export interface RoutingResourceEvidence {
   resourceId: string;
   workstreamIds: string[];
   locators: string[];
+  filesystemPaths: string[];
   references: string[];
 }
 
@@ -51,7 +52,7 @@ export function collectWorkstreamRoutingEvidence(state: LoopState): WorkstreamRo
     if (call.tool === "git_context_find_workstreams") {
       collectCandidateArray(output["workstreams"], workstreams, reference, false);
     } else if (call.tool === "git_context_read_workstream") {
-      collectReadWorkstream(output, workstreams, reference);
+      collectReadWorkstream(output, workstreams, resources, reference);
     } else if (call.tool === "git_context_find_resources") {
       collectResourceArray(output["resources"], resources, reference);
     }
@@ -79,6 +80,7 @@ interface MutableResourceEvidence {
   resourceId: string;
   workstreamIds: Set<string>;
   locators: Set<string>;
+  filesystemPaths: Set<string>;
   references: Set<string>;
 }
 
@@ -112,6 +114,7 @@ function collectCandidateArray(
 function collectReadWorkstream(
   output: Record<string, unknown>,
   workstreams: Map<string, MutableWorkstreamEvidence>,
+  resources: Map<string, MutableResourceEvidence>,
   reference: string,
 ): void {
   const workstream = asRecord(output["workstream"]);
@@ -130,6 +133,12 @@ function collectReadWorkstream(
   const selectedRequestId = stringValue(selectedRequest?.["id"]);
   if (selectedRequestId) current.requestIds.add(selectedRequestId);
   collectRequestIds(context?.["unfinishedRequests"], current.requestIds);
+  collectWorkstreamResourceBindings(
+    context?.["resources"],
+    resources,
+    workstreamId,
+    reference,
+  );
 }
 
 function collectRequestIds(value: unknown, target: Set<string>): void {
@@ -151,22 +160,61 @@ function collectResourceArray(
     const resource = asRecord(record?.["resource"]);
     const resourceId = stringValue(resource?.["resourceId"]);
     if (!resourceId) continue;
-    let current = resources.get(resourceId);
-    if (!current) {
-      current = {
-        resourceId,
-        workstreamIds: new Set(),
-        locators: new Set(),
-        references: new Set(),
-      };
-      resources.set(resourceId, current);
-    }
+    const current = mutableResource(resources, resourceId);
     current.references.add(reference);
     for (const workstreamId of stringArray(record?.["workstreamIds"])) {
       current.workstreamIds.add(workstreamId);
     }
     const locator = resource?.["locator"];
-    if (locator !== undefined) current.locators.add(stableLocator(locator));
+    collectResourceLocator(current, locator);
+  }
+}
+
+function collectWorkstreamResourceBindings(
+  value: unknown,
+  resources: Map<string, MutableResourceEvidence>,
+  workstreamId: string,
+  reference: string,
+): void {
+  if (!Array.isArray(value)) return;
+  for (const item of value) {
+    const resource = asRecord(asRecord(item)?.["resource"]);
+    const resourceId = stringValue(resource?.["resourceId"]);
+    if (!resourceId) continue;
+    const current = mutableResource(resources, resourceId);
+    current.workstreamIds.add(workstreamId);
+    current.references.add(reference);
+    collectResourceLocator(current, resource?.["locator"]);
+  }
+}
+
+function mutableResource(
+  resources: Map<string, MutableResourceEvidence>,
+  resourceId: string,
+): MutableResourceEvidence {
+  const existing = resources.get(resourceId);
+  if (existing) return existing;
+  const created: MutableResourceEvidence = {
+    resourceId,
+    workstreamIds: new Set(),
+    locators: new Set(),
+    filesystemPaths: new Set(),
+    references: new Set(),
+  };
+  resources.set(resourceId, created);
+  return created;
+}
+
+function collectResourceLocator(
+  resource: MutableResourceEvidence,
+  locator: unknown,
+): void {
+  if (locator === undefined) return;
+  resource.locators.add(stableLocator(locator));
+  const record = asRecord(locator);
+  if (record?.["kind"] === "filesystem") {
+    const path = stringValue(record["path"]);
+    if (path) resource.filesystemPaths.add(path);
   }
 }
 
@@ -206,6 +254,7 @@ function freezeResourceEvidence(value: MutableResourceEvidence): RoutingResource
     resourceId: value.resourceId,
     workstreamIds: [...value.workstreamIds],
     locators: [...value.locators],
+    filesystemPaths: [...value.filesystemPaths],
     references: [...value.references],
   };
 }

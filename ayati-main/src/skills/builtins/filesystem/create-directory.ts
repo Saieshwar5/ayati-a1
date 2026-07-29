@@ -14,7 +14,7 @@ export const createDirectoryTool: ToolDefinition = {
     properties: {
       path: {
         type: "string",
-        description: "Absolute path of the directory to create.",
+        description: "Directory path relative to context.run.workspaceRoot, or a canonical absolute path inside it.",
       },
       recursive: {
         type: "boolean",

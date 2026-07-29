@@ -30,6 +30,7 @@ export interface ModeCapabilityOptions {
   "context.retrieve": string[];
   "observe.locate": string[];
   "observe.investigate": string[];
+  "workstream.route": string[];
   resolve: string[];
   execute: string[];
   validation: string[];

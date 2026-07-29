@@ -31,6 +31,9 @@ const CREATE_TOOL = tool("create_directory");
 const SYSTEM_TIME_TOOL = tool("system_time");
 const SYSTEM_HEALTH_TOOL = tool("system_health");
 const DB_QUERY_TOOL = tool("db_query");
+const FIND_WORKSTREAMS_TOOL = tool("git_context_find_workstreams");
+const READ_WORKSTREAM_TOOL = tool("git_context_read_workstream");
+const FIND_RESOURCES_TOOL = tool("git_context_find_resources");
 const READ_TOOLS = [INSPECT_TOOL, READ_TOOL];
 const WRITE_TOOLS = [CREATE_TOOL, WRITE_TOOL, PATCH_TOOL];
 
@@ -65,6 +68,7 @@ describe("virtual mode runtime", () => {
         capabilities: ["file:read"],
         targets: ["/tmp/known.md"],
       },
+      workspaceRoot: "/tmp",
       iteration: 1,
       toolDefinitions: [],
       capabilitySurfaceManager: manager,
@@ -492,19 +496,68 @@ describe("virtual mode runtime", () => {
     });
   });
 
+  it("enters a read-only workstream routing surface before unbound mutation", async () => {
+    const current = state("Create output.txt.");
+    const result = await transition(current, {
+      to: "workstream.route",
+      purpose: "Find the durable owner before creating the file.",
+      capabilities: ["workstream:search", "workstream:read", "resource:ownership"],
+      subjects: ["output.txt"],
+    }, [FIND_WORKSTREAMS_TOOL, READ_WORKSTREAM_TOOL, FIND_RESOURCES_TOOL]);
+
+    expect(result).toMatchObject({
+      kind: "applied",
+      active: "workstream.route",
+      toolNames: [
+        "git_context_find_workstreams",
+        "git_context_read_workstream",
+        "git_context_find_resources",
+      ],
+    });
+  });
+
+  it("prohibits direct unbound resolve before workstream routing", async () => {
+    const result = await transition(state("Create /tmp/output.txt."), {
+      to: "resolve",
+      purpose: "Try to bind before routing.",
+      capabilities: ["file:write"],
+      workspaceTargets: [{ kind: "file", relativePath: "output.txt" }],
+      binding: {
+        kind: "create",
+        title: "Create output file",
+        objective: "Create the requested output.",
+        initialRequest: {
+          title: "Create output",
+          request: "Create /tmp/output.txt.",
+          acceptance: ["The requested file exists."],
+          constraints: [],
+        },
+      },
+    }, WRITE_TOOLS);
+
+    expect(result).toMatchObject({
+      kind: "rejected",
+      repair: { code: "MODE_EDGE_PROHIBITED" },
+    });
+  });
+
   it("requires mutation intent and a binding-required capability at resolve", async () => {
-    const readOnly = await transition(state("Inspect /tmp/output.txt; do not modify anything."), {
+    const readOnly = await transition(
+      workstreamRoutingState("Inspect /tmp/output.txt; do not modify anything."),
+      {
       to: "resolve",
       purpose: "Try to write despite the read-only request.",
       capabilities: ["file:write"],
       targets: ["/tmp/output.txt"],
-    }, WRITE_TOOLS);
+      },
+      WRITE_TOOLS,
+    );
     expect(readOnly).toMatchObject({
       kind: "rejected",
       repair: { code: "MODE_MUTATION_INTENT_REQUIRED" },
     });
 
-    const observationalCapability = await transition(state("Create /tmp/output.txt."), {
+    const observationalCapability = await transition(workstreamRoutingState("Create /tmp/output.txt."), {
       to: "resolve",
       purpose: "Resolve with a read-only capability.",
       capabilities: ["file:read"],
@@ -517,20 +570,7 @@ describe("virtual mode runtime", () => {
   });
 
   it("resolves once and enters execute mechanically after authoritative binding", async () => {
-    const current = state("Create /tmp/output.txt.");
-    current.toolContext = {
-      recent: [],
-      toolCalls: [{
-        step: 1,
-        callId: "routing-1",
-        tool: "git_context_find_workstreams",
-        purpose: "Check existing ownership before creating a workstream.",
-        input: { query: "Create /tmp/output.txt", paths: ["/tmp/output.txt"] },
-        status: "success",
-        output: JSON.stringify({ workstreams: [], count: 0 }),
-        evidenceRef: "evidence:routing-1",
-      }],
-    };
+    const current = workstreamRoutingState("Create /tmp/output.txt.");
     const bound = boundContext(current.harnessContext.contextEngine!);
     const coordinator = {
       bind: vi.fn(async () => ({
@@ -548,7 +588,7 @@ describe("virtual mode runtime", () => {
         to: "resolve",
         purpose: "Bind the exact output before writing.",
         capabilities: ["file:write"],
-        targets: ["/tmp/output.txt"],
+        workspaceTargets: [{ kind: "file", relativePath: "output.txt" }],
         binding: {
           kind: "create",
           title: "Create output file",
@@ -559,10 +599,9 @@ describe("virtual mode runtime", () => {
             acceptance: ["The requested file exists."],
             constraints: [],
           },
-          resources: [],
-          evidence: ["evidence:routing-1"],
         },
       },
+      workspaceRoot: "/tmp",
       iteration: 1,
       toolDefinitions: WRITE_TOOLS,
       toolContext: { runId: "RUN-1", stepNumber: 1 },
@@ -581,10 +620,100 @@ describe("virtual mode runtime", () => {
     expect(coordinator.bind).toHaveBeenCalledOnce();
     expect(current.virtualMode).toMatchObject({
       active: "execute",
-      revision: 2,
+      revision: 3,
       capabilities: ["file:write"],
-      targets: ["/tmp/output.txt"],
+      targets: ["output.txt"],
     });
+  });
+
+  it("activates an existing workstream from routed resource IDs without model-authored scopes", async () => {
+    const resourceId = "RES-0123456789ABCDEF01234567";
+    const current = workstreamRoutingState("Update the existing balcony-herbs.md file.");
+    current.toolContext!.toolCalls![0]!.output = JSON.stringify({
+      workstreams: [{
+        workstreamId: "W-20260722-0001",
+        head: "a".repeat(40),
+        currentRequest: { id: "R-0001", status: "done" },
+        discovery: { tier: "definite", reasons: ["owned_resource"] },
+      }],
+      count: 1,
+    });
+    current.toolContext!.toolCalls!.push({
+      step: 2,
+      callId: "routing-resource",
+      tool: "git_context_find_resources",
+      purpose: "Find the exact existing herb-note resource.",
+      input: { resourceIds: [resourceId] },
+      status: "success",
+      output: JSON.stringify({
+        resources: [{
+          resource: {
+            resourceId,
+            locator: {
+              kind: "filesystem",
+              path: "/tmp/balcony-herbs.md",
+            },
+          },
+          workstreamIds: ["W-20260722-0001"],
+        }],
+        count: 1,
+      }),
+      evidenceRef: "evidence:routing-resource",
+    });
+    const coordinator = {
+      bind: vi.fn(async () => ({
+        status: "resolved" as const,
+        kind: "activated_workstream" as const,
+        workstreamId: "W-20260722-0001",
+        requestId: "R-0002",
+        context: boundContext(current.harnessContext.contextEngine!),
+      })),
+    };
+
+    const result = await dispatchVirtualModeTransition({
+      state: current,
+      request: {
+        to: "resolve",
+        purpose: "Activate the existing herb-note workstream for this update.",
+        capabilities: ["file:write"],
+        binding: {
+          kind: "activate",
+          workstreamId: "W-20260722-0001",
+          requestDecision: {
+            kind: "create_and_activate",
+            title: "Add rosemary guidance",
+            request: "Add rosemary guidance to the existing note.",
+            acceptance: ["The note contains rosemary sunlight and watering guidance."],
+            constraints: ["Keep all existing content."],
+            reason: "This is a separate outcome in the same herb-note project.",
+          },
+          resourceIds: [resourceId],
+        },
+      },
+      workspaceRoot: "/tmp",
+      iteration: 2,
+      toolDefinitions: WRITE_TOOLS,
+      toolContext: { runId: "RUN-1", stepNumber: 2 },
+      workstreamBinding: coordinator,
+      bindingAlreadyAttempted: false,
+      applyContext(context) {
+        current.harnessContext.contextEngine = context;
+      },
+    });
+
+    expect(result).toMatchObject({
+      kind: "resolved",
+      active: "execute",
+      toolNames: ["create_directory", "write_files", "patch_files"],
+    });
+    expect(coordinator.bind).toHaveBeenCalledWith(expect.objectContaining({
+      expectedWorkstreamHead: "a".repeat(40),
+      routingEvidence: ["evidence:routing-1", "evidence:routing-resource"],
+      proposal: expect.objectContaining({
+        resourceIds: [resourceId],
+      }),
+    }));
+    expect(current.virtualMode.targets).toEqual([resourceId]);
   });
 
   it("enters execute from ENTRY when the run is already authoritatively bound", async () => {
@@ -669,6 +798,7 @@ async function transition(
   return await dispatchVirtualModeTransition({
     state: current,
     request,
+    workspaceRoot: "/tmp",
     iteration: current.iteration + 1,
     toolDefinitions,
     toolContext: { runId: current.runId, stepNumber: current.iteration + 1 },
@@ -745,6 +875,33 @@ function observationState(): LoopState {
     capabilities: ["file:read"],
     targets: ["/tmp/known.md"],
     enteredAtIteration: 1,
+  };
+  return current;
+}
+
+function workstreamRoutingState(message: string): LoopState {
+  const current = state(message);
+  current.virtualMode = {
+    active: "workstream.route",
+    revision: 1,
+    operational: true,
+    purpose: "Find the durable owner before mutation.",
+    capabilities: ["workstream:search"],
+    targets: [message],
+    enteredAtIteration: 1,
+  };
+  current.toolContext = {
+    recent: [],
+    toolCalls: [{
+      step: 1,
+      callId: "routing-1",
+      tool: "git_context_find_workstreams",
+      purpose: "Check existing ownership before creating a workstream.",
+      input: { query: message },
+      status: "success",
+      output: JSON.stringify({ workstreams: [], count: 0 }),
+      evidenceRef: "evidence:routing-1",
+    }],
   };
   return current;
 }

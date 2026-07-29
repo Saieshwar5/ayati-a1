@@ -2,6 +2,20 @@ import { describe, expect, it } from "vitest";
 import { normalizeModeTransitionRequest } from "../../src/ivec/agent-runner/mode-transition-request.js";
 
 describe("mode transition request normalization", () => {
+  it("preserves the dedicated workstream routing destination and subjects", () => {
+    expect(normalizeModeTransitionRequest({
+      to: "workstream.route",
+      purpose: "Find the durable owner before mutation.",
+      capabilities: ["workstream:search"],
+      subjects: [" balcony herbs ", "balcony herbs"],
+    })).toMatchObject({
+      to: "workstream.route",
+      purpose: "Find the durable owner before mutation.",
+      capabilities: ["workstream:search"],
+      subjects: ["balcony herbs"],
+    });
+  });
+
   it("preserves and normalizes a typed bounded-read validation check", () => {
     expect(normalizeModeTransitionRequest({
       to: "validation",

@@ -10,7 +10,9 @@ describe("stable decision system prompt", () => {
     expect(prompt).toContain("Decision and execution:");
     expect(prompt).toContain("Validation and terminal responses:");
     expect(prompt).not.toContain("workstream_resolve");
-    expect(prompt).toContain("destination-specific mode control");
+    expect(prompt).toContain("enter workstream.route first");
+    expect(prompt).toContain("workstream.route is the only path from unbound mutation intent to resolve");
+    expect(prompt).toContain("Resolve controls remain unavailable until one of those tools succeeds");
     expect(prompt).toContain("decision_resolve_create");
     expect(prompt).not.toContain("decision_transition_mode");
     expect(prompt).toContain("decision_stop");
@@ -52,6 +54,7 @@ describe("stable decision system prompt", () => {
     expect(prompt).not.toContain("context.resources");
     expect(prompt).not.toContain("context.observations");
     expect(prompt).toContain("context.run");
+    expect(prompt).toContain("context.run.workspaceRoot");
     expect(prompt).toContain("context.run.verifiedOutcomes");
     expect(prompt).toContain("context.harness");
     expect(prompt).not.toContain("context.personal");
@@ -74,7 +77,7 @@ describe("stable decision system prompt", () => {
   it("uses canonical paths and typed current-run outcomes for final validation", () => {
     const prompt = STABLE_DECISION_SYSTEM_CONTEXT;
 
-    expect(prompt).toContain("Filesystem and command paths are canonical absolute host paths");
+    expect(prompt).toContain("Use canonical paths and narrow reads");
     expect(prompt).toContain("enter task:validation with only deciding outcomes");
     expect(prompt).toContain("deciding outcomes copied exactly from context.run.verifiedOutcomes");
     expect(prompt).toContain("file.search_no_match requires its searchScope");
@@ -82,10 +85,12 @@ describe("stable decision system prompt", () => {
     expect(prompt).toContain("tool.call_succeeded with an exact callId");
     expect(prompt).toContain("tool.call_denied requires the exact callId and denialCode");
     expect(prompt).toContain("never proves a read or mutation succeeded");
-    expect(prompt).toContain("may read any OS-readable machine path");
-    expect(prompt).toContain("omitted search roots default to Ayati's workspace");
-    expect(prompt).toContain("Read access grants no mutation authority");
-    expect(prompt).toContain("must stay inside Ayati's workspace");
+    expect(prompt).toContain("Other OS-readable absolute paths remain read-only");
+    expect(prompt).toContain("omitted search roots, and working directories use it");
+    expect(prompt).toContain("never search or ask for it");
+    expect(prompt).toContain("filename-only or relative outputs");
+    expect(prompt).toContain("no resource authority or completion evidence");
+    expect(prompt).toContain("mutations stay inside workspaceRoot");
     expect(prompt).toContain("without repeating work");
     expect(prompt).toContain("completed result, not a blocker");
     expect(prompt).not.toContain('"path": "/absolute/resource/path/index.html"');

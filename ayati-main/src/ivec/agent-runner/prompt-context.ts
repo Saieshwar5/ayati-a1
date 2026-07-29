@@ -9,6 +9,8 @@ import type { VirtualModeCard } from "./virtual-mode.js";
 export type { PromptBoundWorkstreamContext } from "./bound-workstream-prompt-context.js";
 
 export interface PromptRunContext {
+  /** Exact configured workspace location. This is navigation context, not mutation authority. */
+  workspaceRoot?: string;
   mode?: VirtualModeCard;
   boundWorkstream?: PromptBoundWorkstreamContext;
   workState?: PromptRunWorkStateContext;
@@ -107,6 +109,7 @@ function compactRunContext(
 ): PromptRunContext | undefined {
   if (!run) return undefined;
   const compacted: PromptRunContext = {
+    ...(run.workspaceRoot ? { workspaceRoot: run.workspaceRoot } : {}),
     ...(run.mode ? { mode: run.mode } : {}),
     ...(run.boundWorkstream ? { boundWorkstream: run.boundWorkstream } : {}),
     ...(run.workState ? { workState: run.workState } : {}),

@@ -24,6 +24,7 @@ import {
   collectToolPaths,
   DEFAULT_FILESYSTEM_ACCESS_POLICY,
   isMachineFilesystemReadTool,
+  resolveWorkspaceMutationInput,
   scopeToolInput,
   validateMachineReadPaths,
   validateWorkspaceMutationPaths,
@@ -121,13 +122,17 @@ class ResourceScopedToolExecutor implements ToolExecutor {
       });
     }
 
+    const executionInput = taxonomy.effect === "read_only"
+      ? originalInput
+      : resolveWorkspaceMutationInput(toolName, originalInput, this.workspaceRoot);
+
     if (
       taxonomy.effect !== "read_only"
       && this.filesystemAccess.mutationScope === "workspace"
     ) {
       const pathFailure = await validateWorkspaceMutationPaths({
         toolName,
-        value: originalInput,
+        value: executionInput,
         workspaceRoot: this.workspaceRoot,
       });
       if (pathFailure) {
@@ -146,7 +151,7 @@ class ResourceScopedToolExecutor implements ToolExecutor {
           "Mutation requires a run, session, and authoritative workstream binding.",
         );
       }
-      return await this.base.execute(toolName, originalInput, context);
+      return await this.base.execute(toolName, executionInput, context);
     }
 
     const active = await this.contextEngine.getAgentContext({ streamId: context.sessionId });
@@ -171,7 +176,7 @@ class ResourceScopedToolExecutor implements ToolExecutor {
       }
       const selectedRoot = await selectUnboundReadRoot(
         active.ingressResources ?? [],
-        collectToolPaths(originalInput),
+        collectToolPaths(executionInput),
         this.workspaceRoot,
       );
       if (!selectedRoot) {
@@ -181,7 +186,7 @@ class ResourceScopedToolExecutor implements ToolExecutor {
         );
       }
       const scopeError = await validateSingleAuthority(
-        originalInput,
+        executionInput,
         selectedRoot.authorityPath,
         selectedRoot.authorityKind,
         "workspace",
@@ -189,7 +194,7 @@ class ResourceScopedToolExecutor implements ToolExecutor {
       if (scopeError) return scopeFailure(scopeError.code, scopeError.message);
       const scopedInput = scopeToolInput(
         toolName,
-        originalInput,
+        executionInput,
         selectedRoot.executionRootPath,
       );
       return await this.base.execute(toolName, scopedInput, {
@@ -218,7 +223,7 @@ class ResourceScopedToolExecutor implements ToolExecutor {
         "The selected workstream has no accessible filesystem resource.",
       );
     }
-    const requestedPaths = collectToolPaths(originalInput);
+    const requestedPaths = collectToolPaths(executionInput);
     const rootBinding = await selectCallRoot(filesystemBindings, requestedPaths);
     if (!rootBinding) {
       return scopeFailure(
@@ -228,7 +233,7 @@ class ResourceScopedToolExecutor implements ToolExecutor {
     }
     const selectedScope = await filesystemScope(rootBinding.resource);
     const scopeError = await validateSingleAuthority(
-      originalInput,
+      executionInput,
       selectedScope.authorityPath,
       selectedScope.authorityKind,
       "resource",
@@ -236,7 +241,7 @@ class ResourceScopedToolExecutor implements ToolExecutor {
     if (scopeError) return scopeFailure(scopeError.code, scopeError.message);
     const scopedInput = scopeToolInput(
       toolName,
-      originalInput,
+      executionInput,
       selectedScope.executionRootPath,
     );
     const scopedContext: ToolExecutionContext = {

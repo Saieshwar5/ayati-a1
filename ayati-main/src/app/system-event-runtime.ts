@@ -44,6 +44,7 @@ import { finalizeAgentRun, isWorkstreamBoundRun } from "./run-finalization-coord
 export interface CreateSystemEventRuntimeOptions {
   onReply?: (clientId: string, data: unknown) => void;
   provider?: LlmProvider;
+  workspaceRoot: string;
   staticContext?: StaticContext;
   systemEventContextRuntime: ContextEngineRuntime;
   contextEngineService?: ContextEngineService;
@@ -94,6 +95,7 @@ export function createSystemEventRuntime(options: CreateSystemEventRuntimeOption
 class AppSystemEventRuntime implements SystemEventRuntime {
   private readonly onReply?: (clientId: string, data: unknown) => void;
   private readonly provider?: LlmProvider;
+  private readonly workspaceRoot: string;
   private readonly staticContext?: StaticContext;
   private readonly systemEventContextRuntime: ContextEngineRuntime;
   private readonly contextEngineService?: ContextEngineService;
@@ -113,6 +115,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
   constructor(options: CreateSystemEventRuntimeOptions) {
     this.onReply = options.onReply;
     this.provider = options.provider;
+    this.workspaceRoot = options.workspaceRoot;
     this.staticContext = options.staticContext;
     this.systemEventContextRuntime = options.systemEventContextRuntime;
     this.contextEngineService = options.contextEngineService;
@@ -217,6 +220,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       );
       const result = await agentLoop({
         provider: this.provider,
+        workspaceRoot: this.workspaceRoot,
         toolExecutor: this.toolExecutor,
         capabilitySurfaceManager: this.capabilitySurfaceManager,
         hotContextRuntime: this.hotContextRuntime,

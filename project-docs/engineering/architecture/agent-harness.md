@@ -80,11 +80,20 @@ The model can:
   `failed` outcome;
 - return normal assistant text after the stored `validation` mode has passed.
 
+Provider tool choice follows the same graph contract. At `ENTRY` and after
+passed validation, `normal_reply` is legal and provider tool choice remains
+`auto`. While the graph is active and `normal_reply` is absent from
+`context.run.mode.allowedNext`, provider tool choice is `required`. If a
+text-encoded tool attempt identifies one still-exposed native tool, the
+bounded repair request pins that exact tool. Assistant text is never promoted
+into an executable call.
+
 The run-scoped virtual graph is:
 
 ```text
-ENTRY -> context.retrieve | observe.locate | observe.investigate | resolve | direct reply
-observe.locate <-> observe.investigate -> context.retrieve | resolve | validation
+ENTRY -> context.retrieve | observe.locate | observe.investigate | workstream.route | direct reply
+observe.locate <-> observe.investigate -> context.retrieve | workstream.route | validation
+workstream.route -> context.retrieve | workstream.route | resolve(after routing evidence)
 resolve --accepted--> execute
 execute -> context.retrieve | execute | observe.locate | observe.investigate | validation
 context.retrieve --after context_load--> preceding mode
@@ -97,26 +106,40 @@ proof-only mode so its small checklist and result remain visible across
 decisions. `context.retrieve` is a transient stored detour: it exposes only
 bounded context-loading tools, never compacts context, and restores the
 preceding mode after the load. The other stored modes are `observe.locate`,
-`observe.investigate`, and `execute`. A bound execute run may temporarily
-observe and return directly to execute; it never resolves again because the
-run binding is immutable.
+`observe.investigate`, `workstream.route`, and `execute`. A bound execute run
+may temporarily observe and return directly to execute; it never resolves
+again because the run binding is immutable.
 
 Transition inputs are discriminated by destination. `observe.locate` accepts
 non-authoritative `subjects`; investigation uses typed read-only `references`;
-resolve and execute use typed `mutationScopes`; unbound resolve also requires
-a typed binding proposal. Host filesystem values are canonical absolute paths.
-Portable children inside a named resource use `relativePath` and are never
-resolved from process cwd.
+and `workstream.route` accepts search subjects with only
+`workstream:search`, `workstream:read`, and `resource:ownership`. Existing-
+workstream resolve uses exact routed resource IDs, while bound execute uses
+typed `mutationScopes`; new-workstream resolve uses typed `workspaceTargets`
+plus a bounded creation proposal. The runtime, not the model, derives existing
+activation paths, repository HEAD, mutation scope, and evidence. Each creation
+target declares `kind: file | directory` and a portable `relativePath` beneath
+`context.run.workspaceRoot`; the model does not send the workspace root, an
+absolute creation path, a resource id, or a routing-evidence id.
 
 Filesystem observation and mutation intentionally have different runtime
 boundaries. The five core filesystem observation tools may use any explicit
 canonical absolute path readable by the daemon's operating-system account;
 omitted search roots still default to `<AYATI_ROOT_DIR>/workspace/`. This
 machine-read path runs before workstream-resource enforcement and grants no
-binding or write authority. Mutation effects are first canonicalized against
-the configured workspace and rejected before resource lookup, preparation, or
-execution when they escape it. Existing binding, mutable-resource,
-exact-target, and post-operation verification gates then run normally.
+binding or write authority. Direct filesystem mutation tools may receive a
+canonical absolute workspace path or a workspace-relative path. The execution
+wrapper resolves a relative path once beneath the configured workspace, then
+rejects traversal and symbolic-link escapes before resource lookup,
+preparation, or execution. Existing binding, mutable-resource, exact-target,
+and post-operation verification gates then run normally.
+
+Every primary decision receives that exact configured absolute path once as
+`context.run.workspaceRoot`. The model treats “my workspace,” “the workspace,”
+and “Ayati's workspace” as this location instead of searching the machine or
+asking the user for an internal path. Filename-only and relative output
+destinations resolve beneath it. The projection is a location fact only; it
+does not grant resource authority or supply completion evidence.
 
 A filesystem-only `file:read` transition does not require prior
 target-grounding evidence: `read_files` and its executor policy validate the
@@ -133,8 +156,8 @@ preference:  ENTRY -> context.retrieve -> context_load -> ENTRY -> direct respon
 exact read:  ENTRY -> observe.investigate -> read -> validation(proof) -> direct response
 vague read:  ENTRY -> observe.locate -> find -> observe.investigate -> read -> validation(proof) -> direct response
 read choice: observe.locate -> find(multiple) -> chosen read or clarification
-ownership ambiguity: observe.locate -> resolve(ambiguous) -> decision_stop(needs_user_input)
-mutation:    observe -> resolve -> execute -> validation(proof) -> direct response
+ownership ambiguity: workstream.route -> search -> resolve(ambiguous) -> decision_stop(needs_user_input)
+mutation:    workstream.route -> search/read -> resolve -> execute -> validation(proof) -> direct response
 repair:      execute -> validation(failed) -> execute -> validation -> direct response
 ```
 
@@ -149,13 +172,19 @@ exception to prior target provenance; its current read result is still
 verified.
 
 The model never sees a separate workstream-resolution agent or lifecycle tool.
-Before `resolve`, it uses read-only workstream search/read and resource-owner
-lookup in an observation mode. An accepted transition to `resolve` must have
-mutation-permitting intent, a binding-required capability, evidence-backed
-mutation scopes, and one typed request-routing or workstream-creation proposal
-citing exact current-run routing evidence. The deterministic gate performs at
-most one lifecycle binding attempt, makes no model request, and requires a
-fresh primary decision after authoritative bound context is mounted.
+Before any unbound mutation, it enters `workstream.route` and uses read-only
+workstream search/read or resource-owner lookup. Direct `ENTRY -> resolve` is
+unavailable, and the route does not expose resolve controls until one of those
+calls succeeds in the current run. An accepted transition to `resolve` must
+then have mutation-permitting intent, a binding-required capability, and one
+typed request-routing or workstream-creation proposal. Existing activation
+supplies the observed workstream, lifecycle choice, and exact routed resource
+IDs. The runtime derives their paths, ownership, mutation scope, repository
+HEAD, and evidence. Creation instead supplies typed `workspaceTargets`; the
+runtime derives their absolute paths, routing evidence, and resource
+identities. The deterministic gate performs at most one lifecycle binding
+attempt, makes no model request, and requires a fresh primary decision after
+authoritative bound context is mounted.
 
 Executable tools retain native schemas. Harness-only controls are not
 persisted as fake calls. If a provider returns a whole JSON object whose shape
@@ -172,8 +201,8 @@ The primary loop owns read-only workstream routing observations. It requests
 focused capability ids instead of lifecycle effects:
 
 ```text
-decision_enter_observe_locate({
-  purpose: "Find the durable owner of result.txt.",
+decision_enter_workstream_route({
+  purpose: "Find the durable owner of result.txt before mutation.",
   capabilities: ["workstream:search", "resource:ownership"],
   subjects: ["result.txt"]
 })
@@ -181,33 +210,50 @@ decision_enter_observe_locate({
 decision_resolve_create({
   purpose: "Bind the exact output before writing it.",
   capabilities: ["file:write"],
-  mutationScopes: [{ kind: "filesystem", value: "/absolute/project/result.txt" }],
-  binding: { kind: "create", ..., evidence: ["run:...:step:...:call:..."] }
+  workspaceTargets: [{ kind: "file", relativePath: "project/result.txt" }],
+  binding: {
+    title: "Result file",
+    objective: "Create and maintain result.txt.",
+    initialRequest: {
+      title: "Create result.txt",
+      request: "Create the requested result file.",
+      acceptance: ["project/result.txt exists with the requested content."],
+      constraints: []
+    }
+  }
 })
 -> deterministic binding gate (zero model calls)
+-> runtime resolves <workspaceRoot>/project/result.txt and derives evidence/resource identity
 -> automatic execute entry with a replaced capability surface
 -> refreshed authoritative context
 -> fresh main decision
 ```
 
-The model-facing read-only groups are `workstream:search`, `workstream:read`,
-and `resource:ownership`. Their calls are persisted as ordinary observation
-steps, but their evidence is tagged as routing evidence and cannot satisfy
-whole-task completion.
+The model-facing read-only groups in `workstream.route` are
+`workstream:search`, `workstream:read`, and `resource:ownership`. Their calls
+are persisted as ordinary observation steps, but their evidence is tagged as
+routing evidence and cannot satisfy whole-task completion. The same
+capabilities remain available in ordinary observation modes for read-only
+workstream questions; those modes cannot proceed directly to resolve.
 
-The gate checks mutation intent, binding-required taxonomy, exact target
-provenance, current-run routing references, candidate identity, workstream
-HEAD, request identity, and the one-attempt limit. For creation, it searches
-again immediately before the commit and returns `needs_user_input` when a
-probable or definite owner exists, unless the user explicitly selected a new
-independent workstream. An exact follow-up answer to that durable question is
-recognized on the next run. Ambiguity performs no binding and does not consume
-the attempt. For activation, the gate re-reads the exact candidate and rejects
-a stale HEAD.
+The gate checks mutation intent, binding-required taxonomy, the one-attempt
+limit, and a successful current-run routing observation. For creation, it
+validates every target kind and portable relative path, resolves and
+canonicalizes it beneath the configured workspace, rejects traversal or
+symbolic-link escape, inspects that exact prospective resource, and searches
+again for a probable or definite owner. A strong owner returns
+`needs_user_input` unless the user explicitly selected a new independent
+workstream. Ambiguity performs no binding and does not consume the attempt.
+For activation, the gate validates each model-selected resource ID against
+current-run routing, derives the relevant evidence and observed workstream
+HEAD, then rechecks candidate identity, request identity, mutable resource
+ownership, availability, and HEAD freshness against Context Engine state.
 
 Read-only references are never inspected or bound as mutation resources.
-Filesystem mutation scopes and exact resource ids are rechecked inside the
-gate before binding. Directory scopes authorize canonical descendants, not
+For creation, only the exact resolved file or directory targets become
+prospective mutable resource bindings; the whole workspace is never bound.
+For activation, only exact routed resource IDs can establish the derived
+mutation scope. Directory resources authorize canonical descendants, not
 siblings or symbolic-link escapes.
 
 Only after those checks does the coordinator call Context Engine's atomic
@@ -249,7 +295,8 @@ Prompt context uses explicit bounded lanes:
 - `tools`: current capability surface;
 - `harness`: compact unresolved repair feedback;
 - `run`: the exact selected-request contract and distilled workstream context
-  for a bound run, WorkState, current calls, a compact `verifiedOutcomes`
+  for a bound run, the exact configured `workspaceRoot`, WorkState, current
+  calls, a compact `verifiedOutcomes`
   catalog, the virtual-mode card, pressure state, and an optional disposable
   anchored focus summary that is navigation context only. The bound-workstream
   projection identifies a different active request when necessary and carries
@@ -283,13 +330,15 @@ The native schema exposes only graph-legal destinations and capabilities
 available under current authority. The harness resolves each requested
 responsibility to eligible concrete tools.
 
-`observe.locate` and `observe.investigate` expose only read-only tools. A mode
-transition replaces the complete capability surface so tools from an earlier mode do
-not accumulate. Bounded self-transitions may adjust the surface; repeated
-identical transitions stop through no-progress protection. `execute` enforces
-the workspace-effect policy plus the existing bound-resource policy. Selecting
-a capability never authorizes its effect; resource-scoped validation still
-runs at execution time.
+`observe.locate`, `observe.investigate`, and `workstream.route` expose only
+read-only tools. `workstream.route` is narrower: only its three routing
+capabilities are eligible. A mode transition replaces the complete capability
+surface so tools from an earlier mode do not accumulate. Bounded
+self-transitions may adjust the surface; repeated identical transitions stop
+through no-progress protection. `execute` enforces the workspace-effect
+policy plus the existing bound-resource policy. Selecting a capability never
+authorizes its effect; resource-scoped validation still runs at execution
+time.
 
 `context.retrieve` exposes only `context_load` through `context:load`. Its
 receipt is audited, but full content is mounted directly in

@@ -366,6 +366,8 @@ function workstreamSearchTool(
 }
 
 function createBindingProposal(runId: string, callId: string) {
+  void runId;
+  void callId;
   return {
     kind: "create" as const,
     title: "Create requested output",
@@ -376,8 +378,6 @@ function createBindingProposal(runId: string, callId: string) {
       acceptance: ["The requested file exists and is verified."],
       constraints: [],
     },
-    resources: [],
-    evidence: [`run:${runId}:step:1:call:${callId}`],
   };
 }
 
@@ -392,6 +392,7 @@ describe("agentLoop one-run lifecycle", () => {
 
       const result = await agentLoop({
         provider,
+        workspaceRoot: dataDir,
         toolDefinitions: [],
         runRecorder: noopRunRecorder,
         runHandle: runHandle("R-direct"),
@@ -413,6 +414,10 @@ describe("agentLoop one-run lifecycle", () => {
       });
       expect(recordRunStep).not.toHaveBeenCalled();
       expect(provider.generateTurn).toHaveBeenCalledTimes(1);
+      const firstTurn = vi.mocked(provider.generateTurn).mock.calls[0]?.[0];
+      const userPrompt = firstTurn?.messages.find((message) => message.role === "user")?.content;
+      expect(typeof userPrompt).toBe("string");
+      expect(extractStateView(userPrompt as string).context.run.workspaceRoot).toBe(dataDir);
     } finally {
       cleanup(dataDir);
     }
@@ -664,8 +669,7 @@ describe("agentLoop one-run lifecycle", () => {
       expect(firstInput.tools.map((tool) => tool.name)).toEqual([
         "decision_enter_observe_locate",
         "decision_enter_observe_investigate",
-        "decision_resolve_activate",
-        "decision_resolve_create",
+        "decision_enter_workstream_route",
       ]);
       const secondInput = vi.mocked(provider.generateTurn).mock.calls[1]?.[0];
       expect(secondInput.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
@@ -1157,7 +1161,7 @@ describe("agentLoop one-run lifecycle", () => {
 
       expect(result).toMatchObject({
         outcome: "done",
-        totalIterations: 6,
+        totalIterations: 5,
         totalToolCalls: 1,
       });
       expect(provider.generateTurn).toHaveBeenCalledTimes(6);
@@ -1169,15 +1173,19 @@ describe("agentLoop one-run lifecycle", () => {
         return extractStateView(prompt as string);
       };
       const afterDirectReadMode = decisionView(1);
-      const afterCapabilityRepair = decisionView(2);
+      const capabilityRepairInput = vi.mocked(provider.generateTurn).mock.calls[2]?.[0];
+      const capabilityRepairPrompt = capabilityRepairInput.messages.at(-1)?.content ?? "";
+      const duringCapabilityRepair = decisionView(2);
       const afterAcceptedTransition = decisionView(3);
       const afterVerifiedAction = decisionView(4);
 
       expect(JSON.stringify(afterDirectReadMode)).toContain("/tmp/invented-notes.md");
       expect(JSON.stringify(afterDirectReadMode)).not.toContain("MODE_TARGET_UNVERIFIED");
-      expect(JSON.stringify(afterCapabilityRepair)).toContain("/tmp/invented-notes.md");
-      expect(JSON.stringify(afterCapabilityRepair)).toContain("Unknown capability ids");
-      expect(JSON.stringify(afterCapabilityRepair)).toContain("domain:filesystem");
+      expect(JSON.stringify(duringCapabilityRepair)).toContain("/tmp/invented-notes.md");
+      expect(capabilityRepairPrompt).toContain("Repair code: R_TOOL_INPUT_INVALID");
+      expect(JSON.stringify(feedback.events.find(
+        (event) => event.event === "input_schema_violation",
+      ))).toContain("capabilities.0 must be one of");
       expect(JSON.stringify(afterAcceptedTransition)).not.toContain("/tmp/invented-notes.md");
       expect(JSON.stringify(afterAcceptedTransition)).not.toContain("Unknown capability ids");
       expect(JSON.stringify(afterAcceptedTransition)).not.toContain("domain:filesystem");
@@ -1188,12 +1196,13 @@ describe("agentLoop one-run lifecycle", () => {
       expect(JSON.stringify(afterVerifiedAction)).not.toContain("domain:filesystem");
 
       expect(feedback.events).toContainEqual(expect.objectContaining({
-        stage: "guard",
-        event: "repair_resolved",
+        stage: "decision",
+        event: "repair_requested",
         data: expect.objectContaining({
-          resolutionKind: "accepted_mode_transition",
-          scopes: ["navigation"],
-          resolvedCount: 1,
+          reason: "tool_input_schema_violation",
+          repair: expect.objectContaining({
+            code: "R_TOOL_INPUT_INVALID",
+          }),
         }),
       }));
     } finally {
@@ -1493,6 +1502,7 @@ describe("agentLoop one-run lifecycle", () => {
         "mode",
         "toolCalls",
         "verifiedOutcomes",
+        "workspaceRoot",
       ]);
       expect(stateView.context.run).not.toHaveProperty("runId");
       expect(stateView.context.run).not.toHaveProperty("status");
@@ -1665,7 +1675,7 @@ describe("agentLoop one-run lifecycle", () => {
         {
           kind: "transition_mode",
           request: {
-            to: "observe.locate",
+            to: "workstream.route",
             purpose: "Check durable ownership before creating the file.",
             capabilities: ["workstream:search"],
             targets: [outputPath],
@@ -1692,7 +1702,10 @@ describe("agentLoop one-run lifecycle", () => {
             to: "resolve",
             purpose: "Bind the exact output target before creating it.",
             capabilities: ["file:write"],
-            targets: [outputPath],
+            workspaceTargets: [{
+              kind: "file",
+              relativePath: "must-not-exist.txt",
+            }],
             binding: createBindingProposal(runId, routingCallId),
           },
         },
@@ -1755,7 +1768,10 @@ describe("agentLoop one-run lifecycle", () => {
           to: "resolve",
           purpose: "Attempt mutation despite the read-only request.",
           capabilities: ["file:write"],
-          targets: [outputPath],
+          workspaceTargets: [{
+            kind: "file",
+            relativePath: "must-stay-absent.txt",
+          }],
           binding: createBindingProposal(runId, "unreachable-routing-evidence"),
         },
       };
@@ -1796,6 +1812,7 @@ describe("agentLoop one-run lifecycle", () => {
     const dataDir = makeTmpDir();
     const runId = "R-repeated-load";
     const routingCallId = "find-existing-project";
+    const projectPath = join(dataDir, "existing-project");
     try {
       const routingSearch = workstreamSearchTool();
       const routingTools = [
@@ -1819,10 +1836,10 @@ describe("agentLoop one-run lifecycle", () => {
         {
           kind: "transition_mode",
           request: {
-            to: "observe.locate",
+            to: "workstream.route",
             purpose: "Find the workstream that owns the project.",
             capabilities: ["workstream:search"],
-            targets: ["/tmp/existing-project"],
+            targets: [projectPath],
           },
         },
         {
@@ -1846,7 +1863,10 @@ describe("agentLoop one-run lifecycle", () => {
             to: "resolve",
             purpose: "Bind the exact project before writing.",
             capabilities: ["file:write"],
-            targets: ["/tmp/existing-project"],
+            workspaceTargets: [{
+              kind: "directory",
+              relativePath: "existing-project",
+            }],
             binding: createBindingProposal(runId, routingCallId),
           },
         },
@@ -1856,7 +1876,10 @@ describe("agentLoop one-run lifecycle", () => {
             to: "resolve",
             purpose: "Do not replay the failed binding attempt.",
             capabilities: ["file:write"],
-            targets: ["/tmp/existing-project"],
+            workspaceTargets: [{
+              kind: "directory",
+              relativePath: "existing-project",
+            }],
             binding: createBindingProposal(runId, routingCallId),
           },
         },
@@ -1889,10 +1912,10 @@ describe("agentLoop one-run lifecycle", () => {
         workstreamBinding,
         feedbackLedger: feedback.ledger,
         clientId: "c1",
-        initialUserMessage: "Create a file in /tmp/existing-project",
+        initialUserMessage: `Create a file in ${projectPath}`,
         dataDir,
         systemContext: "test system context",
-        harnessContext: unboundContext(runId, "Create a file in /tmp/existing-project"),
+        harnessContext: unboundContext(runId, `Create a file in ${projectPath}`),
       });
 
       expect(result).toMatchObject({
@@ -1909,8 +1932,7 @@ describe("agentLoop one-run lifecycle", () => {
       expect(firstInput.tools.map((tool) => tool.name)).toEqual([
         "decision_enter_observe_locate",
         "decision_enter_observe_investigate",
-        "decision_resolve_activate",
-        "decision_resolve_create",
+        "decision_enter_workstream_route",
       ]);
       expect(firstInput.tools.map((tool) => tool.name)).not.toContain("write_files");
       const secondInput = vi.mocked(provider.generateTurn).mock.calls[1]?.[0];
@@ -1935,7 +1957,7 @@ describe("agentLoop one-run lifecycle", () => {
         {
           kind: "transition_mode",
           request: {
-            to: "observe.locate",
+            to: "workstream.route",
             purpose: "Check whether durable work already owns this output.",
             capabilities: ["workstream:search"],
             targets: [outputPath],
@@ -1962,7 +1984,10 @@ describe("agentLoop one-run lifecycle", () => {
             to: "resolve",
             purpose: "Bind the requested output before creating it.",
             capabilities: ["file:write"],
-            targets: [outputPath],
+            workspaceTargets: [{
+              kind: "file",
+              relativePath: "one-run.txt",
+            }],
             binding: createBindingProposal(runId, routingCallId),
           },
         },
@@ -2074,17 +2099,20 @@ describe("agentLoop one-run lifecycle", () => {
 
       const firstInput = vi.mocked(provider.generateTurn).mock.calls[0]?.[0];
       const secondInput = vi.mocked(provider.generateTurn).mock.calls[1]?.[0];
+      const thirdInput = vi.mocked(provider.generateTurn).mock.calls[2]?.[0];
       const fourthInput = vi.mocked(provider.generateTurn).mock.calls[3]?.[0];
       expect(firstInput.tools.map((tool) => tool.name)).toEqual([
         "decision_enter_observe_locate",
         "decision_enter_observe_investigate",
-        "decision_resolve_activate",
-        "decision_resolve_create",
+        "decision_enter_workstream_route",
       ]);
       expect(firstInput.tools.map((tool) => tool.name)).not.toContain("workstream_resolve");
       expect(firstInput.tools.map((tool) => tool.name)).not.toContain("write_files");
       expect(secondInput.tools.map((tool) => tool.name)).toContain("git_context_find_workstreams");
       expect(secondInput.tools.map((tool) => tool.name)).toContain("decision_stop");
+      expect(secondInput.tools.map((tool) => tool.name)).not.toContain("decision_resolve_create");
+      expect(thirdInput.tools.map((tool) => tool.name)).toContain("decision_resolve_activate");
+      expect(thirdInput.tools.map((tool) => tool.name)).toContain("decision_resolve_create");
       expect(fourthInput.tools.map((tool) => tool.name)).toContain("write_files");
       expect(fourthInput.tools.map((tool) => tool.name)).toContain("decision_stop");
       const fourthPromptText = fourthInput.messages
@@ -2324,14 +2352,14 @@ describe("agentLoop one-run lifecycle", () => {
     const dataDir = makeTmpDir();
     try {
       const runId = "R-routing-failure";
-      const target = "/tmp/durable-work.txt";
+      const target = join(dataDir, "durable-work.txt");
       const routingCallId = "find-durable-work-owner";
       const routingTool = workstreamSearchTool();
       const provider = createProvider([
         {
           kind: "transition_mode",
           request: {
-            to: "observe.locate",
+            to: "workstream.route",
             purpose: "Find durable ownership before creating the file.",
             capabilities: ["workstream:search"],
             targets: [target],
@@ -2358,7 +2386,10 @@ describe("agentLoop one-run lifecycle", () => {
             to: "resolve",
             purpose: "Bind ownership before creating the durable file.",
             capabilities: ["file:write"],
-            targets: [target],
+            workspaceTargets: [{
+              kind: "file",
+              relativePath: "durable-work.txt",
+            }],
             binding: createBindingProposal(runId, routingCallId),
           },
         },
@@ -2421,14 +2452,14 @@ describe("agentLoop one-run lifecycle", () => {
     const dataDir = makeTmpDir();
     try {
       const runId = "R-routing-ambiguous";
-      const target = "/tmp/site";
+      const target = join(dataDir, "site");
       const routingCallId = "find-site-owner";
       const routingTool = workstreamSearchTool();
       const provider = createProvider([
         {
           kind: "transition_mode",
           request: {
-            to: "observe.locate",
+            to: "workstream.route",
             purpose: "Find workstreams that may own the website target.",
             capabilities: ["workstream:search"],
             targets: [target],
@@ -2455,7 +2486,10 @@ describe("agentLoop one-run lifecycle", () => {
             to: "resolve",
             purpose: "Bind the website target before updating it.",
             capabilities: ["file:write"],
-            targets: [target],
+            workspaceTargets: [{
+              kind: "directory",
+              relativePath: "site",
+            }],
             binding: createBindingProposal(runId, routingCallId),
           },
         },

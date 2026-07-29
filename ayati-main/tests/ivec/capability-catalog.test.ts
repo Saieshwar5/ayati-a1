@@ -79,6 +79,7 @@ describe("capability catalog", () => {
     const context = toolProperties(tools, "decision_enter_context_retrieve");
     const locate = toolProperties(tools, "decision_enter_observe_locate");
     const investigate = toolProperties(tools, "decision_enter_observe_investigate");
+    const workstreamRoute = toolProperties(tools, "decision_enter_workstream_route");
     const resolveActivate = toolProperties(tools, "decision_resolve_activate");
     const resolveCreate = toolProperties(tools, "decision_resolve_create");
     const validation = toolProperties(tools, "decision_enter_validation");
@@ -90,17 +91,44 @@ describe("capability catalog", () => {
     expect(capabilityEnum(investigate)).toContain("system:time");
     expect(capabilityEnum(investigate)).toContain("system:health");
     expect(capabilityEnum(investigate)).not.toContain("file:write");
+    expect(capabilityEnum(workstreamRoute)).toEqual([
+      "workstream:search",
+      "workstream:read",
+      "resource:ownership",
+    ]);
     expect(capabilityEnum(resolveActivate)).toContain("file:write");
     expect(capabilityEnum(resolveActivate)).not.toContain("file:read");
     expect(capabilityEnum(validation)).toEqual(["task:validation"]);
     expect(JSON.stringify(validation)).toContain("read_complete");
     expect(JSON.stringify(validation)).not.toContain("\"read\"");
+    expect(resolveActivate).not.toHaveProperty("references");
+    expect(resolveActivate).not.toHaveProperty("mutationScopes");
     expect((resolveActivate["binding"] as Record<string, unknown>)["properties"]).toMatchObject({
-      kind: { const: "activate" },
+      workstreamId: { type: "string" },
+      resourceIds: {
+        type: "array",
+        minItems: 1,
+        maxItems: 8,
+      },
     });
-    expect((resolveCreate["binding"] as Record<string, unknown>)["properties"]).toMatchObject({
-      kind: { const: "create" },
+    const createBindingProperties = (
+      resolveCreate["binding"] as Record<string, unknown>
+    )["properties"] as Record<string, unknown>;
+    expect(createBindingProperties).toMatchObject({
+      title: { type: "string" },
+      objective: { type: "string" },
+      initialRequest: { type: "object" },
     });
+    expect(createBindingProperties).not.toHaveProperty("kind");
+    expect(createBindingProperties).not.toHaveProperty("resources");
+    expect(createBindingProperties).not.toHaveProperty("evidence");
+    expect(resolveCreate["workspaceTargets"]).toMatchObject({
+      type: "array",
+      minItems: 1,
+      maxItems: 8,
+    });
+    expect(resolveCreate).not.toHaveProperty("references");
+    expect(resolveCreate).not.toHaveProperty("mutationScopes");
     expect((locate["capabilities"] as Record<string, unknown>)["maxItems"]).toBe(3);
     const investigateTool = tools.find(
       (tool) => tool.name === "decision_enter_observe_investigate",
@@ -165,6 +193,7 @@ function allDestinations(): VirtualModeTransitionTarget[] {
     "context.retrieve",
     "observe.locate",
     "observe.investigate",
+    "workstream.route",
     "resolve",
     "execute",
     "validation",

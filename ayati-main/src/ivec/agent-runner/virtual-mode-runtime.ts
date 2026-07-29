@@ -28,6 +28,7 @@ import {
   isVirtualGraphActive,
   isVirtualModeTransitionAllowed,
   modeTransitionEvidenceTargetValues,
+  modeTransitionReferenceValues,
   modeTransitionTargetValues,
   recordVirtualResolveVisit,
   type ModeTransitionRequest,
@@ -51,6 +52,7 @@ import {
   workStateBlockers,
   workStateOpenTasks,
 } from "./work-state/selectors.js";
+import { collectWorkstreamRoutingEvidence } from "./workstream-routing-evidence.js";
 
 export { collectVirtualModeTargetEvidence } from "./virtual-mode-targets.js";
 
@@ -93,6 +95,7 @@ export type VirtualModeTransitionResult =
 export async function dispatchVirtualModeTransition(input: {
   state: LoopState;
   request: ModeTransitionRequest;
+  workspaceRoot: string;
   iteration: number;
   toolDefinitions: ToolDefinition[];
   capabilitySurfaceManager?: CapabilitySurfaceManager;
@@ -223,6 +226,7 @@ export async function dispatchVirtualModeTransition(input: {
 async function dispatchResolveTransition(input: {
   state: LoopState;
   request: ModeTransitionRequest;
+  workspaceRoot: string;
   iteration: number;
   resolvedToolNames: string[];
   toolDefinitions: ToolDefinition[];
@@ -236,6 +240,7 @@ async function dispatchResolveTransition(input: {
   const binding = await dispatchDeterministicResolveGate({
     state: input.state,
     request: input.request,
+    workspaceRoot: input.workspaceRoot,
     toolNames: input.resolvedToolNames,
     coordinator: input.workstreamBinding,
     alreadyAttempted: input.bindingAlreadyAttempted,
@@ -360,7 +365,15 @@ export function buildVirtualCapabilitySummary(definitions: ToolDefinition[]): st
   const registry = new ToolRegistry(definitions);
   const catalog = new CapabilityCatalog();
   const cards = catalog.cardsForModes(
-    ["context.retrieve", "observe.locate", "observe.investigate", "resolve", "execute", "validation"],
+    [
+      "context.retrieve",
+      "observe.locate",
+      "observe.investigate",
+      "workstream.route",
+      "resolve",
+      "execute",
+      "validation",
+    ],
     registry.nameSet(),
   );
   return cards.length > 0
@@ -419,6 +432,7 @@ function validateModeTransitionRequest(
 ): VirtualModeRepair | undefined {
   if (!isVirtualModeTransitionAllowed(state.virtualMode, request.to, {
     workstreamBound: isWorkstreamBound(state),
+    routingObserved: collectWorkstreamRoutingEvidence(state).observed,
   })) {
     return repair(
       "MODE_EDGE_PROHIBITED",
@@ -478,7 +492,7 @@ function validateModeTransitionRequest(
       "MODE_BINDING_REQUIRED",
       "Execute mode cannot be entered before authoritative workstream binding.",
       targets,
-      ["Use the resolve gate with a binding-required capability and evidence-backed target."],
+      ["Route ownership, then use resolve with observed activation authority or typed workspace creation targets."],
     );
   }
   return undefined;
@@ -488,13 +502,22 @@ async function validateTransitionTargets(
   state: LoopState,
   request: ModeTransitionRequest,
 ): Promise<VirtualModeRepair | undefined> {
-  const targets = modeTransitionEvidenceTargetValues(request);
+  const allTargets = modeTransitionEvidenceTargetValues(request);
+  const targets = request.to === "resolve" && request.binding?.kind === "create"
+    ? modeTransitionReferenceValues(request)
+    : request.to === "resolve" && request.binding?.kind === "activate"
+      ? []
+      : allTargets;
   if (request.to === "validation") {
     return undefined;
   }
   const requiredTargetKind = request.to === "observe.investigate"
     ? "read-only reference"
-    : "mutation scope";
+    : request.binding?.kind === "create"
+      ? "workspace target"
+      : request.binding?.kind === "activate"
+        ? "routed resource"
+        : "mutation scope";
   const targetlessInvestigation = request.to === "observe.investigate"
     && !new CapabilityCatalog().requiresReferenceTarget(
       request.capabilities,
@@ -502,14 +525,15 @@ async function validateTransitionTargets(
   if (
     request.to !== "context.retrieve"
     && request.to !== "observe.locate"
+    && request.to !== "workstream.route"
     && !targetlessInvestigation
-    && targets.length === 0
+    && allTargets.length === 0
   ) {
     return repair(
       "MODE_TARGET_REQUIRED",
       `${request.to} requires at least one exact ${requiredTargetKind}.`,
       [],
-      ["Use observe.locate to discover a resource, then provide it in references or mutationScopes."],
+      ["Locate the target first, then use its exact reference, routed resource ID, or bound mutation scope."],
     );
   }
   if (targets.length === 0) return undefined;
@@ -528,12 +552,16 @@ async function validateTransitionTargets(
 
 function validateTypedModeInputs(request: ModeTransitionRequest): VirtualModeRepair | undefined {
   const targets = modeTransitionTargetValues(request);
-  if (request.to !== "observe.locate" && (request.subjects?.length ?? 0) > 0) {
+  if (
+    request.to !== "observe.locate"
+    && request.to !== "workstream.route"
+    && (request.subjects?.length ?? 0) > 0
+  ) {
     return repair(
       "MODE_INPUT_INVALID",
-      "Search subjects are valid only in observe.locate.",
+      "Search subjects are valid only in observe.locate or workstream.route.",
       request.subjects ?? [],
-      ["Move authoritative resources into references or mutationScopes."],
+      ["Move authoritative resources into references, or select exact routed resource IDs during activation."],
     );
   }
   if (
@@ -541,6 +569,7 @@ function validateTypedModeInputs(request: ModeTransitionRequest): VirtualModeRep
       request.to === "observe.locate"
       || request.to === "context.retrieve"
       || request.to === "observe.investigate"
+      || request.to === "workstream.route"
       || request.to === "validation"
     )
     && (request.mutationScopes?.length ?? 0) > 0
@@ -550,6 +579,61 @@ function validateTypedModeInputs(request: ModeTransitionRequest): VirtualModeRep
       "Mutation scopes are valid only for resolve or execute.",
       targets,
       ["Use references for read-only investigation."],
+    );
+  }
+  if (
+    request.to !== "resolve"
+    && (request.workspaceTargets?.length ?? 0) > 0
+  ) {
+    return repair(
+      "MODE_INPUT_INVALID",
+      "Workspace targets are valid only when creating a workstream through resolve.",
+      request.workspaceTargets?.map((target) => target.relativePath) ?? [],
+      ["Remove workspaceTargets outside decision_resolve_create."],
+    );
+  }
+  if (request.to === "resolve" && request.binding?.kind === "create") {
+    if ((request.workspaceTargets?.length ?? 0) === 0) {
+      return repair(
+        "MODE_TARGET_REQUIRED",
+        "New workstream creation requires at least one typed workspace file or directory target.",
+        [],
+        ["Declare workspaceTargets with kind and relativePath under context.run.workspaceRoot."],
+      );
+    }
+    if ((request.mutationScopes?.length ?? 0) > 0) {
+      return repair(
+        "MODE_INPUT_INVALID",
+        "New workstream creation uses workspaceTargets; the model must not provide mutationScopes.",
+        targets,
+        ["Remove mutationScopes and declare exact workspace-relative file or directory targets."],
+      );
+    }
+  }
+  if (
+    request.to === "resolve"
+    && request.binding?.kind === "activate"
+    && (request.workspaceTargets?.length ?? 0) > 0
+  ) {
+    return repair(
+      "MODE_INPUT_INVALID",
+      "Existing-workstream activation uses exact existing resource IDs, not new workspace targets.",
+      request.workspaceTargets?.map((target) => target.relativePath) ?? [],
+      ["Use exact resourceIds returned by current-run routing."],
+    );
+  }
+  if (
+    request.to === "resolve"
+    && request.binding?.kind === "activate"
+    && (request.mutationScopes?.length ?? 0) > 0
+  ) {
+    return repair(
+      "MODE_INPUT_INVALID",
+      "The runtime derives existing-workstream mutation scope from routed resource IDs.",
+      request.mutationScopes?.map((scope) => (
+        scope.kind === "filesystem" ? scope.path : scope.resourceId
+      )) ?? [],
+      ["Remove mutationScopes and use exact resourceIds returned by current-run routing."],
     );
   }
   if (
@@ -694,6 +778,7 @@ function filterToolsForMode(
       mode === "context.retrieve"
       || mode === "observe.locate"
       || mode === "observe.investigate"
+      || mode === "workstream.route"
       || mode === "validation"
     ) {
       return isObservationalTool(toolName);

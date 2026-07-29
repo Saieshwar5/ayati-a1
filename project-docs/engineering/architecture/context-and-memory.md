@@ -65,12 +65,15 @@ unfinished request, a compact material handoff may initialize that new
 WorkState, while the latest five progress entries for the selected request are
 loaded separately from the durable progress projection.
 
-Workstream routing observation is part of the same primary loop. Read-only
-candidate and owner lookups enter the run step history but are tagged as
-routing evidence. `resolve` is a transient deterministic gate with no private
-history, model call, prompt lane, WorkState, token budget, or retry loop. It
-validates one typed proposal, calls one atomic Context Engine binding path,
-and publishes the refreshed projection to the next primary decision.
+Workstream routing is part of the same primary loop. Before an unbound
+mutation, the run enters the dedicated read-only `workstream.route` mode.
+Candidate and owner lookups enter the run step history but are tagged as
+routing evidence. `resolve` is not available from `ENTRY` or from the route
+until one such lookup succeeds in the current run. It remains a transient
+deterministic gate with no private history, model call, prompt lane, WorkState,
+token budget, or retry loop. It validates one typed proposal, calls one atomic
+Context Engine binding path, and publishes the refreshed projection to the
+next primary decision.
 
 ## Agent-Facing Prompt Lanes
 
@@ -85,14 +88,20 @@ The model receives an explicit bounded projection:
 - `context.run`: on a bound run, `boundWorkstream` with distilled project
   context, the exact selected request, an optional different active-request
   identity, and at most five selected-request progress summaries; material
-  WorkState when present; current-run calls; a compact `verifiedOutcomes`
-  catalog; the run-scoped mode card; pressure state; and an optional `focus`
-  overlay. The overlay and prior progress are context only and are never
-  verification or completion evidence. Tool calls keep useful exact inputs
-  and outputs plus a scalar verification status; full verification machinery
-  remains in the journal. The mode card exposes the current validation
-  checklist and per-path status. Completion selects catalog kind/subject
-  values instead of copying current-call evidence identifiers.
+  WorkState when present; the exact runtime-configured absolute
+  `workspaceRoot`; current-run calls; a compact `verifiedOutcomes` catalog;
+  the run-scoped mode card; pressure state; and an optional `focus` overlay.
+  New-workstream `workspaceTargets` and relative filesystem-mutation paths use
+  that root without repeating it. The workspace root is location context, not
+  resource authority or completion evidence. Existing activation supplies
+  exact resource IDs from current-run routing; the runtime derives their
+  mutation authority without projecting paths, Git state, or evidence fields
+  for the model to reproduce. The overlay and prior progress are likewise
+  context only. Tool calls keep useful exact inputs and outputs plus a scalar
+  verification status; full verification machinery remains in the journal.
+  The mode card exposes the current validation checklist and per-path status.
+  Completion selects catalog kind/subject values instead of copying
+  current-call evidence identifiers.
 
 Internal database paths, context-repository paths, observation authority
 fields, resource locators, commit metadata, raw logs, idempotency data, and

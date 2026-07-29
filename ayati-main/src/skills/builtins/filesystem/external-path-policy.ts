@@ -11,7 +11,7 @@ export function externalWorkspacePathError(rejection: WorkspaceMutationPathRejec
     retryable: true,
     recoverable: true,
     suggestedNextActions: [
-      "Use an absolute path inside one filesystem resource bound to the active workstream.",
+      "Use a workspace-relative or canonical absolute path inside one filesystem resource bound to the active workstream.",
       "If the user requested another location, inspect and bind that exact resource before mutation.",
     ],
     structuredContent: {

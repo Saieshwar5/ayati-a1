@@ -61,6 +61,7 @@ Mode behavior:
 | --- | --- | --- |
 | `observe.locate` | discovery, listing, search, routing lookup | read-only locate tools |
 | `observe.investigate` | exact reads, inspection, queries, and targetless system observations | read-only evidence tools |
+| `workstream.route` | durable-owner discovery before unbound mutation | only workstream search/read and resource-owner lookup |
 | `resolve` | binding-required mutation responsibility | no lifecycle tools; the deterministic gate binds, then mounts the matching execute surface |
 | `execute` | bound mutation, verification, or bound control | only tools permitted by current workstream/resource authority |
 | `validation` | final typed task-outcome proof | no executable tools; queries the derived current-run verification index |
@@ -68,6 +69,9 @@ Mode behavior:
 A mode change replaces the full earlier surface. Tools do not accumulate
 across modes. An authority change that invalidates any active tool clears the
 whole surface so a partially authorized capability cannot remain active.
+For an unbound mutation, `resolve` is not graph-legal from `ENTRY`. The model
+must enter `workstream.route`, and resolve controls remain absent until a
+successful current-run routing observation exists.
 
 ## Catalog Rules
 

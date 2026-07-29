@@ -3,6 +3,7 @@ import {
   workstreamActivateProposalSchema,
   workstreamCreateProposalSchema,
 } from "../workstream-binding/proposal.js";
+import { workstreamWorkspaceTargetArraySchema } from "../workstream-binding/workspace-targets.js";
 import type { ModeCapabilityOptions } from "./capabilities/contracts.js";
 import { normalizeModeTransitionRequest } from "./mode-transition-request.js";
 import { TASK_VALIDATION_OUTCOME_KINDS } from "./task-validation-contracts.js";
@@ -17,6 +18,7 @@ export const MODE_TRANSITION_CONTROL_TOOL_NAMES = [
   "decision_enter_context_retrieve",
   "decision_enter_observe_locate",
   "decision_enter_observe_investigate",
+  "decision_enter_workstream_route",
   "decision_resolve_activate",
   "decision_resolve_create",
   "decision_enter_execute",
@@ -70,12 +72,7 @@ export function buildModeTransitionControlTools(
       "Enter read-only observe.locate to search for an uncertain file, resource, workstream, or other target.",
       {
         ...commonProperties(capabilities["observe.locate"]),
-        subjects: {
-          type: "array",
-          maxItems: 12,
-          items: { type: "string", minLength: 1, maxLength: 500 },
-          description: "Human search subjects only. These values are not filesystem or mutation authority.",
-        },
+        subjects: subjectArraySchema(),
       },
       ["purpose", "capabilities"],
     ));
@@ -91,30 +88,43 @@ export function buildModeTransitionControlTools(
       ["purpose", "capabilities"],
     ));
   }
+  if (allowed.has("workstream.route")) {
+    tools.push(controlTool(
+      "decision_enter_workstream_route",
+      "Enter the read-only workstream routing mode before any unbound mutation. Search durable owners, inspect candidates, or check resource ownership; resolve controls become available only after a successful current-run routing observation.",
+      {
+        ...commonProperties(capabilities["workstream.route"]),
+        subjects: subjectArraySchema(),
+      },
+      ["purpose", "capabilities"],
+    ));
+  }
   if (allowed.has("resolve")) {
-    const resolveProperties = {
+    const activateProperties = {
       ...commonProperties(capabilities.resolve),
-      references: referenceArraySchema(),
-      mutationScopes: mutationScopeArraySchema(),
+    };
+    const createProperties = {
+      ...commonProperties(capabilities.resolve),
+      workspaceTargets: workstreamWorkspaceTargetArraySchema(),
     };
     tools.push(
       controlTool(
         "decision_resolve_activate",
-        "Enter the deterministic resolve gate by activating one exact observed workstream and request.",
+        "Activate one exact observed workstream and request using existing resource IDs returned by current-run routing. The runtime derives paths, mutation scope, repository HEAD, and evidence.",
         {
-          ...resolveProperties,
+          ...activateProperties,
           binding: workstreamActivateProposalSchema(),
         },
-        ["purpose", "capabilities", "mutationScopes", "binding"],
+        ["purpose", "capabilities", "binding"],
       ),
       controlTool(
         "decision_resolve_create",
-        "Enter the deterministic resolve gate by creating one new evidence-backed workstream and initial request.",
+        "Create one new workstream and initial request for exact file or directory targets relative to context.run.workspaceRoot. The runtime derives absolute paths, routing evidence, and resource identities.",
         {
-          ...resolveProperties,
+          ...createProperties,
           binding: workstreamCreateProposalSchema(),
         },
-        ["purpose", "capabilities", "mutationScopes", "binding"],
+        ["purpose", "capabilities", "workspaceTargets", "binding"],
       ),
     );
   }
@@ -158,9 +168,15 @@ export function modeTransitionRequestFromControlCall(
   toolName: ModeTransitionControlToolName,
   input: Record<string, unknown>,
 ): ModeTransitionRequest {
+  const binding = toolName === "decision_resolve_create"
+    ? createBindingFromControlInput(input["binding"])
+    : toolName === "decision_resolve_activate"
+      ? activateBindingFromControlInput(input["binding"])
+      : input["binding"];
   return normalizeModeTransitionRequest({
     ...input,
     to: modeTransitionTargetForControl(toolName),
+    binding,
     references: normalizeControlReferences(input["references"]),
     mutationScopes: normalizeControlMutationScopes(input["mutationScopes"]),
   });
@@ -176,7 +192,9 @@ export function modeTransitionControlCallFromRequest(
     to: _to,
     references,
     mutationScopes,
+    workspaceTargets,
     targets: _targets,
+    binding,
     ...rest
   } = request;
   const compatibilityTargets = request.targets ?? [];
@@ -188,13 +206,17 @@ export function modeTransitionControlCallFromRequest(
     );
   const effectiveMutationScopes = mutationScopes
     ?? (
-      request.to === "resolve" || request.to === "execute"
+      request.to === "execute"
         ? compatibilityTargets.map(filesystemMutationScope)
         : undefined
     );
   const effectiveSubjects = request.subjects
     ?? (
-      request.to === "observe.locate" && compatibilityTargets.length > 0
+      (
+        request.to === "observe.locate"
+        || request.to === "workstream.route"
+      )
+      && compatibilityTargets.length > 0
         ? compatibilityTargets
         : undefined
     );
@@ -202,6 +224,13 @@ export function modeTransitionControlCallFromRequest(
     name: modeTransitionControlNameForRequest(request),
     input: {
       ...rest,
+      ...(binding
+        ? {
+            binding: binding.kind === "create"
+              ? createBindingToControlInput(binding)
+              : activateBindingToControlInput(binding),
+          }
+        : {}),
       ...(effectiveSubjects ? { subjects: effectiveSubjects } : {}),
       ...(effectiveReferences
         ? { references: effectiveReferences.map(toControlReference) }
@@ -209,6 +238,7 @@ export function modeTransitionControlCallFromRequest(
       ...(effectiveMutationScopes
         ? { mutationScopes: effectiveMutationScopes.map(toControlMutationScope) }
         : {}),
+      ...(workspaceTargets ? { workspaceTargets } : {}),
     },
   };
 }
@@ -223,6 +253,8 @@ function modeTransitionControlNameForRequest(
       return "decision_enter_observe_locate";
     case "observe.investigate":
       return "decision_enter_observe_investigate";
+    case "workstream.route":
+      return "decision_enter_workstream_route";
     case "resolve":
       return request.binding?.kind === "activate"
         ? "decision_resolve_activate"
@@ -244,6 +276,8 @@ function modeTransitionTargetForControl(
       return "observe.locate";
     case "decision_enter_observe_investigate":
       return "observe.investigate";
+    case "decision_enter_workstream_route":
+      return "workstream.route";
     case "decision_resolve_activate":
     case "decision_resolve_create":
       return "resolve";
@@ -273,6 +307,15 @@ function capabilitySchema(capabilities: string[]): Record<string, unknown> {
       enum: [...capabilities],
     },
     description: "Choose one to three exact capability ids from this destination-specific catalog.",
+  };
+}
+
+function subjectArraySchema(): Record<string, unknown> {
+  return {
+    type: "array",
+    maxItems: 12,
+    items: { type: "string", minLength: 1, maxLength: 500 },
+    description: "Human search subjects only. These values are not filesystem or mutation authority.",
   };
 }
 
@@ -459,6 +502,36 @@ function normalizeControlMutationScopes(value: unknown): unknown {
   });
 }
 
+function createBindingFromControlInput(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  return { ...value, kind: "create" };
+}
+
+function activateBindingFromControlInput(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  return { ...value, kind: "activate" };
+}
+
+function createBindingToControlInput(
+  binding: Extract<NonNullable<ModeTransitionRequest["binding"]>, { kind: "create" }>,
+): Record<string, unknown> {
+  return {
+    title: binding.title,
+    objective: binding.objective,
+    initialRequest: binding.initialRequest,
+  };
+}
+
+function activateBindingToControlInput(
+  binding: Extract<NonNullable<ModeTransitionRequest["binding"]>, { kind: "activate" }>,
+): Record<string, unknown> {
+  return {
+    workstreamId: binding.workstreamId,
+    requestDecision: binding.requestDecision,
+    resourceIds: binding.resourceIds,
+  };
+}
+
 function toControlReference(reference: ModeTransitionReference): Record<string, string> {
   switch (reference.kind) {
     case "filesystem":
@@ -493,6 +566,7 @@ function emptyCapabilityOptions(): ModeCapabilityOptions {
     "context.retrieve": [],
     "observe.locate": [],
     "observe.investigate": [],
+    "workstream.route": [],
     resolve: [],
     execute: [],
     validation: [],

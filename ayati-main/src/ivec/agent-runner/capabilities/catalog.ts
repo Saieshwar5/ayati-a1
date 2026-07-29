@@ -18,6 +18,7 @@ import type { VirtualModeTransitionTarget } from "../virtual-mode.js";
 const OBSERVE_LOCATE: VirtualModeTransitionTarget[] = ["observe.locate"];
 const OBSERVE_INVESTIGATE: VirtualModeTransitionTarget[] = ["observe.investigate"];
 const CONTEXT_RETRIEVE: VirtualModeTransitionTarget[] = ["context.retrieve"];
+const WORKSTREAM_ROUTE: VirtualModeTransitionTarget[] = ["workstream.route"];
 const OBSERVE_BOTH: VirtualModeTransitionTarget[] = [
   "observe.locate",
   "observe.investigate",
@@ -162,9 +163,27 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
   ]),
   capability("artifact:fetch", "Fetch a URL into a bound resource.", "Use for an explicitly requested external download.", MUTATION, ["file_fetch_url"]),
 
-  unboundCapability("workstream:search", "Search candidate workstreams.", "Use before mutation to find possible durable owners.", OBSERVE_LOCATE, ["git_context_find_workstreams"]),
-  unboundCapability("workstream:read", "Read one exact workstream candidate.", "Use to verify objective, request, HEAD, and resource context.", OBSERVE_INVESTIGATE, ["git_context_read_workstream"]),
-  unboundCapability("resource:ownership", "Find workstreams that own a resource.", "Use before mutation to establish authoritative resource ownership.", OBSERVE_BOTH, ["git_context_find_resources"]),
+  unboundCapability(
+    "workstream:search",
+    "Search candidate workstreams.",
+    "Use in workstream.route before mutation, or in observe.locate for a read-only workstream lookup.",
+    [...OBSERVE_LOCATE, ...WORKSTREAM_ROUTE],
+    ["git_context_find_workstreams"],
+  ),
+  unboundCapability(
+    "workstream:read",
+    "Read one exact workstream candidate.",
+    "Use in workstream.route to inspect a routing candidate, or in observe.investigate for a read-only workstream question.",
+    [...OBSERVE_INVESTIGATE, ...WORKSTREAM_ROUTE],
+    ["git_context_read_workstream"],
+  ),
+  unboundCapability(
+    "resource:ownership",
+    "Find workstreams that own a resource.",
+    "Use in workstream.route before mutation, or in an observation mode for a read-only ownership lookup.",
+    [...OBSERVE_BOTH, ...WORKSTREAM_ROUTE],
+    ["git_context_find_resources"],
+  ),
   capability("resource:binding", "Bind resources to the active workstream.", "Use after ownership is resolved and the run is bound.", MUTATION, ["git_context_bind_resources"]),
   capability("workstream:preferences", "Update an explicit workstream preference.", "Use only for an explicit star or preference change.", EXECUTE, ["git_context_set_workstream_star"]),
   capability("history:read", "Search and read exact older agent-stream history.", "Use when exact older discussion or evidence is required.", OBSERVE_BOTH, [
@@ -271,6 +290,7 @@ export class CapabilityCatalog {
       "context.retrieve": this.listForMode("context.retrieve", availableTools).map(({ id }) => id),
       "observe.locate": this.listForMode("observe.locate", availableTools).map(({ id }) => id),
       "observe.investigate": this.listForMode("observe.investigate", availableTools).map(({ id }) => id),
+      "workstream.route": this.listForMode("workstream.route", availableTools).map(({ id }) => id),
       resolve: this.listForMode("resolve", availableTools).map(({ id }) => id),
       execute: this.listForMode("execute", availableTools).map(({ id }) => id),
       validation: this.listForMode("validation", availableTools).map(({ id }) => id),
@@ -387,6 +407,7 @@ function validateDefinitionShape(definition: CapabilityDefinition): void {
     definition.allowedModes.some((mode) => (
       mode === "observe.locate"
       || mode === "observe.investigate"
+      || mode === "workstream.route"
       || mode === "validation"
     ))
     && allTools.some((tool) => !isObservationalTool(tool))

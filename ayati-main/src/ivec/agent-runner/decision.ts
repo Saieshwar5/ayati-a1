@@ -7,7 +7,14 @@ import type {
   ProviderEmptyResponseError,
   ProviderMalformedResponseError,
 } from "../../core/contracts/provider-errors.js";
-import type { LlmMessage, LlmToolCall, LlmToolSchema, LlmTurnInput, LlmTurnOutput } from "../../core/contracts/llm-protocol.js";
+import type {
+  LlmMessage,
+  LlmToolCall,
+  LlmToolChoice,
+  LlmToolSchema,
+  LlmTurnInput,
+  LlmTurnOutput,
+} from "../../core/contracts/llm-protocol.js";
 import {
   assertContextIsAdmissible,
   assertContextRecoveryIsNotExhausted,
@@ -68,6 +75,12 @@ import {
   looksLikeToolCallRecord,
   type AssistantTextToolCallViolation,
 } from "./assistant-text-tool-call.js";
+import {
+  describeDecisionToolChoice,
+  nativeToolRequiredAssistantViolation,
+  resolveDecisionToolChoicePolicy,
+} from "./decision-tool-choice-policy.js";
+import { validateJsonSchemaInput } from "./json-schema-input-validator.js";
 
 export type AgentDecisionStatus = "completed" | "failed";
 export type AgentActionMode = "single" | "sequential" | "parallel";
@@ -209,6 +222,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
   ];
 
   let rawText = "";
+  let preferredNativeToolName: string | undefined;
   for (let attempt = 0; attempt < MAX_DECISION_ATTEMPTS; attempt++) {
     const metricStage = attempt === 0 ? "agent_decision" : "agent_decision_repair";
     const startedAt = Date.now();
@@ -220,7 +234,17 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
       modeCapabilityOptions: input.modeCapabilityOptions ?? DEFAULT_MODE_CAPABILITY_OPTIONS,
       allowedModeDestinations: allowedModeDestinations(input.stateView),
     });
-    traceDecisionProviderRequest(input.provider, messages, attempt);
+    const toolChoicePolicy = resolveDecisionToolChoicePolicy({
+      stateView: input.stateView,
+      nativeTools: decisionTools,
+      ...(preferredNativeToolName ? { preferredNativeToolName } : {}),
+    });
+    traceDecisionProviderRequest(
+      input.provider,
+      messages,
+      attempt,
+      toolChoicePolicy.toolChoice,
+    );
     try {
       if (!input.provider.capabilities.nativeToolCalling) {
         throw new Error(`Provider ${input.provider.name} does not support native decision tools.`);
@@ -237,10 +261,14 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
           requiredFields: readSchemaRequiredFields(tool.inputSchema),
         })),
         nativeToolCount: decisionTools.length,
+        directAssistantResponseAllowed: toolChoicePolicy.directAssistantResponseAllowed,
+        nativeToolCallRequired: toolChoicePolicy.nativeToolCallRequired,
+        toolChoice: describeDecisionToolChoice(toolChoicePolicy.toolChoice),
       });
       turn = await generateTurnWithEmptyResponseRetry(input, {
         messages,
         decisionTools,
+        toolChoice: toolChoicePolicy.toolChoice,
         contextLimits,
         decisionAttempt: attempt + 1,
         requestStartedAt: startedAt,
@@ -278,14 +306,28 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
     });
 
     try {
-      const assistantTextToolCallViolation = turn.type === "assistant"
+      const detectedAssistantTextToolCall = turn.type === "assistant"
         ? detectAssistantTextToolCall(rawText, {
-            selectedTools: input.toolDefinitions.map((tool) => tool.name),
-            nativeTools: decisionTools,
-          })
+          selectedTools: input.toolDefinitions.map((tool) => tool.name),
+          nativeTools: decisionTools,
+        })
         : null;
+      const assistantTextToolCallViolation = detectedAssistantTextToolCall
+        ?? (
+          turn.type === "assistant" && toolChoicePolicy.nativeToolCallRequired
+            ? nativeToolRequiredAssistantViolation(decisionTools)
+            : null
+        );
       if (assistantTextToolCallViolation) {
-        const repair = createAssistantTextToolCallRepairSignal(assistantTextToolCallViolation, attempt + 1);
+        const repair = createAssistantTextToolCallRepairSignal(
+          assistantTextToolCallViolation,
+          attempt + 1,
+          toolChoicePolicy.nativeToolCallRequired,
+        );
+        preferredNativeToolName = assistantTextToolCallViolation.toolName
+          && decisionTools.some((tool) => tool.name === assistantTextToolCallViolation.toolName)
+          ? assistantTextToolCallViolation.toolName
+          : undefined;
         agentTrace(
           "agent_decision",
           `attempt=${attempt + 1} assistant_text_tool_call reason=${assistantTextToolCallViolation.reason}`,
@@ -465,6 +507,7 @@ async function generateTurnWithEmptyResponseRetry(
   request: {
     messages: LlmMessage[];
     decisionTools: LlmToolSchema[];
+    toolChoice: LlmToolChoice;
     contextLimits: ResolvedModelContextLimits;
     decisionAttempt: number;
     requestStartedAt: number;
@@ -473,7 +516,7 @@ async function generateTurnWithEmptyResponseRetry(
   const candidateTurnInput: LlmTurnInput = {
     messages: request.messages,
     tools: request.decisionTools,
-    toolChoice: "auto" as const,
+    toolChoice: request.toolChoice,
     parallelToolCalls: false,
   };
   const contextPreparationStarted = process.hrtime.bigint();
@@ -616,7 +659,7 @@ async function generateTurnWithEmptyResponseRetry(
           model: responseFailure.model,
           latencyMs: Date.now() - request.requestStartedAt,
           ...responseFailure.operatorDetails,
-          toolChoice: "auto",
+          toolChoice: describeDecisionToolChoice(request.toolChoice),
           nativeToolCount: request.decisionTools.length,
           requestMode: request.decisionTools.length > 0 ? "tools" : "text",
           willRetry,
@@ -630,7 +673,7 @@ async function generateTurnWithEmptyResponseRetry(
         model: responseFailure.model,
         latencyMs: Date.now() - request.requestStartedAt,
         ...responseFailure.operatorDetails,
-        toolChoice: "auto",
+        toolChoice: describeDecisionToolChoice(request.toolChoice),
         nativeToolCount: request.decisionTools.length,
         requestMode: request.decisionTools.length > 0 ? "tools" : "text",
         willRetry,
@@ -783,12 +826,26 @@ function repairPromptText(signal: RepairSignal): string {
 function createAssistantTextToolCallRepairSignal(
   violation: AssistantTextToolCallViolation,
   attempt: number,
+  nativeToolCallRequired = false,
 ): RepairSignal {
   return createRepairSignal("R_ASSISTANT_TEXT_TOOL_CALL", {
+    ...(nativeToolCallRequired
+      ? {
+          message:
+            "The current graph state requires one native tool call; assistant text cannot advance this decision.",
+          allowedNextActions: [
+            violation.toolName
+              ? `Call ${violation.toolName} through provider native tool calling.`
+              : "Call exactly one currently available native tool through provider tool calling.",
+            "Do not print tool names or arguments as assistant text.",
+          ],
+        }
+      : {}),
     blockedTargets: violation.toolName ? [violation.toolName] : [],
     operatorDetails: {
       attempt,
       reason: violation.reason,
+      nativeToolCallRequired,
       ...(violation.toolName ? { toolName: violation.toolName } : {}),
       inputKeys: violation.inputKeys,
       selectedTools: violation.selectedTools,
@@ -869,7 +926,9 @@ function extractMissingRequiredFields(error: string): string[] {
 }
 
 function extractInvalidFields(error: string): string[] {
-  const matches = [...error.matchAll(/field '([^']+)' expected type/g)];
+  const matches = [...error.matchAll(
+    /field '([^']+)' (?:expected type|is not allowed|does not match|must contain|must be)/g,
+  )];
   return matches.map((match) => match[1]).filter((field): field is string => Boolean(field));
 }
 
@@ -1027,64 +1086,10 @@ function validateInputAgainstSchema(
   input: Record<string, unknown>,
   schema: Record<string, unknown>,
 ): string | null {
-  const required = Array.isArray(schema["required"]) ? schema["required"].map(String) : [];
-  const properties = isPlainObject(schema["properties"])
-    ? schema["properties"] as Record<string, Record<string, unknown>>
-    : {};
-
-  for (const field of required) {
-    if (input[field] === undefined || input[field] === null) {
-      return `Invalid input for '${toolName}': missing required field '${field}'`;
-    }
-  }
-
-  for (const [field, value] of Object.entries(input)) {
-    const property = properties[field];
-    const expectedType = typeof property?.["type"] === "string" ? property["type"] : undefined;
-    if (expectedType && !matchesJsonSchemaType(value, expectedType)) {
-      return `Invalid input for '${toolName}': field '${field}' expected type '${expectedType}', got '${describeJsonType(value)}'`;
-    }
-    if (
-      typeof value === "string"
-      && typeof property?.["minLength"] === "number"
-      && value.length < property["minLength"]
-    ) {
-      return `Invalid input for '${toolName}': field '${field}' must contain at least ${property["minLength"]} characters`;
-    }
-    if (
-      typeof value === "string"
-      && typeof property?.["maxLength"] === "number"
-      && value.length > property["maxLength"]
-    ) {
-      return `Invalid input for '${toolName}': field '${field}' must contain at most ${property["maxLength"]} characters`;
-    }
-    if (
-      Array.isArray(value)
-      && typeof property?.["minItems"] === "number"
-      && value.length < property["minItems"]
-    ) {
-      return `Invalid input for '${toolName}': field '${field}' must contain at least ${property["minItems"]} items`;
-    }
-    if (
-      Array.isArray(value)
-      && typeof property?.["maxItems"] === "number"
-      && value.length > property["maxItems"]
-    ) {
-      return `Invalid input for '${toolName}': field '${field}' must contain at most ${property["maxItems"]} items`;
-    }
-  }
-
-  return null;
-}
-
-function matchesJsonSchemaType(value: unknown, expectedType: string): boolean {
-  if (expectedType === "array") return Array.isArray(value);
-  if (expectedType === "integer") return typeof value === "number" && Number.isInteger(value);
-  if (expectedType === "number") return typeof value === "number" && Number.isFinite(value);
-  if (expectedType === "object") return isPlainObject(value);
-  if (expectedType === "string") return typeof value === "string";
-  if (expectedType === "boolean") return typeof value === "boolean";
-  return true;
+  const error = validateJsonSchemaInput(input, schema, {
+    enforceAdditionalProperties: isNativeControlToolName(toolName),
+  });
+  return error ? `Invalid input for '${toolName}': ${error}` : null;
 }
 
 function describeJsonType(value: unknown): string {
@@ -1109,10 +1114,11 @@ function traceDecisionProviderRequest(
   provider: LlmProvider,
   messages: LlmMessage[],
   attempt: number,
+  toolChoice: LlmToolChoice,
 ): void {
   agentTrace(
     "agent_decision",
-    `attempt=${attempt + 1} provider_request provider=${provider.name} version=${provider.version} nativeDecisionTools=auto messages=${messages.length}`,
+    `attempt=${attempt + 1} provider_request provider=${provider.name} version=${provider.version} nativeDecisionTools=${describeDecisionToolChoice(toolChoice)} messages=${messages.length}`,
   );
   if (isAgentTracePromptEnabled()) {
     agentTrace("agent_decision", `attempt=${attempt + 1} prompt=${tracePreview(messages)}`);
@@ -1254,12 +1260,21 @@ function allowedModeDestinations(stateView: AgentStateView): VirtualModeTransiti
       destination === "context.retrieve"
       || destination === "observe.locate"
       || destination === "observe.investigate"
+      || destination === "workstream.route"
       || destination === "resolve"
       || destination === "execute"
       || destination === "validation"
     ));
   return allowed
-    ?? ["context.retrieve", "observe.locate", "observe.investigate", "resolve", "execute", "validation"];
+    ?? [
+      "context.retrieve",
+      "observe.locate",
+      "observe.investigate",
+      "workstream.route",
+      "resolve",
+      "execute",
+      "validation",
+    ];
 }
 
 function buildNativeDecisionTools(

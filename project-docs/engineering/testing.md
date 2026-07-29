@@ -48,8 +48,11 @@ Changes should prove the relevant invariants:
     continuation.
 13. Context Engine is the serialization owner. Step persistence returns the
     updated authoritative projection without a harness-side reread or cache.
-14. Workstream and resource-owner discovery run as read-only primary-loop
-    observations. They produce exact current-run routing references but cannot
+14. An unbound mutation enters the read-only `workstream.route` mode before
+    resolve. Its surface contains only workstream search/read and
+    resource-owner lookup. Direct `ENTRY -> resolve` is unavailable, and
+    resolve controls remain absent until one routing call succeeds in the
+    current run. Those calls produce exact routing references but cannot
     satisfy task-completion evidence.
 15. The deterministic resolve gate makes zero model calls, accepts one typed
     continuation, amendment, activation, resumption, creation, defer-and-switch,
@@ -84,8 +87,9 @@ Changes should prove the relevant invariants:
     authority, failures, WorkState, or completion evidence.
 21. Every run begins at `ENTRY`; virtual modes never survive finalization,
     interruption, restart, or the next accepted input.
-22. Observation modes expose only read-only effects, mode changes replace the
-    complete tool surface, and execute cannot re-enter resolution.
+22. Observation modes and `workstream.route` expose only read-only effects,
+    mode changes replace the complete tool surface, and execute cannot
+    re-enter routing or resolution.
 23. Passed validation unlocks a direct final response. Failed checks preserve
     the graph for repair, while `decision_stop` is reserved for supported
     needs-input, blocked, or failed outcomes.
@@ -95,18 +99,23 @@ Changes should prove the relevant invariants:
     Passed validation resolves an earlier validation-scoped terminal repair
     without clearing real action, binding, or permission failures unless an
     exact passed `tool.call_denied` check accounts for its own permission call.
-24. Host filesystem fields reject relative paths and file URIs. Resource child
-    fields stay explicitly relative, pair with a resource id, and reject
-    containment escapes. The five core filesystem observation tools accept
-    explicit machine paths in bound and unbound runs when read scope is
-    `machine`; omitted search roots remain workspace-local, host permission
-    failures return no content, and non-regular devices are not normal files.
+24. Read-only host references and existing mutation scopes reject relative
+    paths and file URIs. Resource children remain explicitly relative to a
+    resource id. New-workstream targets instead require `{ kind,
+    relativePath }` beneath the configured workspace. Direct filesystem
+    mutation tools accept absolute workspace paths or workspace-relative
+    paths, which the executor resolves once before all normal gates. The five
+    core filesystem observation tools accept explicit machine paths in bound
+    and unbound runs when read scope is `machine`; omitted search roots remain
+    workspace-local, host permission failures return no content, and
+    non-regular devices are not normal files.
 25. Directory mutation authority includes canonical descendants but not
     siblings or symbolic-link escapes. With mutation scope `workspace`, every
     direct file mutation, move endpoint, process/Python declared effect, and
     mutable database destination is rejected outside the configured workspace
-    before resource lookup, preparation, or execution. Read-only references
-    and `allowExternalPath` never become mutation authority.
+    before resource lookup, preparation, or execution. Relative traversal and
+    symbolic-link escapes fail at the same boundary. Read-only references and
+    `allowExternalPath` never become mutation authority.
 26. Explicit create-new ownership survives a focused clarification; ambiguity
     without a binding does not consume the single binding attempt.
 27. File-content validation rejects a silently substituted source.
@@ -145,6 +154,9 @@ Changes should prove the relevant invariants:
     signature of a currently exposed native control is never accepted as a
     direct reply or executed automatically. The harness requests one native
     tool-call repair, while unrelated JSON assistant replies remain valid.
+    Provider tool choice is `auto` only when `normal_reply` is graph-legal;
+    active graph states require one native tool call, and a known repair target
+    may pin only a native tool that remains exposed.
 34. A failed permission call produces `tool.call_denied` only with exact call
     identity, stable denial code, and deterministic evidence that the requested
     operation did not occur. Exact denial validation resolves only the matching
@@ -190,6 +202,23 @@ Changes should prove the relevant invariants:
     complete history stay outside the prompt. WorkState does not repeat
     workstream or request identity. Context-pressure projection preserves the
     bound-workstream lane exactly.
+43. Every primary-model prompt contains the exact configured absolute
+    `context.run.workspaceRoot` once. Chat and actionable system-event runs use
+    the same runtime value; prompt compaction and post-binding refresh preserve
+    it. The model treats workspace aliases and relative output destinations as
+    this location without rediscovery or repeating the root in a creation
+    call. Creation declares exact typed workspace-relative targets; the runtime
+    derives canonical absolute paths, current-run routing evidence, and exact
+    resource identities. Normal binding, resource, containment, and
+    verification gates remain required.
+44. `decision_resolve_create` exposes no creation `kind`, absolute mutation
+    scope, resource id, or evidence field. Its native schema deeply validates
+    every workspace target and the complete initial-request contract before
+    dispatch. Invalid nested fields receive one bounded repair and never reach
+    the deterministic graph. `decision_resolve_activate` exposes only the
+    observed workstream, request lifecycle choice, and exact routed resource
+    IDs. The runtime derives paths, mutable ownership, mutation scope,
+    repository HEAD, and evidence, and rejects stale or mismatched state.
 
 ## Prompt and Harness Coverage
 
@@ -242,10 +271,11 @@ Below the forced barrier foreground work continues; at the barrier the runtime
 may wait once for safe context admission.
 
 Binding tests must distinguish routing evidence from task evidence, verify
-that old-mode tools disappear, prove one fresh primary decision follows a
-successful binding, and assert the expected primary-model request count. No
-resolver pressure profile, private history, private semantic usage, or second
-context-preparation lane exists.
+that old-mode tools disappear, prove resolve controls are hidden before a
+successful route observation and visible afterward, prove one fresh primary
+decision follows a successful binding, and assert the expected primary-model
+request count. No resolver pressure profile, private history, private semantic
+usage, or second context-preparation lane exists.
 
 ## Migration and Reset Testing
 

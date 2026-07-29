@@ -71,6 +71,7 @@ export interface CreateChatTurnRuntimeOptions {
   onReply?: (clientId: string, data: unknown) => void;
   clientSupportsReplyStreaming?: (clientId: string) => boolean;
   provider?: LlmProvider;
+  workspaceRoot: string;
   staticContext?: StaticContext;
   toolExecutor?: ToolExecutor;
   capabilitySurfaceManager?: CapabilitySurfaceManager;
@@ -129,6 +130,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   private readonly onReply?: (clientId: string, data: unknown) => void;
   private readonly clientSupportsReplyStreaming: (clientId: string) => boolean;
   private readonly provider?: LlmProvider;
+  private readonly workspaceRoot: string;
   private readonly staticContext?: StaticContext;
   private readonly toolExecutor?: ToolExecutor;
   private readonly capabilitySurfaceManager?: CapabilitySurfaceManager;
@@ -150,6 +152,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     this.onReply = options.onReply;
     this.clientSupportsReplyStreaming = options.clientSupportsReplyStreaming ?? (() => false);
     this.provider = options.provider;
+    this.workspaceRoot = options.workspaceRoot;
     this.staticContext = options.staticContext;
     this.toolExecutor = options.toolExecutor;
     this.capabilitySurfaceManager = options.capabilitySurfaceManager;
@@ -243,6 +246,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         }) ?? [];
         let result = await agentLoop({
           provider: this.provider,
+          workspaceRoot: this.workspaceRoot,
           toolExecutor: this.toolExecutor,
           capabilitySurfaceManager: this.capabilitySurfaceManager,
           hotContextRuntime: this.hotContextRuntime,

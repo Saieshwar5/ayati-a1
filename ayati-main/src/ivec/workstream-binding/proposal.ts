@@ -2,8 +2,6 @@ import type {
   WorkstreamBindingProposal,
   WorkstreamRequestDecision,
   WorkstreamRequestDefinition,
-  WorkstreamResourceBindingProposal,
-  WorkstreamResourceRole,
 } from "./contracts.js";
 
 const WORKSTREAM_ID_PATTERN = "^W-[0-9]{8}-[0-9]{4}$";
@@ -24,18 +22,16 @@ function normalizeActivateProposal(
   record: Record<string, unknown>,
 ): WorkstreamBindingProposal | undefined {
   const workstreamId = stringValue(record["workstreamId"]);
-  const expectedWorkstreamHead = stringValue(record["expectedWorkstreamHead"]);
   const requestDecision = normalizeRequestDecision(record["requestDecision"]);
-  const evidence = stringArray(record["evidence"]);
-  if (!workstreamId || !expectedWorkstreamHead || !requestDecision || evidence.length === 0) {
+  const resourceIds = resourceIdArray(record["resourceIds"]);
+  if (!workstreamId || !requestDecision || !resourceIds) {
     return undefined;
   }
   return {
     kind: "activate",
     workstreamId,
-    expectedWorkstreamHead,
     requestDecision,
-    evidence,
+    resourceIds,
   };
 }
 
@@ -45,9 +41,7 @@ function normalizeCreateProposal(
   const title = stringValue(record["title"]);
   const objective = stringValue(record["objective"]);
   const initialRequest = normalizeRequestDefinition(record["initialRequest"]);
-  const resources = normalizeResourceBindings(record["resources"]);
-  const evidence = stringArray(record["evidence"]);
-  if (!title || !objective || !initialRequest || resources === undefined || evidence.length === 0) {
+  if (!title || !objective || !initialRequest) {
     return undefined;
   }
   return {
@@ -55,8 +49,6 @@ function normalizeCreateProposal(
     title,
     objective,
     initialRequest,
-    resources,
-    evidence,
   };
 }
 
@@ -150,33 +142,9 @@ function normalizeRequestDefinition(value: unknown): WorkstreamRequestDefinition
     : undefined;
 }
 
-function normalizeResourceBindings(
-  value: unknown,
-): WorkstreamResourceBindingProposal[] | undefined {
-  if (value === undefined) return [];
-  if (!Array.isArray(value) || value.length > 8) return undefined;
-  const resources: WorkstreamResourceBindingProposal[] = [];
-  for (const item of value) {
-    const record = asRecord(item);
-    const resourceId = stringValue(record?.["resourceId"]);
-    const role = resourceRole(record?.["role"]);
-    const access = record?.["access"];
-    if (!resourceId || !role || (access !== "read" && access !== "mutate")) return undefined;
-    resources.push({
-      resourceId,
-      role,
-      access,
-      ...(record?.["primary"] === true ? { primary: true } : {}),
-    });
-  }
-  return resources;
-}
-
 export function workstreamActivateProposalSchema(): Record<string, unknown> {
   return objectSchema({
-    kind: { const: "activate" },
     workstreamId: { type: "string", pattern: WORKSTREAM_ID_PATTERN },
-    expectedWorkstreamHead: { type: "string", minLength: 1, maxLength: 200 },
     requestDecision: {
       description:
         "Choose one explicit lifecycle operation. Continue only the same contract; amend only the same independently acceptable outcome; create a new request for a separate outcome; defer instead of falsely blocking unfinished work.",
@@ -191,23 +159,26 @@ export function workstreamActivateProposalSchema(): Record<string, unknown> {
         deferAndActivateDecisionSchema(),
       ],
     },
-    evidence: evidenceSchema(),
-  }, ["kind", "workstreamId", "expectedWorkstreamHead", "requestDecision", "evidence"]);
+    resourceIds: {
+      type: "array",
+      minItems: 1,
+      maxItems: 8,
+      items: {
+        type: "string",
+        pattern: RESOURCE_ID_PATTERN,
+      },
+      description:
+        "Exact existing resource IDs returned by current-run routing. The runtime derives paths, ownership, mutation scope, repository HEAD, and evidence.",
+    },
+  }, ["workstreamId", "requestDecision", "resourceIds"]);
 }
 
 export function workstreamCreateProposalSchema(): Record<string, unknown> {
   return objectSchema({
-    kind: { const: "create" },
     title: { type: "string", minLength: 1, maxLength: 120 },
     objective: { type: "string", minLength: 1, maxLength: 2000 },
     initialRequest: requestDefinitionSchema(),
-    resources: {
-      type: "array",
-      maxItems: 8,
-      items: resourceBindingSchema(),
-    },
-    evidence: evidenceSchema(),
-  }, ["kind", "title", "objective", "initialRequest", "resources", "evidence"]);
+  }, ["title", "objective", "initialRequest"]);
 }
 
 function existingRequestDecisionSchema(
@@ -341,26 +312,6 @@ function requestDefinitionSchema(): Record<string, unknown> {
   }, ["title", "request", "acceptance", "constraints"]);
 }
 
-function resourceBindingSchema(): Record<string, unknown> {
-  return objectSchema({
-    resourceId: { type: "string", pattern: RESOURCE_ID_PATTERN },
-    role: {
-      enum: ["input", "reference", "primary", "supporting", "output", "deliverable", "evidence", "asset"],
-    },
-    access: { enum: ["read", "mutate"] },
-    primary: { type: "boolean" },
-  }, ["resourceId", "role", "access"]);
-}
-
-function evidenceSchema(): Record<string, unknown> {
-  return {
-    type: "array",
-    minItems: 1,
-    maxItems: 12,
-    items: { type: "string", minLength: 1, maxLength: 500 },
-  };
-}
-
 function boundedStringArray(maxItems: number): Record<string, unknown> {
   return {
     type: "array",
@@ -404,17 +355,11 @@ function stringArray(value: unknown): string[] {
     : [];
 }
 
-function resourceRole(value: unknown): WorkstreamResourceRole | undefined {
-  return [
-    "input",
-    "reference",
-    "primary",
-    "supporting",
-    "output",
-    "deliverable",
-    "evidence",
-    "asset",
-  ].includes(String(value))
-    ? value as WorkstreamResourceRole
+function resourceIdArray(value: unknown): string[] | undefined {
+  const values = stringArray(value);
+  return values.length > 0
+    && values.length <= 8
+    && values.every((item) => /^RES-[0-9A-F]{24}$/.test(item))
+    ? values
     : undefined;
 }

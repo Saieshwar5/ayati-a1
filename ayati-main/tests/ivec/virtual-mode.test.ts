@@ -19,6 +19,7 @@ const TARGETS: VirtualModeTransitionTarget[] = [
   "context.retrieve",
   "observe.locate",
   "observe.investigate",
+  "workstream.route",
   "resolve",
   "execute",
   "validation",
@@ -31,13 +32,17 @@ describe("virtual mode graph", () => {
       ["context.retrieve", mode("context.retrieve")],
       ["observe.locate", mode("observe.locate")],
       ["observe.investigate", mode("observe.investigate")],
+      ["workstream.route", mode("workstream.route")],
       ["execute", mode("execute")],
       ["validation", mode("validation")],
     ];
 
     for (const [source, state] of states) {
       for (const target of TARGETS) {
-        expect(isVirtualModeTransitionAllowed(state, target, { workstreamBound: false }))
+        expect(isVirtualModeTransitionAllowed(state, target, {
+          workstreamBound: false,
+          routingObserved: true,
+        }))
           .toBe(VIRTUAL_MODE_GRAPH[source].includes(target));
       }
     }
@@ -72,13 +77,26 @@ describe("virtual mode graph", () => {
       revision: 0,
       capabilities: [],
       targets: [],
-      allowedNext: ["normal_reply", "context.retrieve", "observe.locate", "observe.investigate", "resolve"],
+      allowedNext: [
+        "normal_reply",
+        "context.retrieve",
+        "observe.locate",
+        "observe.investigate",
+        "workstream.route",
+      ],
     });
 
     expect(buildVirtualModeCard(mode("observe.investigate"), { workstreamBound: false }))
       .toMatchObject({
         active: "observe.investigate",
-        allowedNext: ["context.retrieve", "observe.locate", "observe.investigate", "resolve", "validation", "stop"],
+        allowedNext: [
+          "context.retrieve",
+          "observe.locate",
+          "observe.investigate",
+          "workstream.route",
+          "validation",
+          "stop",
+        ],
       });
 
     expect(buildVirtualModeCard(createEntryVirtualModeState(), {
@@ -88,7 +106,30 @@ describe("virtual mode graph", () => {
       "normal_reply",
       "observe.locate",
       "observe.investigate",
+      "workstream.route",
+    ]);
+  });
+
+  it("offers resolve from workstream routing only after current-run routing evidence exists", () => {
+    const routing = mode("workstream.route");
+
+    expect(buildVirtualModeCard(routing, {
+      workstreamBound: false,
+      routingObserved: false,
+    }).allowedNext).toEqual([
+      "context.retrieve",
+      "workstream.route",
+      "stop",
+    ]);
+
+    expect(buildVirtualModeCard(routing, {
+      workstreamBound: false,
+      routingObserved: true,
+    }).allowedNext).toEqual([
+      "context.retrieve",
+      "workstream.route",
       "resolve",
+      "stop",
     ]);
   });
 
@@ -206,6 +247,8 @@ function mode(active: VirtualModeName): VirtualModeState {
       ? ["file:write"]
       : active === "context.retrieve"
         ? ["context:load"]
+        : active === "workstream.route"
+          ? ["workstream:search"]
         : ["file:read"],
     targets: active === "context.retrieve" ? [] : ["known.txt"],
     enteredAtIteration: 1,

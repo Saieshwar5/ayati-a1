@@ -256,6 +256,7 @@ export async function main(): Promise<void> {
     },
     clientSupportsReplyStreaming: (clientId) => wsServer.clientSupportsReplyStreaming(clientId),
     provider,
+    workspaceRoot: runtimeConfig.workspace.root,
     staticContext,
     toolExecutor,
     capabilitySurfaceManager: skills.capabilitySurfaceManager,
@@ -277,6 +278,7 @@ export async function main(): Promise<void> {
       recordOutboundTransport(feedbackLedger, clientId, data, runByReplyTurn, elapsedMs(started));
     },
     provider,
+    workspaceRoot: runtimeConfig.workspace.root,
     staticContext,
     toolExecutor,
     capabilitySurfaceManager: skills.capabilitySurfaceManager,

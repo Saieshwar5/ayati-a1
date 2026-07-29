@@ -1,12 +1,10 @@
 import type {
   ContextEngineService,
-  ResourcePublicLocator,
   StreamMessage,
   WorkstreamCandidate,
   WorkstreamRequestRoute,
 } from "ayati-context-engine";
 import { ContextEngineServiceError } from "ayati-context-engine";
-import { isAbsolute } from "node:path";
 import { buildContextEngineProjection } from "../../context-engine/index.js";
 import type {
   DeterministicWorkstreamBindingRequest,
@@ -81,6 +79,14 @@ async function activateExistingWorkstream(
     return failed("WORKSTREAM_BINDING_PROPOSAL_INVALID", "Expected an activation proposal.", false);
   }
   const proposal = request.proposal;
+  const expectedWorkstreamHead = request.expectedWorkstreamHead?.trim();
+  if (!expectedWorkstreamHead) {
+    return failed(
+      "WORKSTREAM_BINDING_HEAD_REQUIRED",
+      "Existing-workstream activation requires a runtime-derived observed HEAD.",
+      false,
+    );
+  }
   const discovered = await options.service.findWorkstreams({
     query: proposal.workstreamId,
     streamId: options.streamId,
@@ -98,19 +104,25 @@ async function activateExistingWorkstream(
       false,
     );
   }
-  if (candidate.head !== proposal.expectedWorkstreamHead) {
+  if (candidate.head !== expectedWorkstreamHead) {
     return failed(
       "WORKSTREAM_BINDING_HEAD_MISMATCH",
       "The proposed workstream changed after it was observed. Inspect it again before binding.",
       true,
     );
   }
+  const resourceFailure = await validateActivationResources(
+    options.service,
+    proposal.workstreamId,
+    proposal.resourceIds,
+  );
+  if (resourceFailure) return resourceFailure;
 
   const selected = await options.service.activateWorkstreamForRun({
     requestId: `${options.runId}:deterministic-bind`,
     runId: options.runId,
     workstreamId: proposal.workstreamId,
-    expectedWorkstreamHead: proposal.expectedWorkstreamHead,
+    expectedWorkstreamHead,
     route: requestRoute(proposal.requestDecision),
     at: (options.now ?? (() => new Date()))().toISOString(),
   });
@@ -135,6 +147,64 @@ async function activateExistingWorkstream(
   };
 }
 
+async function validateActivationResources(
+  service: ContextEngineService,
+  workstreamId: string,
+  resourceIds: string[],
+): Promise<
+  Extract<DeterministicWorkstreamBindingOutcome, { status: "failed" }> | undefined
+> {
+  if (resourceIds.length === 0) {
+    return failed(
+      "WORKSTREAM_BINDING_TARGET_REQUIRED",
+      "Existing-workstream activation requires at least one exact routed resource.",
+      false,
+    );
+  }
+  const invalid = resourceIds.filter(
+    (resourceId) => !/^RES-[0-9A-F]{24}$/.test(resourceId),
+  );
+  if (invalid.length > 0) {
+    return failed(
+      "WORKSTREAM_BINDING_RESOURCE_INVALID",
+      `Activation resources must use exact resource IDs: ${invalid.join(", ")}.`,
+      false,
+    );
+  }
+  const current = await service.getWorkstream({ workstreamId });
+  const bindings = current.context?.resources ?? [];
+  for (const resourceId of resourceIds) {
+    const binding = bindings.find(
+      (candidate) => candidate.resource.resourceId === resourceId,
+    );
+    if (!binding) {
+      return failed(
+        "WORKSTREAM_BINDING_RESOURCE_OWNER_MISMATCH",
+        `The selected resource is not bound to ${workstreamId}: ${resourceId}.`,
+        false,
+      );
+    }
+    if (binding.access !== "mutate") {
+      return failed(
+        "WORKSTREAM_BINDING_RESOURCE_NOT_MUTABLE",
+        `The selected resource is bound read-only: ${resourceId}.`,
+        false,
+      );
+    }
+    if (
+      binding.resource.availability === "missing"
+      || binding.resource.availability === "deleted"
+    ) {
+      return failed(
+        "WORKSTREAM_BINDING_RESOURCE_MISSING",
+        `The selected mutation resource is unavailable: ${resourceId}.`,
+        false,
+      );
+    }
+  }
+  return undefined;
+}
+
 async function createWorkstream(
   options: WorkstreamBindingCoordinatorOptions,
   request: DeterministicWorkstreamBindingRequest,
@@ -143,11 +213,18 @@ async function createWorkstream(
   if (request.proposal.kind !== "create") {
     return failed("WORKSTREAM_BINDING_PROPOSAL_INVALID", "Expected a creation proposal.", false);
   }
+  if (request.routingEvidence.length === 0) {
+    return failed(
+      "WORKSTREAM_BINDING_ROUTING_EVIDENCE_REQUIRED",
+      "New workstream creation requires a successful current-run routing observation.",
+      false,
+    );
+  }
   const strong = createNewSelected
     ? []
     : (await options.service.findWorkstreams({
         query: options.currentInput,
-        paths: request.mutationScopes.filter(isAbsolute),
+        paths: request.workspaceTargets.map((target) => target.absolutePath),
         streamId: options.streamId,
         currentText: options.currentInput,
         includeArchived: false,
@@ -205,47 +282,21 @@ async function resolveCreationResources(
   if (request.proposal.kind !== "create") {
     return failed("WORKSTREAM_BINDING_PROPOSAL_INVALID", "Expected creation resources.", false);
   }
-  const bindings = new Map<string, WorkstreamResourceBindingProposal>();
-  for (const resource of request.proposal.resources) bindings.set(resource.resourceId, resource);
-
-  const resourceIds = request.mutationScopes
-    .map((target) => target.trim())
-    .filter((target) => /^RES-[0-9A-F]{24}$/.test(target));
-  if (resourceIds.length > 0) {
-    const found = await options.service.findResources({
-      resourceIds,
-      includeMissing: true,
-      limit: resourceIds.length,
-    });
-    const resources = new Map(found.resources.map((entry) => [
-      entry.resource.resourceId,
-      entry.resource,
-    ]));
-    for (const resourceId of resourceIds) {
-      const resource = resources.get(resourceId);
-      if (!resource || resource.availability === "missing" || resource.availability === "deleted") {
-        return failed(
-          "WORKSTREAM_BINDING_RESOURCE_MISSING",
-          `The requested mutation resource is unavailable: ${resourceId}.`,
-          false,
-        );
-      }
-      const prior = bindings.get(resourceId);
-      bindings.set(resourceId, {
-        resourceId,
-        role: prior?.role ?? "primary",
-        access: "mutate",
-        primary: prior?.primary ?? bindings.size === 0,
-      });
-    }
+  if (request.workspaceTargets.length === 0) {
+    return failed(
+      "WORKSTREAM_BINDING_TARGET_REQUIRED",
+      "New workstream creation requires at least one validated workspace target.",
+      false,
+    );
   }
-
-  const locators = request.mutationScopes.flatMap(targetLocator).slice(0, 8);
-  for (const [index, locator] of locators.entries()) {
+  const bindings = new Map<string, WorkstreamResourceBindingProposal>();
+  for (const [index, target] of request.workspaceTargets.entries()) {
+    const locator = { kind: "filesystem" as const, path: target.absolutePath };
     const inspected = await options.service.inspectResourceForRun({
       requestId: `${options.runId}:deterministic-bind:inspect:${index + 1}`,
       runId: options.runId,
       locator,
+      kind: target.kind,
       origin: "user_reference",
       at,
     });
@@ -253,6 +304,19 @@ async function resolveCreationResources(
       return failed(
         "WORKSTREAM_BINDING_RESOURCE_NOT_MUTABLE",
         `The requested resource cannot be bound for mutation: ${displayLocator(locator)}.`,
+        false,
+      );
+    }
+    if (
+      inspected.resource.version.exists
+      && !resourceVersionMatchesTarget(
+        inspected.resource.version.kind,
+        target.kind,
+      )
+    ) {
+      return failed(
+        "WORKSTREAM_BINDING_RESOURCE_KIND_MISMATCH",
+        `The existing workspace target is not a ${target.kind}: ${target.relativePath}.`,
         false,
       );
     }
@@ -295,24 +359,17 @@ function requestRoute(
   return structuredClone(decision);
 }
 
-function targetLocator(target: string): ResourcePublicLocator[] {
-  const normalized = target.trim();
-  if (isAbsolute(normalized)) return [{ kind: "filesystem", path: normalized }];
-  if (/^https?:\/\//i.test(normalized)) {
-    try {
-      return [{ kind: "url", url: new URL(normalized).toString() }];
-    } catch {
-      return [];
-    }
-  }
-  return [];
+function displayLocator(locator: { kind: "filesystem"; path: string }): string {
+  return locator.path;
 }
 
-function displayLocator(locator: ResourcePublicLocator): string {
-  if (locator.kind === "filesystem") return locator.path;
-  if (locator.kind === "url") return locator.url;
-  if (locator.kind === "managed_blob") return locator.resourceId;
-  return locator.uri ?? `${locator.provider}:${locator.externalId}`;
+function resourceVersionMatchesTarget(
+  actual: "file" | "directory" | "git" | "url" | "external" | "unversioned",
+  expected: "file" | "directory",
+): boolean {
+  return expected === "directory"
+    ? actual === "directory" || actual === "git"
+    : actual === "file";
 }
 
 function isStrongCandidate(candidate: WorkstreamCandidate): boolean {

@@ -37,13 +37,20 @@ context SQLite and context-only Git writes. The daemon depends on its typed
    observation mode. The runtime does not classify or reject an `ENTRY` reply
    from request wording alone; prompt policy tells the model to enter the graph
    whenever a response depends on unperformed observation or action.
-   Workstream and resource-owner discovery are read-only observations in that
-   same loop. A
-   transition to `resolve` requires mutation intent, a binding-required
-   capability, evidence-backed mutation scopes, and one typed binding proposal. The
-   deterministic gate makes no model call, enters `execute` mechanically after
-   binding, and mounts authoritative context before a fresh decision. Mode
-   changes replace the exact capability surface.
+   General discovery remains in the read-only observation modes. An unbound
+   mutation instead enters the dedicated read-only `workstream.route` mode,
+   whose surface contains only workstream search/read and resource-owner
+   lookup. Direct `ENTRY -> resolve` is unavailable, and resolve controls
+   appear only after one of those routing tools succeeds in the current run.
+   A transition to `resolve` then requires mutation intent, a binding-required
+   capability, that current-run routing observation, and one typed binding
+   proposal. Existing activation names exact routed resource IDs; the runtime
+   derives their paths, ownership, mutation scope, repository HEAD, and
+   evidence. Creation carries typed workspace-relative targets whose absolute
+   paths, evidence, and resource identities are also runtime-derived. The
+   deterministic gate makes no model call, enters `execute` mechanically
+   after binding, and mounts authoritative context before a fresh decision.
+   Mode changes replace the exact capability surface.
 6. The shared action executor runs calls and deterministically verifies each
    result. `recordRunStep` persists each ordered step, its calls, and
    verification without revising WorkState. The model creates a sparse

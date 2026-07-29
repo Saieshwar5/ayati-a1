@@ -77,6 +77,7 @@ export const NATIVE_CONTROL_TOOL_NAMES = [
   "decision_enter_context_retrieve",
   "decision_enter_observe_locate",
   "decision_enter_observe_investigate",
+  "decision_enter_workstream_route",
   "decision_resolve_activate",
   "decision_resolve_create",
   "decision_enter_execute",

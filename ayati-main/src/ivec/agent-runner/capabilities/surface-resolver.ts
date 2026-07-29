@@ -220,6 +220,7 @@ function isToolEligibleForMode(
     mode === "context.retrieve"
     || mode === "observe.locate"
     || mode === "observe.investigate"
+    || mode === "workstream.route"
     || mode === "validation"
   ) {
     return isObservationalTool(toolName);

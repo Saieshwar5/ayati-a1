@@ -8,6 +8,10 @@ import type { LoopState } from "../../src/ivec/types.js";
 import { contextEngineFixture } from "../fixtures/agent-context.js";
 
 const ROUTING_REF = "run:RUN-1:step:1:call:find-owner";
+const RESOURCE_REF = "run:RUN-1:step:2:call:find-resource";
+const RESOURCE_ID = "RES-0123456789ABCDEF01234567";
+const RESOURCE_PATH = "/tmp/ayati-workspace/balcony-herbs.md";
+const WORKSPACE_ROOT = "/tmp/ayati-workspace";
 
 describe("deterministic resolve gate", () => {
   it("uses taxonomy metadata to identify binding-required capabilities", () => {
@@ -20,6 +24,7 @@ describe("deterministic resolve gate", () => {
     const result = await dispatchDeterministicResolveGate({
       state: state("Inspect notes.md; do not modify anything."),
       request: resolveRequest(),
+      workspaceRoot: WORKSPACE_ROOT,
       toolNames: ["patch_files"],
       coordinator,
       alreadyAttempted: false,
@@ -44,10 +49,8 @@ describe("deterministic resolve gate", () => {
     };
     const inside = await dispatchDeterministicResolveGate({
       state: state(message, true),
-      request: {
-        ...resolveRequest(),
-        mutationScopes: [{ kind: "filesystem", path: "/tmp/site/index.html" }],
-      },
+      request: resolveRequest("index.html"),
+      workspaceRoot: "/tmp/site",
       toolNames: ["write_files"],
       coordinator,
       alreadyAttempted: false,
@@ -58,10 +61,8 @@ describe("deterministic resolve gate", () => {
     coordinator.bind.mockClear();
     const outside = await dispatchDeterministicResolveGate({
       state: state(message, true),
-      request: {
-        ...resolveRequest(),
-        mutationScopes: [{ kind: "filesystem", path: "/tmp/other/index.html" }],
-      },
+      request: resolveRequest("index.html"),
+      workspaceRoot: "/tmp/other",
       toolNames: ["write_files"],
       coordinator,
       alreadyAttempted: false,
@@ -76,11 +77,12 @@ describe("deterministic resolve gate", () => {
     expect(coordinator.bind).not.toHaveBeenCalled();
   });
 
-  it("requires current-run routing evidence and rejects invented evidence references", async () => {
+  it("requires current-run routing evidence and injects exact evidence for creation", async () => {
     const coordinator = { bind: vi.fn() };
     const missing = await dispatchDeterministicResolveGate({
       state: state("Create notes.md."),
       request: resolveRequest(),
+      workspaceRoot: WORKSPACE_ROOT,
       toolNames: ["write_files"],
       coordinator,
       alreadyAttempted: false,
@@ -90,28 +92,27 @@ describe("deterministic resolve gate", () => {
       repair: { code: "MODE_BINDING_PROPOSAL_UNVERIFIED" },
     });
 
-    const observed = state("Create notes.md.", true);
-    const invented = await dispatchDeterministicResolveGate({
-      state: observed,
-      request: {
-        ...resolveRequest(),
-        binding: {
-          ...createProposal(),
-          evidence: ["invented:evidence"],
-        },
-      },
+    const observedCoordinator = {
+      bind: vi.fn(async () => ({
+        status: "failed" as const,
+        code: "FIXTURE_STOP",
+        message: "Reached the coordinator.",
+        retryable: false,
+      })),
+    };
+    const observed = await dispatchDeterministicResolveGate({
+      state: state("Create notes.md.", true),
+      request: resolveRequest(),
+      workspaceRoot: WORKSPACE_ROOT,
       toolNames: ["write_files"],
-      coordinator,
+      coordinator: observedCoordinator,
       alreadyAttempted: false,
     });
-    expect(invented).toMatchObject({
-      kind: "rejected",
-      repair: {
-        code: "MODE_BINDING_PROPOSAL_UNVERIFIED",
-        blockedTargets: ["invented:evidence"],
-      },
-    });
-    expect(coordinator.bind).not.toHaveBeenCalled();
+    expect(observed).toMatchObject({ kind: "failed", attempted: true });
+    expect(observedCoordinator.bind).toHaveBeenCalledWith(expect.objectContaining({
+      routingEvidence: [ROUTING_REF],
+    }));
+    expect(createProposal()).not.toHaveProperty("evidence");
   });
 
   it("passes one verified proposal to the coordinator and returns its bound context", async () => {
@@ -141,6 +142,7 @@ describe("deterministic resolve gate", () => {
     const result = await dispatchDeterministicResolveGate({
       state: current,
       request: resolveRequest(),
+      workspaceRoot: WORKSPACE_ROOT,
       toolNames: ["write_files"],
       coordinator,
       alreadyAttempted: false,
@@ -158,8 +160,12 @@ describe("deterministic resolve gate", () => {
     expect(coordinator.bind).toHaveBeenCalledOnce();
     expect(coordinator.bind).toHaveBeenCalledWith(expect.objectContaining({
       purpose: "Bind the requested output.",
-      referenceTargets: [],
-      mutationScopes: ["notes.md"],
+      workspaceTargets: [{
+        kind: "file",
+        relativePath: "notes.md",
+        absolutePath: "/tmp/ayati-workspace/notes.md",
+      }],
+      routingEvidence: [ROUTING_REF],
       proposal: createProposal(),
       expectedContextRevision: current.harnessContext.contextEngine?.contextRevision,
     }));
@@ -177,6 +183,7 @@ describe("deterministic resolve gate", () => {
     const result = await dispatchDeterministicResolveGate({
       state: state("Create notes.md.", true),
       request: resolveRequest(),
+      workspaceRoot: WORKSPACE_ROOT,
       toolNames: ["write_files"],
       coordinator,
       alreadyAttempted: false,
@@ -191,7 +198,7 @@ describe("deterministic resolve gate", () => {
     });
   });
 
-  it("accepts activation only when the selected workstream and HEAD were observed", async () => {
+  it("derives activation scope, HEAD, and evidence from exact routed resource IDs", async () => {
     const current = state("Update files in W-20260722-0001.", true);
     current.toolContext!.toolCalls![0]!.output = JSON.stringify({
       workstreams: [{
@@ -201,6 +208,30 @@ describe("deterministic resolve gate", () => {
         discovery: { tier: "definite", reasons: ["exact_workstream_id"] },
       }],
       count: 1,
+    });
+    current.toolContext!.toolCalls!.push({
+      step: 2,
+      callId: "find-resource",
+      tool: "git_context_find_resources",
+      purpose: "Find the exact resource owned by the workstream.",
+      input: { resourceIds: [RESOURCE_ID] },
+      status: "success",
+      output: JSON.stringify({
+        resources: [{
+          resource: {
+            resourceId: RESOURCE_ID,
+            locator: { kind: "filesystem", path: RESOURCE_PATH },
+          },
+          workstreamIds: ["W-20260722-0001"],
+        }],
+        count: 1,
+      }),
+      evidenceRef: RESOURCE_REF,
+      stepRef: {
+        runId: "RUN-1",
+        step: 2,
+        callId: "find-resource",
+      },
     });
     const coordinator = {
       bind: vi.fn(async () => ({
@@ -217,19 +248,18 @@ describe("deterministic resolve gate", () => {
         to: "resolve",
         purpose: "Continue the exact observed workstream.",
         capabilities: ["file:write"],
-        targets: ["W-20260722-0001"],
         binding: {
           kind: "activate",
           workstreamId: "W-20260722-0001",
-          expectedWorkstreamHead: "a".repeat(40),
           requestDecision: {
             kind: "continue_current",
             requestId: "R-0001",
             reason: "Continue the exact active request returned by discovery.",
           },
-          evidence: [ROUTING_REF],
+          resourceIds: [RESOURCE_ID],
         },
       },
+      workspaceRoot: WORKSPACE_ROOT,
       toolNames: ["write_files"],
       coordinator,
       alreadyAttempted: false,
@@ -237,6 +267,13 @@ describe("deterministic resolve gate", () => {
 
     expect(result).toMatchObject({ kind: "failed", attempted: true });
     expect(coordinator.bind).toHaveBeenCalledOnce();
+    expect(coordinator.bind).toHaveBeenCalledWith(expect.objectContaining({
+      routingEvidence: [ROUTING_REF, RESOURCE_REF],
+      expectedWorkstreamHead: "a".repeat(40),
+      proposal: expect.objectContaining({
+        resourceIds: [RESOURCE_ID],
+      }),
+    }));
 
     coordinator.bind.mockClear();
     const switched = await dispatchDeterministicResolveGate({
@@ -245,11 +282,9 @@ describe("deterministic resolve gate", () => {
         to: "resolve",
         purpose: "Switch from the exact observed active request.",
         capabilities: ["file:write"],
-        targets: ["W-20260722-0001"],
         binding: {
           kind: "activate",
           workstreamId: "W-20260722-0001",
-          expectedWorkstreamHead: "a".repeat(40),
           requestDecision: {
             kind: "defer_current_and_create",
             currentRequestId: "R-0001",
@@ -259,9 +294,10 @@ describe("deterministic resolve gate", () => {
             constraints: [],
             reason: "The user explicitly prioritized a separate request.",
           },
-          evidence: [ROUTING_REF],
+          resourceIds: [RESOURCE_ID],
         },
       },
+      workspaceRoot: WORKSPACE_ROOT,
       toolNames: ["write_files"],
       coordinator,
       alreadyAttempted: false,
@@ -276,11 +312,9 @@ describe("deterministic resolve gate", () => {
         to: "resolve",
         purpose: "Attempt to switch an unobserved request.",
         capabilities: ["file:write"],
-        targets: ["W-20260722-0001"],
         binding: {
           kind: "activate",
           workstreamId: "W-20260722-0001",
-          expectedWorkstreamHead: "a".repeat(40),
           requestDecision: {
             kind: "defer_current_and_create",
             currentRequestId: "R-0002",
@@ -290,9 +324,10 @@ describe("deterministic resolve gate", () => {
             constraints: [],
             reason: "Attempt to switch without observing the current request.",
           },
-          evidence: [ROUTING_REF],
+          resourceIds: [RESOURCE_ID],
         },
       },
+      workspaceRoot: WORKSPACE_ROOT,
       toolNames: ["write_files"],
       coordinator,
       alreadyAttempted: false,
@@ -309,6 +344,72 @@ describe("deterministic resolve gate", () => {
       },
     });
     expect(coordinator.bind).not.toHaveBeenCalled();
+
+    coordinator.bind.mockClear();
+    const unobservedResource = await dispatchDeterministicResolveGate({
+      state: current,
+      request: {
+        to: "resolve",
+        purpose: "Attempt to use an unobserved resource.",
+        capabilities: ["file:write"],
+        binding: {
+          kind: "activate",
+          workstreamId: "W-20260722-0001",
+          requestDecision: {
+            kind: "continue_current",
+            requestId: "R-0001",
+            reason: "Continue the observed request.",
+          },
+          resourceIds: ["RES-AAAAAAAAAAAAAAAAAAAAAAAA"],
+        },
+      },
+      workspaceRoot: WORKSPACE_ROOT,
+      toolNames: ["write_files"],
+      coordinator,
+      alreadyAttempted: false,
+    });
+    expect(unobservedResource).toMatchObject({
+      kind: "rejected",
+      repair: {
+        code: "MODE_BINDING_PROPOSAL_UNVERIFIED",
+        blockedTargets: ["RES-AAAAAAAAAAAAAAAAAAAAAAAA"],
+        message: expect.stringContaining("not returned by current-run routing"),
+      },
+    });
+    expect(coordinator.bind).not.toHaveBeenCalled();
+
+    current.userMessage =
+      "Update /tmp/allowed/balcony-herbs.md. Do not modify anything outside /tmp/allowed.";
+    const outsideUserBoundary = await dispatchDeterministicResolveGate({
+      state: current,
+      request: {
+        to: "resolve",
+        purpose: "Attempt to route a resource outside the user's exact boundary.",
+        capabilities: ["file:write"],
+        binding: {
+          kind: "activate",
+          workstreamId: "W-20260722-0001",
+          requestDecision: {
+            kind: "continue_current",
+            requestId: "R-0001",
+            reason: "Continue the observed request.",
+          },
+          resourceIds: [RESOURCE_ID],
+        },
+      },
+      workspaceRoot: WORKSPACE_ROOT,
+      toolNames: ["write_files"],
+      coordinator,
+      alreadyAttempted: false,
+    });
+    expect(outsideUserBoundary).toMatchObject({
+      kind: "rejected",
+      repair: {
+        code: "MODE_MUTATION_INTENT_REQUIRED",
+        blockedTargets: [RESOURCE_PATH],
+      },
+    });
+    expect(coordinator.bind).not.toHaveBeenCalled();
   });
 
   it("never invokes the coordinator after the run has attempted binding", async () => {
@@ -316,6 +417,7 @@ describe("deterministic resolve gate", () => {
     const result = await dispatchDeterministicResolveGate({
       state: state("Create notes.md.", true),
       request: resolveRequest(),
+      workspaceRoot: WORKSPACE_ROOT,
       toolNames: ["write_files"],
       coordinator,
       alreadyAttempted: true,
@@ -329,12 +431,12 @@ describe("deterministic resolve gate", () => {
   });
 });
 
-function resolveRequest() {
+function resolveRequest(relativePath = "notes.md") {
   return {
     to: "resolve" as const,
     purpose: "Bind the requested output.",
     capabilities: ["file:write"],
-    targets: ["notes.md"],
+    workspaceTargets: [{ kind: "file" as const, relativePath }],
     binding: createProposal(),
   };
 }
@@ -350,8 +452,6 @@ function createProposal() {
       acceptance: ["notes.md exists and is verified."],
       constraints: [],
     },
-    resources: [],
-    evidence: [ROUTING_REF],
   };
 }
 

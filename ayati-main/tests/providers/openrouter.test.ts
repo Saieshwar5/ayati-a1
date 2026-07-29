@@ -237,6 +237,68 @@ describe("OpenRouter provider", () => {
     });
   });
 
+  it("should omit unsupported uniqueItems from provider-facing tool schemas", async () => {
+    process.env["OPENROUTER_API_KEY"] = "or-test-key";
+
+    const mockCreate = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: "Schema accepted" } }],
+    });
+    mockOpenAIConstructor(mockCreate);
+
+    const inputSchema = {
+      type: "object",
+      properties: {
+        capabilities: {
+          type: "array",
+          uniqueItems: true,
+          items: {
+            type: "object",
+            properties: {
+              aliases: {
+                type: "array",
+                uniqueItems: true,
+                items: { type: "string" },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    provider.start();
+    await provider.generateTurn({
+      messages: [{ role: "user", content: "Choose a routing tool" }],
+      tools: [{
+        name: "decision_enter_workstream_route",
+        description: "Enter workstream routing.",
+        inputSchema,
+      }],
+      toolChoice: "required",
+    });
+
+    const request = mockCreate.mock.calls[0]?.[0] as any;
+    expect(request.tool_choice).toBe("required");
+    expect(request.tools[0].function.parameters).toEqual({
+      type: "object",
+      properties: {
+        capabilities: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              aliases: {
+                type: "array",
+                items: { type: "string" },
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(inputSchema.properties.capabilities.uniqueItems).toBe(true);
+    expect(inputSchema.properties.capabilities.items.properties.aliases.uniqueItems).toBe(true);
+  });
+
   it("should ignore structured output settings when native support is disabled", async () => {
     process.env["OPENROUTER_API_KEY"] = "or-test-key";
 

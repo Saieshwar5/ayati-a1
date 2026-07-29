@@ -1,4 +1,5 @@
 import { normalizeWorkstreamBindingProposal } from "../workstream-binding/proposal.js";
+import { normalizeWorkstreamWorkspaceTargets } from "../workstream-binding/workspace-targets.js";
 import { requireAbsoluteFilesystemPath } from "../../shared/filesystem-paths.js";
 import {
   isTaskValidationOutcomeKind,
@@ -18,6 +19,7 @@ export function normalizeModeTransitionRequest(value: unknown): ModeTransitionRe
   const binding = normalizeWorkstreamBindingProposal(record["binding"]);
   const references = normalizeReferences(record["references"]);
   const mutationScopes = normalizeMutationScopes(record["mutationScopes"]);
+  const workspaceTargets = normalizeWorkstreamWorkspaceTargets(record["workspaceTargets"]);
   const validationChecks = normalizeValidationChecks(record["validationChecks"]);
   return {
     to: normalizeModeTransitionTarget(record["to"]),
@@ -28,6 +30,7 @@ export function normalizeModeTransitionRequest(value: unknown): ModeTransitionRe
       : {}),
     ...(references.length > 0 ? { references } : {}),
     ...(mutationScopes.length > 0 ? { mutationScopes } : {}),
+    ...(workspaceTargets.length > 0 ? { workspaceTargets } : {}),
     ...(validationChecks.length > 0 ? { validationChecks } : {}),
     ...(Array.isArray(record["targets"])
       ? { targets: normalizeStringArray(record["targets"]) }
@@ -41,6 +44,7 @@ function normalizeModeTransitionTarget(value: unknown): ModeTransitionRequest["t
     value === "context.retrieve"
     || value === "observe.locate"
     || value === "observe.investigate"
+    || value === "workstream.route"
     || value === "resolve"
     || value === "execute"
     || value === "validation"
