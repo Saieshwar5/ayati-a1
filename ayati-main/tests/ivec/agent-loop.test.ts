@@ -545,8 +545,10 @@ describe("agentLoop one-run lifecycle", () => {
         content: response,
         workState: {
           status: "done",
+          summary: "Completed the direct response.",
         },
       });
+      expect(result.workState?.summary).not.toBe(response);
       expect(result.workState?.nextAction).toBeUndefined();
       expect(provider.generateTurn).toHaveBeenCalledTimes(1);
     } finally {
@@ -1458,7 +1460,7 @@ describe("agentLoop one-run lifecycle", () => {
         totalToolCalls: 1,
         workState: {
           status: "done",
-          summary: `Upload handling is in ${target}.`,
+          summary: `Verified a complete read of ${target}.`,
           plan: [],
           importantContext: [{
             kind: "finding",
@@ -1742,7 +1744,12 @@ describe("agentLoop one-run lifecycle", () => {
         totalIterations: 4,
         totalToolCalls: 1,
         content: "I could not safely create the file because workstream binding is unavailable.",
+        workState: {
+          status: "in_progress",
+          summary: "The run failed before completion.",
+        },
       });
+      expect(result.workState?.summary).not.toBe(result.content);
       expect(existsSync(outputPath)).toBe(false);
       expect(recordRunStep).toHaveBeenCalledOnce();
       expect(provider.generateTurn).toHaveBeenCalledTimes(4);

@@ -75,7 +75,7 @@ import {
   buildVerifiedCompletionResources,
   buildWorkstreamSummaryRecord,
 } from "./run-result.js";
-import { mergeValidationCompletionReceipts } from "./work-state/completion-receipts.js";
+import { completeWorkStateHandoff } from "./work-state/terminal-handoff.js";
 import { workStateFindings } from "./work-state/selectors.js";
 import {
   buildFinalFeedbackWarnings,
@@ -181,7 +181,7 @@ export async function runAgentLoop(
       state.workState = {
         ...state.workState,
         summary: state.workState.summary === "Run started."
-          ? input.content || failure || "The run failed before completion."
+          ? failure || "The run failed before completion."
           : state.workState.summary,
         importantContext: failure
           ? appendWorkStateConstraint(state.workState, failure)
@@ -582,21 +582,11 @@ export async function runAgentLoop(
       state.status = decision.status === "failed" ? "failed" : "completed";
       state.finalOutput = decision.message;
       if (decision.status === "completed" && canMarkTerminalReplyDone(state)) {
-        state.workState = {
-          ...state.workState,
-          status: "done",
-          summary: decision.message,
-          plan: state.workState.plan.map((item) => ({
-            ...item,
-            status: "done",
-          })),
-          importantContext: mergeValidationCompletionReceipts({
-            runId: state.runId,
-            importantContext: state.workState.importantContext,
-            checks: state.virtualMode.validation?.checks ?? [],
-          }),
-          nextAction: undefined,
-        };
+        state.workState = completeWorkStateHandoff({
+          runId: state.runId,
+          workState: state.workState,
+          validationChecks: state.virtualMode.validation?.checks ?? [],
+        });
       }
       const responseKind = state.preferredResponseKind ?? "reply";
       return finalize({

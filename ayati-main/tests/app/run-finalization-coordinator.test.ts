@@ -32,8 +32,15 @@ describe("run finalization coordinator", () => {
       stopReason: "completed",
       assistantResponse: "A direct answer.",
       assistantResponseKind: "reply",
+      summary: "Answered directly.",
+      workState: expect.objectContaining({
+        summary: "Answered directly.",
+      }),
       validation: "not_applicable",
     }));
+    expect(finalizeRun.mock.calls[0]?.[0].summary).not.toBe(
+      finalizeRun.mock.calls[0]?.[0].assistantResponse,
+    );
     expect(finalizeRun.mock.calls[0]?.[0]).not.toHaveProperty("workstreamCompletion");
   });
 

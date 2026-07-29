@@ -549,7 +549,10 @@ failed checklist keeps the virtual graph active. The agent returns to locate,
 investigate, or bound execute, repairs the issue, and enters validation again.
 On an accepted final response, the runtime—not the model—derives the bounded
 completion receipts from the stored passed checklist, marks WorkState done,
-uses the response as its summary, and removes the next action.
+marks its plan done, and removes the next action. The full assistant response
+remains in message history. WorkState instead preserves an existing meaningful
+checkpoint summary, derives a compact summary from completion receipts when
+available, or records a small direct-response handoff.
 Generated deliverables committed during finalization are derived from
 the intersection of passed filesystem validation subjects and artifacts
 actually produced by successful mutation steps; the model does not declare
@@ -559,7 +562,8 @@ completion resources.
 usable user-facing clarification backed by current ambiguity for
 `needs_user_input`, or a current blocker/failure for `blocked` and `failed`.
 Clarification acceptance does not depend on punctuation. Successful work never
-uses `decision_stop`.
+uses `decision_stop`. A failed stop also keeps its user-facing response in
+message history instead of copying it into WorkState.
 
 One coordinator serves chat and system events. `finalizeRun` receives outcome,
 stop reason, assistant response, summaries, validation, WorkState, completion

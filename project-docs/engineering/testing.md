@@ -128,6 +128,9 @@ Changes should prove the relevant invariants:
     explicit request, excludes active/recovery/initial and trivial completed
     records, orders newest first, caps at five distinct runs, and remains
     historical advisory context rather than authority or completion evidence.
+    A terminal WorkState summary never copies the full assistant response: it
+    preserves a meaningful checkpoint or derives a compact deterministic
+    handoff.
 30. The recent-document registry is rebuilt only from exact verified successful
     complete-read steps belonging to stable terminal runs. It preserves valid
     reads from done, incomplete, failed, blocked, and needs-input outcomes while

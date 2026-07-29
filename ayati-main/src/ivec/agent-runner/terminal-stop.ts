@@ -88,7 +88,6 @@ export function dispatchTerminalStop(
         nextWorkState: {
           ...state.workState,
           status: "in_progress",
-          summary: response,
           nextAction: "Retry from the latest verified state when a safe recovery is available.",
         },
       };

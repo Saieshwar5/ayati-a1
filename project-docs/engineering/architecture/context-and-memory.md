@@ -216,7 +216,9 @@ status, summary, optional plan, important context, next action, exact run and
 message references, and optional bound workstream/request identity. It excludes
 the current active run, recovery-required runs, initial WorkStates, and trivial
 completed conversations with no plan, important context, next action, or
-workstream binding. Records are newest first and deduplicated by run id.
+workstream binding. The summary is a compact operational handoff, not a copy of
+the assistant response already available in message history. Records are newest
+first and deduplicated by run id.
 
 The source is rebuilt directly from existing SQLite `runs`,
 `run_work_state`, `messages`, and workstream metadata; there is no second
@@ -330,6 +332,7 @@ not itself repeat a read.
 
 Durable ownership remains explicit:
 
+- full user-facing assistant responses stay in conversation messages;
 - current action detail stays in run steps and tool calls;
 - selected progress, the optional plan, essential constraints, next action,
   and bounded terminal completion receipts stay in WorkState;
