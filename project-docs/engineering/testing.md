@@ -125,13 +125,17 @@ Changes should prove the relevant invariants:
     excluding running/recovery-required runs and failed or unverified calls. It
     deduplicates and caps at 32 paths, projects only five lightweight active
     pointers into the Core Capsule, exposes only the remaining 27 through
-    `files.recent`, preserves both views through restart/checkpoint projection,
-    and grounds read-only investigation without granting mutation authority or
-    current-content proof.
+    `files.recent`, and preserves both views through restart/checkpoint
+    projection. These are navigation pointers, not read admission, mutation
+    authority, or current-content proof.
 31. `system:time` and `system:health` enter investigation without a resource
     reference, while target-backed or mixed investigation capabilities still
-    require one. Their outputs are bounded, privacy-safe, contract-verified,
-    and become typed current-run validation outcomes without a second sample.
+    require one. An exact filesystem-only `file:read` reference may enter
+    without earlier grounding evidence; its tool boundary still validates the
+    path, policy, file type, content, and read result. Other target-backed
+    references retain provenance checks. System outputs are bounded,
+    privacy-safe, contract-verified, and become typed current-run validation
+    outcomes without a second sample.
 32. A verified multi-match `find_files` call projects a bounded factual
     candidate set through normal and compacted tool-call context while keeping
     private projection metadata hidden. Candidate choice and clarification
@@ -190,7 +194,8 @@ Changes should prove the relevant invariants:
 ## Prompt and Harness Coverage
 
 Test zero-step `ENTRY` conversation and clarification replies, every
-virtual-graph edge, exact target provenance, read-only observation surfaces,
+virtual-graph edge, exact target provenance and the narrow self-validating
+filesystem-read exception, read-only observation surfaces,
 capability-surface replacement, active-graph direct-response guarding, and
 identical self-transition no-progress stopping. Also
 test the absence of a second model loop, main-loop workstream observation,

@@ -11,6 +11,7 @@ import {
 } from "../hot-context/index.js";
 import { activeDocumentPointers } from "../recent-document-registry.js";
 import type { LoopState } from "../types.js";
+import type { ModeTransitionRequest } from "./virtual-mode.js";
 
 type TargetEvidence =
   | {
@@ -25,6 +26,32 @@ type TargetEvidence =
 
 export function collectVirtualModeTargetEvidence(state: LoopState): string[] {
   return collectStructuredTargetEvidence(state, {}).map((entry) => entry.value);
+}
+
+/**
+ * Exact filesystem reads validate their own path, access, file type, content,
+ * and result at the read tool boundary. The mode transition therefore needs
+ * the target for navigation, but does not require earlier grounding evidence.
+ */
+export function isDirectFilesystemReadTransition(
+  request: ModeTransitionRequest,
+): boolean {
+  if (
+    request.to !== "observe.investigate"
+    || request.capabilities.length !== 1
+    || request.capabilities[0] !== "file:read"
+  ) {
+    return false;
+  }
+  const references = request.references ?? [];
+  if (references.length > 0) {
+    return references.every(
+      (reference) => reference.kind === "filesystem",
+    );
+  }
+  const targets = request.targets ?? [];
+  return targets.length > 0
+    && targets.every((target) => isAbsolute(target));
 }
 
 export async function findUnverifiedVirtualModeTargets(

@@ -1077,7 +1077,7 @@ describe("agentLoop one-run lifecycle", () => {
     }
   });
 
-  it("removes recovered transition repairs from later model prompts while retaining audit feedback", async () => {
+  it("removes a recovered transition repair from later prompts while retaining audit feedback", async () => {
     const dataDir = makeTmpDir();
     try {
       const notesPath = join(dataDir, "requested-notes.md");
@@ -1168,12 +1168,13 @@ describe("agentLoop one-run lifecycle", () => {
         expect(typeof prompt).toBe("string");
         return extractStateView(prompt as string);
       };
-      const afterTargetRepair = decisionView(1);
+      const afterDirectReadMode = decisionView(1);
       const afterCapabilityRepair = decisionView(2);
       const afterAcceptedTransition = decisionView(3);
       const afterVerifiedAction = decisionView(4);
 
-      expect(JSON.stringify(afterTargetRepair)).toContain("/tmp/invented-notes.md");
+      expect(JSON.stringify(afterDirectReadMode)).toContain("/tmp/invented-notes.md");
+      expect(JSON.stringify(afterDirectReadMode)).not.toContain("MODE_TARGET_UNVERIFIED");
       expect(JSON.stringify(afterCapabilityRepair)).toContain("/tmp/invented-notes.md");
       expect(JSON.stringify(afterCapabilityRepair)).toContain("Unknown capability ids");
       expect(JSON.stringify(afterCapabilityRepair)).toContain("domain:filesystem");
@@ -1192,7 +1193,7 @@ describe("agentLoop one-run lifecycle", () => {
         data: expect.objectContaining({
           resolutionKind: "accepted_mode_transition",
           scopes: ["navigation"],
-          resolvedCount: 2,
+          resolvedCount: 1,
         }),
       }));
     } finally {

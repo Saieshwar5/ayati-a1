@@ -37,6 +37,7 @@ import {
 import { normalizeModeTransitionRequest } from "./mode-transition-request.js";
 import {
   findUnverifiedVirtualModeTargets,
+  isDirectFilesystemReadTransition,
 } from "./virtual-mode-targets.js";
 import {
   applyValidationModeEvidence,
@@ -506,12 +507,13 @@ async function validateTransitionTargets(
   ) {
     return repair(
       "MODE_TARGET_REQUIRED",
-      `${request.to} requires at least one exact evidence-backed ${requiredTargetKind}.`,
+      `${request.to} requires at least one exact ${requiredTargetKind}.`,
       [],
       ["Use observe.locate to discover a resource, then provide it in references or mutationScopes."],
     );
   }
   if (targets.length === 0) return undefined;
+  if (isDirectFilesystemReadTransition(request)) return undefined;
   const unverified = await findUnverifiedVirtualModeTargets(state, targets, {
     includeRecentFileNavigation: request.to === "observe.investigate",
   });

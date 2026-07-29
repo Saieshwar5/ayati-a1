@@ -136,8 +136,11 @@ describe("callAgentDecision", () => {
     const messages = generateTurn.mock.calls[0]?.[0]?.messages ?? [];
     const systemPrompt = messages.find((message) => message.role === "system")?.content ?? "";
     expect(systemPrompt).toContain("Every run starts at ENTRY");
-    expect(systemPrompt).toContain("Use observe.locate to discover an uncertain target");
-    expect(systemPrompt).toContain("Use observe.investigate to read or inspect an exact evidence-backed target");
+    expect(systemPrompt).toContain("Use observe.locate when unknown");
+    expect(systemPrompt).toContain(
+      "Known absolute path: use observe.investigate/file:read; skip pre-checks",
+    );
+    expect(systemPrompt).toContain("read_files validates it; other targets need grounding");
     expect(systemPrompt).toContain(
       "Use decision_resolve_activate or decision_resolve_create only for explicit mutation-permitting intent",
     );

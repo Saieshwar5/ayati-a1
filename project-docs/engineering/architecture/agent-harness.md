@@ -66,8 +66,10 @@ The model can:
 
 - return normal assistant text at `ENTRY` for conversation, supplied-content
   transformation, or a focused clarification before graph entry;
+- use an exact absolute file path from current or recent exact context to enter
+  `file:read` investigation without rediscovering or pre-inspecting that path;
 - use one of the five active-document paths already visible in the Core
-  Capsule to enter read-only investigation without rediscovering that path;
+  Capsule as a compact navigation pointer for the same direct-read flow;
 - enter transient `context.retrieve`, load relevant advertised Hot Context,
   and return automatically to the preceding mode;
 - call one graph-legal destination-specific mode control with an immediate
@@ -112,9 +114,15 @@ canonical absolute path readable by the daemon's operating-system account;
 omitted search roots still default to `<AYATI_ROOT_DIR>/workspace/`. This
 machine-read path runs before workstream-resource enforcement and grants no
 binding or write authority. Mutation effects are first canonicalized against
-the configured workspace and rejected before resource lookup or preparation
-when they escape it. Existing binding, mutable-resource, exact-target, and
-post-operation verification gates then run normally.
+the configured workspace and rejected before resource lookup, preparation, or
+execution when they escape it. Existing binding, mutable-resource,
+exact-target, and post-operation verification gates then run normally.
+
+A filesystem-only `file:read` transition does not require prior
+target-grounding evidence: `read_files` and its executor policy validate the
+call path, read scope, existence, file type, readability, bounded returned
+content, and deterministic read result. `observe.locate` remains necessary
+when the exact path is unknown.
 
 Typical traces remain inside the one harness loop:
 
@@ -134,9 +142,11 @@ A verified `find_files` call with multiple results adds a small factual
 `candidateSet` to that call's model-facing run context. It contains bounded
 exact paths and useful relative labels, and survives tool-output compaction.
 The model decides from the request whether to continue or ask through the
-normal needs-user-input path. The runtime still checks target provenance,
-resource authority, and tool verification, but it does not classify the
-meaning of the user's choice.
+normal needs-user-input path. The runtime still checks target provenance where
+required, resource authority, and every tool result, but it does not classify
+the meaning of the user's choice. An exact filesystem read is the narrow
+exception to prior target provenance; its current read result is still
+verified.
 
 The model never sees a separate workstream-resolution agent or lifecycle tool.
 Before `resolve`, it uses read-only workstream search/read and resource-owner
@@ -234,7 +244,8 @@ Prompt context uses explicit bounded lanes:
   checkpoint, whole recent exact turns, and explicit unloaded ranges;
 - `hot`: metadata for optional typed context plus bounded run-scoped entries
   mounted through `context.retrieve`, including recent-file navigation that
-  can ground an exact read-only investigation path but never authority;
+  can identify an exact read-only path but never grants authority or current
+  content proof;
 - `tools`: current capability surface;
 - `harness`: compact unresolved repair feedback;
 - `run`: the exact selected-request contract and distilled workstream context

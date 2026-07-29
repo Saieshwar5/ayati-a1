@@ -30,6 +30,7 @@ const WRITE_TOOL = tool("write_files");
 const CREATE_TOOL = tool("create_directory");
 const SYSTEM_TIME_TOOL = tool("system_time");
 const SYSTEM_HEALTH_TOOL = tool("system_health");
+const DB_QUERY_TOOL = tool("db_query");
 const READ_TOOLS = [INSPECT_TOOL, READ_TOOL];
 const WRITE_TOOLS = [CREATE_TOOL, WRITE_TOOL, PATCH_TOOL];
 
@@ -81,7 +82,7 @@ describe("virtual mode runtime", () => {
     });
   });
 
-  it("accepts exact current-input targets and rejects invented investigation targets", async () => {
+  it("allows an exact filesystem read target without prior grounding evidence", async () => {
     const known = state("Read /tmp/known.md and summarize it.");
     const accepted = await transition(known, {
       to: "observe.investigate",
@@ -91,17 +92,72 @@ describe("virtual mode runtime", () => {
     }, READ_TOOLS);
     expect(accepted).toMatchObject({ kind: "applied", active: "observe.investigate" });
 
-    const invented = await transition(state("Read /tmp/known.md and summarize it."), {
+    const earlierConversationPath = await transition(state("Read that same file again."), {
       to: "observe.investigate",
-      purpose: "Read an invented file.",
+      purpose: "Read the exact file path retained from recent conversation.",
       capabilities: ["file:read"],
-      targets: ["/tmp/invented.md"],
+      references: [{ kind: "filesystem", path: "/tmp/earlier-conversation.md" }],
     }, READ_TOOLS);
-    expect(invented).toMatchObject({
+    expect(earlierConversationPath).toMatchObject({
+      kind: "applied",
+      active: "observe.investigate",
+      toolNames: ["inspect_paths", "read_files"],
+    });
+  });
+
+  it("keeps exact target grounding mandatory for filesystem mutations", async () => {
+    const current = state("Update the existing output file.");
+    current.harnessContext.contextEngine = boundContext(
+      current.harnessContext.contextEngine!,
+    );
+
+    const result = await transition(current, {
+      to: "execute",
+      purpose: "Update an ungrounded mutation target.",
+      capabilities: ["file:write"],
+      mutationScopes: [{
+        kind: "filesystem",
+        path: "/tmp/ungrounded-output.txt",
+      }],
+    }, WRITE_TOOLS);
+
+    expect(result).toMatchObject({
       kind: "rejected",
       repair: {
         code: "MODE_TARGET_UNVERIFIED",
-        blockedTargets: ["/tmp/invented.md"],
+        blockedTargets: ["/tmp/ungrounded-output.txt"],
+      },
+    });
+  });
+
+  it("keeps prior grounding mandatory outside direct filesystem reads", async () => {
+    const resourceId = "RES-AAAAAAAAAAAAAAAAAAAAAAAA";
+    const resourceRead = await transition(state("Read the relevant resource."), {
+      to: "observe.investigate",
+      purpose: "Read an ungrounded resource identity.",
+      capabilities: ["file:read"],
+      references: [{ kind: "resource", resourceId }],
+    }, READ_TOOLS);
+    expect(resourceRead).toMatchObject({
+      kind: "rejected",
+      repair: {
+        code: "MODE_TARGET_UNVERIFIED",
+        blockedTargets: [resourceId],
+      },
+    });
+
+    const databaseRead = await transition(state("Inspect the relevant database."), {
+      to: "observe.investigate",
+      purpose: "Query an ungrounded database resource.",
+      capabilities: ["database:read"],
+      references: [{ kind: "resource", resourceId }],
+    }, [DB_QUERY_TOOL]);
+
+    expect(databaseRead).toMatchObject({
+      kind: "rejected",
+      repair: {
+        code: "MODE_TARGET_UNVERIFIED",
+        blockedTargets: [resourceId],
       },
     });
   });
@@ -266,7 +322,7 @@ describe("virtual mode runtime", () => {
     });
   });
 
-  it("allows descendants of an admitted directory but rejects siblings", async () => {
+  it("keeps directory grounding bounded without using it as file-read admission", async () => {
     const current = state("Inspect the attached website directory.");
     current.harnessContext.contextEngine!.ingressResources = [{
       resourceId: "RES-111111111111111111111111",
@@ -288,27 +344,30 @@ describe("virtual mode runtime", () => {
       createdAt: "2026-07-22T12:00:00.000Z",
       updatedAt: "2026-07-22T12:00:00.000Z",
     }];
+    const childPath = "/tmp/authorized-site/index.html";
+    const siblingPath = "/tmp/authorized-site-other/index.html";
 
+    await expect(findUnverifiedVirtualModeTargets(current, [childPath]))
+      .resolves.toEqual([]);
+    await expect(findUnverifiedVirtualModeTargets(current, [siblingPath]))
+      .resolves.toEqual([siblingPath]);
     await expect(transition(current, {
       to: "observe.investigate",
       purpose: "Inspect a child in the admitted directory.",
       capabilities: ["file:read"],
-      references: [{ kind: "filesystem", path: "/tmp/authorized-site/index.html" }],
+      references: [{ kind: "filesystem", path: childPath }],
     }, READ_TOOLS)).resolves.toMatchObject({ kind: "applied" });
 
     const sibling = state("Inspect the attached website directory.");
     sibling.harnessContext.contextEngine!.ingressResources = current.harnessContext.contextEngine!.ingressResources;
     await expect(transition(sibling, {
       to: "observe.investigate",
-      purpose: "Inspect a sibling outside the admitted directory.",
+      purpose: "Let the read tool validate a sibling outside the admitted directory.",
       capabilities: ["file:read"],
-      references: [{ kind: "filesystem", path: "/tmp/authorized-site-other/index.html" }],
+      references: [{ kind: "filesystem", path: siblingPath }],
     }, READ_TOOLS)).resolves.toMatchObject({
-      kind: "rejected",
-      repair: {
-        code: "MODE_TARGET_UNVERIFIED",
-        blockedTargets: ["/tmp/authorized-site-other/index.html"],
-      },
+      kind: "applied",
+      active: "observe.investigate",
     });
   });
 

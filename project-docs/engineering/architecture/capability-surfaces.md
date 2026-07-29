@@ -87,9 +87,13 @@ targetRequirement?
 
 `targetRequirement: "none"` is reserved for bounded observations that do not
 inspect a user resource. The current targetless capabilities are
-`system:time` and `system:health`. Every target-backed investigation still
-requires an exact verified reference; combining a targetless capability with a
-target-backed capability does not remove that requirement.
+`system:time` and `system:health`. Target-backed investigations still require
+an exact reference. A filesystem-only `file:read` investigation may use a
+known absolute path without earlier grounding evidence because the read tool
+boundary validates the path, read policy, file type, returned content, and
+read evidence. Other target-backed investigations still require a verified
+reference, and combining them with `file:read` or a targetless capability does
+not remove that requirement.
 
 The catalog constructor rejects:
 
