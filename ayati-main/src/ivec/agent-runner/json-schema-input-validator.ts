@@ -20,13 +20,24 @@ function validateNode(
     ? schema["oneOf"].filter(isRecord)
     : [];
   if (oneOf.length > 0) {
-    const results = oneOf.map((candidate) => validateNode(value, candidate, path, options));
-    const matches = results.filter((result) => result === null).length;
-    if (matches !== 1) {
-      const firstFailure = results.find((result): result is string => result !== null);
-      return matches === 0
-        ? firstFailure ?? `${displayPath(path)} must match one allowed shape`
-        : `${displayPath(path)} matches more than one allowed shape`;
+    const discriminated = validateKindDiscriminatedOneOf(
+      value,
+      oneOf,
+      path,
+      options,
+    );
+    if (discriminated.applicable) {
+      if (discriminated.error) return discriminated.error;
+    } else {
+      const results = oneOf.map((candidate) =>
+        validateNode(value, candidate, path, options));
+      const matches = results.filter((result) => result === null).length;
+      if (matches !== 1) {
+        const firstFailure = results.find((result): result is string => result !== null);
+        return matches === 0
+          ? firstFailure ?? `${displayPath(path)} must match one allowed shape`
+          : `${displayPath(path)} matches more than one allowed shape`;
+      }
     }
   }
 
@@ -152,6 +163,65 @@ function validateNode(
   }
 
   return null;
+}
+
+function validateKindDiscriminatedOneOf(
+  value: unknown,
+  candidates: Record<string, unknown>[],
+  path: string,
+  options: {
+    enforceAdditionalProperties?: boolean;
+  },
+): { applicable: false } | { applicable: true; error: string | null } {
+  if (!isRecord(value)) return { applicable: false };
+  const branches = candidates.map(kindDiscriminatedBranch);
+  if (branches.some((branch) => branch === undefined)) {
+    return { applicable: false };
+  }
+  const typedBranches = branches.filter(
+    (branch): branch is { kind: string; schema: Record<string, unknown> } =>
+      branch !== undefined,
+  );
+  const kinds = typedBranches.map((branch) => branch.kind);
+  if (new Set(kinds).size !== kinds.length) return { applicable: false };
+
+  const kind = value["kind"];
+  if (kind === undefined || kind === null) {
+    return {
+      applicable: true,
+      error: `missing required field '${joinPath(path, "kind")}'`,
+    };
+  }
+  const selected = typedBranches.find((branch) => branch.kind === kind);
+  if (!selected) {
+    return {
+      applicable: true,
+      error: `field '${joinPath(path, "kind")}' must be one of ${kinds.map((item) => JSON.stringify(item)).join(", ")}`,
+    };
+  }
+  return {
+    applicable: true,
+    error: validateNode(value, selected.schema, path, options),
+  };
+}
+
+function kindDiscriminatedBranch(
+  schema: Record<string, unknown>,
+): { kind: string; schema: Record<string, unknown> } | undefined {
+  const properties = isRecord(schema["properties"])
+    ? schema["properties"]
+    : undefined;
+  const kindSchema = properties && isRecord(properties["kind"])
+    ? properties["kind"]
+    : undefined;
+  const required = Array.isArray(schema["required"])
+    ? schema["required"].map(String)
+    : [];
+  return kindSchema
+    && typeof kindSchema["const"] === "string"
+    && required.includes("kind")
+    ? { kind: kindSchema["const"], schema }
+    : undefined;
 }
 
 function matchesJsonSchemaType(value: unknown, expectedType: string): boolean {
