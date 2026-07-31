@@ -215,9 +215,12 @@ repository HEAD, evidence, and every eligible mutable filesystem root from the
 authoritative activated bindings. Creation instead supplies typed
 `workspaceTargets`; the runtime derives their absolute selected roots and
 routing evidence without pre-registering missing resources. The deterministic
-gate performs at most one lifecycle binding attempt, makes no model request,
-and requires a fresh primary decision after authoritative bound context is
-mounted.
+gate permits at most one authoritative lifecycle binding and makes no model
+request. A lifecycle-route rejection explicitly produced before any route
+plan or run binding may receive one corrected proposal; every other failure
+closes binding immediately, and a second no-change rejection also closes it.
+After authoritative bound context is mounted, execution requires a fresh
+primary decision.
 
 Executable tools retain native schemas. Harness-only controls are not
 persisted as fake calls. If a provider returns a whole JSON object whose shape

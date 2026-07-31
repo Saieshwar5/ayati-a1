@@ -59,7 +59,10 @@ Changes should prove the relevant invariants:
 15. The deterministic resolve gate makes zero model calls, accepts one typed
     continuation, amendment, activation, resumption, creation, defer-and-switch,
     or new-workstream proposal, rechecks authoritative candidate/resource
-    state, and binds at most one workstream/request on the existing run.
+    state, and binds at most one workstream/request on the existing run. One
+    corrected proposal is allowed only after a retryable rejection explicitly
+    recorded before any route plan or binding; all uncertain failures close
+    binding immediately.
 16. Whole-task validation is a stored proof-only mode with no executable
     tools. It checks a small absolute-path checklist against compact completion
     evidence emitted by deterministically verified current-run calls; it does
@@ -123,7 +126,9 @@ Changes should prove the relevant invariants:
     relative locators. A narrower filesystem boundary in the current user
     message filters those roots.
 26. Explicit create-new ownership survives a focused clarification; ambiguity
-    without a binding does not consume the single binding attempt.
+    without a binding consumes no binding authority. A lifecycle-state
+    rejection proven to have made no change permits one corrected resolve
+    proposal, while a second rejection closes binding for the run.
 27. File-content validation rejects a silently substituted source.
 28. Assistant response/feedback kinds survive finalization and restart, while
     attachment resource identities remain associated only with their exact

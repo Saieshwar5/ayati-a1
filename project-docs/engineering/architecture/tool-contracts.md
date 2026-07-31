@@ -224,6 +224,14 @@ effects can outlive a single tool result; they cannot provide focused
 filesystem completion evidence. Use focused filesystem tools for mutations
 and bounded `process_run` for commands whose completion can be checked.
 
+For a new workstream, finite `process_run` may use the exact current-run
+creation scope before the new files have durable resource records. The
+executor still requires explicit targets, contains the working directory and
+targets within one selected scope, and observes those targets before and after
+the command. A successful command may leave an existing validation target
+unchanged; a failed command must not change a declared target. Durable
+resource registration remains a finalization responsibility.
+
 These declarations are Ayati's authorization contract, not an operating-system
 sandbox around arbitrary native or Python code. A deployment requiring
 host-enforced containment must separately sandbox or disable those
@@ -278,10 +286,13 @@ asking for a fresh decision. Routing an existing workstream must explicitly
 continue, amend, activate, resume, create, or atomically defer and switch its
 request.
 Replay identity derives from the existing run id and deterministic gate id.
-An ambiguity that performs no binding does not consume the mutation-safe
-binding attempt. An explicit create-new instruction or an exact follow-up
-choice to the prior durable question bypasses semantic reuse suggestions;
-authoritative resource checks still apply.
+An ambiguity that performs no binding consumes no mutation-safe binding
+authority. A request-lifecycle rejection recorded before any route plan or
+run binding permits one corrected proposal; a second no-change rejection or
+any uncertain failure closes binding for the run. An explicit create-new
+instruction or an exact follow-up choice to the prior durable question
+bypasses semantic reuse suggestions; authoritative resource checks still
+apply.
 
 ## System Observations
 
