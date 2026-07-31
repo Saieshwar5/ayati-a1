@@ -1,4 +1,4 @@
-import { isAbsolute, resolve } from "node:path";
+import { resolve } from "node:path";
 import type { ArtifactRef } from "../../skills/types.js";
 import { requireAbsoluteFilesystemPath } from "../../shared/filesystem-paths.js";
 import type { ToolCallVerifiedFact } from "./tool-call-verification-contracts.js";
@@ -6,7 +6,6 @@ import {
   isFilesystemTaskValidationOutcomeKind,
   type FileReadValidationScope,
   type FileSearchValidationScope,
-  type ModeTransitionValidationCheck,
   type TaskValidationOutcomeKind,
 } from "./task-validation-contracts.js";
 
@@ -16,11 +15,6 @@ export interface RegisteredTaskOutcome {
   summary: string;
   factKind?: string;
   data?: Record<string, unknown>;
-}
-
-export interface TaskValidationCheckIssue {
-  message: string;
-  subject: string;
 }
 
 const VERIFIED_FACT_OUTCOMES: Readonly<Record<string, TaskValidationOutcomeKind>> = {
@@ -72,105 +66,6 @@ export function registeredArtifactOutcome(
       ...(artifact.label ? { label: artifact.label } : {}),
     },
   };
-}
-
-export function normalizeTaskValidationCheck(
-  check: ModeTransitionValidationCheck,
-): ModeTransitionValidationCheck {
-  return {
-    kind: check.kind,
-    subject: normalizeTaskValidationSubject(check.kind, check.subject),
-    ...(check.expectedKind ? { expectedKind: check.expectedKind } : {}),
-    ...(check.searchScope
-      ? { searchScope: normalizeFileSearchValidationScope(check.searchScope) }
-      : {}),
-    ...(check.readScope
-      ? { readScope: normalizeFileReadValidationScope(check.readScope) }
-      : {}),
-    ...(check.denialCode ? { denialCode: check.denialCode.trim() } : {}),
-  };
-}
-
-export function validateTaskValidationCheck(
-  check: ModeTransitionValidationCheck,
-): TaskValidationCheckIssue | undefined {
-  const subject = check.subject.trim();
-  if (!subject) {
-    return {
-      message: `Validation outcome ${check.kind} requires an exact non-empty subject.`,
-      subject,
-    };
-  }
-  if (isFilesystemTaskValidationOutcomeKind(check.kind)) {
-    const required = requireAbsoluteFilesystemPath(subject);
-    if (!required.ok || !isAbsolute(required.absolutePath)) {
-      return {
-        message: `Filesystem validation outcome ${check.kind} requires a canonical absolute path subject.`,
-        subject,
-      };
-    }
-  } else if (check.expectedKind !== undefined) {
-    return {
-      message: `expectedKind is valid only for filesystem validation outcomes, not ${check.kind}.`,
-      subject,
-    };
-  }
-
-  if (check.kind === "file.search_no_match") {
-    if (!check.searchScope) {
-      return {
-        message: "file.search_no_match requires one exact searchScope.",
-        subject,
-      };
-    }
-    const scopeIssue = validateFileSearchValidationScope(check.searchScope);
-    if (scopeIssue) {
-      return {
-        message: scopeIssue,
-        subject,
-      };
-    }
-  } else if (check.searchScope !== undefined) {
-    return {
-      message: `searchScope is valid only for file.search_no_match, not ${check.kind}.`,
-      subject,
-    };
-  }
-
-  if (check.kind === "file.read_scope_satisfied") {
-    if (!check.readScope) {
-      return {
-        message: "file.read_scope_satisfied requires one exact readScope.",
-        subject,
-      };
-    }
-    const scopeIssue = validateFileReadValidationScope(check.readScope);
-    if (scopeIssue) {
-      return {
-        message: scopeIssue,
-        subject,
-      };
-    }
-  } else if (check.readScope !== undefined) {
-    return {
-      message: `readScope is valid only for file.read_scope_satisfied, not ${check.kind}.`,
-      subject,
-    };
-  }
-  if (check.kind === "tool.call_denied") {
-    if (!check.denialCode?.trim()) {
-      return {
-        message: "tool.call_denied requires the exact stable denialCode.",
-        subject,
-      };
-    }
-  } else if (check.denialCode !== undefined) {
-    return {
-      message: `denialCode is valid only for tool.call_denied, not ${check.kind}.`,
-      subject,
-    };
-  }
-  return undefined;
 }
 
 export function normalizeFileSearchValidationScope(
@@ -230,50 +125,4 @@ function factSubject(fact: ToolCallVerifiedFact): string | undefined {
     return String(value);
   }
   return undefined;
-}
-
-function validateFileSearchValidationScope(
-  scope: FileSearchValidationScope,
-): string | undefined {
-  if (scope.roots.length === 0) {
-    return "Search scope requires at least one canonical absolute root.";
-  }
-  for (const root of scope.roots) {
-    const required = requireAbsoluteFilesystemPath(root);
-    if (!required.ok || !isAbsolute(required.absolutePath)) {
-      return "Search scope roots must be canonical absolute paths.";
-    }
-  }
-  if (!Number.isSafeInteger(scope.maxDepth) || scope.maxDepth < 1) {
-    return "Search scope maxDepth must be a positive integer.";
-  }
-  if (typeof scope.includeHidden !== "boolean") {
-    return "Search scope includeHidden must be a boolean.";
-  }
-  return undefined;
-}
-
-function validateFileReadValidationScope(
-  scope: FileReadValidationScope,
-): string | undefined {
-  if (scope.mode === "slice") {
-    if (
-      !Number.isInteger(scope.startLine)
-      || !Number.isInteger(scope.endLine)
-      || scope.startLine < 1
-      || scope.endLine < scope.startLine
-    ) {
-      return "Slice readScope requires positive integer startLine/endLine with endLine at or after startLine.";
-    }
-    return undefined;
-  }
-  if (scope.mode === "search") {
-    return scope.query.trim()
-      ? undefined
-      : "Search readScope requires a non-empty query.";
-  }
-  if (scope.mode === "profile") {
-    return undefined;
-  }
-  return "readScope mode must be slice, search, or profile.";
 }

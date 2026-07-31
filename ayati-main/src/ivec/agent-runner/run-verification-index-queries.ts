@@ -13,6 +13,25 @@ import {
   normalizeTaskValidationSubject,
 } from "./task-validation-outcome-registry.js";
 
+export function findCurrentCompletionOutcomeByRef(
+  index: CurrentRunVerificationIndex,
+  outcomeRef: string,
+): RunVerifiedOutcome | undefined {
+  return index.outcomes.find((outcome) => (
+    outcome.id === outcomeRef && outcome.role === "completion"
+  ));
+}
+
+export function findInvalidatedCompletionOutcomeByRef(
+  index: CurrentRunVerificationIndex,
+  outcomeRef: string,
+): RunInvalidatedOutcome | undefined {
+  return index.invalidated.find((entry) => (
+    entry.outcome.id === outcomeRef
+    && entry.outcome.role === "completion"
+  ));
+}
+
 export function findLatestVerifiedPathOutcome(
   index: CurrentRunVerificationIndex,
   path: string,
@@ -67,6 +86,9 @@ export function findLatestVerifiedOutcomeForCheck(
   index: CurrentRunVerificationIndex,
   check: ModeTransitionValidationCheck,
 ): RunVerifiedOutcome | undefined {
+  if (check.outcomeRef) {
+    return findCurrentCompletionOutcomeByRef(index, check.outcomeRef);
+  }
   const subject = normalizeTaskValidationSubject(check.kind, check.subject);
   return latestOutcome(index.outcomes, (outcome): outcome is RunVerifiedOutcome => {
     if (outcome.role !== "completion" || outcome.subject !== subject) {
@@ -118,6 +140,9 @@ export function findLatestInvalidatedOutcomeForCheck(
   index: CurrentRunVerificationIndex,
   check: ModeTransitionValidationCheck,
 ): RunInvalidatedOutcome | undefined {
+  if (check.outcomeRef) {
+    return findInvalidatedCompletionOutcomeByRef(index, check.outcomeRef);
+  }
   const subject = normalizeTaskValidationSubject(check.kind, check.subject);
   return latestInvalidated(index.invalidated, (entry) => {
     if (

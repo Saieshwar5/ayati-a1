@@ -207,6 +207,7 @@ function promptState(): AgentPromptStateView {
           importantContext: [],
         },
         verifiedOutcomes: [{
+          outcomeRef: "run:RUN-1:step:2:call:write-config:outcome:0",
           kind: "file.written",
           subject: "/workspace/config.ts",
           actualKind: "file",

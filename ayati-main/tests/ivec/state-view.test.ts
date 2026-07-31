@@ -441,6 +441,7 @@ describe("buildAgentStateView", () => {
     expect(call).not.toHaveProperty("projectionMetadata");
     expect(call).not.toHaveProperty("stepRef");
     expect(prompt.context.run?.verifiedOutcomes).toEqual([{
+      outcomeRef: "run:RUN-1:step:2:call:write-generated:outcome:0",
       kind: "file.written",
       subject: "/workspace/src/generated.ts",
       actualKind: "file",

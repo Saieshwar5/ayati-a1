@@ -1,13 +1,7 @@
 import { normalizeWorkstreamBindingProposal } from "../workstream-binding/proposal.js";
 import { normalizeWorkstreamWorkspaceTargets } from "../workstream-binding/workspace-targets.js";
 import { requireAbsoluteFilesystemPath } from "../../shared/filesystem-paths.js";
-import {
-  isTaskValidationOutcomeKind,
-  type FileReadValidationScope,
-  type FileSearchValidationScope,
-  type ModeTransitionValidationCheck,
-} from "./task-validation-contracts.js";
-import { normalizeTaskValidationCheck } from "./task-validation-outcome-registry.js";
+import type { ResourceMetadataProposal } from "./task-validation-contracts.js";
 import type {
   ModeTransitionMutationScope,
   ModeTransitionReference,
@@ -20,7 +14,8 @@ export function normalizeModeTransitionRequest(value: unknown): ModeTransitionRe
   const references = normalizeReferences(record["references"]);
   const mutationScopes = normalizeMutationScopes(record["mutationScopes"]);
   const workspaceTargets = normalizeWorkstreamWorkspaceTargets(record["workspaceTargets"]);
-  const validationChecks = normalizeValidationChecks(record["validationChecks"]);
+  const outcomeRefs = normalizeOutcomeRefs(record["outcomeRefs"]);
+  const resourceMetadata = normalizeResourceMetadata(record["resourceMetadata"]);
   return {
     to: normalizeModeTransitionTarget(record["to"]),
     purpose: typeof record["purpose"] === "string" ? normalizeText(record["purpose"]) : "",
@@ -31,7 +26,8 @@ export function normalizeModeTransitionRequest(value: unknown): ModeTransitionRe
     ...(references.length > 0 ? { references } : {}),
     ...(mutationScopes.length > 0 ? { mutationScopes } : {}),
     ...(workspaceTargets.length > 0 ? { workspaceTargets } : {}),
-    ...(validationChecks.length > 0 ? { validationChecks } : {}),
+    ...(outcomeRefs.length > 0 ? { outcomeRefs } : {}),
+    ...(resourceMetadata.length > 0 ? { resourceMetadata } : {}),
     ...(Array.isArray(record["targets"])
       ? { targets: normalizeStringArray(record["targets"]) }
       : {}),
@@ -54,83 +50,35 @@ function normalizeModeTransitionTarget(value: unknown): ModeTransitionRequest["t
   return "observe.locate";
 }
 
-function normalizeValidationChecks(value: unknown): ModeTransitionValidationCheck[] {
+function normalizeOutcomeRefs(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
-  const checks = value.flatMap((item): ModeTransitionValidationCheck[] => {
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim());
+}
+
+function normalizeResourceMetadata(value: unknown): ResourceMetadataProposal[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): ResourceMetadataProposal[] => {
     if (
       !isRecord(item)
-      || !isTaskValidationOutcomeKind(item["kind"])
-      || typeof item["subject"] !== "string"
+      || typeof item["path"] !== "string"
+      || typeof item["displayName"] !== "string"
+      || typeof item["description"] !== "string"
+      || !Array.isArray(item["aliases"])
     ) {
       return [];
     }
-    const expectedKind = item["expectedKind"] === "directory"
-      ? "directory"
-      : item["expectedKind"] === "either"
-        ? "either"
-        : item["expectedKind"] === "file"
-          ? "file"
-          : undefined;
-    const readScope = normalizeReadScope(item["readScope"]);
-    const searchScope = normalizeSearchScope(item["searchScope"]);
-    const denialCode = typeof item["denialCode"] === "string"
-      ? normalizeText(item["denialCode"])
-      : undefined;
-    return [normalizeTaskValidationCheck({
-      kind: item["kind"],
-      subject: item["subject"],
-      ...(expectedKind ? { expectedKind } : {}),
-      ...(searchScope ? { searchScope } : {}),
-      ...(readScope ? { readScope } : {}),
-      ...(denialCode ? { denialCode } : {}),
-    })];
-  });
-  return uniqueObjects(checks).slice(0, 12);
-}
-
-function normalizeSearchScope(value: unknown): FileSearchValidationScope | undefined {
-  if (
-    !isRecord(value)
-    || !Array.isArray(value["roots"])
-    || typeof value["maxDepth"] !== "number"
-    || typeof value["includeHidden"] !== "boolean"
-  ) {
-    return undefined;
-  }
-  return {
-    roots: value["roots"].filter(
-      (root): root is string => typeof root === "string",
-    ),
-    maxDepth: value["maxDepth"],
-    includeHidden: value["includeHidden"],
-  };
-}
-
-function normalizeReadScope(value: unknown): FileReadValidationScope | undefined {
-  if (!isRecord(value)) return undefined;
-  if (
-    value["mode"] === "slice"
-    && typeof value["startLine"] === "number"
-    && typeof value["endLine"] === "number"
-  ) {
-    return {
-      mode: "slice",
-      startLine: value["startLine"],
-      endLine: value["endLine"],
-    };
-  }
-  if (
-    value["mode"] === "search"
-    && typeof value["query"] === "string"
-  ) {
-    return {
-      mode: "search",
-      query: normalizeText(value["query"]),
-    };
-  }
-  return value["mode"] === "profile"
-    ? { mode: "profile" }
-    : undefined;
+    return [{
+      path: normalizeFilesystemPath(item["path"]),
+      displayName: normalizeText(item["displayName"]),
+      description: normalizeText(item["description"]),
+      aliases: [...new Set(item["aliases"]
+        .filter((alias): alias is string => typeof alias === "string")
+        .map(normalizeText)
+        .filter(Boolean))],
+    }];
+  }).slice(0, 32);
 }
 
 function normalizeReferences(value: unknown): ModeTransitionReference[] {

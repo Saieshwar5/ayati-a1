@@ -21,76 +21,53 @@ describe("mode transition request normalization", () => {
     });
   });
 
-  it("preserves and normalizes a typed bounded-read validation check", () => {
+  it("preserves exact validation outcome references and resource metadata", () => {
     expect(normalizeModeTransitionRequest({
       to: "validation",
       purpose: "Validate the requested source lines.",
       capabilities: ["task:validation"],
-      validationChecks: [{
-        kind: "file.read_scope_satisfied",
-        subject: "/tmp/source.ts",
-        expectedKind: "file",
-        readScope: {
-          mode: "search",
-          query: "  createParser  ",
-        },
+      outcomeRefs: ["  run:RUN-1:step:1:call:read-1:outcome:1  "],
+      resourceMetadata: [{
+        path: "/tmp/source.ts",
+        displayName: "  Source file  ",
+        description: "  Parser implementation  ",
+        aliases: [" parser ", "parser"],
       }],
     })).toMatchObject({
       to: "validation",
-      validationChecks: [{
-        kind: "file.read_scope_satisfied",
-        subject: "/tmp/source.ts",
-        expectedKind: "file",
-        readScope: {
-          mode: "search",
-          query: "createParser",
-        },
+      outcomeRefs: ["run:RUN-1:step:1:call:read-1:outcome:1"],
+      resourceMetadata: [{
+        path: "/tmp/source.ts",
+        displayName: "Source file",
+        description: "Parser implementation",
+        aliases: ["parser"],
       }],
     });
   });
 
-  it("does not manufacture a read scope from malformed input", () => {
-    expect(normalizeModeTransitionRequest({
+  it("does not accept model-supplied validation checks", () => {
+    const request = normalizeModeTransitionRequest({
       to: "validation",
-      purpose: "Validate the requested source lines.",
+      purpose: "Try to manufacture completion proof.",
       capabilities: ["task:validation"],
       validationChecks: [{
-        kind: "file.read_scope_satisfied",
+        kind: "file.read_complete",
         subject: "/tmp/source.ts",
-        readScope: {
-          mode: "slice",
-          startLine: "10",
-          endLine: 20,
-        },
       }],
-    }).validationChecks).toEqual([{
-      kind: "file.read_scope_satisfied",
-      subject: "/tmp/source.ts",
-    }]);
+    });
+
+    expect(request.validationChecks).toBeUndefined();
+    expect(request.outcomeRefs).toBeUndefined();
   });
 
-  it("normalizes exact no-match search scope roots", () => {
-    expect(normalizeModeTransitionRequest({
+  it("preserves duplicate and empty references for deterministic rejection", () => {
+    const request = normalizeModeTransitionRequest({
       to: "validation",
-      purpose: "Validate the zero-match search.",
+      purpose: "Validate exact current-run outcomes.",
       capabilities: ["task:validation"],
-      validationChecks: [{
-        kind: "file.search_no_match",
-        subject: "missing-report.txt",
-        searchScope: {
-          roots: ["/workspace/z", "/workspace/a", "/workspace/z"],
-          maxDepth: 10,
-          includeHidden: false,
-        },
-      }],
-    }).validationChecks).toEqual([{
-      kind: "file.search_no_match",
-      subject: "missing-report.txt",
-      searchScope: {
-        roots: ["/workspace/a", "/workspace/z"],
-        maxDepth: 10,
-        includeHidden: false,
-      },
-    }]);
+      outcomeRefs: [" outcome-1 ", "outcome-1", "   "],
+    });
+
+    expect(request.outcomeRefs).toEqual(["outcome-1", "outcome-1", ""]);
   });
 });

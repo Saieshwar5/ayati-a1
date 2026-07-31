@@ -2124,7 +2124,8 @@ describe("callAgentDecision", () => {
     });
   });
 
-  it("exposes the exact validation-mode schema and parses typed task outcomes", async () => {
+  it("exposes the exact validation-mode schema and parses outcome references", async () => {
+    const outcomeRef = "run:RUN-1:step:1:call:write-1:outcome:0";
     const { provider, generateTurn } = createNativeToolProvider([{
       type: "tool_calls",
       calls: [{
@@ -2133,11 +2134,7 @@ describe("callAgentDecision", () => {
         input: {
           purpose: "Freshly verify the important website file.",
           capabilities: ["task:validation"],
-          validationChecks: [{
-            kind: "path.exists",
-            subject: "/tmp/site/index.html",
-            expectedKind: "file",
-          }],
+          outcomeRefs: [outcomeRef],
         },
       }],
     }]);
@@ -2152,26 +2149,20 @@ describe("callAgentDecision", () => {
       ?.find((tool) => tool.name === "decision_enter_validation");
     expect(transitionTool?.inputSchema).toMatchObject({
       type: "object",
-      required: ["purpose", "capabilities", "validationChecks"],
+      required: ["purpose", "capabilities", "outcomeRefs"],
       additionalProperties: false,
     });
-    expect(JSON.stringify(transitionTool?.inputSchema)).toContain("Typed deterministic outcome");
-    expect(JSON.stringify(transitionTool?.inputSchema)).toContain("process.exit_success");
-    expect(JSON.stringify(transitionTool?.inputSchema)).toContain("file.search_no_match");
-    expect(JSON.stringify(transitionTool?.inputSchema)).toContain("searchScope");
-    expect(JSON.stringify(transitionTool?.inputSchema)).toContain("file.read_scope_satisfied");
-    expect(JSON.stringify(transitionTool?.inputSchema)).toContain("readScope");
+    expect(JSON.stringify(transitionTool?.inputSchema)).toContain("context.run.verifiedOutcomes");
+    expect(JSON.stringify(transitionTool?.inputSchema)).not.toContain("validationChecks");
+    expect(JSON.stringify(transitionTool?.inputSchema)).not.toContain("searchScope");
+    expect(JSON.stringify(transitionTool?.inputSchema)).not.toContain("readScope");
     expect(decision).toEqual({
       kind: "transition_mode",
       request: {
         to: "validation",
         purpose: "Freshly verify the important website file.",
         capabilities: ["task:validation"],
-        validationChecks: [{
-          kind: "path.exists",
-          subject: "/tmp/site/index.html",
-          expectedKind: "file",
-        }],
+        outcomeRefs: [outcomeRef],
       },
       workingNotes: undefined,
     });

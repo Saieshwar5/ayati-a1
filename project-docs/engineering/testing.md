@@ -76,8 +76,11 @@ Changes should prove the relevant invariants:
     replace detailed verification and completion-evidence objects with one
     verification-status scalar. A separate exact
     `context.run.verifiedOutcomes` projection contains only current
-    validation-ready completion proofs and is rebuildable from the durable
-    call journal. Accepted terminal completion promotes at most four selected
+    validation-ready completion proofs, gives each one a stable exact
+    `outcomeRef`, and is rebuildable from the durable call journal. The model
+    selects only these references; tests must reject fabricated, cross-run,
+    routing-only, supporting, duplicate, and stale references. Accepted
+    terminal completion promotes at most four selected
     passed checks into bounded WorkState receipts with exact proof references;
     failed checks and raw verifier payloads are excluded.
 17. Context candidates are disposable, lane-scoped, source-hashed, and valid

@@ -78,12 +78,11 @@ describe("stable decision system prompt", () => {
     const prompt = STABLE_DECISION_SYSTEM_CONTEXT;
 
     expect(prompt).toContain("Use canonical paths and narrow reads");
-    expect(prompt).toContain("enter task:validation with only deciding outcomes");
-    expect(prompt).toContain("deciding outcomes copied exactly from context.run.verifiedOutcomes");
-    expect(prompt).toContain("file.search_no_match requires its searchScope");
+    expect(prompt).toContain("enter task:validation with only the few exact outcomeRefs from context.run.verifiedOutcomes");
+    expect(prompt).toContain("Never copy or reconstruct kind, subject, path kind, searchScope, readScope, callId, or denialCode");
     expect(prompt).toContain("Validation is proof-only, exposes no action tools");
-    expect(prompt).toContain("tool.call_succeeded with an exact callId");
-    expect(prompt).toContain("tool.call_denied requires the exact callId and denialCode");
+    expect(prompt).toContain("Prefer stronger typed outcomes over tool.call_succeeded");
+    expect(prompt).toContain("A missing or stale outcomeRef requires fresh proof");
     expect(prompt).toContain("never proves a read or mutation succeeded");
     expect(prompt).toContain("other OS-readable absolute paths remain read-only");
     expect(prompt).toContain("omitted search roots, and working directories use it");

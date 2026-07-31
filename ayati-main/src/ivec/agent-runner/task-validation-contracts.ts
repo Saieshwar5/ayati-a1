@@ -58,12 +58,14 @@ export type FileReadValidationScope =
     };
 
 /**
- * One exact responsibility outcome selected for final task validation.
+ * One exact responsibility outcome resolved by the runtime for final task
+ * validation.
  *
- * The subject is copied from deterministic current-run verification:
- * a canonical path, verified fact subject, artifact identity, or exact call id.
+ * Model-facing transitions select only outcomeRef values. The remaining fields
+ * are materialized from deterministic current-run verification.
  */
 export interface ModeTransitionValidationCheck {
+  outcomeRef?: string;
   kind: TaskValidationOutcomeKind;
   subject: string;
   expectedKind?: ValidationExpectedPathKind;

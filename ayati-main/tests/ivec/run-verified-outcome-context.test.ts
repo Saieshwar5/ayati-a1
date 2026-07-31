@@ -30,6 +30,7 @@ describe("run verified-outcome prompt context", () => {
     });
 
     expect(outcomes).toEqual([{
+      outcomeRef: `run:${RUN_ID}:step:1:call:call-1:outcome:0`,
       kind: "file.search_no_match",
       subject: "missing-report.txt",
       searchScope: {
@@ -77,6 +78,7 @@ describe("run verified-outcome prompt context", () => {
 
     expect(outcomes).toEqual([
       {
+        outcomeRef: `run:${RUN_ID}:step:1:call:call-1:outcome:0`,
         kind: "file.written",
         subject: "/workspace/src/config.ts",
         actualKind: "file",
@@ -87,6 +89,7 @@ describe("run verified-outcome prompt context", () => {
         },
       },
       {
+        outcomeRef: `run:${RUN_ID}:step:2:call:call-2:outcome:1`,
         kind: "file.read_scope_satisfied",
         subject: "/workspace/src/parser.ts",
         actualKind: "file",
@@ -155,6 +158,49 @@ describe("run verified-outcome prompt context", () => {
         source: expect.objectContaining({ step: 2 }),
       }),
     ]);
+  });
+
+  it("keeps an earlier outcome reference stable when later evidence is appended", () => {
+    const firstCall = verifiedCall(1, "read_files", [
+      pathEvidence("/workspace/report.txt", true, "file", 1, "read", "observed"),
+      {
+        kind: "file_read",
+        path: "/workspace/report.txt",
+        requestedPath: "/workspace/report.txt",
+        coverage: "complete",
+        contentAvailable: true,
+        change: "observed",
+        tool: "read_files",
+        step: 1,
+        callId: "call-1",
+        mode: "full",
+        truncated: false,
+      },
+    ]);
+    const initial = buildPromptVerifiedOutcomes({ runId: RUN_ID, calls: [firstCall] });
+    const appended = buildPromptVerifiedOutcomes({
+      runId: RUN_ID,
+      calls: [
+        firstCall,
+        verifiedCall(2, "write_files", [pathEvidence(
+          "/workspace/other.txt",
+          true,
+          "file",
+          2,
+          "write",
+          "mutated",
+        )]),
+      ],
+    });
+
+    expect(initial[1]?.outcomeRef).toBe(
+      `run:${RUN_ID}:step:1:call:call-1:outcome:1`,
+    );
+    expect(appended.find((outcome) => (
+      outcome.subject === "/workspace/report.txt"
+      && outcome.kind === "file.read_complete"
+    ))?.outcomeRef)
+      .toBe(initial[1]?.outcomeRef);
   });
 });
 

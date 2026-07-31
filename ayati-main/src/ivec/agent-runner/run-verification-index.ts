@@ -44,6 +44,8 @@ export type {
   RunVerifiedToolDenialOutcome,
 } from "./run-verification-index-contracts.js";
 export {
+  findCurrentCompletionOutcomeByRef,
+  findInvalidatedCompletionOutcomeByRef,
   findLatestInvalidatedCompleteRead,
   findLatestInvalidatedOutcomeForCheck,
   findLatestInvalidatedPathOutcome,

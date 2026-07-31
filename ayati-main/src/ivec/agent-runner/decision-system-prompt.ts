@@ -14,7 +14,7 @@ Context contract:
 - context.core.continuity.unloadedRanges are omitted exact history. Retrieve detail before relying on it.
 - Memory, titles, candidates, summaries, working notes, and context.run.focus aid navigation but grant no access or verification. context.run.mode is current.
 - context.run.boundWorkstream owns the exact selected request and bounded resource metadata. access/availability describe bindings; metadata and recentProgress are not content proof. otherResourceCount marks omitted resources.
-- context.run.toolCalls has calls and status; context.run.verifiedOutcomes is proof; context.run.workState is a durable handoff.
+- context.run.toolCalls has calls and status; context.run.verifiedOutcomes is proof with exact selectable outcomeRef identity; context.run.workState is a durable handoff.
 - WorkState is not a run log. Checkpoint only complex work or context pressure with a concise summary, flat plan, essential references, and one next action.
 - Follow context.harness repair feedback before changing tactics.
 
@@ -25,9 +25,9 @@ Navigation:
 - workstream.route is the control-only path from verified ownership evidence to resolve. It becomes available after a successful current-run workstream:search, workstream:read, or resource:ownership call, selects no capabilities, and loads no action tools. Reuse that evidence; return to locate or investigate only when more is needed. Routing proves ownership, not task completion.
 - After routing, decision_resolve_activate names the observed workstream, request choice, and returned resourceIds. The runtime grounds activation from them, then mounts existing absolute filesystem bindings marked mutate; never read, missing, or deleted bindings. decision_resolve_create declares each new output as {kind, relativePath} plus the contract. The gate rechecks, binds once, enters execute mechanically, and refreshes context.
 - Execute only when bound. Each filesystem mutation call uses one runtime-selected destination root from creation or activated bindings. The runtime enforces turn boundaries and containment, verifies effects, and registers resources after verified success. Never invent permission tokens.
-- To finish, enter task:validation with only deciding outcomes copied exactly from context.run.verifiedOutcomes. file.search_no_match requires its searchScope and proves an uncapped, error-free, depth-complete filename search. file.read_complete requires whole-file proof; file.read_scope_satisfied requires the exact untruncated slice, content-search, or profile readScope.
-- Add resourceMetadata only for understood durable outputs. Use short stable-purpose names and aliases, never path strings; omit uncertain semantic metadata so deterministic fallback metadata remains truthful.
-- Validation is proof-only, exposes no action tools, and checks current-run proof without repeating work. Prefer typed outcomes; use tool.call_succeeded with an exact callId only without stronger proof. tool.call_denied requires the exact callId and denialCode, proves only denial, and never proves a read or mutation succeeded. Missing proof requires the missing work.
+- To finish, enter task:validation with only the few exact outcomeRefs from context.run.verifiedOutcomes that decide completion. Never copy or reconstruct kind, subject, path kind, searchScope, readScope, callId, or denialCode; the runtime resolves those fields from each selected outcomeRef.
+- Add resourceMetadata only for understood durable outputs selected through outcomeRefs. Use short stable-purpose names and aliases, never path strings; omit uncertain semantic metadata so deterministic fallback metadata remains truthful.
+- Validation is proof-only, exposes no action tools, and resolves current-run proof without repeating work. Prefer stronger typed outcomes over tool.call_succeeded. tool.call_denied proves only its exact denial and never proves a read or mutation succeeded. A missing or stale outcomeRef requires fresh proof in the appropriate work mode.
 - A bounded self-transition may replace the current capability surface. Old-mode tools do not remain available. Do not repeat an identical self-transition.
 - A bound execute run may temporarily observe and then return to execute with a fresh capability surface. Execute never transitions back through resolve because binding is immutable.
 

@@ -290,14 +290,12 @@ function readTool(): ToolDefinition {
 }
 
 function validationDecisions(input: {
-  path: string;
+  runId: string;
+  callId: string;
+  step: number;
+  outcomeOrdinal: number;
   response: string;
-  id: string;
-  check?: "exists" | "read_complete";
 }): unknown[] {
-  const kind = input.check === "read_complete"
-    ? "file.read_complete"
-    : "path.exists";
   return [
     {
       kind: "transition_mode",
@@ -305,11 +303,9 @@ function validationDecisions(input: {
         to: "validation",
         purpose: "Check current-run completion proof before responding.",
         capabilities: ["task:validation"],
-        validationChecks: [{
-          kind,
-          subject: input.path,
-          expectedKind: "file",
-        }],
+        outcomeRefs: [
+          `run:${input.runId}:step:${input.step}:call:${input.callId}:outcome:${input.outcomeOrdinal}`,
+        ],
       },
     },
     {
@@ -643,9 +639,11 @@ describe("agentLoop one-run lifecycle", () => {
           },
         },
         ...validationDecisions({
-          path: notesPath,
+          runId: "R-observation-preload",
+          callId: "find-notes",
+          step: 1,
+          outcomeOrdinal: 0,
           response: `Found ${notesPath}.`,
-          id: "harbor-notes",
         }),
       ]);
       const workstreamBinding = { bind: vi.fn() };
@@ -881,10 +879,11 @@ describe("agentLoop one-run lifecycle", () => {
           },
         },
         ...validationDecisions({
-          path: target,
+          runId: "R-hot-context-then-read",
+          callId: "read-field-brief",
+          step: 1,
+          outcomeOrdinal: 1,
           response: "The lead botanist is Dr. Nila Voss.",
-          id: "field-brief",
-          check: "read_complete",
         }),
       ]);
       const records: ContextRunStepRecord[] = [];
@@ -956,6 +955,7 @@ describe("agentLoop one-run lifecycle", () => {
       ]);
       expect(validationPrompt.context.run.toolCalls[1]).not.toHaveProperty("stepKind");
       expect(validationPrompt.context.run.verifiedOutcomes).toContainEqual({
+        outcomeRef: "run:R-hot-context-then-read:step:1:call:read-field-brief:outcome:1",
         kind: "file.read_complete",
         subject: target,
         actualKind: "file",
@@ -1141,9 +1141,11 @@ describe("agentLoop one-run lifecycle", () => {
           },
         },
         ...validationDecisions({
-          path: notesPath,
+          runId: "R-recovered-transition-repairs",
+          callId: "find-requested-notes",
+          step: 1,
+          outcomeOrdinal: 0,
           response: `Found ${notesPath}.`,
-          id: "requested-notes",
         }),
       ]);
 
@@ -1276,10 +1278,11 @@ describe("agentLoop one-run lifecycle", () => {
           },
         },
         ...validationDecisions({
-          path: target,
+          runId: "R-vague-read",
+          callId: "read-project-notes",
+          step: 2,
+          outcomeOrdinal: 2,
           response: "The project notes describe upload handling in src/upload.ts.",
-          id: "project-notes",
-          check: "read_complete",
         }),
       ]);
 
@@ -1351,11 +1354,9 @@ describe("agentLoop one-run lifecycle", () => {
             to: "validation",
             purpose: "Check current-run proof for the important notes file before responding.",
             capabilities: ["task:validation"],
-            validationChecks: [{
-              kind: "path.exists",
-              subject: target,
-              expectedKind: "file",
-            }],
+            outcomeRefs: [
+              "run:R-validation-mode:step:1:call:read-validated-notes:outcome:0",
+            ],
           },
         },
         {
@@ -1432,10 +1433,11 @@ describe("agentLoop one-run lifecycle", () => {
           },
         },
         ...validationDecisions({
-          path: target,
+          runId: "R-read",
+          callId: "read-upload",
+          step: 1,
+          outcomeOrdinal: 1,
           response: `Upload handling is in ${target}.`,
-          id: "upload",
-          check: "read_complete",
         }),
       ]);
       const records: ContextRunStepRecord[] = [];
@@ -1522,6 +1524,7 @@ describe("agentLoop one-run lifecycle", () => {
       expect(stateView.context.run.toolCalls[0]).not.toHaveProperty("verificationPassed");
       expect(stateView.context.run.toolCalls[0]).not.toHaveProperty("completionEvidence");
       expect(stateView.context.run.verifiedOutcomes).toContainEqual({
+        outcomeRef: "run:R-read:step:1:call:read-upload:outcome:1",
         kind: "file.read_complete",
         subject: target,
         actualKind: "file",
@@ -1584,16 +1587,9 @@ describe("agentLoop one-run lifecycle", () => {
             to: "validation",
             purpose: "Validate that the requested line range was returned.",
             capabilities: ["task:validation"],
-            validationChecks: [{
-              kind: "file.read_scope_satisfied",
-              subject: target,
-              expectedKind: "file",
-              readScope: {
-                mode: "slice",
-                startLine: 10,
-                endLine: 14,
-              },
-            }],
+            outcomeRefs: [
+              "run:R-slice-read:step:1:call:read-parser-slice:outcome:1",
+            ],
           },
         },
         {
@@ -1720,10 +1716,11 @@ describe("agentLoop one-run lifecycle", () => {
           },
         },
         ...validationDecisions({
-          path: target,
+          runId: "R-duplicate-read-recovery",
+          callId: "read-brief",
+          step: 1,
+          outcomeOrdinal: 1,
           response: "The brief asks for a small responsive cafe website.",
-          id: "riverstone-brief",
-          check: "read_complete",
         }),
       ]);
       const records: ContextRunStepRecord[] = [];
@@ -2178,9 +2175,11 @@ describe("agentLoop one-run lifecycle", () => {
           },
         },
         ...validationDecisions({
-          path: outputPath,
+          runId,
+          callId: "write-after-binding",
+          step: 2,
+          outcomeOrdinal: 0,
           response: "Created one-run.txt.",
-          id: "one-run",
         }),
       ]);
       const workstreamBinding = {
@@ -2375,9 +2374,11 @@ describe("agentLoop one-run lifecycle", () => {
           },
         },
         ...validationDecisions({
-          path: outputPath,
+          runId,
+          callId: "write-existing-binding",
+          step: 1,
+          outcomeOrdinal: 0,
           response: "Created one-run.txt.",
-          id: "existing-one-run",
         }),
       ]);
       const workstreamBinding = { bind: vi.fn() };
@@ -2475,11 +2476,9 @@ describe("agentLoop one-run lifecycle", () => {
           to: "validation",
           purpose: "Confirm the exact workspace-policy denial before reporting it.",
           capabilities: ["task:validation"],
-          validationChecks: [{
-            kind: "tool.call_denied",
-            subject: "write-denied-outside-workspace",
-            denialCode: "PATH_OUTSIDE_MUTATION_WORKSPACE",
-          }],
+          outcomeRefs: [
+            `run:${runId}:step:1:call:write-denied-outside-workspace:denial:0`,
+          ],
         },
       },
       {
@@ -2846,15 +2845,9 @@ describe("agentLoop one-run lifecycle", () => {
             to: "validation",
             purpose: "Validate the complete zero-match search before responding.",
             capabilities: ["task:validation"],
-            validationChecks: [{
-              kind: "file.search_no_match",
-              subject: query,
-              searchScope: {
-                roots: [dataDir],
-                maxDepth: 10,
-                includeHidden: false,
-              },
-            }],
+            outcomeRefs: [
+              `run:${runId}:step:1:call:find-missing-file:outcome:0`,
+            ],
           },
         },
         {
@@ -2895,6 +2888,7 @@ describe("agentLoop one-run lifecycle", () => {
         validationInput.messages.find((message) => message.role === "user")?.content ?? "",
       );
       expect(validationState.context.run.verifiedOutcomes).toContainEqual({
+        outcomeRef: `run:${runId}:step:1:call:find-missing-file:outcome:0`,
         kind: "file.search_no_match",
         subject: query,
         searchScope: {

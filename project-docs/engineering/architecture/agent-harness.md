@@ -354,10 +354,10 @@ Prompt context uses explicit bounded lanes:
   at most five progress summaries for the selected request. Tool calls retain
   useful inputs, outputs, purposes, execution status, and one
   verification-status scalar; detailed verification records and completion
-  evidence remain internal. Validation status and its exact checklist appear
-  in the mode card; the model selects kind and subject from
-  `verifiedOutcomes` instead of copying tool-call evidence into a completion
-  transaction.
+  evidence remain internal. Validation status and its runtime-resolved
+  checklist appear in the mode card; the model selects exact `outcomeRef`
+  values from `verifiedOutcomes` instead of reconstructing proof fields from
+  tool output.
 
 Full workstream documents and resource cards are not prompt lanes or Hot
 Context entries. The bounded run projection includes at most ten resource
@@ -456,9 +456,10 @@ routing outcomes remain navigation-only, and a later exact or ancestor
 mutation invalidates an earlier read or path proof.
 
 The model sees only the index's currently valid completion subset under
-`context.run.verifiedOutcomes`. Each entry contains a validation-ready kind,
-subject, relevant path kind, search scope, or read scope, and its
-step/call/tool source.
+`context.run.verifiedOutcomes`. Each entry contains a stable `outcomeRef`, a
+human-readable kind and subject, relevant path kind, search scope, or read
+scope, and its step/call/tool source. Only `outcomeRef` is selectable input;
+the remaining fields explain what the runtime already proved.
 Supporting facts, routing outcomes, invalidated proof, hashes, verification
 contracts, checks, and methods stay internal. The adjacent tool-call
 projection keeps its exact normal input and output; moving proof detail out of
@@ -519,19 +520,25 @@ on demand and returns an exact run/step/call reference.
 ## Completion and Finalization
 
 When the derived verification index indicates that the current responsibility
-may be fulfilled, the model enters `validation` with one to twelve important
-typed outcome checks:
+may be fulfilled, the model enters `validation` with one to twelve exact
+current-run outcome references:
 
 ```text
 decision_enter_validation({
   purpose: "Verify the important site outputs before responding.",
   capabilities: ["task:validation"],
-  validationChecks: [
-    { kind: "path.exists", subject: "/absolute/site/index.html", expectedKind: "file" },
-    { kind: "process.exit_success", subject: "pnpm test" }
+  outcomeRefs: [
+    "run:RUN-...:step:2:call:write-site:outcome:0",
+    "run:RUN-...:step:3:call:test-site:task:1"
   ]
 })
 ```
+
+The model never supplies `kind`, `subject`, `expectedKind`, `searchScope`,
+`readScope`, `callId`, or `denialCode`. The runtime resolves each exact
+reference against the derived current-run index and materializes the full
+typed check itself. Unknown, cross-run, routing-only, supporting, and stale
+references are rejected before validation is entered.
 
 `path.exists` requires a verified current-run path-state result for the exact
 subject and optional expected kind. `file.read_complete` requires a verified
@@ -542,7 +549,8 @@ matches, profiles, samples, partial slices, failed verification, and
 historical-run evidence do not satisfy it.
 
 When the responsibility asks for a bounded read instead of the whole file,
-`file.read_scope_satisfied` carries one exact `readScope`:
+the selected outcome resolves internally to a `file.read_scope_satisfied`
+check carrying the exact verified `readScope`:
 
 ```text
 {
@@ -574,7 +582,8 @@ fallback keyed by `callId`; it is emitted only by the existing deterministic
 runtime verifier when no stronger completion outcome exists. Routing calls
 never produce task-completion proof.
 
-For a reportable permission denial, validation may instead select:
+For a reportable permission denial, the model selects its exact outcome
+reference. The runtime resolves it internally to:
 
 ```text
 {
@@ -591,13 +600,13 @@ as operation success. The model still decides whether reporting the denial
 fulfills the user's request; otherwise it uses a truthful blocked or failed
 outcome.
 
-Entering validation queries only the relevant outcomes in the derived
+Entering validation resolves only the selected references in the derived
 current-run index and records the satisfying exact call reference on each
 passed check. It does not call
 `inspect_paths`, `read_files`, `process_run`, or any other action tool. If
-proof is missing, wrong-kind, stale, or incomplete, the stored check fails with
-a direct repair reason. The agent returns to the appropriate work mode and
-performs only the missing operation once.
+proof is missing, ineligible, stale, or incomplete, the transition is rejected
+with a direct repair reason. The agent returns to the appropriate work mode
+and performs only the missing operation once.
 
 A passed checklist unlocks a direct final response only when WorkState has no
 remaining work, blocker, user-input need, or unresolved current-run failure. A

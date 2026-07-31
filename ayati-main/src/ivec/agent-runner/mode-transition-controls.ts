@@ -6,7 +6,10 @@ import {
 import { workstreamWorkspaceTargetArraySchema } from "../workstream-binding/workspace-targets.js";
 import type { ModeCapabilityOptions } from "./capabilities/contracts.js";
 import { normalizeModeTransitionRequest } from "./mode-transition-request.js";
-import { TASK_VALIDATION_OUTCOME_KINDS } from "./task-validation-contracts.js";
+import {
+  resourceMetadataArraySchema,
+  validationOutcomeRefArraySchema,
+} from "./task-validation-control-schema.js";
 import type {
   ModeTransitionMutationScope,
   ModeTransitionReference,
@@ -143,10 +146,10 @@ export function buildModeTransitionControlTools(
       "Evaluate only the important verified current-run outcomes required before reporting task completion. This proof-only mode runs no action tools.",
       {
         ...commonProperties(capabilities.validation),
-        validationChecks: validationCheckArraySchema(),
+        outcomeRefs: validationOutcomeRefArraySchema(),
         resourceMetadata: resourceMetadataArraySchema(),
       },
-      ["purpose", "capabilities", "validationChecks"],
+      ["purpose", "capabilities", "outcomeRefs"],
     ));
   }
 
@@ -199,6 +202,7 @@ export function modeTransitionControlCallFromRequest(
     references,
     mutationScopes,
     workspaceTargets,
+    validationChecks: _validationChecks,
     targets: _targets,
     binding,
     ...rest
@@ -369,124 +373,6 @@ function mutationScopeArraySchema(): Record<string, unknown> {
       },
     }, ["kind", "value"]),
   };
-}
-
-function validationCheckArraySchema(): Record<string, unknown> {
-  return {
-    type: "array",
-    minItems: 1,
-    maxItems: 12,
-    description: "The few exact responsibility outcomes that must already have deterministic current-run proof before completion.",
-    items: objectSchema({
-      kind: {
-        type: "string",
-        enum: TASK_VALIDATION_OUTCOME_KINDS,
-        description: "Typed deterministic outcome required for the current responsibility.",
-      },
-      subject: {
-        type: "string",
-        minLength: 1,
-        maxLength: 2000,
-        description: "Exact subject from current-run verification: canonical path, verified fact subject, artifact identity, or callId.",
-      },
-      expectedKind: {
-        type: "string",
-        enum: ["file", "directory", "symlink", "either"],
-        description: "Optional filesystem path-kind constraint. Omit for non-filesystem outcomes.",
-      },
-      searchScope: searchScopeSchema(),
-      readScope: readScopeSchema(),
-      denialCode: {
-        type: "string",
-        minLength: 1,
-        maxLength: 200,
-        description: "Required only for tool.call_denied. Copy the exact stable denial code from current-run verification.",
-      },
-    }, ["kind", "subject"]),
-  };
-}
-
-function resourceMetadataArraySchema(): Record<string, unknown> {
-  return {
-    type: "array",
-    maxItems: 32,
-    description: "Optional semantic metadata for important durable filesystem resources named by validationChecks. The runtime owns identity, kind, path, version, and lifecycle.",
-    items: objectSchema({
-      path: {
-        type: "string",
-        minLength: 1,
-        maxLength: 2000,
-        description: "Exact canonical absolute resource path also named by a validation check.",
-      },
-      displayName: {
-        type: "string",
-        minLength: 1,
-        maxLength: 500,
-        description: "Short human-readable resource name.",
-      },
-      description: {
-        type: "string",
-        minLength: 1,
-        maxLength: 2000,
-        description: "Stable semantic purpose of this resource, not a restatement of its path or latest operation.",
-      },
-      aliases: {
-        type: "array",
-        maxItems: 16,
-        uniqueItems: true,
-        items: { type: "string", minLength: 1, maxLength: 500 },
-        description: "Useful human search names; do not repeat the absolute path.",
-      },
-    }, ["path", "displayName", "description", "aliases"]),
-  };
-}
-
-function searchScopeSchema(): Record<string, unknown> {
-  return objectSchema({
-    roots: {
-      type: "array",
-      minItems: 1,
-      maxItems: 8,
-      uniqueItems: true,
-      items: { type: "string", minLength: 1, maxLength: 2000 },
-      description: "Exact canonical roots searched by the verified find_files call.",
-    },
-    maxDepth: {
-      type: "integer",
-      minimum: 1,
-      description: "Exact recursion depth used by the verified search.",
-    },
-    includeHidden: {
-      type: "boolean",
-      description: "Exact hidden-file policy used by the verified search.",
-    },
-  }, ["roots", "maxDepth", "includeHidden"]);
-}
-
-function readScopeSchema(): Record<string, unknown> {
-  return objectSchema({
-    mode: {
-      type: "string",
-      enum: ["slice", "search", "profile"],
-      description: "Exact bounded read mode already verified by read_files.",
-    },
-    startLine: {
-      type: "integer",
-      minimum: 1,
-      description: "Required first line for slice mode.",
-    },
-    endLine: {
-      type: "integer",
-      minimum: 1,
-      description: "Required inclusive last line for slice mode.",
-    },
-    query: {
-      type: "string",
-      minLength: 1,
-      maxLength: 1000,
-      description: "Exact query for search mode.",
-    },
-  }, ["mode"]);
 }
 
 function controlTool(

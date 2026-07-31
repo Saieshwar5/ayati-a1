@@ -90,7 +90,7 @@ function createSingleLoopMutationProvider(outputPath: string): LlmProvider {
     },
     start: vi.fn(),
     stop: vi.fn(),
-    generateTurn: vi.fn(async (): Promise<LlmTurnOutput> => {
+    generateTurn: vi.fn(async (input): Promise<LlmTurnOutput> => {
       decision++;
       if (decision === 1) {
         return nativeDecisionFixture({
@@ -172,17 +172,14 @@ function createSingleLoopMutationProvider(outputPath: string): LlmProvider {
         });
       }
       if (decision === 6) {
+        const outcomeRef = projectedOutcomeRef(input, "write-after-binding");
         return nativeDecisionFixture({
           kind: "transition_mode",
           request: {
             to: "validation",
             purpose: "Check current-run proof for the important output file.",
             capabilities: ["task:validation"],
-            validationChecks: [{
-              kind: "path.exists",
-              subject: outputPath,
-              expectedKind: "file",
-            }],
+            outcomeRefs: [outcomeRef],
           },
         });
       }
@@ -196,6 +193,17 @@ function createSingleLoopMutationProvider(outputPath: string): LlmProvider {
       throw new Error("No queued provider response.");
     }),
   };
+}
+
+function projectedOutcomeRef(input: LlmTurnInput, callId: string): string {
+  const prompt = input.messages.find((message) => message.role === "user")?.content ?? "";
+  const refs = [...prompt.matchAll(/"outcomeRef"\s*:\s*"([^"]+)"/g)]
+    .map((match) => match[1] ?? "");
+  const outcomeRef = refs.find((candidate) => candidate.includes(`:call:${callId}:`));
+  if (!outcomeRef) {
+    throw new Error(`No projected outcomeRef found for ${callId}.`);
+  }
+  return outcomeRef;
 }
 
 function createSystemEventPolicy(): SystemEventPolicyConfig {
@@ -915,11 +923,7 @@ describe("IVecEngine one-run integration", () => {
               to: "validation",
               purpose: "Check current-run proof for the located health notes file.",
               capabilities: ["task:validation"],
-              validationChecks: [{
-                kind: "path.exists",
-                subject: healthNotesPath,
-                expectedKind: "file",
-              }],
+              outcomeRefs: ["run:R-system-read:step:1:call:find-health:outcome:0"],
             },
           },
           {

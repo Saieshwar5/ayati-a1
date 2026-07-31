@@ -1,6 +1,3 @@
-import type { ModeTransitionValidationCheck } from "./task-validation-contracts.js";
-import { validateTaskValidationCheck } from "./task-validation-outcome-registry.js";
-
 export interface TaskValidationRequestIssue {
   message: string;
   subjects: string[];
@@ -8,29 +5,42 @@ export interface TaskValidationRequestIssue {
 }
 
 export function validateTaskValidationRequest(
-  checks: ModeTransitionValidationCheck[] | undefined,
+  outcomeRefs: string[] | undefined,
 ): TaskValidationRequestIssue | undefined {
-  if ((checks?.length ?? 0) === 0) {
+  if ((outcomeRefs?.length ?? 0) === 0) {
     return {
-      message: "Validation mode requires at least one exact important responsibility outcome.",
+      message: "Validation mode requires at least one exact current-run outcomeRef.",
       subjects: [],
       allowedNextActions: [
-        "Provide only the few outcome kinds and exact subjects required to decide whether the current responsibility is complete.",
+        "Select only the few exact outcomeRef values required to decide whether the current responsibility is complete.",
       ],
     };
   }
 
-  for (const check of checks ?? []) {
-    const issue = validateTaskValidationCheck(check);
-    if (issue) {
-      return {
-        message: issue.message,
-        subjects: [issue.subject].filter(Boolean),
-        allowedNextActions: [
-          "Copy the outcome kind and exact subject from deterministic current-run verification.",
-        ],
-      };
-    }
+  if ((outcomeRefs?.length ?? 0) > 12) {
+    return {
+      message: "Validation mode accepts at most twelve outcomeRef values.",
+      subjects: outcomeRefs ?? [],
+      allowedNextActions: ["Select only the few outcomes that materially decide completion."],
+    };
+  }
+
+  const empty = (outcomeRefs ?? []).find((outcomeRef) => !outcomeRef.trim());
+  if (empty !== undefined) {
+    return {
+      message: "Every validation outcomeRef must be a non-empty exact reference.",
+      subjects: [],
+      allowedNextActions: ["Copy exact outcomeRef values from context.run.verifiedOutcomes."],
+    };
+  }
+
+  const unique = new Set(outcomeRefs);
+  if (unique.size !== outcomeRefs?.length) {
+    return {
+      message: "Validation outcomeRef values must be unique.",
+      subjects: outcomeRefs ?? [],
+      allowedNextActions: ["Remove duplicate outcomeRef values."],
+    };
   }
   return undefined;
 }

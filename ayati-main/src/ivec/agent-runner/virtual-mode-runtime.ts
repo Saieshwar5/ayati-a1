@@ -44,8 +44,8 @@ import {
   applyValidationModeEvidence,
   validationModePassed,
 } from "./validation-mode.js";
-import { buildCurrentRunVerificationIndex } from "./run-verification-index.js";
 import { validateTaskValidationRequest } from "./task-validation-request.js";
+import { prepareTaskValidationTransition } from "./task-validation-transition.js";
 import { canMarkTerminalReplyDone } from "./final-response-policy.js";
 import { latestActiveFailure } from "./failure-lifecycle.js";
 import {
@@ -159,25 +159,38 @@ export async function dispatchVirtualModeTransition(input: {
   const targetRepair = await validateTransitionTargets(input.state, request);
   if (targetRepair) return { kind: "rejected", repair: targetRepair };
 
-  if (request.to === "resolve") {
+  let effectiveRequest = request;
+  let validationIndex: import("./run-verification-index.js").CurrentRunVerificationIndex | undefined;
+  if (request.to === "validation") {
+    const prepared = prepareTaskValidationTransition({
+      runId: input.state.runId,
+      calls: input.state.toolContext?.toolCalls,
+      request,
+    });
+    if (!prepared.ok) return { kind: "rejected", repair: prepared.repair };
+    effectiveRequest = prepared.request;
+    validationIndex = prepared.index;
+  }
+
+  if (effectiveRequest.to === "resolve") {
     return await dispatchResolveTransition({
       ...input,
-      request,
+      request: effectiveRequest,
       resolvedToolNames: capabilityResolution.loaded,
     });
   }
 
-  if (identicalVirtualModeRequest(input.state.virtualMode, request)) {
+  if (identicalVirtualModeRequest(input.state.virtualMode, effectiveRequest)) {
     const active = capabilityResolution.loaded;
     return {
       kind: "rejected",
       repair: repair(
         "MODE_NO_PROGRESS",
-        `The ${request.to} mode already has the same purpose, capabilities, and targets.`,
-        request.capabilities,
+        `The ${effectiveRequest.to} mode already has the same purpose, capabilities, and targets.`,
+        effectiveRequest.capabilities,
         ["Use an active executable tool, validate the outcome, or change the mode capability surface."],
       ),
-      noProgressResult: noProgressCapabilitySurfaceResult(request, active),
+      noProgressResult: noProgressCapabilitySurfaceResult(effectiveRequest, active),
     };
   }
 
@@ -204,30 +217,27 @@ export async function dispatchVirtualModeTransition(input: {
 
   const loadResult = mountModeTools({
     state: input.state,
-    request,
+    request: effectiveRequest,
     toolNames: eligibleToolNames,
     capabilitySurfaceManager: input.capabilitySurfaceManager,
     toolContext: input.toolContext,
   });
   input.state.virtualMode = applyVirtualModeTransition(
     input.state.virtualMode,
-    request,
-    request.to,
+    effectiveRequest,
+    effectiveRequest.to,
     input.iteration,
   );
-  if (request.to === "validation") {
+  if (effectiveRequest.to === "validation") {
     applyValidationModeEvidence(
       input.state.virtualMode,
-      buildCurrentRunVerificationIndex({
-        runId: input.state.runId,
-        calls: input.state.toolContext?.toolCalls,
-      }),
+      validationIndex!,
     );
   }
   input.state.lastCapabilitySurface = loadResult;
   return {
     kind: "applied",
-    active: request.to,
+    active: effectiveRequest.to,
     toolNames: eligibleToolNames,
     loadResult,
   };
@@ -701,38 +711,32 @@ function validateTypedModeInputs(request: ModeTransitionRequest): VirtualModeRep
       ["Remove validationChecks or transition to validation after the responsibility appears fulfilled."],
     );
   }
+  if (request.to !== "validation" && (request.outcomeRefs?.length ?? 0) > 0) {
+    return repair(
+      "MODE_INPUT_INVALID",
+      "Outcome references are valid only in validation mode.",
+      request.outcomeRefs ?? [],
+      ["Remove outcomeRefs or transition to validation after the responsibility appears fulfilled."],
+    );
+  }
   if (request.to !== "validation" && (request.resourceMetadata?.length ?? 0) > 0) {
     return repair(
       "MODE_INPUT_INVALID",
       "Resource metadata proposals are valid only in validation mode.",
       request.resourceMetadata?.map((metadata) => metadata.path) ?? [],
-      ["Remove resourceMetadata or provide it with exact validation checks."],
+      ["Remove resourceMetadata or provide it with exact selected outcomeRefs."],
     );
   }
   if (request.to === "validation") {
-    const issue = validateTaskValidationRequest(request.validationChecks);
+    const issue = validateTaskValidationRequest(request.outcomeRefs);
     if (issue) {
       return repair(
-        (request.validationChecks?.length ?? 0) === 0
+        (request.outcomeRefs?.length ?? 0) === 0
           ? "MODE_TARGET_REQUIRED"
           : "MODE_INPUT_INVALID",
         issue.message,
         issue.subjects,
         issue.allowedNextActions,
-      );
-    }
-    const validationSubjects = new Set(
-      (request.validationChecks ?? []).map((check) => check.subject),
-    );
-    const unmatchedMetadata = (request.resourceMetadata ?? [])
-      .filter((metadata) => !validationSubjects.has(metadata.path))
-      .map((metadata) => metadata.path);
-    if (unmatchedMetadata.length > 0) {
-      return repair(
-        "MODE_INPUT_INVALID",
-        "Resource metadata must refer to an exact path named by validationChecks.",
-        unmatchedMetadata,
-        ["Remove unmatched metadata or add the exact verified path to validationChecks."],
       );
     }
   }

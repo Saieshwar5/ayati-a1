@@ -327,6 +327,7 @@ describe("prepared main-context admission", () => {
         evidenceRef: "run:RUN-1:step:1:call:route-1",
       }],
       verifiedOutcomes: [{
+        outcomeRef: "run:RUN-1:step:2:call:write-result:outcome:0",
         kind: "file.written",
         subject: "/workspace/result.txt",
         actualKind: "file",
@@ -376,6 +377,7 @@ describe("prepared main-context admission", () => {
       mode: "full",
     });
     expect(finalState.context.run?.verifiedOutcomes).toEqual([{
+      outcomeRef: "run:RUN-1:step:2:call:write-result:outcome:0",
       kind: "file.written",
       subject: "/workspace/result.txt",
       actualKind: "file",

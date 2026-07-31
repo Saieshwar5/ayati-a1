@@ -379,10 +379,11 @@ call has a passed per-call verification record. Older records that only
 contain `verificationPassed` remain readable during migration, but new calls
 derive that Boolean from the per-call record.
 
-The validation request uses
-`{ kind, subject, expectedKind?, searchScope?, readScope?, denialCode? }`. The runtime
-matches it against the latest current-run eligible outcome and writes the
-satisfying run/step/call reference into the check result. A later filesystem
+The validation request uses `{ outcomeRefs: string[] }`. Each value must be an
+exact reference copied from `context.run.verifiedOutcomes`. The runtime—not
+the model—resolves every reference into
+`{ kind, subject, expectedKind?, searchScope?, readScope?, denialCode? }` and
+writes the satisfying run/step/call reference into the check result. A later filesystem
 mutation invalidates stale path/read proof and affected no-match searches. A
 deterministic runtime-check call
 may expose `tool.call_succeeded` by exact `callId` only when no stronger typed
@@ -390,9 +391,9 @@ outcome exists. A deterministically rejected permission call may expose
 `tool.call_denied` by exact `callId` and stable `denialCode` only when the call
 did not perform the requested operation. That proves the denial, never a read
 or mutation success. Routing and historical calls cannot satisfy task validation.
-The decision model obtains these selectable fields from the compact
-`context.run.verifiedOutcomes` projection rather than reconstructing proof
-from success-sounding tool output.
+Unknown, cross-run, supporting, routing-only, and invalidated references are
+rejected. The decision model sees descriptive proof fields in the compact
+projection, but selects only its exact opaque `outcomeRef` values.
 
 When a passed checklist is followed by an accepted final response, the runtime
 converts at most four of those exact passed checks into compact WorkState

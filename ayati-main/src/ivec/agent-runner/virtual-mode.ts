@@ -89,6 +89,8 @@ export interface ModeTransitionRequest {
   references?: ModeTransitionReference[];
   mutationScopes?: ModeTransitionMutationScope[];
   workspaceTargets?: import("../workstream-binding/contracts.js").WorkstreamWorkspaceTarget[];
+  outcomeRefs?: string[];
+  /** Runtime-resolved checks; never accepted from a model-facing control. */
   validationChecks?: ModeTransitionValidationCheck[];
   resourceMetadata?: ResourceMetadataProposal[];
   /**
@@ -391,12 +393,15 @@ export function modeTransitionActivationResourceValues(
 }
 
 export function modeTransitionEvidenceTargetValues(request: ModeTransitionRequest): string[] {
+  const validationTargets = (request.validationChecks?.length ?? 0) > 0
+    ? request.validationChecks!.map((check) => check.subject)
+    : request.outcomeRefs ?? [];
   const typed = normalizeStrings([
     ...modeTransitionReferenceValues(request),
     ...modeTransitionMutationScopeValues(request),
     ...modeTransitionWorkspaceTargetValues(request),
     ...modeTransitionActivationResourceValues(request),
-    ...(request.validationChecks ?? []).map((check) => check.subject),
+    ...validationTargets,
   ]);
   return typed.length > 0 ? typed : normalizeStrings(request.targets ?? []);
 }

@@ -265,11 +265,7 @@ describe("virtual mode runtime", () => {
       to: "validation",
       purpose: "Check completion proof for the important requested file.",
       capabilities: ["task:validation"],
-      validationChecks: [{
-        kind: "file.read_complete",
-        subject: "/tmp/known.md",
-        expectedKind: "file",
-      }],
+      outcomeRefs: [`run:${current.runId}:step:1:call:read-known:outcome:0`],
     }, []);
 
     expect(result).toMatchObject({
@@ -283,6 +279,7 @@ describe("virtual mode runtime", () => {
         returnMode: "observe.investigate",
         status: "passed",
         checks: [{
+          outcomeRef: `run:${current.runId}:step:1:call:read-known:outcome:0`,
           kind: "file.read_complete",
           subject: "/tmp/known.md",
           expectedKind: "file",

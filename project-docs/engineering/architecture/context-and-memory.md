@@ -309,7 +309,9 @@ routing evidence as non-completion context, and removes filesystem proofs
 invalidated by later known mutations. The index therefore improves validation
 without becoming a second persistence path. A filtered completion-only
 projection appears inside `context.run.verifiedOutcomes`; it is not a new
-top-level lane or authority source.
+top-level lane or authority source. Each projected item has an exact stable
+`outcomeRef`. The model selects that reference while the runtime retains
+ownership of the underlying kind, subject, scope, denial code, and source.
 
 The model-facing tool-call projection deliberately excludes verification
 methods, contracts, checks, verified-fact payloads, compatibility booleans,

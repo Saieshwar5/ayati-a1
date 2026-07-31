@@ -119,8 +119,9 @@ describe("capability catalog", () => {
     expect(capabilityEnum(resolveActivate)).toContain("file:permissions");
     expect(capabilityEnum(resolveActivate)).not.toContain("file:read");
     expect(capabilityEnum(validation)).toEqual(["task:validation"]);
-    expect(JSON.stringify(validation)).toContain("read_complete");
-    expect(JSON.stringify(validation)).not.toContain("\"read\"");
+    expect(validation).toHaveProperty("outcomeRefs");
+    expect(validation).not.toHaveProperty("validationChecks");
+    expect(JSON.stringify(validation)).toContain("context.run.verifiedOutcomes");
     expect(resolveActivate).not.toHaveProperty("references");
     expect(resolveActivate).not.toHaveProperty("mutationScopes");
     expect((resolveActivate["binding"] as Record<string, unknown>)["properties"]).toMatchObject({

@@ -16,6 +16,7 @@ export interface PromptVerifiedOutcomeSource {
 }
 
 export interface PromptVerifiedOutcome {
+  outcomeRef: string;
   kind: TaskValidationOutcomeKind;
   subject: string;
   actualKind?: "file" | "directory" | "symlink";
@@ -55,9 +56,11 @@ function projectVerifiedOutcome(
     ...(outcome.source.callId ? { callId: outcome.source.callId } : {}),
     tool: outcome.source.tool,
   };
+  const reference = { outcomeRef: outcome.id };
 
   if (outcome.family === "filesystem_path") {
     return {
+      ...reference,
       kind: outcome.kind,
       subject: outcome.subject,
       ...(outcome.actualKind ? { actualKind: outcome.actualKind } : {}),
@@ -68,6 +71,7 @@ function projectVerifiedOutcome(
   if (outcome.family === "filesystem_read") {
     if (outcome.kind === "file.read_complete") {
       return {
+        ...reference,
         kind: "file.read_complete",
         subject: outcome.subject,
         actualKind: "file",
@@ -76,6 +80,7 @@ function projectVerifiedOutcome(
     }
     if (outcome.readScope) {
       return {
+        ...reference,
         kind: "file.read_scope_satisfied",
         subject: outcome.subject,
         actualKind: "file",
@@ -88,6 +93,7 @@ function projectVerifiedOutcome(
 
   if (outcome.family === "filesystem_search") {
     return {
+      ...reference,
       kind: "file.search_no_match",
       subject: outcome.subject,
       searchScope: outcome.searchScope,
@@ -97,6 +103,7 @@ function projectVerifiedOutcome(
 
   if (outcome.family === "tool_denial") {
     return {
+      ...reference,
       kind: "tool.call_denied",
       subject: outcome.subject,
       denialCode: outcome.denialCode,
@@ -107,6 +114,7 @@ function projectVerifiedOutcome(
 
   if (outcome.family === "task") {
     return {
+      ...reference,
       kind: outcome.kind,
       subject: outcome.subject,
       ...(outcome.artifactKind ? { artifactKind: outcome.artifactKind } : {}),
