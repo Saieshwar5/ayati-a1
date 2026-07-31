@@ -30,6 +30,7 @@ const MUTATION_EVENT_TYPES = new Set<ResourceEventType>([
   "modified",
   "moved",
   "deleted",
+  "restored",
   "downloaded",
   "external_state_changed",
 ]);
@@ -44,7 +45,7 @@ export function buildWorkstreamProgressEntry(
     at: input.at,
     outcome: input.outcome,
     summary: progressSummary(input),
-    workCompleted: completedWork(input.workState),
+    workCompleted: completedWork(input.workState, input.resourceEvents),
     verifiedMutations: verifiedMutations(input.resourceEvents),
     validation: validationItems(input.validation, input.completion),
     findingsAndDecisions: durableContext(input.workState),
@@ -88,11 +89,19 @@ function progressSummary(input: BuildWorkstreamProgressEntryInput): string {
   ) || compactText(input.summary, WORKSTREAM_PROGRESS_LIMITS.summaryChars);
 }
 
-function completedWork(workState: RunWorkState): string[] {
-  return uniqueItems(workState.plan
+function completedWork(
+  workState: RunWorkState,
+  events: readonly ResourceEvent[],
+): string[] {
+  const completedPlanItems = uniqueItems(workState.plan
     .filter((item) => item.status === "done")
     .map((item) => progressItem(item.task))
     .filter(Boolean));
+  if (completedPlanItems.length > 0) return completedPlanItems;
+  return uniqueItems([...events]
+    .filter((event) => MUTATION_EVENT_TYPES.has(event.type))
+    .sort(compareResourceEvents)
+    .map((event) => progressItem(event.summary)));
 }
 
 function verifiedMutations(events: readonly ResourceEvent[]): string[] {
@@ -195,6 +204,7 @@ function mutationLabel(type: ResourceEventType): string {
   if (type === "modified") return "Modified";
   if (type === "moved") return "Moved";
   if (type === "deleted") return "Deleted";
+  if (type === "restored") return "Restored";
   if (type === "downloaded") return "Downloaded";
   if (type === "external_state_changed") return "Changed external state for";
   throw invalid("Progress mutation classification contains a non-mutation event.", {

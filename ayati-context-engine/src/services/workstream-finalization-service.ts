@@ -489,6 +489,7 @@ function mutationCount(events: Array<{ type: string }>): number {
     "modified",
     "moved",
     "deleted",
+    "restored",
     "downloaded",
     "external_state_changed",
   ]);

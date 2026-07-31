@@ -126,9 +126,19 @@ describe("workstream progress projection", () => {
       "Modified `" + resourceId(5) + "`: Recorded modified.",
       "Moved `" + resourceId(6) + "`: Recorded moved.",
       "Deleted `" + resourceId(7) + "`: Recorded deleted.",
+      "Restored `" + resourceId(9) + "`: Recorded restored.",
       "Downloaded `" + resourceId(10) + "`: Recorded downloaded.",
       "Changed external state for `" + resourceId(13)
         + "`: Recorded external_state_changed.",
+    ]);
+    expect(projected.workCompleted).toEqual([
+      "Recorded created.",
+      "Recorded modified.",
+      "Recorded moved.",
+      "Recorded deleted.",
+      "Recorded restored.",
+      "Recorded downloaded.",
+      "Recorded external_state_changed.",
     ]);
   });
 
