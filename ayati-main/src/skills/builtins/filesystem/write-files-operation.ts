@@ -9,7 +9,6 @@ import {
 import { dirname, join, resolve } from "node:path";
 import {
   canonicalizeAbsoluteFilesystemPath,
-  filesystemPathIsWithin,
 } from "../../../shared/filesystem-paths.js";
 import {
   filesystemPreconditionMap,
@@ -22,7 +21,11 @@ import type {
   ToolErrorCategory,
   ToolExecutionContext,
 } from "../../types.js";
-import { getWorkspaceRoot } from "../../workspace-paths.js";
+import {
+  describeMutationAuthorities,
+  mutationAuthoritiesOwnPath,
+  resolveMutationAuthorities,
+} from "./mutation-authority.js";
 import type {
   WriteFileResult,
   WriteFilesInput,
@@ -70,7 +73,7 @@ export async function executeWriteFilesOperation(
   input: WriteFilesInput,
   context?: ToolExecutionContext,
 ): Promise<WriteFilesOperationResult> {
-  const authority = await resolveAuthority(context);
+  const authorities = await resolveMutationAuthorities(context);
   const preconditions = filesystemPreconditionMap(
     context?.filesystemTargetPreconditions,
   );
@@ -91,10 +94,10 @@ export async function executeWriteFilesOperation(
     }
 
     const path = await canonicalizeAbsoluteFilesystemPath(lexicalPath);
-    if (!authorityOwnsPath(authority.path, authority.kind, path)) {
+    if (!mutationAuthoritiesOwnPath(authorities, path)) {
       return preparationFailure(
         "PATH_OUTSIDE_SELECTED_MUTATION_ROOT",
-        `write_files target is outside the selected absolute destination root ${authority.path}: ${path}`,
+        `write_files target is outside the selected absolute destination roots ${describeMutationAuthorities(authorities)}: ${path}`,
         "permission",
         path,
         file,
@@ -256,27 +259,6 @@ export async function executeWriteFilesOperation(
         : committed.get(target.path) ?? fileResult(target, "failed")
     ))),
   };
-}
-
-async function resolveAuthority(
-  context?: ToolExecutionContext,
-): Promise<{ path: string; kind: "file" | "directory" }> {
-  const scope = context?.resourceScope;
-  const requestedPath = scope?.authorityPath ?? getWorkspaceRoot();
-  return {
-    path: await canonicalizeAbsoluteFilesystemPath(requestedPath),
-    kind: scope?.authorityKind ?? "directory",
-  };
-}
-
-function authorityOwnsPath(
-  authorityPath: string,
-  authorityKind: "file" | "directory",
-  path: string,
-): boolean {
-  return authorityKind === "file"
-    ? resolve(authorityPath) === resolve(path)
-    : filesystemPathIsWithin(authorityPath, path);
 }
 
 async function stageTarget(target: PreparedWriteTarget): Promise<string> {

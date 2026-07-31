@@ -6,10 +6,7 @@ import {
   rm,
 } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import {
-  canonicalizeAbsoluteFilesystemPath,
-  filesystemPathIsWithin,
-} from "../../../shared/filesystem-paths.js";
+import { canonicalizeAbsoluteFilesystemPath } from "../../../shared/filesystem-paths.js";
 import {
   filesystemPreconditionMap,
   observeFilesystemTarget,
@@ -17,12 +14,18 @@ import {
   summarizeFilesystemTargetState,
 } from "../../../shared/filesystem-target-state.js";
 import type {
+  FilesystemMutationAuthority,
   FilesystemTargetState,
   ToolErrorCategory,
   ToolExecutionContext,
 } from "../../types.js";
 import { getWorkspaceRoot } from "../../workspace-paths.js";
 import { classifyWriteFilesystemError } from "./write-files-operation.js";
+import {
+  describeMutationAuthorities,
+  mutationAuthoritiesOwnPath,
+  resolveMutationAuthorities,
+} from "./mutation-authority.js";
 import type { PatchCheck } from "./patch-text.js";
 import type { PatchFilesInput } from "./types.js";
 
@@ -71,12 +74,11 @@ export async function resolvePatchTargets(
   | { ok: true; targets: ResolvedPatchTarget[] }
   | { ok: false; issue: PatchOperationIssue }
 > {
-  let authority: {
-    path: string;
-    kind: "file" | "directory";
-  } | undefined;
+  let authorities: FilesystemMutationAuthority[] | undefined;
   try {
-    authority = await resolveAuthority(input, context);
+    authorities = !context?.resourceScope && input.allowExternalPath === true
+      ? undefined
+      : await resolveMutationAuthorities(context);
   } catch (error) {
     return {
       ok: false,
@@ -137,14 +139,14 @@ export async function resolvePatchTargets(
       };
     }
     if (
-      authority
-      && !authorityOwnsPath(authority.path, authority.kind, path)
+      authorities
+      && !mutationAuthoritiesOwnPath(authorities, path)
     ) {
       return {
         ok: false,
         issue: {
           code: "PATH_OUTSIDE_SELECTED_MUTATION_ROOT",
-          message: `patch_files target is outside the selected absolute destination root ${authority.path}: ${path}`,
+          message: `patch_files target is outside the selected absolute destination roots ${describeMutationAuthorities(authorities)}: ${path}`,
           category: "permission",
           retryable: false,
           target: path,
@@ -423,32 +425,6 @@ function patchFilesystemSuggestedActions(
           : "Inspect the target and filesystem error before making another patch.",
       ];
   }
-}
-
-async function resolveAuthority(
-  input: PatchFilesInput,
-  context?: ToolExecutionContext,
-): Promise<
-  { path: string; kind: "file" | "directory" } | undefined
-> {
-  const scope = context?.resourceScope;
-  if (!scope && input.allowExternalPath === true) return undefined;
-  return {
-    path: await canonicalizeAbsoluteFilesystemPath(
-      scope?.authorityPath ?? getWorkspaceRoot(),
-    ),
-    kind: scope?.authorityKind ?? "directory",
-  };
-}
-
-function authorityOwnsPath(
-  authorityPath: string,
-  authorityKind: "file" | "directory",
-  path: string,
-): boolean {
-  return authorityKind === "file"
-    ? resolve(authorityPath) === resolve(path)
-    : filesystemPathIsWithin(authorityPath, path);
 }
 
 function missingPath(error: unknown): undefined {

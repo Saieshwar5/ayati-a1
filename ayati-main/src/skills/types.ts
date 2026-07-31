@@ -54,6 +54,12 @@ export interface ToolExecutionContext {
   resourceScope?: ToolResourceScope;
 }
 
+export interface FilesystemMutationAuthority {
+  /** Canonical absolute file or directory that grants mutation authority. */
+  path: string;
+  kind: "file" | "directory";
+}
+
 export interface ToolResourceScope {
   kind: "workspace" | "resource" | "machine_read" | "mutation_root";
   /** Directory used by filesystem and process tools for relative-path resolution. */
@@ -61,6 +67,8 @@ export interface ToolResourceScope {
   /** Exact filesystem authority retained by the resource-scoping wrapper. */
   authorityPath: string;
   authorityKind: "file" | "directory";
+  /** Bounded per-target authorities for naturally batched filesystem tools. */
+  mutationAuthorities?: FilesystemMutationAuthority[];
   workstreamId?: string;
   resourceId?: string;
 }

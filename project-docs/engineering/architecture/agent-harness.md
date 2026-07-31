@@ -149,11 +149,14 @@ call path, read scope, existence, file type, readability, bounded returned
 content, and deterministic read result. `observe.locate` remains necessary
 when the exact path is unknown.
 
-The focused filesystem tools—`create_directory`, `write_files`, `patch_files`,
-`copy`, `move`, `delete`, and `set_permissions`—operate against one selected
-destination root. The root comes from runtime-resolved creation targets or
-an eligible authoritative mutable binding in the activated workstream; the
-model does not provide a permission token.
+The focused filesystem tools derive destination authority from
+runtime-resolved creation targets or eligible authoritative mutable bindings
+in the activated workstream; the model does not provide a permission token.
+`create_directory`, `copy`, `move`, `delete`, and `set_permissions` retain one
+selected destination root per call. Naturally batched `write_files` and
+`patch_files` calls may use several separately selected roots only when every
+target maps to one authorized root before execution; one unmatched target
+rejects the complete batch.
 `copy` may read an explicit source elsewhere, but only its selected-root
 destination may change. Target-local verification observes the exact declared
 entries and any created-parent or deferred-cleanup paths reported by the tool,

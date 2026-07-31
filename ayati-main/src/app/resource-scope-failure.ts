@@ -38,7 +38,7 @@ export function resourceScopeFailure(
             : outsideMutationWorkspace
               ? "Choose an exact target inside the configured Ayati workspace."
               : outsideSelectedRoot
-                ? "Use canonical absolute paths inside one selected destination root, or split the work into separate calls."
+                ? "Use canonical absolute paths inside the runtime-selected destination authority; write_files and patch_files may batch only across explicitly selected roots."
               : "Use an absolute path inside one resource bound to the active workstream.",
         ],
       },

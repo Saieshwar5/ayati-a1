@@ -395,13 +395,16 @@ all distinct usable absolute filesystem bindings already declared
 An explicit narrower user boundary for the current turn filters that mounted
 set.
 
-For `create_directory`, `write_files`, `patch_files`, `copy`, `move`, `delete`,
-and `set_permissions`, the runtime then selects one destination root for each
-call. Every target in that call must remain inside the root; a copy source may
+For `create_directory`, `copy`, `move`, `delete`, and `set_permissions`, the
+runtime selects one destination root for each call. `write_files` and
+`patch_files` may instead use a bounded set of selected roots so one natural
+batch can update several separately authorized files. Before execution, every
+batch target must map to one of those runtime-derived roots; one unmatched
+target rejects the complete call without changing any file. A copy source may
 be read-only elsewhere. Relative paths resolve once beneath
-`context.run.workspaceRoot`, while absolute paths must already be inside the
-selected root. The executor canonicalizes and rechecks the target against the
-runtime-derived root before mutation, so prompt metadata alone cannot
+`context.run.workspaceRoot`, while absolute paths must already be inside an
+authorized root. The executor canonicalizes and rechecks every target against
+the runtime-derived authority before mutation, so prompt metadata alone cannot
 authorize a call.
 
 A new workstream may have no resources. Missing output paths are not

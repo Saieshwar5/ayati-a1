@@ -285,6 +285,7 @@ class ResourceScopedToolExecutor implements ToolExecutor {
           rootPath: selected.selection.executionRootPath,
           authorityPath: selected.selection.authorityPath,
           authorityKind: selected.selection.authorityKind,
+          mutationAuthorities: selected.selection.mutationAuthorities,
           workstreamId: binding.workstreamId,
         },
       });

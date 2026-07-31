@@ -115,16 +115,19 @@ Changes should prove the relevant invariants:
     and unbound runs when read scope is `machine`; omitted search roots remain
     workspace-local, host permission failures return no content, and
     non-regular devices are not normal files.
-25. A focused filesystem call uses one runtime-derived destination root.
-    Canonical descendants are allowed, siblings and symbolic-link escapes are
-    rejected, and a copy source is read-only. Workspace-relative paths resolve
-    once beneath the configured workspace; external absolute destinations
-    require an exact routed bound resource. Process/Python and other broad
-    effects retain resource-scoped preparation. Existing-workstream activation
-    mounts every distinct absolute filesystem binding already marked
-    `mutate`, excluding read-only, missing, deleted, non-filesystem, and
-    relative locators. A narrower filesystem boundary in the current user
-    message filters those roots.
+25. A focused filesystem call uses runtime-derived destination authority.
+    `write_files` and `patch_files` may batch across several separately
+    selected roots only after every target maps to one root before execution;
+    one unmatched target rejects the complete batch. Other focused mutation
+    tools retain one destination root. Canonical descendants are allowed,
+    siblings and symbolic-link escapes are rejected, and a copy source is
+    read-only. Workspace-relative paths resolve once beneath the configured
+    workspace; external absolute destinations require an exact routed bound
+    resource. Process/Python and other broad effects retain resource-scoped
+    preparation. Existing-workstream activation mounts every distinct absolute
+    filesystem binding already marked `mutate`, excluding read-only, missing,
+    deleted, non-filesystem, and relative locators. A narrower filesystem
+    boundary in the current user message filters those roots.
 26. Explicit create-new ownership survives a focused clarification; ambiguity
     without a binding consumes no binding authority. A lifecycle-state
     rejection proven to have made no change permits one corrected resolve

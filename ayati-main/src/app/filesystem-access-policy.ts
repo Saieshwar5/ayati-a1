@@ -1,5 +1,8 @@
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import type { ToolDefinition } from "../skills/types.js";
+import type {
+  FilesystemMutationAuthority,
+  ToolDefinition,
+} from "../skills/types.js";
 import {
   canonicalizeAbsoluteFilesystemPath,
   requireAbsoluteFilesystemPath,
@@ -36,6 +39,11 @@ const DIRECT_FILESYSTEM_MUTATION_TOOLS = new Set([
   "set_permissions",
 ]);
 
+const MULTI_ROOT_FILESYSTEM_MUTATION_TOOLS = new Set([
+  "write_files",
+  "patch_files",
+]);
+
 const TARGET_VERIFIED_FILESYSTEM_MUTATION_TOOLS = new Set([
   "write_files",
   "patch_files",
@@ -64,6 +72,7 @@ export interface SelectedFilesystemMutationRoot {
   executionRootPath: string;
   authorityPath: string;
   authorityKind: "file" | "directory";
+  mutationAuthorities: FilesystemMutationAuthority[];
 }
 
 export function loadFilesystemAccessPolicy(
@@ -138,10 +147,28 @@ export async function selectFilesystemMutationRoot(input: {
     paths.push(await canonicalizeAbsoluteFilesystemPath(required.absolutePath));
   }
 
-  const selected = roots
-    .sort((left, right) => right.length - left.length)
-    .find((root) => paths.every((path) => isWithin(root, path)));
-  if (!selected) {
+  const orderedRoots = [...new Set(roots)]
+    .sort((left, right) => right.length - left.length);
+  const selected = orderedRoots.find((root) => (
+    paths.every((path) => isWithin(root, path))
+  ));
+  if (selected) {
+    const authorityKind = mutationAuthorityKind(
+      input.toolName,
+      selected,
+      paths,
+    );
+    return {
+      selection: {
+        executionRootPath: authorityKind === "file" ? dirname(selected) : selected,
+        authorityPath: selected,
+        authorityKind,
+        mutationAuthorities: [{ path: selected, kind: authorityKind }],
+      },
+    };
+  }
+
+  if (!MULTI_ROOT_FILESYSTEM_MUTATION_TOOLS.has(input.toolName)) {
     const target = paths[0];
     return {
       failure: {
@@ -151,18 +178,58 @@ export async function selectFilesystemMutationRoot(input: {
       },
     };
   }
-  const authorityKind = input.toolName !== "create_directory"
-    && paths.length > 0
-    && paths.every((path) => path === selected)
-    ? "file"
-    : "directory";
+
+  const assignedPaths = new Map<string, string[]>();
+  for (const path of paths) {
+    const root = orderedRoots.find((candidate) => isWithin(candidate, path));
+    if (!root) {
+      return {
+        failure: {
+          code: "PATH_OUTSIDE_SELECTED_MUTATION_ROOT",
+          message: "Every path in one batched filesystem mutation call must stay inside one of the selected absolute destination roots.",
+          target: path,
+        },
+      };
+    }
+    assignedPaths.set(root, [...(assignedPaths.get(root) ?? []), path]);
+  }
+
+  const mutationAuthorities = [...assignedPaths.entries()].map(([
+    root,
+    assigned,
+  ]): FilesystemMutationAuthority => ({
+    path: root,
+    kind: mutationAuthorityKind(input.toolName, root, assigned),
+  }));
+  const primary = mutationAuthorities[0];
+  if (!primary) {
+    return {
+      failure: {
+        code: "PATH_OUTSIDE_SELECTED_MUTATION_ROOT",
+        message: "A filesystem mutation call must contain at least one path inside a selected absolute destination root.",
+      },
+    };
+  }
   return {
     selection: {
-      executionRootPath: authorityKind === "file" ? dirname(selected) : selected,
-      authorityPath: selected,
-      authorityKind,
+      executionRootPath: primary.kind === "file" ? dirname(primary.path) : primary.path,
+      authorityPath: primary.path,
+      authorityKind: primary.kind,
+      mutationAuthorities,
     },
   };
+}
+
+function mutationAuthorityKind(
+  toolName: string,
+  root: string,
+  paths: string[],
+): "file" | "directory" {
+  return toolName !== "create_directory"
+    && paths.length > 0
+    && paths.every((path) => path === root)
+    ? "file"
+    : "directory";
 }
 
 export function validateMachineReadPaths(
