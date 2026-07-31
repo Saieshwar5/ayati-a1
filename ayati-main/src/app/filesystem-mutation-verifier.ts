@@ -21,6 +21,7 @@ const TARGET_VERIFIED_TOOLS = new Set([
   "copy",
   "delete",
   "set_permissions",
+  "process_run",
 ]);
 
 export type TargetRole =
@@ -32,7 +33,8 @@ export type TargetRole =
   | "copy_source"
   | "copy_destination"
   | "delete"
-  | "permissions";
+  | "permissions"
+  | "process_target";
 
 export interface TargetSpec {
   requestedPath: string;
@@ -40,6 +42,7 @@ export interface TargetSpec {
   role: TargetRole;
   expectedSha256?: string;
   requestedMode?: number;
+  requestedKind?: "file" | "directory";
 }
 
 export type PathState = FilesystemTargetState;
@@ -279,6 +282,20 @@ function mutationTargetSpecs(
   }
   if (toolName === "delete" && typeof value["path"] === "string") {
     return [{ requestedPath: value["path"], role: "delete" }];
+  }
+  if (toolName === "process_run" && Array.isArray(value["targets"])) {
+    return value["targets"].flatMap((entry) => {
+      if (!isRecord(entry) || typeof entry["path"] !== "string") return [];
+      const requestedKind = entry["kind"] === "file"
+        || entry["kind"] === "directory"
+        ? entry["kind"]
+        : undefined;
+      return [{
+        requestedPath: entry["path"],
+        role: "process_target",
+        ...(requestedKind ? { requestedKind } : {}),
+      }];
+    });
   }
   return [];
 }

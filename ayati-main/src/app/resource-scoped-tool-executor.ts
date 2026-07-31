@@ -266,6 +266,12 @@ class ResourceScopedToolExecutor implements ToolExecutor {
             : undefined,
         );
       }
+      if (toolName === "process_run" && !preparedVerification) {
+        return scopeFailure(
+          "WORKSTREAM_RESOURCE_SCOPE_VIOLATION",
+          "process_run must declare exact file or directory targets before it can run inside a current-run creation scope.",
+        );
+      }
       const result = await this.base.execute(toolName, scopedInput, {
         ...context,
         ...(preparedVerification

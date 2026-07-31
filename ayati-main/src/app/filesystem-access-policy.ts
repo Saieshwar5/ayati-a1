@@ -44,6 +44,7 @@ const TARGET_VERIFIED_FILESYSTEM_MUTATION_TOOLS = new Set([
   "move",
   "delete",
   "set_permissions",
+  "process_run",
 ]);
 
 const PROCESS_MUTATION_TOOLS = new Set([
