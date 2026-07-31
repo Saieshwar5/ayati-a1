@@ -62,7 +62,7 @@ Mode behavior:
 | --- | --- | --- |
 | `observe.locate` | discovery, listing, search, routing lookup | read-only locate tools |
 | `observe.investigate` | exact reads, inspection, queries, and targetless system observations | read-only evidence tools |
-| `workstream.route` | durable-owner discovery before unbound mutation | only workstream search/read and resource-owner lookup |
+| `workstream.route` | move verified durable-owner evidence toward binding | no executable tools; control-only |
 | `resolve` | binding-required mutation responsibility | no lifecycle tools; the deterministic gate binds, then mounts the matching execute surface |
 | `execute` | bound mutation, verification, or bound control | tools permitted by the bound workstream and selected destination or existing-resource policy |
 | `validation` | final typed task-outcome proof | no executable tools; queries the derived current-run verification index |
@@ -70,9 +70,23 @@ Mode behavior:
 A mode change replaces the full earlier surface. Tools do not accumulate
 across modes. An authority change that invalidates any active tool clears the
 whole surface so a partially authorized capability cannot remain active.
-For an unbound mutation, `resolve` is not graph-legal from `ENTRY`. The model
-must enter `workstream.route`, and resolve controls remain absent until a
-successful current-run routing observation exists.
+For an unbound mutation, neither `workstream.route` nor `resolve` is
+graph-legal from `ENTRY`. The model first uses `workstream:search` or
+`resource:ownership` in `observe.locate`, or `workstream:read` in
+`observe.investigate`. A successful current-run observation unlocks
+`workstream.route`. Entering it clears the observation surface; resolve
+controls then become available, and the model may return to either observation
+mode if it needs more evidence.
+
+Successful existing-workstream activation mounts an execute surface and a
+runtime-derived set of usable filesystem roots. The set comes from the
+authoritative activated workstream projection, not from model-authored paths:
+all distinct absolute bindings with `access: mutate` are eligible unless the
+resource is missing or deleted. Read bindings remain read-only. A narrower
+filesystem boundary stated by the user for the current turn filters this set,
+and each focused filesystem call must still fit inside one selected root.
+Resource metadata in `boundWorkstream` helps the model choose a target; actual
+access remains deterministic runtime policy.
 
 ## Catalog Rules
 

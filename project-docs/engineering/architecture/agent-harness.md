@@ -91,9 +91,9 @@ into an executable call.
 The run-scoped virtual graph is:
 
 ```text
-ENTRY -> context.retrieve | observe.locate | observe.investigate | workstream.route | direct reply
-observe.locate <-> observe.investigate -> context.retrieve | workstream.route | validation
-workstream.route -> context.retrieve | workstream.route | resolve(after routing evidence)
+ENTRY -> context.retrieve | observe.locate | observe.investigate | direct reply
+observe.locate <-> observe.investigate -> context.retrieve | workstream.route(after routing evidence) | validation
+workstream.route -> context.retrieve | observe.locate | observe.investigate | resolve(after routing evidence)
 resolve --accepted--> execute
 execute -> context.retrieve | execute | observe.locate | observe.investigate | validation
 context.retrieve --after context_load--> preceding mode
@@ -112,15 +112,18 @@ again because the run binding is immutable.
 
 Transition inputs are discriminated by destination. `observe.locate` accepts
 non-authoritative `subjects`; investigation uses typed read-only `references`;
-and `workstream.route` accepts search subjects with only
-`workstream:search`, `workstream:read`, and `resource:ownership`. Existing-
-workstream resolve uses exact routed resource IDs, while bound execute uses
-typed `mutationScopes`; new-workstream resolve uses typed `workspaceTargets`
-plus a bounded creation proposal. The runtime, not the model, derives existing
-activation paths, repository HEAD, selected mutation roots, and evidence. Each creation
-target declares `kind: file | directory` and a portable `relativePath` beneath
-`context.run.workspaceRoot`; the model does not send the workspace root, an
-absolute creation path, a resource id, or a routing-evidence id.
+workstream and owner discovery use `workstream:search` or
+`resource:ownership` in locate, and exact workstream inspection uses
+`workstream:read` in investigate. `workstream.route` accepts only a concise
+purpose and mounts no capability or action tool. Existing-workstream resolve
+uses exact routed resource IDs, while bound execute uses typed
+`mutationScopes`; new-workstream resolve uses typed `workspaceTargets` plus a
+bounded creation proposal. The runtime, not the model, derives existing
+activation paths, repository HEAD, eligible mutable roots, and evidence. Each
+creation target declares `kind: file | directory` and a portable
+`relativePath` beneath `context.run.workspaceRoot`; the model does not send
+the workspace root, an absolute creation path, a resource id, or a
+routing-evidence id.
 
 Filesystem observation and mutation intentionally have different runtime
 boundaries. The five core filesystem observation tools may use any explicit
@@ -149,7 +152,8 @@ when the exact path is unknown.
 The focused filesystem tools—`create_directory`, `write_files`, `patch_files`,
 `copy`, `move`, `delete`, and `set_permissions`—operate against one selected
 destination root. The root comes from runtime-resolved creation targets or
-exact routed resources; the model does not provide a permission token.
+an eligible authoritative mutable binding in the activated workstream; the
+model does not provide a permission token.
 `copy` may read an explicit source elsewhere, but only its selected-root
 destination may change. Target-local verification observes the exact declared
 entries and any created-parent or deferred-cleanup paths reported by the tool,
@@ -171,8 +175,9 @@ preference:  ENTRY -> context.retrieve -> context_load -> ENTRY -> direct respon
 exact read:  ENTRY -> observe.investigate -> read -> validation(proof) -> direct response
 vague read:  ENTRY -> observe.locate -> find -> observe.investigate -> read -> validation(proof) -> direct response
 read choice: observe.locate -> find(multiple) -> chosen read or clarification
-ownership ambiguity: workstream.route -> search -> resolve(ambiguous) -> decision_stop(needs_user_input)
-mutation:    workstream.route -> search/read -> resolve -> execute -> validation(proof) -> direct response
+workstream question: observe.locate -> workstream search -> observe.investigate -> workstream read -> validation(proof) -> direct response
+ownership ambiguity: observe.locate -> workstream search -> workstream.route -> resolve(ambiguous) -> decision_stop(needs_user_input)
+mutation:    observe.locate/investigate -> ownership observation -> workstream.route -> resolve -> execute -> validation(proof) -> direct response
 repair:      execute -> validation(failed) -> execute -> validation -> direct response
 ```
 
@@ -195,19 +200,24 @@ exception to prior target provenance; its current read result is still
 verified.
 
 The model never sees a separate workstream-resolution agent or lifecycle tool.
-Before any unbound mutation, it enters `workstream.route` and uses read-only
-workstream search/read or resource-owner lookup. Direct `ENTRY -> resolve` is
-unavailable, and the route does not expose resolve controls until one of those
-calls succeeds in the current run. An accepted transition to `resolve` must
-then have mutation-permitting intent, a binding-required capability, and one
-typed request-routing or workstream-creation proposal. Existing activation
+Before any unbound mutation, it observes durable ownership through
+`workstream:search` or `resource:ownership` in `observe.locate`, or through
+`workstream:read` in `observe.investigate`. Direct `ENTRY -> workstream.route`
+and `ENTRY -> resolve` are unavailable. A successful current-run ownership
+observation unlocks the control-only route stage. That stage clears
+observation tools, exposes the resolve controls, and can return to observation
+if more evidence is needed. An accepted transition to `resolve` must then have
+mutation-permitting intent, a binding-required capability, and one typed
+request-routing or workstream-creation proposal. Existing activation
 supplies the observed workstream, lifecycle choice, and exact routed resource
-IDs. The runtime derives their paths, ownership, mutation scope, repository
-HEAD, and evidence. Creation instead supplies typed `workspaceTargets`; the
-runtime derives their absolute selected roots and routing evidence without
-pre-registering missing resources. The deterministic gate performs at most one lifecycle binding
-attempt, makes no model request, and requires a fresh primary decision after
-authoritative bound context is mounted.
+IDs. The runtime uses them to ground activation, then derives ownership,
+repository HEAD, evidence, and every eligible mutable filesystem root from the
+authoritative activated bindings. Creation instead supplies typed
+`workspaceTargets`; the runtime derives their absolute selected roots and
+routing evidence without pre-registering missing resources. The deterministic
+gate performs at most one lifecycle binding attempt, makes no model request,
+and requires a fresh primary decision after authoritative bound context is
+mounted.
 
 Executable tools retain native schemas. Harness-only controls are not
 persisted as fake calls. If a provider returns a whole JSON object whose shape
@@ -224,12 +234,16 @@ The primary loop owns read-only workstream routing observations. It requests
 focused capability ids instead of lifecycle effects:
 
 ```text
-decision_enter_workstream_route({
+decision_enter_observe_locate({
   purpose: "Find the durable owner of result.txt before mutation.",
   capabilities: ["workstream:search", "resource:ownership"],
   subjects: ["result.txt"]
 })
 -> read-only routing observation step
+decision_enter_workstream_route({
+  purpose: "Use the verified owner observation to prepare binding."
+})
+-> control-only route stage; no executable tools
 decision_resolve_create({
   purpose: "Bind the exact output before writing it.",
   capabilities: ["file:write"],
@@ -252,12 +266,13 @@ decision_resolve_create({
 -> fresh main decision
 ```
 
-The model-facing read-only groups in `workstream.route` are
-`workstream:search`, `workstream:read`, and `resource:ownership`. Their calls
-are persisted as ordinary observation steps, but their evidence is tagged as
-routing evidence and cannot satisfy whole-task completion. The same
-capabilities remain available in ordinary observation modes for read-only
-workstream questions; those modes cannot proceed directly to resolve.
+The model-facing routing observations are `workstream:search` and
+`resource:ownership` in `observe.locate`, plus `workstream:read` in
+`observe.investigate`. Their calls are persisted as ordinary observation
+steps, but their evidence is tagged as routing evidence and cannot satisfy
+whole-task completion. Read-only workstream questions stay in observation and
+never bind. Mutation flows use the same evidence, then pass through
+`workstream.route`; observation modes cannot proceed directly to resolve.
 
 The gate checks mutation intent, binding-required taxonomy, the one-attempt
 limit, and a successful current-run routing observation. For creation, it
@@ -272,12 +287,18 @@ current-run routing, derives the relevant evidence and observed workstream
 HEAD, then rechecks candidate identity, request identity, mutable resource
 ownership, availability, and HEAD freshness against Context Engine state.
 
-Read-only references are never inspected or bound as mutation resources.
+Read-only bindings are never upgraded into mutation authority.
 For creation, the exact resolved file or directory targets become selected
 mutation roots for the current run; missing targets are not pre-registered as
 resources, and the whole workspace is never bound.
-For activation, only exact routed resource IDs can establish the derived
-mutation scope. Directory resources authorize canonical descendants, not
+For activation, exact current-run routed resource IDs establish the right to
+activate the existing owner. After the authoritative activation projection is
+returned, the runtime mounts every distinct absolute filesystem binding in
+that workstream whose access is `mutate` and whose resource is not missing or
+deleted. A selected resource therefore grounds activation; it is not a
+model-authored permission list. An explicit narrower path boundary in the
+current user message still filters the mounted roots. Each filesystem call
+selects one root; directory resources authorize canonical descendants, not
 siblings or symbolic-link escapes.
 
 Only after those checks does the coordinator call Context Engine's atomic
@@ -333,10 +354,15 @@ Prompt context uses explicit bounded lanes:
   transaction.
 
 Full workstream documents and resource cards are not prompt lanes or Hot
-Context entries. The bounded run projection omits resource locators, commit
-metadata, raw logs, all other request files, and complete progress history.
-The agent obtains current ownership and resource facts through read-only
-routing/resource tools. Routing evidence stays in current-run tool calls, and
+Context entries. The bounded run projection includes at most ten resource
+metadata records, ordered by selected-request relevance, primary role,
+mutation access, availability, and recency. Each record may carry stable
+identity, display metadata, public locator, role, access, availability,
+primary status, and request relevance; `otherResourceCount` reports omitted
+records. It omits file contents, versions, hashes, commit metadata, raw logs,
+all other request files, and complete progress history. This metadata helps
+the model choose a known resource but does not prove its current contents or
+grant permission. Routing evidence stays in current-run tool calls, and
 resource enforcement continues to use exact Context Engine state.
 
 Do not expose context-repository paths, database paths, run storage paths,
@@ -354,10 +380,10 @@ The native schema exposes only graph-legal destinations and capabilities
 available under current authority. The harness resolves each requested
 responsibility to eligible concrete tools.
 
-`observe.locate`, `observe.investigate`, and `workstream.route` expose only
-read-only tools. `workstream.route` is narrower: only its three routing
-capabilities are eligible. A mode transition replaces the complete capability
-surface so tools from an earlier mode do not accumulate. Bounded
+`observe.locate` and `observe.investigate` expose only read-only tools.
+`workstream.route` is control-only and exposes no executable tools or
+capabilities. Entering it replaces and clears the observation surface so tools
+from an earlier mode do not accumulate. Bounded
 self-transitions may adjust the surface; repeated identical transitions stop
 through no-progress protection. `execute` enforces the selected-destination
 policy for focused filesystem operations and the existing bound-resource
@@ -466,7 +492,7 @@ as an `in_progress` `continuation` state. An untouched initial WorkState is
 omitted from the model-facing prompt. A material WorkState projects only its
 status, summary, optional plan, important context, and next action.
 `context.run.boundWorkstream` is the single prompt owner of workstream and
-request identity.
+request identity and bounded activated-resource metadata.
 
 Immediately before a successful terminal state is built, the runtime converts
 at most four passed final-validation checks into `importantContext` receipts.

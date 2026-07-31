@@ -18,7 +18,6 @@ import type { VirtualModeTransitionTarget } from "../virtual-mode.js";
 const OBSERVE_LOCATE: VirtualModeTransitionTarget[] = ["observe.locate"];
 const OBSERVE_INVESTIGATE: VirtualModeTransitionTarget[] = ["observe.investigate"];
 const CONTEXT_RETRIEVE: VirtualModeTransitionTarget[] = ["context.retrieve"];
-const WORKSTREAM_ROUTE: VirtualModeTransitionTarget[] = ["workstream.route"];
 const OBSERVE_BOTH: VirtualModeTransitionTarget[] = [
   "observe.locate",
   "observe.investigate",
@@ -174,22 +173,22 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
   unboundCapability(
     "workstream:search",
     "Search candidate workstreams.",
-    "Use in workstream.route before mutation, or in observe.locate for a read-only workstream lookup.",
-    [...OBSERVE_LOCATE, ...WORKSTREAM_ROUTE],
+    "Use in observe.locate when the durable owner is unknown. Verified current-run results can later support workstream routing.",
+    OBSERVE_LOCATE,
     ["git_context_find_workstreams"],
   ),
   unboundCapability(
     "workstream:read",
     "Read one exact workstream candidate.",
-    "Use in workstream.route to inspect a routing candidate, or in observe.investigate for a read-only workstream question.",
-    [...OBSERVE_INVESTIGATE, ...WORKSTREAM_ROUTE],
+    "Use in observe.investigate to answer a read-only workstream question or inspect an exact routing candidate.",
+    OBSERVE_INVESTIGATE,
     ["git_context_read_workstream"],
   ),
   unboundCapability(
     "resource:ownership",
     "Find workstreams that own a resource.",
-    "Use in workstream.route before mutation, or in an observation mode for a read-only ownership lookup.",
-    [...OBSERVE_BOTH, ...WORKSTREAM_ROUTE],
+    "Use in an observation mode to identify exact durable resource ownership before reporting or routing.",
+    OBSERVE_BOTH,
     ["git_context_find_resources"],
   ),
   capability("resource:binding", "Bind resources to the active workstream.", "Use after ownership is resolved and the run is bound.", MUTATION, ["git_context_bind_resources"]),

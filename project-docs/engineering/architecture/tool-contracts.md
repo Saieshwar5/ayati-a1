@@ -115,8 +115,12 @@ resource IDs, bound execute mutation scopes, and new `workspaceTargets` in
 separate typed fields. A reference path cannot become mutation authority
 merely because it is absolute. The model-facing activation control accepts
 only the observed workstream, request lifecycle choice, and exact resource
-IDs; the runtime derives paths, ownership, mutation scope, repository HEAD,
-and evidence. The model-facing create control accepts only:
+IDs. The runtime uses those IDs to ground activation, then derives ownership,
+repository HEAD, evidence, and every usable mutation root from the
+authoritative activated workstream bindings. It includes only absolute
+filesystem bindings already marked `mutate` and excludes missing or deleted
+resources; a narrower user-stated turn boundary still applies. The
+model-facing create control accepts only:
 
 ```text
 purpose
@@ -227,9 +231,8 @@ general-purpose execution tools.
 
 ## Workstream Controls
 
-The primary model may use these read-only observations after entering
-`workstream.route` for mutation routing, or a matching observation mode for a
-read-only workstream question:
+The primary model uses these read-only observations in the ordinary
+observation modes for both workstream questions and mutation routing:
 
 - `git_context_find_workstreams`
 - `git_context_read_workstream`
@@ -258,14 +261,17 @@ Bound resource control:
 
 - `git_context_bind_resources`
 
-Reading never binds. An unbound mutation cannot move directly from `ENTRY` to
-`resolve`; it first enters `workstream.route`. That mode exposes only the
-three read-only routing capabilities above, and resolve controls remain absent
-until one of their tools succeeds in the current run. The runtime then
-validates the typed proposal and invokes one atomic Context Engine binding
-operation without a model call. Existing activation requires observed
-resource IDs and a lifecycle choice; the runtime derives and validates
-mutation scope, repository HEAD, and evidence. New creation requires typed
+Reading never binds. Workstream search and resource-owner lookup run in
+`observe.locate`; exact workstream reads run in `observe.investigate`. An
+unbound mutation cannot move directly from `ENTRY` to `workstream.route` or
+`resolve`. One of the observations above must first succeed in the current
+run. That evidence unlocks the control-only route stage, which has no
+executable tools and can either proceed to resolve or return to observation.
+The runtime then validates the typed proposal and invokes one atomic Context
+Engine binding operation without a model call. Existing activation requires
+observed resource IDs and a lifecycle choice; the runtime validates
+activation, repository HEAD, and evidence, then mounts all eligible
+authoritative mutable filesystem bindings. New creation requires typed
 workspace targets; the runtime derives their absolute paths, evidence
 references, and resource ids. It then enters `execute` mechanically before
 asking for a fresh decision. Routing an existing workstream must explicitly

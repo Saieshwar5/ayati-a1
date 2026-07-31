@@ -49,6 +49,10 @@ function cleanup(path: string): void {
   rmSync(dirname(path), { recursive: true, force: true });
 }
 
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function runHandle(runId: string, triggerSeq = 1): AgentRunHandle {
   return {
     runId,
@@ -671,7 +675,6 @@ describe("agentLoop one-run lifecycle", () => {
       expect(firstInput.tools.map((tool) => tool.name)).toEqual([
         "decision_enter_observe_locate",
         "decision_enter_observe_investigate",
-        "decision_enter_workstream_route",
       ]);
       const secondInput = vi.mocked(provider.generateTurn).mock.calls[1]?.[0];
       expect(secondInput.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
@@ -1677,7 +1680,7 @@ describe("agentLoop one-run lifecycle", () => {
         {
           kind: "transition_mode",
           request: {
-            to: "workstream.route",
+            to: "observe.locate",
             purpose: "Check durable ownership before creating the file.",
             capabilities: ["workstream:search"],
             targets: [outputPath],
@@ -1696,6 +1699,13 @@ describe("agentLoop one-run lifecycle", () => {
             }],
             allowedTools: ["git_context_find_workstreams"],
             assertions: [],
+          },
+        },
+        {
+          kind: "transition_mode",
+          request: {
+            to: "workstream.route",
+            purpose: "Use the observed ownership evidence to prepare deterministic binding.",
           },
         },
         {
@@ -1741,7 +1751,7 @@ describe("agentLoop one-run lifecycle", () => {
       expect(result).toMatchObject({
         outcome: "failed",
         stopReason: "failed",
-        totalIterations: 4,
+        totalIterations: 5,
         totalToolCalls: 1,
         content: "I could not safely create the file because workstream binding is unavailable.",
         workState: {
@@ -1752,7 +1762,7 @@ describe("agentLoop one-run lifecycle", () => {
       expect(result.workState?.summary).not.toBe(result.content);
       expect(existsSync(outputPath)).toBe(false);
       expect(recordRunStep).toHaveBeenCalledOnce();
-      expect(provider.generateTurn).toHaveBeenCalledTimes(4);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(5);
       expect(feedback.events).toEqual(expect.arrayContaining([
         expect.objectContaining({
           stage: "virtual_mode",
@@ -1843,7 +1853,7 @@ describe("agentLoop one-run lifecycle", () => {
         {
           kind: "transition_mode",
           request: {
-            to: "workstream.route",
+            to: "observe.locate",
             purpose: "Find the workstream that owns the project.",
             capabilities: ["workstream:search"],
             targets: [projectPath],
@@ -1862,6 +1872,13 @@ describe("agentLoop one-run lifecycle", () => {
             }],
             allowedTools: ["git_context_find_workstreams"],
             assertions: [],
+          },
+        },
+        {
+          kind: "transition_mode",
+          request: {
+            to: "workstream.route",
+            purpose: "Use the observed owner candidates to prepare deterministic binding.",
           },
         },
         {
@@ -1929,17 +1946,16 @@ describe("agentLoop one-run lifecycle", () => {
         runId,
         outcome: "failed",
         stopReason: "failed",
-        totalIterations: 5,
+        totalIterations: 6,
         totalToolCalls: 1,
         content: "Workstream binding failed, so no file was changed.",
       });
-      expect(provider.generateTurn).toHaveBeenCalledTimes(5);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(6);
       expect(workstreamBinding.bind).toHaveBeenCalledOnce();
       const firstInput = vi.mocked(provider.generateTurn).mock.calls[0]?.[0];
       expect(firstInput.tools.map((tool) => tool.name)).toEqual([
         "decision_enter_observe_locate",
         "decision_enter_observe_investigate",
-        "decision_enter_workstream_route",
       ]);
       expect(firstInput.tools.map((tool) => tool.name)).not.toContain("write_files");
       const secondInput = vi.mocked(provider.generateTurn).mock.calls[1]?.[0];
@@ -1964,7 +1980,7 @@ describe("agentLoop one-run lifecycle", () => {
         {
           kind: "transition_mode",
           request: {
-            to: "workstream.route",
+            to: "observe.locate",
             purpose: "Check whether durable work already owns this output.",
             capabilities: ["workstream:search"],
             targets: [outputPath],
@@ -1983,6 +1999,13 @@ describe("agentLoop one-run lifecycle", () => {
             }],
             allowedTools: ["git_context_find_workstreams"],
             assertions: [],
+          },
+        },
+        {
+          kind: "transition_mode",
+          request: {
+            to: "workstream.route",
+            purpose: "Use the observed owner candidates to prepare deterministic binding.",
           },
         },
         {
@@ -2085,13 +2108,13 @@ describe("agentLoop one-run lifecycle", () => {
       });
       expect(readFileSync(outputPath, "utf8")).toBe("same durable run");
       expect(workstreamBinding.bind).toHaveBeenCalledTimes(1);
-      expect(provider.generateTurn).toHaveBeenCalledTimes(6);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(7);
       expect(feedback.events.find((event) => event.stage === "final" && event.event === "reply")?.data?.["feedbackSummary"])
         .toMatchObject({
           navigation: {
             currentMode: "validation",
-            transitionRequests: 3,
-            transitionAccepted: 3,
+            transitionRequests: 4,
+            transitionAccepted: 4,
             transitionRejected: 0,
             bindingAttempts: 1,
             bindingStatus: "resolved",
@@ -2108,24 +2131,26 @@ describe("agentLoop one-run lifecycle", () => {
       const secondInput = vi.mocked(provider.generateTurn).mock.calls[1]?.[0];
       const thirdInput = vi.mocked(provider.generateTurn).mock.calls[2]?.[0];
       const fourthInput = vi.mocked(provider.generateTurn).mock.calls[3]?.[0];
+      const fifthInput = vi.mocked(provider.generateTurn).mock.calls[4]?.[0];
       expect(firstInput.tools.map((tool) => tool.name)).toEqual([
         "decision_enter_observe_locate",
         "decision_enter_observe_investigate",
-        "decision_enter_workstream_route",
       ]);
       expect(firstInput.tools.map((tool) => tool.name)).not.toContain("workstream_resolve");
       expect(firstInput.tools.map((tool) => tool.name)).not.toContain("write_files");
       expect(secondInput.tools.map((tool) => tool.name)).toContain("git_context_find_workstreams");
       expect(secondInput.tools.map((tool) => tool.name)).toContain("decision_stop");
       expect(secondInput.tools.map((tool) => tool.name)).not.toContain("decision_resolve_create");
-      expect(thirdInput.tools.map((tool) => tool.name)).toContain("decision_resolve_activate");
-      expect(thirdInput.tools.map((tool) => tool.name)).toContain("decision_resolve_create");
-      expect(fourthInput.tools.map((tool) => tool.name)).toContain("write_files");
-      expect(fourthInput.tools.map((tool) => tool.name)).toContain("decision_stop");
-      const fourthPromptText = fourthInput.messages
+      expect(thirdInput.tools.map((tool) => tool.name)).toContain("decision_enter_workstream_route");
+      expect(fourthInput.tools.map((tool) => tool.name)).toContain("decision_resolve_activate");
+      expect(fourthInput.tools.map((tool) => tool.name)).toContain("decision_resolve_create");
+      expect(fourthInput.tools.map((tool) => tool.name)).not.toContain("git_context_find_workstreams");
+      expect(fifthInput.tools.map((tool) => tool.name)).toContain("write_files");
+      expect(fifthInput.tools.map((tool) => tool.name)).toContain("decision_stop");
+      const fifthPromptText = fifthInput.messages
         .find((message) => message.role === "user")?.content ?? "";
-      const fourthPrompt = extractStateView(fourthPromptText);
-      expect(fourthPrompt.context.run.boundWorkstream).toEqual({
+      const fifthPrompt = extractStateView(fifthPromptText);
+      expect(fifthPrompt.context.run.boundWorkstream).toEqual({
         id: "W-20260719-0001",
         title: "One run file",
         purpose: "Create one-run.txt",
@@ -2149,9 +2174,30 @@ describe("agentLoop one-run lifecycle", () => {
           validation: "The requested file remains.",
           next: "Create one-run.txt",
         }],
+        resources: [{
+          id: "RES-AAAAAAAAAAAAAAAAAAAAAAAA",
+          name: "One run output",
+          kind: "directory",
+          description: "User-visible output directory for the one-run fixture.",
+          aliases: ["one run output"],
+          locator: {
+            kind: "filesystem",
+            path: dataDir,
+          },
+          role: "primary",
+          access: "mutate",
+          availability: "available",
+          primary: true,
+          requestRelevant: true,
+        }],
+        otherResourceCount: 0,
       });
-      expect(JSON.stringify(fourthPrompt.context.run.boundWorkstream)).not.toContain(dataDir);
-      expect(JSON.stringify(fourthPrompt.context.run.boundWorkstream)).not.toContain("abc123");
+      expect(
+        JSON.stringify(fifthPrompt.context.run.boundWorkstream).match(
+          new RegExp(escapeRegex(dataDir), "g"),
+        ),
+      ).toHaveLength(1);
+      expect(JSON.stringify(fifthPrompt.context.run.boundWorkstream)).not.toContain("abc123");
     } finally {
       cleanup(dataDir);
     }
@@ -2366,7 +2412,7 @@ describe("agentLoop one-run lifecycle", () => {
         {
           kind: "transition_mode",
           request: {
-            to: "workstream.route",
+            to: "observe.locate",
             purpose: "Find durable ownership before creating the file.",
             capabilities: ["workstream:search"],
             targets: [target],
@@ -2385,6 +2431,13 @@ describe("agentLoop one-run lifecycle", () => {
             }],
             allowedTools: ["git_context_find_workstreams"],
             assertions: [],
+          },
+        },
+        {
+          kind: "transition_mode",
+          request: {
+            to: "workstream.route",
+            purpose: "Use the observed owner candidates to prepare deterministic binding.",
           },
         },
         {
@@ -2449,7 +2502,7 @@ describe("agentLoop one-run lifecycle", () => {
         callId: routingCallId,
       });
       expect(result.totalToolCalls).toBe(1);
-      expect(provider.generateTurn).toHaveBeenCalledTimes(4);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(5);
     } finally {
       cleanup(dataDir);
     }
@@ -2466,7 +2519,7 @@ describe("agentLoop one-run lifecycle", () => {
         {
           kind: "transition_mode",
           request: {
-            to: "workstream.route",
+            to: "observe.locate",
             purpose: "Find workstreams that may own the website target.",
             capabilities: ["workstream:search"],
             targets: [target],
@@ -2485,6 +2538,13 @@ describe("agentLoop one-run lifecycle", () => {
             }],
             allowedTools: ["git_context_find_workstreams"],
             assertions: [],
+          },
+        },
+        {
+          kind: "transition_mode",
+          request: {
+            to: "workstream.route",
+            purpose: "Use the observed owner candidates to prepare deterministic binding.",
           },
         },
         {
@@ -2539,7 +2599,7 @@ describe("agentLoop one-run lifecycle", () => {
         content: "Which website workstream should I continue? Please provide me with its name or path.",
       });
       expect(workstreamBinding.bind).toHaveBeenCalledTimes(1);
-      expect(provider.generateTurn).toHaveBeenCalledTimes(4);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(5);
       expect(result.totalToolCalls).toBe(1);
     } finally {
       cleanup(dataDir);

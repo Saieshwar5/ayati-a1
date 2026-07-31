@@ -141,8 +141,8 @@ describe("callAgentDecision", () => {
       "Known absolute path: use observe.investigate/file:read; skip pre-checks",
     );
     expect(systemPrompt).toContain("read_files validates it; other targets need grounding");
-    expect(systemPrompt).toContain("enter workstream.route first");
-    expect(systemPrompt).toContain("workstream.route is the only path from unbound mutation intent to resolve");
+    expect(systemPrompt).toContain("Before any unbound mutation, collect durable-owner evidence");
+    expect(systemPrompt).toContain("workstream.route is the control-only path from verified ownership evidence to resolve");
     expect(systemPrompt).toContain(
       "decision_resolve_activate names the observed workstream, request choice, and returned resourceIds",
     );

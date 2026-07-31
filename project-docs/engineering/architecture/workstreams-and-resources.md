@@ -178,11 +178,14 @@ project, subject, or resource boundary.
 
 Workstream selection and request selection are separate decisions.
 
-For an unbound mutation, the model first enters `workstream.route`. That
-read-only mode exposes only workstream search/read and resource-owner lookup.
-The first successful current-run routing call makes `resolve` available;
-direct `ENTRY -> resolve` is prohibited. General read-only questions about
-workstreams may still use the ordinary observation modes without binding.
+For both read-only questions and unbound mutation, the model observes
+workstream ownership through the ordinary modes. `observe.locate` owns
+workstream search and resource-owner lookup; `observe.investigate` owns exact
+workstream reads. General questions may finish there without binding. For
+mutation, the first successful current-run routing call unlocks the
+control-only `workstream.route` stage. It exposes no executable tools and may
+proceed to `resolve` or return to observation. Direct `ENTRY -> workstream.route`,
+`ENTRY -> resolve`, and observation-to-resolve transitions are prohibited.
 
 Within routing, the model observes SQLite-backed candidates and exact resource
 owners. Evidence priority is:
@@ -261,9 +264,13 @@ workspace is not.
 Existing-workstream activation remains different: the model selects an
 observed workstream/request lifecycle operation and exact existing resource
 IDs returned by current-run routing. The runtime derives and rechecks paths,
-mutable ownership, mutation scope, repository HEAD, and evidence. This
-distinction lets creation name a path that does not exist yet without
-weakening activation authority.
+mutable ownership, repository HEAD, and evidence. Those selected IDs ground
+activation; they are not the complete permission list. After activation, the
+runtime derives usable mutation roots from every authoritative workstream
+binding with `access: mutate`, an absolute filesystem locator, and
+availability other than `missing` or `deleted`. Explicit narrower user scope
+for the current turn still wins. This distinction lets creation name a path
+that does not exist yet without weakening activation authority.
 
 Routing lifecycle changes are journaled as a provisional plan before
 execution. The current run sees the projected post-route request context, but
@@ -283,7 +290,7 @@ After binding, activation loads:
 - the distilled workstream card;
 - the selected request contract;
 - at most five newest progress projections for that request;
-- relevant resource bindings;
+- the workstream's authoritative resource bindings;
 - any provisional lifecycle plan.
 
 The next primary-model decision receives a bounded
@@ -292,13 +299,22 @@ The next primary-model decision receives a bounded
 not an older workstream current request. If another request is active, only
 its identity, title, and active status appear as `activeRequest`. The
 projection includes distilled purpose, summary, focus, blockers, next action,
-and at most five newest progress summaries for the selected request.
+at most five newest progress summaries for the selected request, and at most
+ten resource metadata records. Selected-request resources, primary resources,
+mutable resources, available resources, and recently used resources receive
+deterministic priority. Each projected resource contains only stable identity,
+display metadata, public locator, role, declared access, availability, primary
+status, and selected-request relevance. `otherResourceCount` reports how many
+bindings were omitted.
 
 Projection fails closed when the route, loaded workstream, selected request,
 or persisted run binding disagree. The selected request contract keeps every
 acceptance criterion and constraint. Descriptive workstream/progress fields
-are size-bounded; resource locators, commit SHAs, raw logs, all request files,
-and complete historical progress remain outside the prompt.
+and resource metadata are size-bounded; resource contents, version hashes,
+commit SHAs, raw logs, all request files, and complete historical progress
+remain outside the prompt. Projected metadata is navigation and selection
+context, not proof of current file contents and not an independent permission
+grant.
 
 Older progress, completed requests, commits, resources, and exact run evidence
 remain searchable on demand. Request FTS contributes matching request
@@ -372,14 +388,21 @@ Ingress attachments are admitted before routing. Uploaded bytes are copied
 once into content-addressed immutable storage; referenced files remain at
 their canonical path.
 
-Binding establishes durable task ownership but does not by itself authorize a
-filesystem call. For `create_directory`, `write_files`, `patch_files`, `copy`,
-`move`, `delete`, and `set_permissions`, the runtime derives one selected
-destination root from the new-workstream targets or exact routed resources.
-Every target in the call must remain inside that root; a copy source may be
-read-only elsewhere. Relative paths resolve once beneath
+Binding establishes durable task ownership. New-workstream creation grants
+only its exact resolved output targets. Existing-workstream activation mounts
+all distinct usable absolute filesystem bindings already declared
+`access: mutate`; it never upgrades `read`, `missing`, or `deleted` bindings.
+An explicit narrower user boundary for the current turn filters that mounted
+set.
+
+For `create_directory`, `write_files`, `patch_files`, `copy`, `move`, `delete`,
+and `set_permissions`, the runtime then selects one destination root for each
+call. Every target in that call must remain inside the root; a copy source may
+be read-only elsewhere. Relative paths resolve once beneath
 `context.run.workspaceRoot`, while absolute paths must already be inside the
-selected root.
+selected root. The executor canonicalizes and rechecks the target against the
+runtime-derived root before mutation, so prompt metadata alone cannot
+authorize a call.
 
 A new workstream may have no resources. Missing output paths are not
 pre-registered merely to manufacture permission. The executor observes only

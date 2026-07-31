@@ -293,6 +293,8 @@ describe("prepared main-context admission", () => {
           constraints: [],
         },
         recentProgress: [],
+        resources: [],
+        otherResourceCount: 0,
       },
       mode: {
         active: "execute",

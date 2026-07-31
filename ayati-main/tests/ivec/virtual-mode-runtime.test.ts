@@ -496,24 +496,100 @@ describe("virtual mode runtime", () => {
     });
   });
 
-  it("enters a read-only workstream routing surface before unbound mutation", async () => {
-    const current = state("Create output.txt.");
-    const result = await transition(current, {
-      to: "workstream.route",
-      purpose: "Find the durable owner before creating the file.",
-      capabilities: ["workstream:search", "workstream:read", "resource:ownership"],
-      subjects: ["output.txt"],
-    }, [FIND_WORKSTREAMS_TOOL, READ_WORKSTREAM_TOOL, FIND_RESOURCES_TOOL]);
+  it("enters control-only workstream routing after current-run ownership observation", async () => {
+    const current = observedWorkstreamState("Create output.txt.");
+    const tools = [FIND_WORKSTREAMS_TOOL, READ_WORKSTREAM_TOOL, FIND_RESOURCES_TOOL];
+    const manager = new CapabilitySurfaceManager({
+      registry: new ToolRegistry(tools),
+      toolExecutor: createToolExecutor([]),
+      validateCoverage: false,
+    });
+    const toolContext = { runId: current.runId, stepNumber: 2 };
+    manager.replaceWithCapabilities({
+      capabilities: ["workstream:search"],
+      mode: "observe.locate",
+      state: current,
+      context: toolContext,
+    });
+    expect(manager.listActive(toolContext)).toEqual(["git_context_find_workstreams"]);
+
+    const result = await dispatchVirtualModeTransition({
+      state: current,
+      request: {
+        to: "workstream.route",
+        purpose: "Select the verified durable owner before creating the file.",
+        capabilities: [],
+      },
+      workspaceRoot: "/tmp",
+      iteration: 2,
+      toolDefinitions: tools,
+      capabilitySurfaceManager: manager,
+      toolContext,
+      bindingAlreadyAttempted: false,
+      applyContext(context) {
+        current.harnessContext.contextEngine = context;
+      },
+    });
 
     expect(result).toMatchObject({
       kind: "applied",
       active: "workstream.route",
-      toolNames: [
-        "git_context_find_workstreams",
-        "git_context_read_workstream",
-        "git_context_find_resources",
-      ],
+      toolNames: [],
+      loadResult: {
+        evicted: ["git_context_find_workstreams"],
+      },
     });
+    expect(manager.listActive(toolContext)).toEqual([]);
+    expect(current.virtualMode).toMatchObject({
+      active: "workstream.route",
+      capabilities: [],
+      targets: [],
+    });
+  });
+
+  it("does not expose workstream routing before a current-run ownership observation", async () => {
+    const result = await transition(state("Create output.txt."), {
+      to: "workstream.route",
+      purpose: "Try to route before observing durable ownership.",
+      capabilities: [],
+    }, [FIND_WORKSTREAMS_TOOL, READ_WORKSTREAM_TOOL, FIND_RESOURCES_TOOL]);
+
+    expect(result).toMatchObject({
+      kind: "rejected",
+      repair: { code: "MODE_EDGE_PROHIBITED" },
+    });
+  });
+
+  it("returns from routing to workstream investigation without discarding current-run evidence", async () => {
+    const current = workstreamRoutingState("Update W-20260722-0001.");
+    current.toolContext!.toolCalls![0]!.output = JSON.stringify({
+      workstreams: [{
+        workstreamId: "W-20260722-0001",
+        head: "a".repeat(40),
+        discovery: {
+          tier: "definite",
+          reasons: ["exact_workstream_id"],
+        },
+      }],
+      count: 1,
+    });
+
+    const result = await transition(current, {
+      to: "observe.investigate",
+      purpose: "Inspect the exact workstream before selecting its request.",
+      capabilities: ["workstream:read"],
+      references: [{
+        kind: "workstream",
+        workstreamId: "W-20260722-0001",
+      }],
+    }, [READ_WORKSTREAM_TOOL]);
+
+    expect(result).toMatchObject({
+      kind: "applied",
+      active: "observe.investigate",
+      toolNames: ["git_context_read_workstream"],
+    });
+    expect(current.toolContext?.toolCalls).toHaveLength(1);
   });
 
   it("prohibits direct unbound resolve before workstream routing", async () => {
@@ -882,9 +958,23 @@ function observationState(): LoopState {
 }
 
 function workstreamRoutingState(message: string): LoopState {
-  const current = state(message);
+  const current = observedWorkstreamState(message);
   current.virtualMode = {
     active: "workstream.route",
+    revision: 1,
+    operational: true,
+    purpose: "Select the verified durable owner before mutation.",
+    capabilities: [],
+    targets: [],
+    enteredAtIteration: 1,
+  };
+  return current;
+}
+
+function observedWorkstreamState(message: string): LoopState {
+  const current = state(message);
+  current.virtualMode = {
+    active: "observe.locate",
     revision: 1,
     operational: true,
     purpose: "Find the durable owner before mutation.",

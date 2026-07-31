@@ -12,7 +12,15 @@ export const BOUND_WORKSTREAM_PROMPT_LIMITS = {
   progressSummaryChars: 800,
   progressValidationChars: 500,
   progressNextChars: 500,
+  resourceCount: 10,
+  resourceNameChars: 200,
+  resourceDescriptionChars: 500,
+  resourceAliasCount: 5,
+  resourceAliasChars: 100,
 } as const;
+
+type ContextWorkstream = NonNullable<ContextEngineMachineContext["workstream"]>;
+type ContextWorkstreamResource = ContextWorkstream["resources"][number];
 
 export interface PromptBoundWorkstreamContext {
   id: string;
@@ -31,6 +39,8 @@ export interface PromptBoundWorkstreamContext {
     status: "active";
   };
   recentProgress: PromptBoundWorkstreamProgress[];
+  resources: PromptBoundWorkstreamResource[];
+  otherResourceCount: number;
 }
 
 export interface PromptBoundRequestContext {
@@ -49,6 +59,20 @@ export interface PromptBoundWorkstreamProgress {
   summary: string;
   validation: string;
   next?: string;
+}
+
+export interface PromptBoundWorkstreamResource {
+  id: string;
+  name: string;
+  kind: ContextWorkstreamResource["resource"]["kind"];
+  description?: string;
+  aliases: string[];
+  locator: ContextWorkstreamResource["resource"]["locator"];
+  role: ContextWorkstreamResource["role"];
+  access: ContextWorkstreamResource["access"];
+  availability: ContextWorkstreamResource["resource"]["availability"];
+  primary: boolean;
+  requestRelevant: boolean;
 }
 
 /**
@@ -144,6 +168,10 @@ export function buildBoundWorkstreamPromptContext(
     workstream.next,
     BOUND_WORKSTREAM_PROMPT_LIMITS.nextActionChars,
   );
+  const resources = projectBoundResources(
+    workstream.resources,
+    selectedRequest.id,
+  );
 
   return {
     id: workstreamId,
@@ -173,7 +201,95 @@ export function buildBoundWorkstreamPromptContext(
       .sort(compareNewestProgressFirst)
       .slice(0, BOUND_WORKSTREAM_PROMPT_LIMITS.recentProgressCount)
       .map((progress) => projectRecentProgress(progress)),
+    resources,
+    otherResourceCount: Math.max(0, workstream.resources.length - resources.length),
   };
+}
+
+function projectBoundResources(
+  resources: ContextWorkstream["resources"],
+  selectedRequestId: string,
+): PromptBoundWorkstreamResource[] {
+  return [...resources]
+    .sort((left, right) => compareResources(left, right, selectedRequestId))
+    .slice(0, BOUND_WORKSTREAM_PROMPT_LIMITS.resourceCount)
+    .map((binding) => projectBoundResource(binding, selectedRequestId));
+}
+
+function compareResources(
+  left: ContextWorkstreamResource,
+  right: ContextWorkstreamResource,
+  selectedRequestId: string,
+): number {
+  const byPriority = resourcePriority(right, selectedRequestId)
+    - resourcePriority(left, selectedRequestId);
+  if (byPriority !== 0) return byPriority;
+  const byLastUse = (right.lastUsedAt ?? "").localeCompare(left.lastUsedAt ?? "");
+  if (byLastUse !== 0) return byLastUse;
+  const byName = left.resource.displayName.localeCompare(right.resource.displayName);
+  return byName !== 0
+    ? byName
+    : left.resource.resourceId.localeCompare(right.resource.resourceId);
+}
+
+function resourcePriority(
+  binding: ContextWorkstreamResource,
+  selectedRequestId: string,
+): number {
+  return (binding.requestIds.includes(selectedRequestId) ? 8 : 0)
+    + (binding.primary ? 4 : 0)
+    + (binding.access === "mutate" ? 2 : 0)
+    + (binding.resource.availability === "available" ? 1 : 0);
+}
+
+function projectBoundResource(
+  binding: ContextWorkstreamResource,
+  selectedRequestId: string,
+): PromptBoundWorkstreamResource {
+  const description = compactOptionalText(
+    binding.resource.description,
+    BOUND_WORKSTREAM_PROMPT_LIMITS.resourceDescriptionChars,
+  );
+  return {
+    id: binding.resource.resourceId,
+    name: compactText(
+      binding.resource.displayName,
+      BOUND_WORKSTREAM_PROMPT_LIMITS.resourceNameChars,
+    ),
+    kind: binding.resource.kind,
+    ...(description ? { description } : {}),
+    aliases: [...new Set(binding.resource.aliases.map((alias) => compactText(
+      alias,
+      BOUND_WORKSTREAM_PROMPT_LIMITS.resourceAliasChars,
+    )).filter((alias) => alias.length > 0))]
+      .slice(0, BOUND_WORKSTREAM_PROMPT_LIMITS.resourceAliasCount),
+    locator: projectResourceLocator(binding.resource.locator),
+    role: binding.role,
+    access: binding.access,
+    availability: binding.resource.availability,
+    primary: binding.primary,
+    requestRelevant: binding.requestIds.includes(selectedRequestId),
+  };
+}
+
+function projectResourceLocator(
+  locator: ContextWorkstreamResource["resource"]["locator"],
+): PromptBoundWorkstreamResource["locator"] {
+  switch (locator.kind) {
+    case "filesystem":
+      return { kind: locator.kind, path: locator.path };
+    case "managed_blob":
+      return { kind: locator.kind, resourceId: locator.resourceId };
+    case "url":
+      return { kind: locator.kind, url: locator.url };
+    case "external":
+      return {
+        kind: locator.kind,
+        provider: locator.provider,
+        externalId: locator.externalId,
+        ...(locator.uri ? { uri: locator.uri } : {}),
+      };
+  }
 }
 
 function projectDifferentActiveRequest(input: {

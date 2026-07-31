@@ -1,18 +1,23 @@
 import { describe, expect, it } from "vitest";
+import { modeTransitionControlCallFromRequest } from "../../src/ivec/agent-runner/mode-transition-controls.js";
 import { normalizeModeTransitionRequest } from "../../src/ivec/agent-runner/mode-transition-request.js";
 
 describe("mode transition request normalization", () => {
-  it("preserves the dedicated workstream routing destination and subjects", () => {
-    expect(normalizeModeTransitionRequest({
+  it("preserves the control-only workstream routing destination", () => {
+    const request = normalizeModeTransitionRequest({
       to: "workstream.route",
-      purpose: "Find the durable owner before mutation.",
-      capabilities: ["workstream:search"],
-      subjects: [" balcony herbs ", "balcony herbs"],
-    })).toMatchObject({
+      purpose: "Select the verified durable owner before mutation.",
+    });
+    expect(request).toMatchObject({
       to: "workstream.route",
-      purpose: "Find the durable owner before mutation.",
-      capabilities: ["workstream:search"],
-      subjects: ["balcony herbs"],
+      purpose: "Select the verified durable owner before mutation.",
+      capabilities: [],
+    });
+    expect(modeTransitionControlCallFromRequest(request)).toEqual({
+      name: "decision_enter_workstream_route",
+      input: {
+        purpose: "Select the verified durable owner before mutation.",
+      },
     });
   });
 

@@ -21,13 +21,15 @@ creates one run. Conversation and observational work can finish unbound;
 durable work binds that same run to one workstream and request.
 
 Each run starts at `ENTRY` and may navigate read-only locate/investigate modes,
-the dedicated read-only `workstream.route` lane for unbound mutation, a
-deterministic binding gate, bound execution, and whole-task validation.
-`workstream.route` exposes only workstream search/read and resource-owner
-lookup; resolve controls appear only after one of those calls succeeds in the
-current run. The binding gate validates one typed proposal without calling a
-model. This is a small harness-enforced capability graph inside the existing
-loop, not a second planner, agent, or session-level state machine.
+a control-only `workstream.route` stage for unbound mutation, a deterministic
+binding gate, bound execution, and whole-task validation. Workstream search,
+read, and resource-owner lookup use the ordinary observation modes. A
+successful current-run ownership observation unlocks `workstream.route`,
+which exposes no executable tools and leads to resolve or back to observation
+when more evidence is needed. The binding gate validates one typed proposal
+without calling a model. This is a small harness-enforced capability graph
+inside the existing loop, not a second planner, agent, or session-level state
+machine.
 
 Continuity lives in one slow-growing agent stream across clients and runs.
 Fast-growing WorkState, steps, tool calls, and verification remain inside the

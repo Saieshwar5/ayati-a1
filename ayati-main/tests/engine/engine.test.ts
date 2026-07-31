@@ -96,7 +96,7 @@ function createSingleLoopMutationProvider(outputPath: string): LlmProvider {
         return nativeDecisionFixture({
           kind: "transition_mode",
           request: {
-            to: "workstream.route",
+            to: "observe.locate",
             purpose: "Check durable ownership before creating the requested file.",
             capabilities: ["workstream:search"],
             targets: [outputPath],
@@ -124,6 +124,15 @@ function createSingleLoopMutationProvider(outputPath: string): LlmProvider {
         return nativeDecisionFixture({
           kind: "transition_mode",
           request: {
+            to: "workstream.route",
+            purpose: "Use the observed owner candidates to prepare deterministic binding.",
+          },
+        });
+      }
+      if (decision === 4) {
+        return nativeDecisionFixture({
+          kind: "transition_mode",
+          request: {
             to: "resolve",
             purpose: "Bind the requested output before creating it.",
             capabilities: ["file:write"],
@@ -145,7 +154,7 @@ function createSingleLoopMutationProvider(outputPath: string): LlmProvider {
           },
         });
       }
-      if (decision === 4) {
+      if (decision === 5) {
         return nativeDecisionFixture({
           kind: "act",
           action: {
@@ -162,7 +171,7 @@ function createSingleLoopMutationProvider(outputPath: string): LlmProvider {
           },
         });
       }
-      if (decision === 5) {
+      if (decision === 6) {
         return nativeDecisionFixture({
           kind: "transition_mode",
           request: {
@@ -177,7 +186,7 @@ function createSingleLoopMutationProvider(outputPath: string): LlmProvider {
           },
         });
       }
-      if (decision === 6) {
+      if (decision === 7) {
         return nativeDecisionFixture({
           kind: "reply",
           status: "completed",
@@ -770,7 +779,7 @@ describe("IVecEngine one-run integration", () => {
       }));
       expect(startWorkstreamResolution).not.toHaveBeenCalled();
       expect(createWorkstreamForRun).toHaveBeenCalledOnce();
-      expect(provider.generateTurn).toHaveBeenCalledTimes(6);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(7);
       for (const [turnInput] of vi.mocked(provider.generateTurn).mock.calls) {
         expect(JSON.stringify(turnInput)).toContain(workingDirectory);
       }

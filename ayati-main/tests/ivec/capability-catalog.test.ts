@@ -46,6 +46,18 @@ describe("capability catalog", () => {
       allowedModes: ["observe.investigate"],
       targetRequirement: "none",
     });
+    expect(catalog.get("workstream:search")).toMatchObject({
+      coreTools: ["git_context_find_workstreams"],
+      allowedModes: ["observe.locate"],
+    });
+    expect(catalog.get("workstream:read")).toMatchObject({
+      coreTools: ["git_context_read_workstream"],
+      allowedModes: ["observe.investigate"],
+    });
+    expect(catalog.get("resource:ownership")).toMatchObject({
+      coreTools: ["git_context_find_resources"],
+      allowedModes: ["observe.locate", "observe.investigate"],
+    });
     expect(catalog.requiresReferenceTarget(["system:time"])).toBe(false);
     expect(catalog.requiresReferenceTarget(["system:time", "file:read"]))
       .toBe(true);
@@ -99,11 +111,9 @@ describe("capability catalog", () => {
     expect(capabilityEnum(investigate)).toContain("system:time");
     expect(capabilityEnum(investigate)).toContain("system:health");
     expect(capabilityEnum(investigate)).not.toContain("file:write");
-    expect(capabilityEnum(workstreamRoute)).toEqual([
-      "workstream:search",
-      "workstream:read",
-      "resource:ownership",
-    ]);
+    expect(workstreamRoute).toHaveProperty("purpose");
+    expect(workstreamRoute).not.toHaveProperty("capabilities");
+    expect(workstreamRoute).not.toHaveProperty("subjects");
     expect(capabilityEnum(resolveActivate)).toContain("file:write");
     expect(capabilityEnum(resolveActivate)).toContain("file:copy");
     expect(capabilityEnum(resolveActivate)).toContain("file:permissions");

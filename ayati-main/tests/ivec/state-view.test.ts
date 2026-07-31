@@ -109,7 +109,7 @@ describe("buildAgentStateView", () => {
     expect(JSON.stringify(activeDocuments)).not.toContain("document-6.txt");
   });
 
-  it("projects the bound request contract while keeping resource details outside the prompt", () => {
+  it("projects the bound request contract and bounded resource metadata once", () => {
     const context = createBoundContext();
     const state = createLoopState({ context });
 
@@ -143,6 +143,23 @@ describe("buildAgentStateView", () => {
         validation: "Runtime wiring remains.",
         next: "Wire the prompt projection.",
       }],
+      resources: [{
+        id: "RES-0123456789ABCDEF01234567",
+        name: "Ayati project",
+        kind: "directory",
+        description: "Repository containing the implementation.",
+        aliases: ["ayati"],
+        locator: {
+          kind: "filesystem",
+          path: "/tmp/ayati-project",
+        },
+        role: "primary",
+        access: "mutate",
+        availability: "available",
+        primary: true,
+        requestRelevant: true,
+      }],
+      otherResourceCount: 0,
     });
     expect(context.workstream).toMatchObject({
       workstreamId: "W-20260719-0001",
@@ -152,7 +169,7 @@ describe("buildAgentStateView", () => {
       kind: "filesystem",
       path: "/tmp/ayati-project",
     });
-    expect(JSON.stringify(prompt)).not.toContain("/tmp/ayati-project");
+    expect(JSON.stringify(prompt).match(/\/tmp\/ayati-project/g)).toHaveLength(1);
 
     state.workState = {
       status: "in_progress",

@@ -3,6 +3,7 @@ import {
   bindingRequiredToolNames,
   dispatchDeterministicResolveGate,
 } from "../../src/ivec/agent-runner/deterministic-resolve.js";
+import type { ContextEngineMachineContext } from "../../src/context-engine/index.js";
 import { createEntryVirtualModeState } from "../../src/ivec/agent-runner/virtual-mode.js";
 import type { LoopState } from "../../src/ivec/types.js";
 import { contextEngineFixture } from "../fixtures/agent-context.js";
@@ -412,6 +413,71 @@ describe("deterministic resolve gate", () => {
     expect(coordinator.bind).not.toHaveBeenCalled();
   });
 
+  it("mounts all authoritative mutable resources after activation without upgrading read access", async () => {
+    const current = activationState(
+      "Update the existing files in W-20260722-0001.",
+    );
+    const context = resolvedActivationContext(
+      current.harnessContext.contextEngine!,
+    );
+    const coordinator = {
+      bind: vi.fn(async () => ({
+        status: "resolved" as const,
+        kind: "activated_workstream" as const,
+        workstreamId: "W-20260722-0001",
+        requestId: "R-0001",
+        context,
+      })),
+    };
+
+    const result = await dispatchDeterministicResolveGate({
+      state: current,
+      request: activationRequest(),
+      workspaceRoot: WORKSPACE_ROOT,
+      toolNames: ["write_files"],
+      coordinator,
+      alreadyAttempted: false,
+    });
+
+    expect(result.kind).toBe("resolved");
+    if (result.kind !== "resolved") throw new Error("Expected activation to resolve.");
+    expect(result.mutationRoots).toEqual([
+      RESOURCE_PATH,
+      "/tmp/ayati-workspace/supporting",
+    ]);
+  });
+
+  it("keeps an explicit per-turn filesystem boundary narrower than activated authority", async () => {
+    const current = activationState(
+      `Update ${RESOURCE_PATH}. Do not modify anything outside ${RESOURCE_PATH}.`,
+    );
+    const context = resolvedActivationContext(
+      current.harnessContext.contextEngine!,
+    );
+    const coordinator = {
+      bind: vi.fn(async () => ({
+        status: "resolved" as const,
+        kind: "activated_workstream" as const,
+        workstreamId: "W-20260722-0001",
+        requestId: "R-0001",
+        context,
+      })),
+    };
+
+    const result = await dispatchDeterministicResolveGate({
+      state: current,
+      request: activationRequest(),
+      workspaceRoot: WORKSPACE_ROOT,
+      toolNames: ["write_files"],
+      coordinator,
+      alreadyAttempted: false,
+    });
+
+    expect(result.kind).toBe("resolved");
+    if (result.kind !== "resolved") throw new Error("Expected activation to resolve.");
+    expect(result.mutationRoots).toEqual([RESOURCE_PATH]);
+  });
+
   it("never invokes the coordinator after the run has attempted binding", async () => {
     const coordinator = { bind: vi.fn() };
     const result = await dispatchDeterministicResolveGate({
@@ -452,6 +518,172 @@ function createProposal() {
       acceptance: ["notes.md exists and is verified."],
       constraints: [],
     },
+  };
+}
+
+function activationRequest() {
+  return {
+    to: "resolve" as const,
+    purpose: "Continue the exact observed workstream.",
+    capabilities: ["file:write"],
+    binding: {
+      kind: "activate" as const,
+      workstreamId: "W-20260722-0001",
+      requestDecision: {
+        kind: "continue_current" as const,
+        requestId: "R-0001",
+        reason: "Continue the exact active request returned by discovery.",
+      },
+      resourceIds: [RESOURCE_ID],
+    },
+  };
+}
+
+function activationState(message: string): LoopState {
+  const current = state(message, true);
+  current.toolContext!.toolCalls![0]!.output = JSON.stringify({
+    workstreams: [{
+      workstreamId: "W-20260722-0001",
+      head: "a".repeat(40),
+      currentRequest: { id: "R-0001", status: "active" },
+      discovery: { tier: "definite", reasons: ["exact_workstream_id"] },
+    }],
+    count: 1,
+  });
+  current.toolContext!.toolCalls!.push({
+    step: 2,
+    callId: "find-resource",
+    tool: "git_context_find_resources",
+    purpose: "Find the exact resource owned by the workstream.",
+    input: { resourceIds: [RESOURCE_ID] },
+    status: "success",
+    output: JSON.stringify({
+      resources: [{
+        resource: {
+          resourceId: RESOURCE_ID,
+          locator: { kind: "filesystem", path: RESOURCE_PATH },
+        },
+        workstreamIds: ["W-20260722-0001"],
+      }],
+      count: 1,
+    }),
+    evidenceRef: RESOURCE_REF,
+    stepRef: {
+      runId: "RUN-1",
+      step: 2,
+      callId: "find-resource",
+    },
+  });
+  return current;
+}
+
+function resolvedActivationContext(
+  context: ContextEngineMachineContext,
+): ContextEngineMachineContext {
+  return {
+    ...context,
+    contextRevision: "ctx:activated",
+    current: {
+      ...context.current,
+      routing: {
+        status: "bound",
+        workstreamId: "W-20260722-0001",
+        requestId: "R-0001",
+      },
+    },
+    workstream: {
+      ref: "workstream:W-20260722-0001",
+      workstreamId: "W-20260722-0001",
+      title: "Balcony herbs",
+      objective: "Maintain the balcony herb notes.",
+      summary: "The herb notes exist.",
+      workstreamStatus: "in_progress",
+      lifecycleStatus: "active",
+      repositoryHealth: "ready",
+      blockers: [],
+      currentRequest: {
+        id: "R-0001",
+        title: "Maintain herb notes",
+        status: "active",
+        request: "Maintain the herb notes.",
+        acceptance: ["The notes are current."],
+        constraints: [],
+      },
+      selectedRequest: {
+        id: "R-0001",
+        title: "Maintain herb notes",
+        status: "active",
+        request: "Maintain the herb notes.",
+        acceptance: ["The notes are current."],
+        constraints: [],
+      },
+      recentProgress: [],
+      resources: [
+        activationResource(RESOURCE_ID, RESOURCE_PATH, "mutate", "available"),
+        activationResource(
+          "RES-111111111111111111111111",
+          "/tmp/ayati-workspace/supporting",
+          "mutate",
+          "changed",
+        ),
+        activationResource(
+          "RES-222222222222222222222222",
+          "/tmp/ayati-workspace/read-only",
+          "read",
+          "available",
+        ),
+        activationResource(
+          "RES-333333333333333333333333",
+          "/tmp/ayati-workspace/missing",
+          "mutate",
+          "missing",
+        ),
+        activationResource(
+          "RES-444444444444444444444444",
+          "/tmp/ayati-workspace/deleted",
+          "mutate",
+          "deleted",
+        ),
+      ],
+    },
+  };
+}
+
+type WorkstreamResource = NonNullable<
+  ContextEngineMachineContext["workstream"]
+>["resources"][number];
+
+function activationResource(
+  resourceId: string,
+  path: string,
+  access: WorkstreamResource["access"],
+  availability: WorkstreamResource["resource"]["availability"],
+): WorkstreamResource {
+  return {
+    resource: {
+      resourceId,
+      kind: "directory",
+      origin: "agent_created",
+      displayName: path.split("/").at(-1) ?? resourceId,
+      description: "A bound test resource.",
+      aliases: [],
+      locator: { kind: "filesystem", path },
+      version: {
+        key: `directory:${resourceId}`,
+        observedAt: "2026-07-31T10:00:00.000Z",
+        exists: availability !== "missing" && availability !== "deleted",
+        kind: "directory",
+      },
+      availability,
+      metadataStatus: "enriched",
+      createdAt: "2026-07-31T10:00:00.000Z",
+      updatedAt: "2026-07-31T10:00:00.000Z",
+    },
+    role: resourceId === RESOURCE_ID ? "primary" : "supporting",
+    access,
+    primary: resourceId === RESOURCE_ID,
+    requestIds: ["R-0001"],
+    boundAt: "2026-07-31T10:00:00.000Z",
   };
 }
 
