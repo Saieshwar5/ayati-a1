@@ -1,11 +1,14 @@
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import type {
   FinalizeRunRequest,
   VerifiedFilesystemResourceEffect,
 } from "../src/contracts.js";
+import { parseWorkstreamCommit } from "../src/workstreams/workstream-commit-metadata.js";
 import { validateWorkstreamRepository } from "../src/workstreams/workstream-repository-validator.js";
 import {
   createBoundWorkstream,
@@ -15,6 +18,7 @@ import {
 } from "./simple-workstream-repository-fixtures.js";
 
 const fixtures: WorkstreamServiceFixture[] = [];
+const execFileAsync = promisify(execFile);
 
 afterEach(async () => {
   await Promise.all(fixtures.splice(0).map(async (fixture) => await fixture.dispose()));
@@ -31,14 +35,15 @@ describe("verified filesystem resource effect finalization", () => {
     await mkdir(join(fixture.root, "workspace", "site"), { recursive: true });
     await writeFile(path, "<h1>In progress</h1>\n", "utf8");
 
-    await fixture.service.finalizeRun(incompleteFinalization(fixture, [
+    const finalized = await fixture.service.finalizeRun(incompleteFinalization(fixture, [
       unaryEffect("FRE-000000000000000000000001", "created", path, 1, "write-index"),
     ]));
 
     const row = fixture.database.prepare([
-      "SELECT origin, locator_json, metadata_status, availability",
+      "SELECT resource_id, origin, locator_json, metadata_status, availability",
       "FROM resources",
     ].join(" ")).get() as {
+      resource_id: string;
       origin: string;
       locator_json: string;
       metadata_status: string;
@@ -50,6 +55,12 @@ describe("verified filesystem resource effect finalization", () => {
       availability: "available",
     });
     expect(JSON.parse(row.locator_json)).toEqual({ kind: "filesystem", path });
+    expect(finalized.resourceEffects.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        resourceId: row.resource_id,
+        type: "created",
+      }),
+    ]));
 
     const validation = await validateWorkstreamRepository({
       workstreamRoot: join(fixture.root, "workstreams"),
@@ -65,6 +76,17 @@ describe("verified filesystem resource effect finalization", () => {
       }),
     ]);
     expect(validation.currentRequest?.status).toBe("active");
+    expect(validation.progress.entries).toEqual([
+      expect.objectContaining({
+        workCompleted: ["Created index.html."],
+        verifiedMutations: [
+          "Created `" + row.resource_id + "`: Created index.html.",
+        ],
+      }),
+    ]);
+    expect(await committedMutationCount(
+      selected.workstream.contextRepositoryPath,
+    )).toBe(1);
   });
 
   it("registers a verified directory without recursively fingerprinting its contents", async () => {
@@ -116,14 +138,14 @@ describe("verified filesystem resource effect finalization", () => {
       aliases: ["restored output"],
       at: "2026-07-28T11:55:00.000Z",
     });
-    await createBoundWorkstream(fixture, {
+    const selected = await createBoundWorkstream(fixture, {
       title: "Restore Missing Resource",
       objective: "Reuse a known resource identity when its bytes appear.",
     });
     await mkdir(join(fixture.root, "workspace"), { recursive: true });
     await writeFile(path, "restored\n", "utf8");
 
-    await fixture.service.finalizeRun(incompleteFinalization(fixture, [
+    const finalized = await fixture.service.finalizeRun(incompleteFinalization(fixture, [
       unaryEffect("FRE-000000000000000000000008", "created", path, 1, "restore-file"),
     ]));
 
@@ -146,6 +168,29 @@ describe("verified filesystem resource effect finalization", () => {
       missing.resource.resourceId,
     ) as Array<{ event_type: string }>;
     expect(events.map((event) => event.event_type)).toContain("restored");
+    expect(finalized.resourceEffects.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        resourceId: missing.resource.resourceId,
+        type: "restored",
+      }),
+    ]));
+
+    const validation = await validateWorkstreamRepository({
+      workstreamRoot: join(fixture.root, "workstreams"),
+      contextRepositoryPath: selected.workstream.contextRepositoryPath,
+      expectedWorkstreamId: selected.workstream.workstreamId,
+    });
+    expect(validation.progress.entries).toEqual([
+      expect.objectContaining({
+        workCompleted: ["Restored restored.txt."],
+        verifiedMutations: [
+          "Restored `" + missing.resource.resourceId + "`: Restored restored.txt.",
+        ],
+      }),
+    ]);
+    expect(await committedMutationCount(
+      selected.workstream.contextRepositoryPath,
+    )).toBe(1);
   });
 
   it("keeps intermediate receipt hashes while reconciling the latest verified bytes", async () => {
@@ -462,4 +507,17 @@ function unaryEffect(
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+async function committedMutationCount(repositoryPath: string): Promise<number> {
+  const result = await execFileAsync(
+    "git",
+    ["show", "-s", "--format=%B", "HEAD"],
+    { cwd: repositoryPath, encoding: "utf8" },
+  );
+  const metadata = parseWorkstreamCommit(result.stdout);
+  if (metadata?.event !== "workstream_bound_run_finalized") {
+    throw new Error("Expected a finalized workstream run commit.");
+  }
+  return metadata.mutations;
 }

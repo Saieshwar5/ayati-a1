@@ -109,7 +109,7 @@ async function applyUnary(
     state: afterState,
     origin: beforeResource.origin,
   });
-  const eventType = resourceEventType(effect.operation, beforeResource);
+  const eventType = resourceEventType(effect.operation, existing);
   recordEffect(
     input,
     resource,
@@ -443,7 +443,7 @@ function recordEffect(
         source: "deterministic_tool_verification",
         effect,
       },
-      summary: effectSummary(effect, resource.displayName),
+      summary: effectSummary(effect, resource.displayName, type),
       at: input.at,
       step: effect.step,
       callId: effect.callId ?? effect.effectId,
@@ -462,10 +462,13 @@ function recordEffect(
 
 function resourceEventType(
   operation: "created" | "modified" | "permissions_changed" | "deleted",
-  before: ResourceRef,
+  existing: ResourceRef | undefined,
 ): ResourceEvent["type"] {
   if (operation === "deleted") return "deleted";
-  if (before.availability === "deleted" || before.availability === "missing") {
+  if (
+    existing?.availability === "deleted"
+    || existing?.availability === "missing"
+  ) {
     return "restored";
   }
   return operation === "created" ? "created" : "modified";
@@ -531,7 +534,9 @@ function requireResource(database: ContextDatabase, resourceId: string): Resourc
 function effectSummary(
   effect: VerifiedFilesystemResourceEffect,
   displayName: string,
+  type: ResourceEvent["type"],
 ): string {
+  if (type === "restored") return "Restored " + displayName + ".";
   switch (effect.operation) {
     case "created":
       return "Created " + displayName + ".";
