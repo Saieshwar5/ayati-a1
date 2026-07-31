@@ -38,8 +38,13 @@ export function buildCapabilityPromptProjection(input: {
   });
 
   return [
-    "Choose 1-3 exact capability ids for the next mode transition. Capabilities select tools but never grant authority.",
+    "Choose 1-3 exact capability ids for a capability-bearing mode transition. Capabilities select tools but never grant authority.",
     ...lines,
+    ...(allowedModes.includes("workstream.route")
+      ? [
+          "workstream.route: control-only binding stage unlocked by verified current-run workstream observation; it selects no capabilities and loads no executable tools.",
+        ]
+      : []),
     ...(input.activeCapabilities.length > 0
       ? [`Active capabilities: ${input.activeCapabilities.join(", ")}.`]
       : []),

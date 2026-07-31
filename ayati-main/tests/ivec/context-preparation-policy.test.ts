@@ -122,6 +122,7 @@ describe("parallel context preparation policy", () => {
       retention: "exact",
       sourceRefs: [
         "request:R-0001",
+        "resource:RES-0123456789ABCDEF01234567",
         "run:RUN-EARLIER",
         "workstream:W-20260729-0001",
       ],
@@ -182,6 +183,22 @@ function promptState(): AgentPromptStateView {
             summary: "Created the files.",
             validation: "Browser validation remains.",
           }],
+          resources: [{
+            id: "RES-0123456789ABCDEF01234567",
+            name: "Website directory",
+            kind: "directory",
+            aliases: [],
+            locator: {
+              kind: "filesystem",
+              path: "/opt/ayati/runtime/workspace/lumen-finch",
+            },
+            role: "primary",
+            access: "mutate",
+            availability: "available",
+            primary: true,
+            requestRelevant: true,
+          }],
+          otherResourceCount: 0,
         },
         workState: {
           status: "in_progress",

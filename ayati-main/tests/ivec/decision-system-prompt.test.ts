@@ -10,9 +10,9 @@ describe("stable decision system prompt", () => {
     expect(prompt).toContain("Decision and execution:");
     expect(prompt).toContain("Validation and terminal responses:");
     expect(prompt).not.toContain("workstream_resolve");
-    expect(prompt).toContain("enter workstream.route first");
-    expect(prompt).toContain("workstream.route is the only path from unbound mutation intent to resolve");
-    expect(prompt).toContain("Resolve controls remain unavailable until one succeeds");
+    expect(prompt).toContain("Before any unbound mutation, collect durable-owner evidence");
+    expect(prompt).toContain("workstream.route is the control-only path from verified ownership evidence to resolve");
+    expect(prompt).toContain("selects no capabilities, and loads no action tools");
     expect(prompt).toContain("decision_resolve_create");
     expect(prompt).not.toContain("decision_transition_mode");
     expect(prompt).toContain("decision_stop");

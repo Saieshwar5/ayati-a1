@@ -56,6 +56,7 @@ export function summarizeVirtualModeTransition(
     return {
       kind: transition.kind,
       attempted: transition.binding.attempted,
+      attemptConsumed: transition.binding.attemptConsumed,
       code: transition.binding.outcome.code,
       retryable: transition.binding.outcome.retryable,
       message: transition.message,

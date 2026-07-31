@@ -91,11 +91,17 @@ export class WorkstreamRequestRoutingService {
       evidence: { explicitWorkstreamId: input.workstreamId },
     }, routingDecision(input.workstreamId, input.route));
     if (resolution.status !== "ready" || resolution.next !== input.route.kind) {
+      // This rejection intentionally precedes lifecycle planning and the
+      // recoverable idempotency transaction, so no request or run state changed.
       throw new ContextEngineServiceError({
         code: "WORKSTREAM_CURRENT_REQUEST_INVALID",
         message: "Request route is not valid for the current lifecycle state.",
         retryable: true,
-        details: { workstreamId: input.workstreamId, resolution },
+        details: {
+          workstreamId: input.workstreamId,
+          resolution,
+          attemptDisposition: "retryable_no_change",
+        },
       });
     }
     const changePlan = input.route.kind === "continue_current"

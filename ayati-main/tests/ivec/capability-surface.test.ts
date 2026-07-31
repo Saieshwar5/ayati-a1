@@ -148,6 +148,7 @@ describe("capability surface resolution", () => {
     const manager = new CapabilitySurfaceManager({
       registry: new ToolRegistry([
         tool("git_context_find_workstreams"),
+        tool("git_context_read_workstream"),
         tool("create_directory"),
         tool("write_files"),
         tool("patch_files"),
@@ -158,7 +159,8 @@ describe("capability surface resolution", () => {
 
     const unbound = manager.getModeCapabilityOptions(state());
     expect(unbound["observe.locate"]).toContain("workstream:search");
-    expect(unbound["workstream.route"]).toContain("workstream:search");
+    expect(unbound["observe.investigate"]).toContain("workstream:read");
+    expect(unbound["workstream.route"]).toEqual([]);
     expect(unbound.resolve).toContain("file:write");
     expect(unbound.execute).not.toContain("file:write");
 

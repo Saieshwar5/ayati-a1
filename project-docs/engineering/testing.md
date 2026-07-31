@@ -48,16 +48,21 @@ Changes should prove the relevant invariants:
     continuation.
 13. Context Engine is the serialization owner. Step persistence returns the
     updated authoritative projection without a harness-side reread or cache.
-14. An unbound mutation enters the read-only `workstream.route` mode before
-    resolve. Its surface contains only workstream search/read and
-    resource-owner lookup. Direct `ENTRY -> resolve` is unavailable, and
-    resolve controls remain absent until one routing call succeeds in the
-    current run. Those calls produce exact routing references but cannot
-    satisfy task-completion evidence.
+14. An unbound mutation first observes ownership through workstream search or
+    resource-owner lookup in `observe.locate`, or exact workstream read in
+    `observe.investigate`. Those calls produce exact routing references but
+    cannot satisfy task-completion evidence. A successful current-run
+    observation unlocks control-only `workstream.route`, whose surface is
+    empty. Direct `ENTRY -> workstream.route`, `ENTRY -> resolve`, and
+    observation-to-resolve transitions are unavailable. Route may return to
+    observation or proceed to resolve.
 15. The deterministic resolve gate makes zero model calls, accepts one typed
     continuation, amendment, activation, resumption, creation, defer-and-switch,
     or new-workstream proposal, rechecks authoritative candidate/resource
-    state, and binds at most one workstream/request on the existing run.
+    state, and binds at most one workstream/request on the existing run. One
+    corrected proposal is allowed only after a retryable rejection explicitly
+    recorded before any route plan or binding; all uncertain failures close
+    binding immediately.
 16. Whole-task validation is a stored proof-only mode with no executable
     tools. It checks a small absolute-path checklist against compact completion
     evidence emitted by deterministically verified current-run calls; it does
@@ -87,8 +92,9 @@ Changes should prove the relevant invariants:
     authority, failures, WorkState, or completion evidence.
 21. Every run begins at `ENTRY`; virtual modes never survive finalization,
     interruption, restart, or the next accepted input.
-22. Observation modes and `workstream.route` expose only read-only effects,
-    mode changes replace the complete tool surface, and execute cannot
+22. Observation modes expose only read-only effects. `workstream.route`
+    exposes no executable effects and clears the observation tool surface.
+    Mode changes replace the complete tool surface, and execute cannot
     re-enter routing or resolution.
 23. Passed validation unlocks a direct final response. Failed checks preserve
     the graph for repair, while `decision_stop` is reserved for supported
@@ -114,9 +120,15 @@ Changes should prove the relevant invariants:
     rejected, and a copy source is read-only. Workspace-relative paths resolve
     once beneath the configured workspace; external absolute destinations
     require an exact routed bound resource. Process/Python and other broad
-    effects retain resource-scoped preparation.
+    effects retain resource-scoped preparation. Existing-workstream activation
+    mounts every distinct absolute filesystem binding already marked
+    `mutate`, excluding read-only, missing, deleted, non-filesystem, and
+    relative locators. A narrower filesystem boundary in the current user
+    message filters those roots.
 26. Explicit create-new ownership survives a focused clarification; ambiguity
-    without a binding does not consume the single binding attempt.
+    without a binding consumes no binding authority. A lifecycle-state
+    rejection proven to have made no change permits one corrected resolve
+    proposal, while a second rejection closes binding for the run.
 27. File-content validation rejects a silently substituted source.
 28. Assistant response/feedback kinds survive finalization and restart, while
     attachment resource identities remain associated only with their exact
@@ -199,11 +211,14 @@ Changes should prove the relevant invariants:
 42. Every bound primary-model prompt contains the exact selected request
     contract and distilled workstream context. A different active request is
     identified without replacing the selected request; progress is limited to
-    the five newest selected-request summaries. Binding/request mismatches fail
-    closed, while resource locators, commits, raw logs, unrelated requests, and
-    complete history stay outside the prompt. WorkState does not repeat
-    workstream or request identity. Context-pressure projection preserves the
-    bound-workstream lane exactly.
+    the five newest selected-request summaries. At most ten deterministic
+    resource metadata records include identity, display metadata, public
+    locator, role, access, availability, primary status, and request relevance;
+    an omitted count preserves boundedness. Binding/request mismatches fail
+    closed, while resource contents, versions, hashes, commits, raw logs,
+    unrelated requests, and complete history stay outside the prompt.
+    WorkState does not repeat workstream or request identity. Context-pressure
+    projection preserves the bound-workstream lane exactly.
 43. Every primary-model prompt contains the exact configured absolute
     `context.run.workspaceRoot` once. Chat and actionable system-event runs use
     the same runtime value; prompt compaction and post-binding refresh preserve
@@ -219,8 +234,10 @@ Changes should prove the relevant invariants:
     dispatch. Invalid nested fields receive one bounded repair and never reach
     the deterministic graph. `decision_resolve_activate` exposes only the
     observed workstream, request lifecycle choice, and exact routed resource
-    IDs. The runtime derives paths, mutable ownership, mutation scope,
-    repository HEAD, and evidence, and rejects stale or mismatched state.
+    IDs. The runtime grounds activation with those IDs, then derives eligible
+    mutable roots from authoritative activated bindings, repository HEAD, and
+    evidence, and rejects stale or mismatched state. Read-only, missing, and
+    deleted resources never become mutation roots.
 45. `create_directory`, `write_files`, `patch_files`, `copy`, `move`,
     `delete`, and `set_permissions` report exact completed, unchanged,
     partial, and failed target effects. The verifier re-observes only declared
@@ -285,8 +302,10 @@ Below the forced barrier foreground work continues; at the barrier the runtime
 may wait once for safe context admission.
 
 Binding tests must distinguish routing evidence from task evidence, verify
-that old-mode tools disappear, prove resolve controls are hidden before a
-successful route observation and visible afterward, prove one fresh primary
+that observation tools disappear in the control-only route stage, prove the
+route control is hidden before a successful ownership observation, prove
+resolve controls appear only inside route, prove route can return to
+observation without losing current-run evidence, prove one fresh primary
 decision follows a successful binding, and assert the expected primary-model
 request count. No resolver pressure profile, private history, private semantic
 usage, or second context-preparation lane exists.

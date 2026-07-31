@@ -130,6 +130,10 @@ import {
   completeContextRetrieval,
   isContextRetrievalAction,
 } from "./context-retrieval.js";
+import {
+  createBindingAttemptPolicyState,
+  recordBindingAttempt,
+} from "./binding-attempt-policy.js";
 
 export async function runAgentLoop(
   deps: AgentLoopDeps,
@@ -151,7 +155,7 @@ export async function runAgentLoop(
   let terminalStopAttemptCount = 0;
   let terminalStopAcceptedCount = 0;
   let terminalStopRejectedCount = 0;
-  let bindingAttemptCount = 0;
+  let bindingAttemptPolicy = createBindingAttemptPolicyState();
   let bindingStatus: "not_started" | "started" | "resolved" | "needs_user_input" | "failed" = "not_started";
   let durableStepCount = 0;
   let transientContextActionCount = 0;
@@ -159,7 +163,6 @@ export async function runAgentLoop(
   let lastVerificationPassed: boolean | undefined;
   let capabilitySurfaceProgress = createCapabilitySurfaceProgressState();
   const state = buildInitialState(deps, config, inputHandle, runHandle);
-  let bindingAttempted = false;
   recordFeedback(deps, inputHandle, runHandle.runId, "loop", "started", {
     inputKind: state.inputKind ?? "user_message",
     userMessage: state.userMessage,
@@ -222,7 +225,7 @@ export async function runAgentLoop(
       transitionRequests: modeTransitionCount,
       transitionAccepted: acceptedModeTransitionCount,
       transitionRejected: rejectedModeTransitionCount,
-      bindingAttempts: bindingAttemptCount,
+      bindingAttempts: bindingAttemptPolicy.attempts,
       bindingStatus,
       validationAttempts: validationAttemptCount,
       validationAccepted: validationAcceptedCount,
@@ -691,7 +694,7 @@ export async function runAgentLoop(
         capabilitySurfaceManager: deps.capabilitySurfaceManager,
         toolContext,
         workstreamBinding: deps.workstreamBinding,
-        bindingAlreadyAttempted: bindingAttempted,
+        bindingAlreadyAttempted: bindingAttemptPolicy.unavailable,
         applyContext: (context) => {
           deps.harnessContext = {
             ...(deps.harnessContext ?? {}),
@@ -711,9 +714,11 @@ export async function runAgentLoop(
         || transition.kind === "binding_needs_user_input"
         || transition.kind === "binding_failed"
       ) {
-        bindingAttempted ||= transition.binding.attempted;
         if (transition.binding.attempted) {
-          bindingAttemptCount = 1;
+          bindingAttemptPolicy = recordBindingAttempt(
+            bindingAttemptPolicy,
+            transition.binding.attemptConsumed,
+          );
           bindingStatus = transition.binding.outcome.status;
         }
       }
@@ -797,11 +802,20 @@ export async function runAgentLoop(
       }
 
       if (transition.kind === "binding_failed") {
+        const canCorrectBinding = !transition.binding.attemptConsumed;
         recordVirtualModeRepair(state, {
-          code: "MODE_RESOLUTION_UNAVAILABLE",
+          code: canCorrectBinding
+            ? "MODE_INPUT_INVALID"
+            : "MODE_RESOLUTION_UNAVAILABLE",
           message: transition.message,
           blockedTargets: modeTransitionTargetValues(decision.request),
-          allowedNextActions: ["Validate a truthful failed or needs-input outcome without replaying mutation."],
+          allowedNextActions: canCorrectBinding
+            ? [
+                "Correct the request lifecycle operation using the observed request state, then retry resolve once.",
+              ]
+            : [
+                "Validate a truthful failed or needs-input outcome without replaying mutation.",
+              ],
         }, "validation_error");
         continue;
       }

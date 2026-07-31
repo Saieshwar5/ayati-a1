@@ -200,7 +200,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     source: "runner.guard",
     message: "No active workstream exists yet. Normal work tools cannot run before workstream binding.",
     allowedNextActions: [
-      "Enter workstream.route, observe ownership, then use the available resolve control with the exact capability and typed binding proposal.",
+      "Observe ownership with a workstream or resource capability, enter workstream.route, then use the available resolve control with the exact capability and typed binding proposal.",
       "After authoritative bound context is mounted, make a fresh decision instead of replaying an earlier mutation.",
       "If the deterministic gate reports ambiguity, validate its focused clarification.",
     ],
@@ -212,7 +212,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     source: "runner.guard",
     message: "A workstream-scoped executable action reached the runner before workstream binding existed.",
     allowedNextActions: [
-      "Enter workstream.route, observe ownership, then enter resolve with the executable capability and an evidence-backed binding proposal.",
+      "Observe ownership, enter workstream.route, then enter resolve with the executable capability and an evidence-backed binding proposal.",
       "Make a fresh executable decision only after the runtime mounts authoritative bound context.",
     ],
     modelFacing: true,
@@ -224,7 +224,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     message: "The current pending turn is not bound to a workstream.",
     allowedNextActions: [
       "Enter an observation mode for read-only evidence gathering.",
-      "For mutation, enter workstream.route, observe ownership, and then use the available resolve control.",
+      "For mutation, observe workstream ownership, enter workstream.route, and then use the available resolve control.",
       "Validate the deterministic gate's focused question if workstream ownership is ambiguous.",
     ],
     modelFacing: true,

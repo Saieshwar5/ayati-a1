@@ -82,7 +82,6 @@ describe("virtual mode graph", () => {
         "context.retrieve",
         "observe.locate",
         "observe.investigate",
-        "workstream.route",
       ],
     });
 
@@ -93,11 +92,14 @@ describe("virtual mode graph", () => {
           "context.retrieve",
           "observe.locate",
           "observe.investigate",
-          "workstream.route",
           "validation",
           "stop",
         ],
       });
+    expect(buildVirtualModeCard(mode("observe.investigate"), {
+      workstreamBound: false,
+      routingObserved: true,
+    }).allowedNext).toContain("workstream.route");
 
     expect(buildVirtualModeCard(createEntryVirtualModeState(), {
       workstreamBound: false,
@@ -106,11 +108,19 @@ describe("virtual mode graph", () => {
       "normal_reply",
       "observe.locate",
       "observe.investigate",
-      "workstream.route",
     ]);
   });
 
-  it("offers resolve from workstream routing only after current-run routing evidence exists", () => {
+  it("unlocks control-only routing after observation and offers resolve only while evidence exists", () => {
+    expect(buildVirtualModeCard(mode("observe.locate"), {
+      workstreamBound: false,
+      routingObserved: false,
+    }).allowedNext).not.toContain("workstream.route");
+    expect(buildVirtualModeCard(mode("observe.locate"), {
+      workstreamBound: false,
+      routingObserved: true,
+    }).allowedNext).toContain("workstream.route");
+
     const routing = mode("workstream.route");
 
     expect(buildVirtualModeCard(routing, {
@@ -118,7 +128,8 @@ describe("virtual mode graph", () => {
       routingObserved: false,
     }).allowedNext).toEqual([
       "context.retrieve",
-      "workstream.route",
+      "observe.locate",
+      "observe.investigate",
       "stop",
     ]);
 
@@ -127,7 +138,8 @@ describe("virtual mode graph", () => {
       routingObserved: true,
     }).allowedNext).toEqual([
       "context.retrieve",
-      "workstream.route",
+      "observe.locate",
+      "observe.investigate",
       "resolve",
       "stop",
     ]);
@@ -250,9 +262,11 @@ function mode(active: VirtualModeName): VirtualModeState {
       : active === "context.retrieve"
         ? ["context:load"]
         : active === "workstream.route"
-          ? ["workstream:search"]
+          ? []
         : ["file:read"],
-    targets: active === "context.retrieve" ? [] : ["known.txt"],
+    targets: active === "context.retrieve" || active === "workstream.route"
+      ? []
+      : ["known.txt"],
     enteredAtIteration: 1,
   };
 }

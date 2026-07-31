@@ -37,6 +37,8 @@ export async function filesystemMutationTransitionProblems(
       return await deleteProblems(prepared, afterTargets, result);
     case "set_permissions":
       return permissionProblems(prepared, afterTargets, result);
+    case "process_run":
+      return processProblems(prepared, afterTargets, result);
     default:
       return [];
   }
@@ -394,6 +396,37 @@ function permissionProblems(
       problems.push(`set_permissions incorrectly reported unchanged: ${target.path}.`);
     }
     return problems;
+  });
+}
+
+function processProblems(
+  prepared: PreparedFilesystemMutationVerification,
+  after: Map<string, PathState>,
+  result: ToolResult,
+): string[] {
+  if (prepared.targets.length === 0) {
+    return ["process_run verification is missing its declared targets."];
+  }
+  return prepared.targets.flatMap((target) => {
+    const before = beforeState(prepared, target.path);
+    const current = afterState(after, target.path);
+    if (!result.ok) {
+      return unchangedProblems(
+        before,
+        current,
+        "Failed process",
+        target.path,
+      );
+    }
+    if (current.kind === "missing") {
+      return [`Successful process target is missing: ${target.path}.`];
+    }
+    if (target.requestedKind && current.kind !== target.requestedKind) {
+      return [
+        `Successful process target has kind ${current.kind}, expected ${target.requestedKind}: ${target.path}.`,
+      ];
+    }
+    return [];
   });
 }
 

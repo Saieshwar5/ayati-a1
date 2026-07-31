@@ -53,6 +53,10 @@ import {
   workStateOpenTasks,
 } from "./work-state/selectors.js";
 import { collectWorkstreamRoutingEvidence } from "./workstream-routing-evidence.js";
+import {
+  createControlOnlyWorkstreamRouteSurface,
+  mountControlOnlyWorkstreamRouteSurface,
+} from "./workstream-route-surface.js";
 
 export { collectVirtualModeTargetEvidence } from "./virtual-mode-targets.js";
 
@@ -109,13 +113,15 @@ export async function dispatchVirtualModeTransition(input: {
   const basicRepair = validateModeTransitionRequest(input.state, request);
   if (basicRepair) return { kind: "rejected", repair: basicRepair };
 
-  const capabilityResolution = resolveCapabilities({
-    state: input.state,
-    mode: request.to,
-    capabilities: request.capabilities,
-    toolDefinitions: input.toolDefinitions,
-    capabilitySurfaceManager: input.capabilitySurfaceManager,
-  });
+  const capabilityResolution = request.to === "workstream.route"
+    ? createControlOnlyWorkstreamRouteSurface()
+    : resolveCapabilities({
+        state: input.state,
+        mode: request.to,
+        capabilities: request.capabilities,
+        toolDefinitions: input.toolDefinitions,
+        capabilitySurfaceManager: input.capabilitySurfaceManager,
+      });
   if (capabilityResolution.missing.length > 0) {
     return {
       kind: "rejected",
@@ -176,7 +182,11 @@ export async function dispatchVirtualModeTransition(input: {
   }
 
   const eligibleToolNames = capabilityResolution.loaded;
-  if (eligibleToolNames.length === 0 && request.to !== "validation") {
+  if (
+    eligibleToolNames.length === 0
+    && request.to !== "validation"
+    && request.to !== "workstream.route"
+  ) {
     return {
       kind: "rejected",
       repair: repair(
@@ -311,12 +321,14 @@ async function dispatchResolveTransition(input: {
       binding: {
         kind: "failed",
         attempted: true,
+        attemptConsumed: true,
         toolNames: input.resolvedToolNames,
         outcome: {
           status: "failed",
           code: "WORKSTREAM_BINDING_CAPABILITY_FORBIDDEN",
           message: "Binding succeeded but no requested concrete tools were eligible under bound policy.",
           retryable: false,
+          attemptDisposition: "consumed",
         },
       },
       message: "Binding succeeded, but the requested capability surface was not allowed by the authoritative bound-resource policy.",
@@ -464,7 +476,24 @@ function validateModeTransitionRequest(
       ["Retry with one concise sentence describing the immediate responsibility."],
     );
   }
-  if (request.capabilities.length === 0 || request.capabilities.length > MAX_MODE_CAPABILITIES) {
+  if (
+    request.to === "workstream.route"
+    && request.capabilities.length > 0
+  ) {
+    return repair(
+      "MODE_INPUT_INVALID",
+      "workstream.route is a control-only binding stage and accepts no capabilities.",
+      request.capabilities,
+      ["Remove capabilities and enter routing only after verified current-run workstream observation."],
+    );
+  }
+  if (
+    request.to !== "workstream.route"
+    && (
+      request.capabilities.length === 0
+      || request.capabilities.length > MAX_MODE_CAPABILITIES
+    )
+  ) {
     return repair(
       "MODE_INPUT_INVALID",
       `Mode transitions require 1-${MAX_MODE_CAPABILITIES} exact capability ids.`,
@@ -473,6 +502,17 @@ function validateModeTransitionRequest(
     );
   }
   const targets = modeTransitionTargetValues(request);
+  if (
+    request.to === "workstream.route"
+    && targets.length > 0
+  ) {
+    return repair(
+      "MODE_INPUT_INVALID",
+      "workstream.route accepts no search subjects, references, targets, or mutation scopes.",
+      targets,
+      ["Keep verified observations in the current run and enter routing with only a concise purpose."],
+    );
+  }
   if (targets.length > MAX_MODE_TARGETS) {
     return repair(
       "MODE_INPUT_INVALID",
@@ -558,14 +598,13 @@ function validateTypedModeInputs(request: ModeTransitionRequest): VirtualModeRep
   const targets = modeTransitionTargetValues(request);
   if (
     request.to !== "observe.locate"
-    && request.to !== "workstream.route"
     && (request.subjects?.length ?? 0) > 0
   ) {
     return repair(
       "MODE_INPUT_INVALID",
-      "Search subjects are valid only in observe.locate or workstream.route.",
+      "Search subjects are valid only in observe.locate.",
       request.subjects ?? [],
-      ["Move authoritative resources into references, or select exact routed resource IDs during activation."],
+      ["Use workstream:search or resource:ownership in observe.locate, then enter workstream.route after evidence exists."],
     );
   }
   if (
@@ -821,6 +860,9 @@ function mountModeTools(input: {
   capabilitySurfaceManager?: CapabilitySurfaceManager;
   toolContext: ToolExecutionContext;
 }): CapabilitySurfaceResult {
+  if (input.request.to === "workstream.route") {
+    return mountControlOnlyWorkstreamRouteSurface(input);
+  }
   if (input.capabilitySurfaceManager) {
     const result = input.capabilitySurfaceManager.replaceWithCapabilities({
       capabilities: input.request.capabilities,

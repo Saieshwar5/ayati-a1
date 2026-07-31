@@ -66,12 +66,15 @@ WorkState, while the latest five progress entries for the selected request are
 loaded separately from the durable progress projection.
 
 Workstream routing is part of the same primary loop. Before an unbound
-mutation, the run enters the dedicated read-only `workstream.route` mode.
-Candidate and owner lookups enter the run step history but are tagged as
-routing evidence. `resolve` is not available from `ENTRY` or from the route
-until one such lookup succeeds in the current run. It remains a transient
-deterministic gate with no private history, model call, prompt lane, WorkState,
-token budget, or retry loop. It validates one typed proposal, calls one atomic
+mutation, candidate and owner lookups run in `observe.locate`, while exact
+workstream context reads run in `observe.investigate`. Those calls enter the
+run step history but are tagged as routing evidence. A successful current-run
+observation unlocks the control-only `workstream.route` stage; it adds no
+action tools or duplicate context. `resolve` is available only from that
+stage, while routing may return to observation if evidence is incomplete.
+`resolve` remains a transient deterministic gate with no private history,
+model call, prompt lane, WorkState, token budget, or retry loop. It validates
+one typed proposal, calls one atomic
 Context Engine binding path, and publishes the refreshed projection to the
 next primary decision.
 
@@ -87,25 +90,30 @@ The model receives an explicit bounded projection:
 - `context.harness`: compact unresolved repair feedback;
 - `context.run`: on a bound run, `boundWorkstream` with distilled project
   context, the exact selected request, an optional different active-request
-  identity, and at most five selected-request progress summaries; material
-  WorkState when present; the exact runtime-configured absolute
-  `workspaceRoot`; current-run calls; a compact `verifiedOutcomes` catalog;
-  the run-scoped mode card; pressure state; and an optional `focus` overlay.
-  New-workstream `workspaceTargets` and relative filesystem-mutation paths use
-  that root without repeating it. The workspace root is location context, not
-  resource authority or completion evidence. Existing activation supplies
-  exact resource IDs from current-run routing; the runtime derives their
-  mutation authority without projecting paths, Git state, or evidence fields
-  for the model to reproduce. The overlay and prior progress are likewise
-  context only. Tool calls keep useful exact inputs and outputs plus a scalar
-  verification status; full verification machinery remains in the journal.
-  The mode card exposes the current validation checklist and per-path status.
-  Completion selects catalog kind/subject values instead of copying
-  current-call evidence identifiers.
+  identity, at most five selected-request progress summaries, and at most ten
+  bounded resource metadata records; material WorkState when present; the
+  exact runtime-configured absolute `workspaceRoot`; current-run calls; a
+  compact `verifiedOutcomes` catalog; the run-scoped mode card; pressure
+  state; and an optional `focus` overlay. Resource records include stable
+  identity, display metadata, public locator, role, access, availability,
+  primary status, and selected-request relevance, plus an omitted count. They
+  do not include contents, hashes, complete version history, or permission
+  tokens. New-workstream `workspaceTargets` and relative
+  filesystem-mutation paths use the workspace root without repeating it. The
+  workspace root and projected resource metadata are context, not completion
+  evidence. Existing activation supplies exact resource IDs from current-run
+  routing; the runtime derives authority from the authoritative workstream
+  bindings rather than asking the model to reproduce paths or evidence
+  fields. The overlay and prior progress are likewise context only. Tool calls
+  keep useful exact inputs and outputs plus a scalar verification status; full
+  verification machinery remains in the journal. The mode card exposes the
+  current validation checklist and per-path status. Completion selects
+  catalog kind/subject values instead of copying current-call evidence
+  identifiers.
 
 Internal database paths, context-repository paths, observation authority
-fields, resource locators, commit metadata, raw logs, idempotency data, and
-recovery journals are not model-facing.
+fields, private storage locators, commit metadata, raw logs, idempotency data,
+and recovery journals are not model-facing.
 
 ## Core Capsule
 
@@ -244,11 +252,11 @@ again. That path is read-only navigation grounding only: normal
 workspace/resource admission still applies, and it cannot ground resolve,
 execute, mutation, or completion.
 
-Current workstream details and current resource cards are intentionally not
-Hot Context sources. A bound run receives the selected contract and distilled
-workstream fields directly; the agent obtains complete workstream, ownership,
-resource, and file state through the relevant read-only tools when the task
-requires it.
+Current workstream details and complete resource cards are intentionally not
+Hot Context sources. A bound run receives the selected contract, distilled
+workstream fields, and bounded resource metadata directly. The agent obtains
+complete workstream history, unprojected resources, and actual file state
+through the relevant read-only tools when the task requires it.
 
 Empty sources are not advertised. Source content is versioned by hash; a
 mounted entry is invalidated if its source disappears or changes.

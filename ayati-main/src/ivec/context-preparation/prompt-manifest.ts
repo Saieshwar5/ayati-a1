@@ -219,6 +219,7 @@ function boundWorkstreamRefs(
     ...(workstream.activeRequest
       ? [`request:${workstream.activeRequest.id}`]
       : []),
+    ...workstream.resources.map((resource) => `resource:${resource.id}`),
     ...workstream.recentProgress.map((progress) => `run:${progress.runId}`),
   ];
 }

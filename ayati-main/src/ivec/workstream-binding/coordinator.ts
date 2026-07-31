@@ -324,7 +324,15 @@ function bindingAmbiguityQuestion(candidates: WorkstreamCandidate[]): string {
 
 function bindingFailure(error: unknown): DeterministicWorkstreamBindingOutcome {
   if (error instanceof ContextEngineServiceError) {
-    return failed(error.code, error.message, error.retryable);
+    return failed(
+      error.code,
+      error.message,
+      error.retryable,
+      error.retryable
+        && error.details?.["attemptDisposition"] === "retryable_no_change"
+        ? "retryable_no_change"
+        : "consumed",
+    );
   }
   return failed(
     "WORKSTREAM_BINDING_FAILED",
@@ -337,6 +345,13 @@ function failed(
   code: string,
   message: string,
   retryable: boolean,
+  attemptDisposition: "consumed" | "retryable_no_change" = "consumed",
 ): Extract<DeterministicWorkstreamBindingOutcome, { status: "failed" }> {
-  return { status: "failed", code, message, retryable };
+  return {
+    status: "failed",
+    code,
+    message,
+    retryable,
+    attemptDisposition,
+  };
 }

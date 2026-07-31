@@ -97,6 +97,94 @@ describe("buildBoundWorkstreamPromptContext", () => {
     expect(projected?.recentProgress[0]).not.toHaveProperty("finalizedAt");
   });
 
+  it("projects bounded resource metadata without copying resource history or contents", () => {
+    const context = boundContext();
+    context.workstream!.resources = [
+      resourceBinding({
+        index: 1,
+        name: "z".repeat(BOUND_WORKSTREAM_PROMPT_LIMITS.resourceNameChars + 20),
+        description: "d".repeat(
+          BOUND_WORKSTREAM_PROMPT_LIMITS.resourceDescriptionChars + 20,
+        ),
+        aliases: Array.from(
+          { length: BOUND_WORKSTREAM_PROMPT_LIMITS.resourceAliasCount + 2 },
+          (_, index) => `alias-${index + 1}`,
+        ),
+        access: "mutate",
+        primary: true,
+        requestIds: [REQUEST_ID],
+      }),
+      resourceBinding({
+        index: 2,
+        name: "Read-only reference",
+        access: "read",
+        requestIds: [REQUEST_ID],
+      }),
+      resourceBinding({
+        index: 3,
+        name: "Missing generated output",
+        access: "mutate",
+        availability: "missing",
+        requestIds: [REQUEST_ID],
+      }),
+      ...Array.from({ length: 9 }, (_, index) => resourceBinding({
+        index: index + 4,
+        name: `Other resource ${index + 1}`,
+        access: "read",
+      })),
+    ];
+
+    const projected = buildBoundWorkstreamPromptContext(context);
+    const primary = projected?.resources.find((resource) => resource.primary);
+    const readOnly = projected?.resources.find(
+      (resource) => resource.name === "Read-only reference",
+    );
+    const missing = projected?.resources.find(
+      (resource) => resource.name === "Missing generated output",
+    );
+
+    expect(projected?.resources).toHaveLength(
+      BOUND_WORKSTREAM_PROMPT_LIMITS.resourceCount,
+    );
+    expect(projected?.otherResourceCount).toBe(2);
+    expect(primary).toMatchObject({
+      id: resourceId(1),
+      kind: "directory",
+      locator: { kind: "filesystem", path: "/tmp/resource-1" },
+      role: "primary",
+      access: "mutate",
+      availability: "available",
+      primary: true,
+      requestRelevant: true,
+    });
+    expect(primary?.name).toHaveLength(
+      BOUND_WORKSTREAM_PROMPT_LIMITS.resourceNameChars,
+    );
+    expect(primary?.description).toHaveLength(
+      BOUND_WORKSTREAM_PROMPT_LIMITS.resourceDescriptionChars,
+    );
+    expect(primary?.aliases).toHaveLength(
+      BOUND_WORKSTREAM_PROMPT_LIMITS.resourceAliasCount,
+    );
+    expect(readOnly).toMatchObject({
+      access: "read",
+      availability: "available",
+      requestRelevant: true,
+    });
+    expect(missing).toMatchObject({
+      access: "mutate",
+      availability: "missing",
+      requestRelevant: true,
+    });
+    for (const resource of projected?.resources ?? []) {
+      expect(resource).not.toHaveProperty("version");
+      expect(resource).not.toHaveProperty("metadataStatus");
+      expect(resource).not.toHaveProperty("createdAt");
+      expect(resource).not.toHaveProperty("updatedAt");
+      expect(resource).not.toHaveProperty("requestIds");
+    }
+  });
+
   it("keeps the selected request primary and identifies a different active request", () => {
     const context = boundContext();
     context.workstream!.selectedRequest = {
@@ -234,4 +322,54 @@ function boundContext(): ContextEngineMachineContext {
     resources: [],
   };
   return context;
+}
+
+type WorkstreamResource = NonNullable<
+  ContextEngineMachineContext["workstream"]
+>["resources"][number];
+
+function resourceBinding(input: {
+  index: number;
+  name: string;
+  description?: string;
+  aliases?: string[];
+  access: WorkstreamResource["access"];
+  availability?: WorkstreamResource["resource"]["availability"];
+  primary?: boolean;
+  requestIds?: string[];
+}): WorkstreamResource {
+  return {
+    resource: {
+      resourceId: resourceId(input.index),
+      kind: "directory",
+      origin: "agent_created",
+      displayName: input.name,
+      description: input.description ?? `Resource ${input.index}.`,
+      aliases: input.aliases ?? [],
+      locator: {
+        kind: "filesystem",
+        path: `/tmp/resource-${input.index}`,
+      },
+      version: {
+        key: `directory:${input.index}`,
+        observedAt: "2026-07-29T10:00:00.000Z",
+        exists: input.availability !== "missing",
+        kind: "directory",
+        entryCount: input.index,
+      },
+      availability: input.availability ?? "available",
+      metadataStatus: "enriched",
+      createdAt: "2026-07-29T10:00:00.000Z",
+      updatedAt: "2026-07-29T10:00:00.000Z",
+    },
+    role: input.primary ? "primary" : "reference",
+    access: input.access,
+    primary: input.primary ?? false,
+    requestIds: input.requestIds ?? [],
+    boundAt: "2026-07-29T10:00:00.000Z",
+  };
+}
+
+function resourceId(index: number): string {
+  return `RES-${String(index).padStart(24, "0")}`;
 }

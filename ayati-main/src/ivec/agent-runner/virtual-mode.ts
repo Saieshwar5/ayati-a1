@@ -156,11 +156,11 @@ export interface VirtualModeRepair {
 }
 
 export const VIRTUAL_MODE_GRAPH: Readonly<Record<VirtualModeSource, readonly VirtualModeTransitionTarget[]>> = {
-  ENTRY: ["context.retrieve", "observe.locate", "observe.investigate", "workstream.route"],
+  ENTRY: ["context.retrieve", "observe.locate", "observe.investigate"],
   "context.retrieve": [],
   "observe.locate": ["context.retrieve", "observe.locate", "observe.investigate", "workstream.route", "validation"],
   "observe.investigate": ["context.retrieve", "observe.locate", "observe.investigate", "workstream.route", "validation"],
-  "workstream.route": ["context.retrieve", "workstream.route", "resolve"],
+  "workstream.route": ["context.retrieve", "observe.locate", "observe.investigate", "resolve"],
   execute: ["context.retrieve", "execute", "observe.locate", "observe.investigate", "validation"],
   validation: ["observe.locate", "observe.investigate"],
 };
@@ -208,6 +208,13 @@ export function allowedVirtualModeTransitions(
   }
   if (options.workstreamBound && source === "workstream.route") {
     return ["execute"];
+  }
+  if (
+    !options.workstreamBound
+    && options.routingObserved !== true
+    && source !== "workstream.route"
+  ) {
+    return allowed.filter((mode) => mode !== "workstream.route");
   }
   if (source === "workstream.route" && options.routingObserved !== true) {
     return allowed.filter((mode) => mode !== "resolve");

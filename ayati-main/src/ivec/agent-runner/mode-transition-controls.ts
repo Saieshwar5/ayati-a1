@@ -91,12 +91,9 @@ export function buildModeTransitionControlTools(
   if (allowed.has("workstream.route")) {
     tools.push(controlTool(
       "decision_enter_workstream_route",
-      "Enter the read-only workstream routing mode before any unbound mutation. Search durable owners, inspect candidates, or check resource ownership; resolve controls become available only after a successful current-run routing observation.",
-      {
-        ...commonProperties(capabilities["workstream.route"]),
-        subjects: subjectArraySchema(),
-      },
-      ["purpose", "capabilities"],
+      "Enter the control-only workstream routing stage after successful current-run workstream or resource observation. This stage loads no action tools; it selects the binding through one resolve control or returns to observation for missing evidence.",
+      controlOnlyProperties(),
+      ["purpose"],
     ));
   }
   if (allowed.has("resolve")) {
@@ -189,6 +186,14 @@ export function modeTransitionControlCallFromRequest(
   name: ModeTransitionControlToolName;
   input: Record<string, unknown>;
 } {
+  if (request.to === "workstream.route") {
+    return {
+      name: "decision_enter_workstream_route",
+      input: {
+        purpose: request.purpose,
+      },
+    };
+  }
   const {
     to: _to,
     references,
@@ -213,10 +218,7 @@ export function modeTransitionControlCallFromRequest(
     );
   const effectiveSubjects = request.subjects
     ?? (
-      (
-        request.to === "observe.locate"
-        || request.to === "workstream.route"
-      )
+      request.to === "observe.locate"
       && compatibilityTargets.length > 0
         ? compatibilityTargets
         : undefined
@@ -293,6 +295,13 @@ function commonProperties(capabilities: string[]): Record<string, unknown> {
   return {
     purpose: PURPOSE_SCHEMA,
     capabilities: capabilitySchema(capabilities),
+    workingNotes: WORKING_NOTES_SCHEMA,
+  };
+}
+
+function controlOnlyProperties(): Record<string, unknown> {
+  return {
+    purpose: PURPOSE_SCHEMA,
     workingNotes: WORKING_NOTES_SCHEMA,
   };
 }

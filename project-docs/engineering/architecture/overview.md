@@ -37,16 +37,19 @@ context SQLite and context-only Git writes. The daemon depends on its typed
    observation mode. The runtime does not classify or reject an `ENTRY` reply
    from request wording alone; prompt policy tells the model to enter the graph
    whenever a response depends on unperformed observation or action.
-   General discovery remains in the read-only observation modes. An unbound
-   mutation instead enters the dedicated read-only `workstream.route` mode,
-   whose surface contains only workstream search/read and resource-owner
-   lookup. Direct `ENTRY -> resolve` is unavailable, and resolve controls
-   appear only after one of those routing tools succeeds in the current run.
-   A transition to `resolve` then requires mutation intent, a binding-required
+   General discovery and durable-owner lookup remain in the read-only
+   observation modes. Workstream search and resource-owner lookup use
+   `observe.locate`; exact workstream reads use `observe.investigate`. A
+   successful current-run ownership observation unlocks the control-only
+   `workstream.route` stage. It mounts no executable tools and may lead to
+   `resolve` or return to observation for more evidence. Direct
+   `ENTRY -> workstream.route` and `ENTRY -> resolve` are unavailable. A
+   transition to `resolve` requires mutation intent, a binding-required
    capability, that current-run routing observation, and one typed binding
    proposal. Existing activation names exact routed resource IDs; the runtime
-   derives their paths, ownership, mutation scope, repository HEAD, and
-   evidence. Creation carries typed workspace-relative targets whose absolute
+   uses them to ground activation, then derives ownership, repository HEAD,
+   evidence, and eligible mutable roots from the authoritative activated
+   bindings. Creation carries typed workspace-relative targets whose absolute
    paths, evidence, and resource identities are also runtime-derived. The
    deterministic gate makes no model call, enters `execute` mechanically
    after binding, and mounts authoritative context before a fresh decision.

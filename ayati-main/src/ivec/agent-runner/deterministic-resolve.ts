@@ -25,12 +25,14 @@ import {
   resolveWorkstreamActivationAuthority,
   type WorkstreamActivationAuthority,
 } from "./workstream-activation-authority.js";
+import { deriveActivatedWorkstreamMutationRoots } from "./activated-workstream-mutation-roots.js";
 
 export type DeterministicResolveGateResult =
   | { kind: "not_required"; attempted: false }
   | {
       kind: "resolved";
       attempted: true;
+      attemptConsumed: true;
       toolNames: string[];
       mutationRoots: string[];
       outcome: Extract<DeterministicWorkstreamBindingOutcome, { status: "resolved" }>;
@@ -44,6 +46,7 @@ export type DeterministicResolveGateResult =
   | {
       kind: "failed";
       attempted: true;
+      attemptConsumed: boolean;
       toolNames: string[];
       outcome: Extract<DeterministicWorkstreamBindingOutcome, { status: "failed" }>;
     }
@@ -112,7 +115,7 @@ export async function dispatchDeterministicResolveGate(input: {
       "MODE_BINDING_PROPOSAL_REQUIRED",
       "An unbound resolve transition requires one typed workstream/request binding proposal.",
       targets,
-      ["Enter workstream.route, observe ownership, then retry resolve with an exact binding proposal."],
+      ["Observe ownership, enter workstream.route, then retry resolve with an exact binding proposal."],
     );
   }
 
@@ -138,7 +141,7 @@ export async function dispatchDeterministicResolveGate(input: {
       "MODE_BINDING_PROPOSAL_UNVERIFIED",
       "An unbound resolve transition requires a successful current-run workstream or resource routing observation.",
       [],
-      ["Use workstream:search, workstream:read, or resource:ownership in workstream.route before resolve."],
+      ["Return to observe.locate for workstream:search or resource:ownership, or observe.investigate for workstream:read, then re-enter workstream.route."],
     );
   }
   let activationAuthority: WorkstreamActivationAuthority | undefined;
@@ -205,20 +208,41 @@ export async function dispatchDeterministicResolveGate(input: {
     outcome: summarizeBindingOutcome(outcome),
   });
   if (outcome.status === "resolved") {
+    const activatedMutationRoots = input.request.binding.kind === "activate"
+      ? deriveActivatedWorkstreamMutationRoots({
+          context: outcome.context,
+          workstreamId: outcome.workstreamId,
+        })
+      : [];
+    const candidateMutationRoots = input.request.binding.kind === "create"
+      ? workspaceTargetResolution.targets.map((target) => target.absolutePath)
+      : activatedMutationRoots.length > 0
+        ? activatedMutationRoots
+        : activationAuthority?.filesystemPaths ?? [];
+    const allowedMutationRoots = await mutationTargetsInsideUserBoundary(
+      candidateMutationRoots,
+      intent.scopePolicy,
+    );
     return {
       kind: "resolved",
       attempted: true,
+      attemptConsumed: true,
       toolNames,
-      mutationRoots: input.request.binding.kind === "create"
-        ? workspaceTargetResolution.targets.map((target) => target.absolutePath)
-        : activationAuthority?.filesystemPaths ?? [],
+      mutationRoots: allowedMutationRoots,
       outcome,
     };
   }
   if (outcome.status === "needs_user_input") {
     return { kind: "needs_user_input", attempted: false, toolNames, outcome };
   }
-  return { kind: "failed", attempted: true, toolNames, outcome };
+  return {
+    kind: "failed",
+    attempted: true,
+    attemptConsumed:
+      !outcome.retryable || outcome.attemptDisposition !== "retryable_no_change",
+    toolNames,
+    outcome,
+  };
 }
 
 export function bindingRequiredToolNames(toolNames: string[]): string[] {
@@ -287,6 +311,7 @@ function summarizeBindingOutcome(
     code: outcome.code,
     message: outcome.message,
     retryable: outcome.retryable,
+    attemptDisposition: outcome.attemptDisposition,
   };
 }
 
@@ -323,4 +348,12 @@ async function mutationTargetsOutsideUserBoundary(
     }
   }));
   return decisions.filter((decision) => decision.outside).map((decision) => decision.scope);
+}
+
+async function mutationTargetsInsideUserBoundary(
+  targets: string[],
+  policy: ReturnType<typeof deriveTurnMutationConstraints>["scopePolicy"],
+): Promise<string[]> {
+  const outside = new Set(await mutationTargetsOutsideUserBoundary(targets, policy));
+  return targets.filter((target) => !outside.has(target));
 }
