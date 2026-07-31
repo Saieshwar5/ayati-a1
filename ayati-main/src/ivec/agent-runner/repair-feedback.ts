@@ -109,7 +109,9 @@ export function recordReadProgressRepair(input: {
     blockedTargets: repair.blockedTargets,
     repairCode: repair.code,
     ...(promptCard ? { repair: promptCard } : {}),
-    repairScope: "action",
+    repairScope: input.violation.code === "R_DUPLICATE_READ"
+      ? "validation"
+      : "action",
   });
   recordFeedback(input.deps, input.inputHandle, input.runId, "guard", "read_progress_repair_requested", {
     message: repair.message,

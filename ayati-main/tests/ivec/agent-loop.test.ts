@@ -1667,6 +1667,120 @@ describe("agentLoop one-run lifecycle", () => {
     }
   });
 
+  it("lets accepted validation recover after an unnecessary duplicate read is blocked", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const target = join(dataDir, "riverstone-brief.txt");
+      writeFileSync(target, "Build a small responsive cafe website.\n", "utf8");
+      const readInput = {
+        files: [{
+          path: target,
+          mode: "full",
+        }],
+      };
+      const feedback = createMemoryFeedbackLedger();
+      const provider = createProvider([
+        {
+          kind: "transition_mode",
+          request: {
+            to: "observe.investigate",
+            purpose: "Read the exact website brief requested by the user.",
+            capabilities: ["file:read"],
+            references: [{ kind: "filesystem", path: target }],
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "read-brief",
+              tool: "read_files",
+              input: readInput,
+              dependsOn: [],
+              purpose: "Read the complete website brief",
+            }],
+            allowedTools: ["read_files"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "read-brief-again",
+              tool: "read_files",
+              input: readInput,
+              dependsOn: [],
+              purpose: "Read the same website brief again",
+            }],
+            allowedTools: ["read_files"],
+            assertions: [],
+          },
+        },
+        ...validationDecisions({
+          path: target,
+          response: "The brief asks for a small responsive cafe website.",
+          id: "riverstone-brief",
+          check: "read_complete",
+        }),
+      ]);
+      const records: ContextRunStepRecord[] = [];
+      const runId = "R-duplicate-read-recovery";
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor: createToolExecutor([readFilesTool]),
+        toolDefinitions: [readFilesTool],
+        feedbackLedger: feedback.ledger,
+        runRecorder: noopRunRecorder,
+        runHandle: runHandle(runId),
+        recordRunStep(record) {
+          records.push(record);
+        },
+        clientId: "c1",
+        initialUserMessage: `Read ${target} and explain what it asks for.`,
+        dataDir,
+        systemContext: "test system context",
+        harnessContext: unboundContext(
+          runId,
+          `Read ${target} and explain what it asks for.`,
+        ),
+      });
+
+      expect(result).toMatchObject({
+        runId,
+        outcome: "done",
+        stopReason: "completed",
+        content: "The brief asks for a small responsive cafe website.",
+        totalIterations: 5,
+        totalToolCalls: 1,
+      });
+      expect(records).toHaveLength(1);
+      expect(feedback.events).toContainEqual(expect.objectContaining({
+        stage: "guard",
+        event: "read_progress_repair_requested",
+        data: expect.objectContaining({
+          repair: expect.objectContaining({
+            code: "R_DUPLICATE_READ",
+          }),
+        }),
+      }));
+      expect(feedback.events).toContainEqual(expect.objectContaining({
+        stage: "guard",
+        event: "repair_resolved",
+        data: expect.objectContaining({
+          resolutionKind: "validation_accepted",
+          scopes: ["navigation", "validation"],
+          resolvedCount: 1,
+        }),
+      }));
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
   it("fails safely when deterministic binding is unavailable after routing observation", async () => {
     const dataDir = makeTmpDir();
     const outputPath = join(dataDir, "must-not-exist.txt");
