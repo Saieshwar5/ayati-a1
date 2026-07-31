@@ -1825,7 +1825,7 @@ describe("agentLoop one-run lifecycle", () => {
     }
   });
 
-  it("allows only one deterministic binding attempt per run", async () => {
+  it("allows one corrected binding call after a retryable no-change rejection", async () => {
     const dataDir = makeTmpDir();
     const runId = "R-repeated-load";
     const routingCallId = "find-existing-project";
@@ -1898,7 +1898,7 @@ describe("agentLoop one-run lifecycle", () => {
           kind: "transition_mode",
           request: {
             to: "resolve",
-            purpose: "Do not replay the failed binding attempt.",
+            purpose: "Retry once with the corrected request lifecycle route.",
             capabilities: ["file:write"],
             workspaceTargets: [{
               kind: "directory",
@@ -1911,19 +1911,28 @@ describe("agentLoop one-run lifecycle", () => {
           kind: "stop",
           request: {
             outcome: "failed",
-            summary: "The single deterministic binding attempt failed.",
+            summary: "The corrected deterministic binding attempt also failed.",
             response: "Workstream binding failed, so no file was changed.",
           },
         },
       ]);
       const feedback = createMemoryFeedbackLedger();
       const workstreamBinding = {
-        bind: vi.fn(async () => ({
-          status: "failed" as const,
-          code: "WORKSTREAM_BINDING_TEST_FAILURE",
-          message: "Fixture binding failed.",
-          retryable: false,
-        })),
+        bind: vi.fn()
+          .mockResolvedValueOnce({
+            status: "failed" as const,
+            code: "WORKSTREAM_CURRENT_REQUEST_INVALID",
+            message: "The first route was rejected without changing state.",
+            retryable: true,
+            attemptDisposition: "retryable_no_change" as const,
+          })
+          .mockResolvedValueOnce({
+            status: "failed" as const,
+            code: "WORKSTREAM_BINDING_TEST_FAILURE",
+            message: "The corrected fixture binding failed.",
+            retryable: false,
+            attemptDisposition: "consumed" as const,
+          }),
       };
 
       const result = await agentLoop({
@@ -1951,7 +1960,7 @@ describe("agentLoop one-run lifecycle", () => {
         content: "Workstream binding failed, so no file was changed.",
       });
       expect(provider.generateTurn).toHaveBeenCalledTimes(6);
-      expect(workstreamBinding.bind).toHaveBeenCalledOnce();
+      expect(workstreamBinding.bind).toHaveBeenCalledTimes(2);
       const firstInput = vi.mocked(provider.generateTurn).mock.calls[0]?.[0];
       expect(firstInput.tools.map((tool) => tool.name)).toEqual([
         "decision_enter_observe_locate",
@@ -1962,6 +1971,24 @@ describe("agentLoop one-run lifecycle", () => {
       expect(secondInput.tools.map((tool) => tool.name)).toContain("git_context_find_workstreams");
       expect(secondInput.tools.map((tool) => tool.name)).not.toContain("git_context_create_workstream");
       expect(secondInput.tools.map((tool) => tool.name)).not.toContain("git_context_activate_workstream");
+      const correctionInput = vi.mocked(provider.generateTurn).mock.calls[4]?.[0];
+      const correctionPrompt = correctionInput.messages
+        .map((message) => message.content)
+        .join("\n");
+      expect(correctionPrompt).toContain(
+        "Correct the request lifecycle operation using the observed request state, then retry resolve once.",
+      );
+      expect(correctionPrompt).not.toContain(
+        "without replaying mutation",
+      );
+      expect(feedback.events.find((event) =>
+        event.stage === "final" && event.event === "reply")?.data?.["feedbackSummary"])
+        .toMatchObject({
+          navigation: {
+            bindingAttempts: 2,
+            bindingStatus: "failed",
+          },
+        });
       expect(feedback.events.some((event) => event.event === "mode_transition_no_progress")).toBe(false);
     } finally {
       cleanup(dataDir);

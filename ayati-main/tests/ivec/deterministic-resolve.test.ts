@@ -199,6 +199,38 @@ describe("deterministic resolve gate", () => {
     });
   });
 
+  it("allows one correction after a retryable no-change lifecycle rejection", async () => {
+    const coordinator = {
+      bind: vi.fn(async () => ({
+        status: "failed" as const,
+        code: "WORKSTREAM_CURRENT_REQUEST_INVALID",
+        message: "Request route is not valid for the current lifecycle state.",
+        retryable: true,
+        attemptDisposition: "retryable_no_change" as const,
+      })),
+    };
+
+    const result = await dispatchDeterministicResolveGate({
+      state: activationState("Update the existing website."),
+      request: activationRequest(),
+      workspaceRoot: WORKSPACE_ROOT,
+      toolNames: ["write_files"],
+      coordinator,
+      alreadyAttempted: false,
+    });
+
+    expect(result).toMatchObject({
+      kind: "failed",
+      attempted: true,
+      attemptConsumed: false,
+      outcome: {
+        code: "WORKSTREAM_CURRENT_REQUEST_INVALID",
+        retryable: true,
+        attemptDisposition: "retryable_no_change",
+      },
+    });
+  });
+
   it("derives activation scope, HEAD, and evidence from exact routed resource IDs", async () => {
     const current = state("Update files in W-20260722-0001.", true);
     current.toolContext!.toolCalls![0]!.output = JSON.stringify({

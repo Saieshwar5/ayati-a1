@@ -1,4 +1,7 @@
-import type { ContextEngineService } from "ayati-context-engine";
+import {
+  ContextEngineServiceError,
+  type ContextEngineService,
+} from "ayati-context-engine";
 import { describe, expect, it, vi } from "vitest";
 import { createWorkstreamBindingCoordinator } from "../../src/ivec/workstream-binding/coordinator.js";
 
@@ -198,6 +201,58 @@ describe("workstream binding coordinator", () => {
         reason: "The user explicitly prioritized the contact form.",
       },
     }));
+  });
+
+  it("marks a rejected request route as a retryable no-change attempt", async () => {
+    const activateWorkstreamForRun = vi.fn(async () => {
+      throw new ContextEngineServiceError({
+        code: "WORKSTREAM_CURRENT_REQUEST_INVALID",
+        message: "Request route is not valid for the current lifecycle state.",
+        retryable: true,
+        details: {
+          attemptDisposition: "retryable_no_change",
+        },
+      });
+    });
+    const service = {
+      getAgentContext: vi.fn(async () => agentContext(false)),
+      findWorkstreams: vi.fn(async () => ({ workstreams: [candidate("definite")] })),
+      getWorkstream: vi.fn(async () => mutableResourceContext()),
+      activateWorkstreamForRun,
+    } as unknown as ContextEngineService;
+    const coordinator = createWorkstreamBindingCoordinator({
+      service,
+      runId: "RUN-1",
+      streamId: "S-1",
+      currentInput: "Add testimonials to the website.",
+      now: () => new Date(NOW),
+    });
+
+    const result = await coordinator.bind({
+      purpose: "Apply the requested website update.",
+      workspaceTargets: [],
+      routingEvidence: [],
+      expectedWorkstreamHead: HEAD,
+      expectedContextRevision: "ctx:unbound",
+      proposal: {
+        kind: "activate",
+        workstreamId: WORKSTREAM_ID,
+        requestDecision: {
+          kind: "activate_existing",
+          requestId: "R-0001",
+          reason: "Attempt to activate the already active request.",
+        },
+        resourceIds: [RESOURCE_ID],
+      },
+    });
+
+    expect(result).toEqual({
+      status: "failed",
+      code: "WORKSTREAM_CURRENT_REQUEST_INVALID",
+      message: "Request route is not valid for the current lifecycle state.",
+      retryable: true,
+      attemptDisposition: "retryable_no_change",
+    });
   });
 
   it("returns ambiguity instead of creating when authoritative ownership is strong", async () => {

@@ -204,6 +204,65 @@ describe("live workstream request lifecycle routes", () => {
       "HEAD",
     ])).toBe(head);
   }, 15_000);
+
+  it("rejects an invalid lifecycle route before creating a plan or binding", async () => {
+    const fixture = await createWorkstreamServiceFixture(
+      "request-route-no-change-rejection",
+      "Start the initial bounded project request.",
+    );
+    fixtures.push(fixture);
+    const selected = await createBoundWorkstream(fixture, {
+      title: "No-change Route Project",
+      objective: "Preserve state when a request route is invalid.",
+    });
+    const workstreamId = selected.workstream.workstreamId;
+    const head = await finalize(fixture, 1, "incomplete", { kind: "none" });
+    fixture.prepared = await fixture.service.prepareAgentRun({
+      requestId: "REQ-no-change-route-2",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      role: "user",
+      content: "Add a separate testimonial section.",
+      at: at(2, 0),
+    });
+    const runId = fixture.prepared.run.runId;
+
+    await expect(fixture.service.activateWorkstreamForRun({
+      requestId: "REQ-no-change-route-2-activate",
+      runId,
+      workstreamId,
+      expectedWorkstreamHead: head,
+      route: {
+        kind: "activate_existing",
+        requestId: "R-0001",
+        reason: "Incorrectly attempt to activate the already active request.",
+      },
+      at: at(2, 1),
+    })).rejects.toMatchObject({
+      code: "WORKSTREAM_CURRENT_REQUEST_INVALID",
+      retryable: true,
+      details: {
+        workstreamId,
+        attemptDisposition: "retryable_no_change",
+      },
+    });
+
+    const context = await fixture.service.getAgentContext({
+      streamId: fixture.prepared.stream.streamId,
+    });
+    expect(context.run?.run.runId).toBe(runId);
+    expect(context.run?.run.workstreamBinding).toBeUndefined();
+    expect(fixture.database.prepare([
+      "SELECT COUNT(*) AS count FROM workstream_request_route_plans",
+      "WHERE run_id = ?",
+    ].join(" ")).get(runId)).toEqual({ count: 0 });
+    expect(fixture.database.prepare([
+      "SELECT request_id, status FROM workstream_requests",
+      "WHERE workstream_id = ? ORDER BY request_id",
+    ].join(" ")).all(workstreamId)).toEqual([
+      { request_id: "R-0001", status: "active" },
+    ]);
+  }, 15_000);
 });
 
 async function prepareAndRoute(

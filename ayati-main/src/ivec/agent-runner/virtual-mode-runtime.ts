@@ -321,12 +321,14 @@ async function dispatchResolveTransition(input: {
       binding: {
         kind: "failed",
         attempted: true,
+        attemptConsumed: true,
         toolNames: input.resolvedToolNames,
         outcome: {
           status: "failed",
           code: "WORKSTREAM_BINDING_CAPABILITY_FORBIDDEN",
           message: "Binding succeeded but no requested concrete tools were eligible under bound policy.",
           retryable: false,
+          attemptDisposition: "consumed",
         },
       },
       message: "Binding succeeded, but the requested capability surface was not allowed by the authoritative bound-resource policy.",

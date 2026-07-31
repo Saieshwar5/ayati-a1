@@ -111,6 +111,7 @@ export type DeterministicWorkstreamBindingOutcome =
       code: string;
       message: string;
       retryable: boolean;
+      attemptDisposition: "consumed" | "retryable_no_change";
     };
 
 export interface WorkstreamBindingCoordinator {

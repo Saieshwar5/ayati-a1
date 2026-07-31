@@ -32,6 +32,7 @@ export type DeterministicResolveGateResult =
   | {
       kind: "resolved";
       attempted: true;
+      attemptConsumed: true;
       toolNames: string[];
       mutationRoots: string[];
       outcome: Extract<DeterministicWorkstreamBindingOutcome, { status: "resolved" }>;
@@ -45,6 +46,7 @@ export type DeterministicResolveGateResult =
   | {
       kind: "failed";
       attempted: true;
+      attemptConsumed: boolean;
       toolNames: string[];
       outcome: Extract<DeterministicWorkstreamBindingOutcome, { status: "failed" }>;
     }
@@ -224,6 +226,7 @@ export async function dispatchDeterministicResolveGate(input: {
     return {
       kind: "resolved",
       attempted: true,
+      attemptConsumed: true,
       toolNames,
       mutationRoots: allowedMutationRoots,
       outcome,
@@ -232,7 +235,14 @@ export async function dispatchDeterministicResolveGate(input: {
   if (outcome.status === "needs_user_input") {
     return { kind: "needs_user_input", attempted: false, toolNames, outcome };
   }
-  return { kind: "failed", attempted: true, toolNames, outcome };
+  return {
+    kind: "failed",
+    attempted: true,
+    attemptConsumed:
+      !outcome.retryable || outcome.attemptDisposition !== "retryable_no_change",
+    toolNames,
+    outcome,
+  };
 }
 
 export function bindingRequiredToolNames(toolNames: string[]): string[] {
@@ -301,6 +311,7 @@ function summarizeBindingOutcome(
     code: outcome.code,
     message: outcome.message,
     retryable: outcome.retryable,
+    attemptDisposition: outcome.attemptDisposition,
   };
 }
 
