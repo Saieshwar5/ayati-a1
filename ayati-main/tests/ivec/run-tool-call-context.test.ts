@@ -212,11 +212,13 @@ describe("run tool-call prompt context", () => {
       matchCount: 2,
       candidates: [
         {
+          name: "release-notes.txt",
           label: "north/release-notes.txt",
           path: "/workspace/north/release-notes.txt",
           kind: "file",
         },
         {
+          name: "release-notes.txt",
           label: "south/release-notes.txt",
           path: "/workspace/south/release-notes.txt",
           kind: "file",
@@ -232,13 +234,14 @@ describe("run tool-call prompt context", () => {
     expect(compacted.candidateSet).toEqual(projected?.candidateSet);
   });
 
-  it("does not add candidate context to a unique file result", () => {
+  it("keeps typed candidate context for a unique verified file result", () => {
     const calls = buildPromptToolCallsForRun([{
       step: 1,
       tool: "find_files",
       input: { query: "notes.txt", roots: ["/workspace"] },
       status: "success",
       output: "Found 1 match.",
+      verificationPassed: true,
       projectionMetadata: {
         query: "notes.txt",
         roots: ["/workspace"],
@@ -247,6 +250,15 @@ describe("run tool-call prompt context", () => {
       },
     }]);
 
-    expect(calls?.[0]).not.toHaveProperty("candidateSet");
+    expect(calls?.[0]?.candidateSet).toEqual({
+      query: "notes.txt",
+      matchCount: 1,
+      candidates: [{
+        name: "notes.txt",
+        label: "notes.txt",
+        path: "/workspace/notes.txt",
+        kind: "file",
+      }],
+    });
   });
 });

@@ -8,6 +8,40 @@ import type {
 const RUN_ID = "RUN-PROMPT-OUTCOMES";
 
 describe("run verified-outcome prompt context", () => {
+  it("projects exact inspected Unix permissions for validation", () => {
+    const outcomes = buildPromptVerifiedOutcomes({
+      runId: RUN_ID,
+      calls: [verifiedCall(1, "inspect_paths", [{
+        kind: "path_state",
+        path: "/workspace/private-note.txt",
+        requestedPath: "/workspace/private-note.txt",
+        exists: true,
+        actualKind: "file",
+        change: "observed",
+        operation: "inspect",
+        modeOctal: "0640",
+        modeSymbolic: "rw-r-----",
+        tool: "inspect_paths",
+        step: 1,
+        callId: "call-1",
+      }])],
+    });
+
+    expect(outcomes).toEqual([{
+      outcomeRef: `run:${RUN_ID}:step:1:call:call-1:outcome:0`,
+      kind: "path.exists",
+      subject: "/workspace/private-note.txt",
+      actualKind: "file",
+      modeOctal: "0640",
+      modeSymbolic: "rw-r-----",
+      source: {
+        step: 1,
+        callId: "call-1",
+        tool: "inspect_paths",
+      },
+    }]);
+  });
+
   it("projects an exact no-match search scope for validation", () => {
     const outcomes = buildPromptVerifiedOutcomes({
       runId: RUN_ID,
@@ -18,6 +52,7 @@ describe("run verified-outcome prompt context", () => {
         matchCount: 0,
         maxDepth: 10,
         includeHidden: false,
+        entryKind: "file",
         capped: false,
         errorCount: 0,
         depthLimitedDirectoryCount: 0,
@@ -37,11 +72,91 @@ describe("run verified-outcome prompt context", () => {
         roots: ["/workspace"],
         maxDepth: 10,
         includeHidden: false,
+        entryKind: "file",
       },
       source: {
         step: 1,
         callId: "call-1",
         tool: "find_files",
+      },
+    }]);
+  });
+
+  it("projects a positive content-search match without exposing matched text", () => {
+    const outcomes = buildPromptVerifiedOutcomes({
+      runId: RUN_ID,
+      calls: [verifiedCall(1, "search_in_files", [{
+        kind: "file_search_match",
+        path: "/workspace/letters/amber.txt",
+        query: "Amber Marsh",
+        line: 12,
+        caseSensitive: false,
+        actualKind: "file",
+        change: "observed",
+        tool: "search_in_files",
+        step: 1,
+        callId: "call-1",
+      }])],
+    });
+
+    expect(outcomes).toEqual([{
+      outcomeRef: `run:${RUN_ID}:step:1:call:call-1:outcome:0`,
+      kind: "file.search_match",
+      subject: "/workspace/letters/amber.txt",
+      actualKind: "file",
+      searchMatch: {
+        query: "Amber Marsh",
+        line: 12,
+        caseSensitive: false,
+      },
+      source: {
+        step: 1,
+        callId: "call-1",
+        tool: "search_in_files",
+      },
+    }]);
+    expect(JSON.stringify(outcomes)).not.toContain("sent the letter");
+  });
+
+  it("projects an exact complete count without matching text", () => {
+    const outcomes = buildPromptVerifiedOutcomes({
+      runId: RUN_ID,
+      calls: [verifiedCall(1, "search_in_files", [{
+        kind: "file_search_count",
+        query: "needle",
+        roots: ["/workspace"],
+        maxDepth: 10,
+        includeHidden: false,
+        caseSensitive: false,
+        returnedMatchCount: 0,
+        totalMatchCount: 42,
+        countComplete: true,
+        hasMore: false,
+        countUnit: "occurrences",
+        change: "observed",
+        tool: "search_in_files",
+        step: 1,
+        callId: "call-1",
+      }])],
+    });
+
+    expect(outcomes).toEqual([{
+      outcomeRef: `run:${RUN_ID}:step:1:call:call-1:outcome:0`,
+      kind: "file.search_count",
+      subject: "needle",
+      searchCount: {
+        query: "needle",
+        roots: ["/workspace"],
+        maxDepth: 10,
+        includeHidden: false,
+        caseSensitive: false,
+        countUnit: "occurrences",
+        totalMatchCount: 42,
+      },
+      source: {
+        step: 1,
+        callId: "call-1",
+        tool: "search_in_files",
       },
     }]);
   });

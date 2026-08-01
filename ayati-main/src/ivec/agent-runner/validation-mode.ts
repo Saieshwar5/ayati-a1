@@ -67,7 +67,7 @@ function evaluateCheck(
   setPassed(
     check,
     outcome,
-    completionMessage(check.kind),
+    completionMessage(check),
     actualKind,
   );
 }
@@ -76,6 +76,12 @@ function filesystemActualKind(
   outcome: RunVerifiedOutcome,
 ): "file" | "directory" | "symlink" | undefined {
   if (outcome.family === "filesystem_read") return "file";
+  if (
+    outcome.family === "filesystem_search"
+    && outcome.kind === "file.search_match"
+  ) {
+    return "file";
+  }
   return outcome.family === "filesystem_path" ? outcome.actualKind : undefined;
 }
 
@@ -89,13 +95,28 @@ function expectedKindMatches(
 }
 
 function completionMessage(
-  kind: ValidationCheckResult["kind"],
+  check: ValidationCheckResult,
 ): string {
+  const kind = check.kind;
   if (kind === "file.read_complete") {
     return "Confirmed an already-verified current-run complete file read.";
   }
+  if (kind === "file.search_match") {
+    return "Confirmed an already-verified current-run file-content match.";
+  }
+  if (kind === "file.search_count") {
+    return "Confirmed an already-verified complete file-content occurrence count.";
+  }
   if (kind === "file.search_no_match") {
-    return "Confirmed an already-verified complete search with no matching files.";
+    const entryKind = check.searchScope?.entryKind;
+    const target = entryKind === "file"
+      ? "files"
+      : entryKind === "directory"
+        ? "directories"
+        : entryKind === "symlink"
+          ? "symbolic links"
+          : "files, directories, or symbolic links";
+    return `Confirmed an already-verified complete search with no matching ${target}.`;
   }
   if (kind === "file.read_scope_satisfied") {
     return "Confirmed the requested bounded file-read scope from current-run proof.";

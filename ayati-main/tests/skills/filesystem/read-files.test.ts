@@ -363,8 +363,21 @@ describe("readFilesTool", () => {
     });
 
     expect(result.ok).toBe(false);
-    expect(result.error).toContain("read_files failed for every requested file");
-    expect(result.output).toContain("Not a file");
+    expect(result.error).toContain("this target is a directory");
+    expect(result.error).toContain("Use list_directory with the same absolute path");
+    expect(result.v2?.error?.category).toBe("semantic");
+    expect(result.v2?.error?.suggestedNextActions).toEqual([
+      expect.stringContaining(`list_directory with the same absolute path: ${tmp}`),
+    ]);
+    expect(result.v2?.structuredContent).toMatchObject({
+      results: [{
+        requestedPath: tmp,
+        ok: false,
+        code: "NOT_A_FILE",
+        actualKind: "directory",
+        recommendedTool: "list_directory",
+      }],
+    });
   });
 
   it("can return partial success when allowMissing is true", async () => {
@@ -433,6 +446,10 @@ describe("readFilesTool", () => {
 
     expect(result.ok).toBe(false);
     expect(result.v2?.code).toBe("ABSOLUTE_PATH_REQUIRED");
+    expect(result.error).toContain("Move to observe.locate and call find_files");
+    expect(result.v2?.error?.suggestedNextActions).toEqual([
+      expect.stringContaining("If one result is found"),
+    ]);
   });
 });
 

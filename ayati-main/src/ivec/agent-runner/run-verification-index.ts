@@ -281,6 +281,12 @@ function completionOutcome(
   if (evidence.kind === "file_search") {
     return fileSearchOutcome(evidence, source, role, ordinal);
   }
+  if (evidence.kind === "file_search_match") {
+    return fileSearchMatchOutcome(evidence, source, role, ordinal);
+  }
+  if (evidence.kind === "file_search_count") {
+    return fileSearchCountOutcome(evidence, source, role, ordinal);
+  }
   const subject = normalizeAbsolutePath(evidence.path);
   if (!isAbsolute(subject)) return undefined;
   if (evidence.kind === "file_read") {
@@ -330,13 +336,20 @@ function completionOutcome(
     kind,
     role,
     subject,
-    summary: pathOutcomeSummary(kind, subject),
+    summary: pathOutcomeSummary(
+      kind,
+      subject,
+      evidence.modeOctal,
+      evidence.modeSymbolic,
+    ),
     source,
     exists: evidence.exists,
     ...(evidence.actualKind ? { actualKind: evidence.actualKind } : {}),
     change: evidence.change,
     operation: evidence.operation,
     ...(evidence.requestedPath ? { requestedPath: evidence.requestedPath } : {}),
+    ...(evidence.modeOctal ? { modeOctal: evidence.modeOctal } : {}),
+    ...(evidence.modeSymbolic ? { modeSymbolic: evidence.modeSymbolic } : {}),
   };
 }
 
@@ -364,18 +377,82 @@ function fileSearchOutcome(
     kind: "file.search_no_match",
     role,
     subject,
-    summary: `Found no filename matches for "${subject}" in the verified search scope.`,
+    summary: `Found no ${searchEntryLabel(evidence.entryKind)} matches for "${subject}" in the verified search scope.`,
     source,
     searchScope: normalizeFileSearchValidationScope({
       roots: evidence.roots,
       maxDepth: evidence.maxDepth,
       includeHidden: evidence.includeHidden,
+      entryKind: evidence.entryKind,
     }),
     matchCount: 0,
     capped: false,
     errorCount: 0,
     depthLimitedDirectoryCount: 0,
     complete: true,
+  };
+}
+
+function searchEntryLabel(kind: "file" | "directory" | "symlink" | "any"): string {
+  if (kind === "file") return "file-name";
+  if (kind === "directory") return "directory-name";
+  if (kind === "symlink") return "symbolic-link-name";
+  return "file-directory-or-symbolic-link-name";
+}
+
+function fileSearchMatchOutcome(
+  evidence: Extract<FilesystemCompletionEvidence, { kind: "file_search_match" }>,
+  source: RunVerificationSource,
+  role: RunVerifiedOutcomeRole,
+  ordinal: number,
+): RunVerifiedFileSearchOutcome | undefined {
+  const subject = normalizeAbsolutePath(evidence.path);
+  const query = evidence.query.trim();
+  if (!isAbsolute(subject) || !query || evidence.line < 1) return undefined;
+  return {
+    id: `${source.ref}:outcome:${ordinal}`,
+    ordinal,
+    family: "filesystem_search",
+    kind: "file.search_match",
+    role,
+    subject,
+    summary: `Found a verified content match for "${query}" in ${subject} at line ${evidence.line}.`,
+    source,
+    actualKind: "file",
+    searchMatch: {
+      query,
+      line: evidence.line,
+      caseSensitive: evidence.caseSensitive,
+    },
+  };
+}
+
+function fileSearchCountOutcome(
+  evidence: Extract<FilesystemCompletionEvidence, { kind: "file_search_count" }>,
+  source: RunVerificationSource,
+  role: RunVerifiedOutcomeRole,
+  ordinal: number,
+): RunVerifiedFileSearchOutcome | undefined {
+  const query = evidence.query.trim();
+  if (!query || !evidence.countComplete || evidence.hasMore) return undefined;
+  return {
+    id: `${source.ref}:outcome:${ordinal}`,
+    ordinal,
+    family: "filesystem_search",
+    kind: "file.search_count",
+    role,
+    subject: query,
+    summary: `Counted exactly ${evidence.totalMatchCount} occurrence${evidence.totalMatchCount === 1 ? "" : "s"} of "${query}" in the verified search scope.`,
+    source,
+    searchCount: {
+      query,
+      roots: [...new Set(evidence.roots)].sort(),
+      maxDepth: evidence.maxDepth,
+      includeHidden: evidence.includeHidden,
+      caseSensitive: evidence.caseSensitive,
+      countUnit: "occurrences",
+      totalMatchCount: evidence.totalMatchCount,
+    },
   };
 }
 
@@ -521,6 +598,8 @@ function pathOutcomeKind(
 function pathOutcomeSummary(
   kind: RunVerifiedPathOutcomeKind,
   subject: string,
+  modeOctal?: string,
+  modeSymbolic?: string,
 ): string {
   switch (kind) {
     case "file.written": return `Wrote ${subject}.`;
@@ -532,7 +611,9 @@ function pathOutcomeSummary(
     case "path.moved_to": return `Moved the path to ${subject}.`;
     case "path.deleted": return `Deleted ${subject}.`;
     case "path.missing": return `Confirmed ${subject} is missing.`;
-    default: return `Confirmed ${subject} exists.`;
+    default: return modeOctal && modeSymbolic
+      ? `Confirmed ${subject} exists with Unix permissions ${modeOctal} (${modeSymbolic}).`
+      : `Confirmed ${subject} exists.`;
   }
 }
 
@@ -574,6 +655,10 @@ function invalidateStaleFilesystemOutcomes(
       candidate.ordinal > outcome.ordinal
       && (
         outcome.family === "filesystem_search"
+          && (
+            outcome.kind === "file.search_no_match"
+            || outcome.kind === "file.search_count"
+          )
           ? mutationInvalidatesSearch(candidate, outcome)
           : mutationInvalidatesPath(candidate, outcome.subject)
       )
@@ -585,6 +670,10 @@ function invalidateStaleFilesystemOutcomes(
     invalidated.push({
       outcome,
       reason: outcome.family === "filesystem_search"
+        && (
+          outcome.kind === "file.search_no_match"
+          || outcome.kind === "file.search_count"
+        )
         ? mutationRemovesSearchRoot(mutation, outcome)
           ? "ancestor_removed"
           : "later_mutation"
@@ -599,9 +688,12 @@ function invalidateStaleFilesystemOutcomes(
 
 function mutationInvalidatesSearch(
   mutation: RunVerifiedPathOutcome,
-  outcome: RunVerifiedFileSearchOutcome,
+  outcome: Extract<
+    RunVerifiedFileSearchOutcome,
+    { kind: "file.search_no_match" | "file.search_count" }
+  >,
 ): boolean {
-  return outcome.searchScope.roots.some((root) => (
+  return searchOutcomeRoots(outcome).some((root) => (
     pathIsWithin(root, mutation.subject)
     || (
       !mutation.exists
@@ -612,10 +704,24 @@ function mutationInvalidatesSearch(
 
 function mutationRemovesSearchRoot(
   mutation: RunVerifiedPathOutcome,
-  outcome: RunVerifiedFileSearchOutcome,
+  outcome: Extract<
+    RunVerifiedFileSearchOutcome,
+    { kind: "file.search_no_match" | "file.search_count" }
+  >,
 ): boolean {
   return !mutation.exists
-    && outcome.searchScope.roots.some((root) => pathIsWithin(mutation.subject, root));
+    && searchOutcomeRoots(outcome).some((root) => pathIsWithin(mutation.subject, root));
+}
+
+function searchOutcomeRoots(
+  outcome: Extract<
+    RunVerifiedFileSearchOutcome,
+    { kind: "file.search_no_match" | "file.search_count" }
+  >,
+): string[] {
+  return outcome.kind === "file.search_count"
+    ? outcome.searchCount.roots
+    : outcome.searchScope.roots;
 }
 
 function pathIsWithin(root: string, candidate: string): boolean {

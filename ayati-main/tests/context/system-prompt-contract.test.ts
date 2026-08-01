@@ -21,6 +21,13 @@ describe("system prompt contract", () => {
     expect(prompt).not.toContain("decision_transition_mode");
     expect(prompt).toContain("observe.locate");
     expect(prompt).toContain("observe.investigate");
+    expect(prompt).toContain("minimum sufficient observation");
+    expect(prompt).toContain("`file.search_match`");
+    expect(prompt).toContain("`file.search_count`");
+    expect(prompt).toContain("never prove totals or absence");
+    expect(prompt).toContain("exact zero proves absence in that scope");
+    expect(prompt).toContain("bounded overview");
+    expect(prompt).toContain("reuse an equivalent current");
     expect(prompt).toContain("decision_stop");
     expect(prompt).toContain("Validation runs no action tools and never repeats a read");
     expect(prompt).toContain("`file.search_no_match`");

@@ -16,6 +16,86 @@ import type {
 const RUN_ID = "RUN-CURRENT";
 
 describe("validation mode", () => {
+  it("passes a positive content-search match without reading the file", () => {
+    const check: ModeTransitionValidationCheck = {
+      kind: "file.search_match",
+      subject: "/workspace/letters/amber.txt",
+      expectedKind: "file",
+      searchMatch: {
+        query: "Amber Marsh",
+        line: 12,
+        caseSensitive: false,
+      },
+    };
+    const mode = validationMode([check]);
+
+    applyEvidence(mode, [evidenceCall(1, [{
+      kind: "file_search_match",
+      path: "/workspace/letters/amber.txt",
+      query: "Amber Marsh",
+      line: 12,
+      caseSensitive: false,
+      actualKind: "file",
+      change: "observed",
+      tool: "search_in_files",
+      step: 1,
+      callId: "call-1",
+    }])]);
+
+    expect(validationModePassed(mode)).toBe(true);
+    expect(mode.validation?.checks[0]).toMatchObject({
+      status: "passed",
+      actualKind: "file",
+      tool: "search_in_files",
+      message: expect.stringContaining("file-content match"),
+    });
+  });
+
+  it("requires complete count evidence for an exact content count", () => {
+    const check: ModeTransitionValidationCheck = {
+      kind: "file.search_count",
+      subject: "needle",
+      searchCount: {
+        query: "needle",
+        roots: ["/workspace"],
+        maxDepth: 10,
+        includeHidden: false,
+        caseSensitive: false,
+        countUnit: "occurrences",
+        totalMatchCount: 42,
+      },
+    };
+    const missing = validationMode([check]);
+    applyEvidence(missing, []);
+    expect(validationModePassed(missing)).toBe(false);
+
+    const complete = validationMode([check]);
+    applyEvidence(complete, [evidenceCall(1, [{
+      kind: "file_search_count",
+      query: "needle",
+      roots: ["/workspace"],
+      maxDepth: 10,
+      includeHidden: false,
+      caseSensitive: false,
+      returnedMatchCount: 0,
+      totalMatchCount: 42,
+      countComplete: true,
+      hasMore: false,
+      countUnit: "occurrences",
+      change: "observed",
+      tool: "search_in_files",
+      step: 1,
+      callId: "call-1",
+    }])]);
+
+    expect(validationModePassed(complete)).toBe(true);
+    expect(complete.validation?.checks[0]).toMatchObject({
+      status: "passed",
+      tool: "search_in_files",
+      message: expect.stringContaining("complete file-content occurrence count"),
+    });
+  });
+
   it("passes a conclusive zero-match search without rerunning the search", () => {
     const check: ModeTransitionValidationCheck = {
       kind: "file.search_no_match",
@@ -24,6 +104,7 @@ describe("validation mode", () => {
         roots: ["/workspace"],
         maxDepth: 10,
         includeHidden: false,
+        entryKind: "file",
       },
     };
     const mode = validationMode([check]);
@@ -35,6 +116,7 @@ describe("validation mode", () => {
       matchCount: 0,
       maxDepth: 10,
       includeHidden: false,
+      entryKind: "file",
       capped: false,
       errorCount: 0,
       depthLimitedDirectoryCount: 0,

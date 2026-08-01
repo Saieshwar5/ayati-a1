@@ -78,6 +78,18 @@ describe("stable decision system prompt", () => {
     const prompt = STABLE_DECISION_SYSTEM_CONTEXT;
 
     expect(prompt).toContain("Use canonical paths and narrow reads");
+    expect(prompt).toContain("File reads require an exact absolute user/verified path");
+    expect(prompt).toContain("otherwise use find_files");
+    expect(prompt).toContain("Never invent a path");
+    expect(prompt).toContain("read_files for file content");
+    expect(prompt).toContain("list_directory for directory entries");
+    expect(prompt).toContain("inspect_paths for metadata/unknown kind");
+    expect(prompt).toContain("inspect symlinks when targets matter");
+    expect(prompt).toContain("Observe minimally");
+    expect(prompt).toContain("For totals or absence use search_in_files count and file.search_count");
+    expect(prompt).toContain("zero proves absence");
+    expect(prompt).toContain("Use profiles/slices for overviews");
+    expect(prompt).toContain("Reuse current outcomes unless stale or incomplete");
     expect(prompt).toContain("enter task:validation with only the few exact outcomeRefs from context.run.verifiedOutcomes");
     expect(prompt).toContain("Never copy or reconstruct kind, subject, path kind, searchScope, readScope, callId, or denialCode");
     expect(prompt).toContain("Validation is proof-only, exposes no action tools");

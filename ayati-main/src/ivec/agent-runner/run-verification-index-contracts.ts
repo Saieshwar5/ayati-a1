@@ -9,6 +9,8 @@ import type {
 } from "./tool-call-verification-contracts.js";
 import type {
   FileReadValidationScope,
+  FileSearchCountValidation,
+  FileSearchMatchValidation,
   FileSearchValidationScope,
   TaskValidationOutcomeKind,
 } from "./task-validation-contracts.js";
@@ -77,6 +79,8 @@ export interface RunVerifiedPathOutcome extends RunVerifiedOutcomeBase {
     | "permissions"
     | "delete";
   requestedPath?: string;
+  modeOctal?: string;
+  modeSymbolic?: string;
 }
 
 export interface RunVerifiedFileReadOutcome extends RunVerifiedOutcomeBase {
@@ -96,7 +100,7 @@ export interface RunVerifiedFileReadOutcome extends RunVerifiedOutcomeBase {
   sha256?: string;
 }
 
-export interface RunVerifiedFileSearchOutcome extends RunVerifiedOutcomeBase {
+export interface RunVerifiedFileSearchNoMatchOutcome extends RunVerifiedOutcomeBase {
   family: "filesystem_search";
   kind: "file.search_no_match";
   subject: string;
@@ -107,6 +111,26 @@ export interface RunVerifiedFileSearchOutcome extends RunVerifiedOutcomeBase {
   depthLimitedDirectoryCount: 0;
   complete: true;
 }
+
+export interface RunVerifiedFileSearchMatchOutcome extends RunVerifiedOutcomeBase {
+  family: "filesystem_search";
+  kind: "file.search_match";
+  subject: string;
+  actualKind: "file";
+  searchMatch: FileSearchMatchValidation;
+}
+
+export interface RunVerifiedFileSearchCountOutcome extends RunVerifiedOutcomeBase {
+  family: "filesystem_search";
+  kind: "file.search_count";
+  subject: string;
+  searchCount: FileSearchCountValidation;
+}
+
+export type RunVerifiedFileSearchOutcome =
+  | RunVerifiedFileSearchNoMatchOutcome
+  | RunVerifiedFileSearchMatchOutcome
+  | RunVerifiedFileSearchCountOutcome;
 
 export interface RunVerifiedFactOutcome extends RunVerifiedOutcomeBase {
   family: "verified_fact";

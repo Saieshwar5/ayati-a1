@@ -1,3 +1,5 @@
+import type { FileSearchEntryKind } from "./task-validation-contracts.js";
+
 export type FilesystemReadCoverage =
   | "complete"
   | "partial"
@@ -41,12 +43,42 @@ export type FilesystemCompletionEvidence =
       matchCount: number;
       maxDepth: number;
       includeHidden: boolean;
+      entryKind: FileSearchEntryKind;
       capped: boolean;
       errorCount: number;
       depthLimitedDirectoryCount: number;
       complete: boolean;
       change: "observed";
       tool: "find_files";
+      step: number;
+      callId?: string;
+    }
+  | {
+      kind: "file_search_match";
+      path: string;
+      query: string;
+      line: number;
+      caseSensitive: boolean;
+      actualKind: "file";
+      change: "observed";
+      tool: "search_in_files";
+      step: number;
+      callId?: string;
+    }
+  | {
+      kind: "file_search_count";
+      query: string;
+      roots: string[];
+      maxDepth: number;
+      includeHidden: boolean;
+      caseSensitive: boolean;
+      returnedMatchCount: 0;
+      totalMatchCount: number;
+      countComplete: true;
+      hasMore: false;
+      countUnit: "occurrences";
+      change: "observed";
+      tool: "search_in_files";
       step: number;
       callId?: string;
     }
@@ -73,6 +105,8 @@ export type FilesystemCompletionEvidence =
       afterKind?: "missing" | "file" | "directory" | "symlink" | "other";
       beforeSha256?: string;
       afterSha256?: string;
+      modeOctal?: string;
+      modeSymbolic?: string;
       writeStatus?: "created" | "replaced" | "unchanged";
       tool: string;
       step: number;

@@ -1,5 +1,6 @@
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { requireAbsoluteFilesystemPath } from "../../shared/filesystem-paths.js";
+import { parseUnixFileMode } from "../../shared/unix-file-mode.js";
 import type {
   ActToolCallRecord,
   FilesystemCompletionEvidence,
@@ -32,6 +33,9 @@ export function deriveFilesystemCompletionEvidence(
       break;
     case "find_files":
       evidence = findFileEvidence(call, step, structured);
+      break;
+    case "search_in_files":
+      evidence = searchInFilesEvidence(call, step, structured);
       break;
     case "list_directory":
       evidence = singlePresentPathEvidence(
@@ -142,12 +146,14 @@ function inspectPathEvidence(
     const path = canonicalPath(entry["path"] ?? entry["requestedPath"]);
     if (!path || typeof entry["exists"] !== "boolean") return [];
     const kind = filesystemKind(entry["kind"]);
+    const unixMode = parseUnixFileMode(entry["modeOctal"], entry["modeSymbolic"]);
     return [{
       kind: "path_state",
       path,
       ...(readString(entry["requestedPath"]) ? { requestedPath: readString(entry["requestedPath"]) } : {}),
       exists: entry["exists"],
       ...(kind ? { actualKind: kind } : {}),
+      ...(unixMode ?? {}),
       change: "observed",
       operation: "inspect",
       tool: call.tool,
@@ -162,25 +168,160 @@ function findFileEvidence(
   structured: Record<string, unknown>,
 ): FilesystemCompletionEvidence[] {
   const matches = recordArray(structured["matches"]);
+  const searchEvidence = fileSearchEvidence(call, step, structured, matches);
   const pathEvidence = matches.flatMap((entry): FilesystemCompletionEvidence[] => {
     const path = canonicalPath(entry["absolutePath"]);
-    if (!path) return [];
+    const actualKind = filesystemKind(entry["kind"]);
+    if (
+      !path
+      || (
+        actualKind !== "file"
+        && actualKind !== "directory"
+        && actualKind !== "symlink"
+      )
+    ) return [];
     return [{
       kind: "path_state",
       path,
       exists: true,
-      actualKind: filesystemKind(entry["kind"]) ?? "file",
+      actualKind,
       change: "observed",
       operation: "find",
       tool: call.tool,
       ...callReference(call, step),
     }];
   });
-  const searchEvidence = fileSearchEvidence(call, step, structured, matches);
   return [
     ...(searchEvidence ? [searchEvidence] : []),
     ...pathEvidence,
   ];
+}
+
+function searchInFilesEvidence(
+  call: ActToolCallRecord,
+  step: number,
+  structured: Record<string, unknown>,
+): FilesystemCompletionEvidence[] {
+  const countEvidence = searchInFilesCountEvidence(call, step, structured);
+  if (countEvidence) return [countEvidence];
+  if (structured["resultMode"] === "count") return [];
+  const query = readString(structured["query"]);
+  const caseSensitive = readBoolean(structured["caseSensitive"]);
+  const matches = recordArray(structured["matches"]);
+  const returnedMatchCount = readNonNegativeInteger(
+    structured["returnedMatchCount"],
+  );
+  const matchedFileCount = readNonNegativeInteger(structured["matchedFileCount"]);
+  if (
+    !query
+    || caseSensitive === undefined
+    || returnedMatchCount === undefined
+    || returnedMatchCount !== matches.length
+    || matchedFileCount === undefined
+  ) {
+    return [];
+  }
+
+  const evidence: FilesystemCompletionEvidence[] = [];
+  const seenPaths = new Set<string>();
+  for (const match of matches) {
+    const path = canonicalPath(match["filePath"]);
+    const line = readPositiveInteger(match["line"]);
+    const matchedLine = typeof match["match"] === "string" ? match["match"] : undefined;
+    if (
+      !path
+      || line === undefined
+      || matchedLine === undefined
+      || match["kind"] !== "file"
+      || !textContainsQuery(matchedLine, query, caseSensitive)
+      || seenPaths.has(path)
+    ) {
+      continue;
+    }
+    seenPaths.add(path);
+    evidence.push({
+      kind: "file_search_match",
+      path,
+      query,
+      line,
+      caseSensitive,
+      actualKind: "file",
+      change: "observed",
+      tool: "search_in_files",
+      ...callReference(call, step),
+    });
+  }
+  return seenPaths.size === matchedFileCount ? evidence : [];
+}
+
+function searchInFilesCountEvidence(
+  call: ActToolCallRecord,
+  step: number,
+  structured: Record<string, unknown>,
+): Extract<FilesystemCompletionEvidence, { kind: "file_search_count" }> | undefined {
+  const query = readString(structured["query"]);
+  const roots = canonicalPathArray(structured["roots"]);
+  const maxDepth = readPositiveInteger(structured["maxDepth"]);
+  const includeHidden = readBoolean(structured["includeHidden"]);
+  const caseSensitive = readBoolean(structured["caseSensitive"]);
+  const returnedMatchCount = readNonNegativeInteger(
+    structured["returnedMatchCount"],
+  );
+  const totalMatchCount = readNonNegativeInteger(structured["totalMatchCount"]);
+  const minimumMatchCount = readNonNegativeInteger(
+    structured["minimumMatchCount"],
+  );
+  const countComplete = readBoolean(structured["countComplete"]);
+  const hasMore = readBoolean(structured["hasMore"]);
+  const capped = readBoolean(structured["capped"]);
+  const skippedLargeFiles = readNonNegativeInteger(
+    structured["skippedLargeFiles"],
+  );
+  const matches = recordArray(structured["matches"]);
+  if (
+    !query
+    || !roots
+    || maxDepth === undefined
+    || includeHidden === undefined
+    || caseSensitive === undefined
+    || returnedMatchCount !== 0
+    || matches.length !== 0
+    || totalMatchCount === undefined
+    || minimumMatchCount !== totalMatchCount
+    || countComplete !== true
+    || hasMore !== false
+    || capped !== false
+    || skippedLargeFiles !== 0
+    || structured["countUnit"] !== "occurrences"
+  ) {
+    return undefined;
+  }
+  return {
+    kind: "file_search_count",
+    query,
+    roots,
+    maxDepth,
+    includeHidden,
+    caseSensitive,
+    returnedMatchCount: 0,
+    totalMatchCount,
+    countComplete: true,
+    hasMore: false,
+    countUnit: "occurrences",
+    change: "observed",
+    tool: "search_in_files",
+    ...callReference(call, step),
+  };
+}
+
+function textContainsQuery(
+  text: string,
+  query: string,
+  caseSensitive: boolean,
+): boolean {
+  return caseSensitive
+    ? text.includes(query)
+    : text.toLowerCase().includes(query.toLowerCase());
 }
 
 function fileSearchEvidence(
@@ -194,6 +335,7 @@ function fileSearchEvidence(
   const matchCount = readNonNegativeInteger(structured["matchCount"]);
   const maxDepth = readPositiveInteger(structured["maxDepth"]);
   const includeHidden = readBoolean(structured["includeHidden"]);
+  const entryKind = fileSearchEntryKind(structured["kind"]);
   const capped = readBoolean(structured["capped"]);
   const errorCount = readNonNegativeInteger(structured["errorCount"]);
   const reportedErrors = structured["errors"];
@@ -207,11 +349,13 @@ function fileSearchEvidence(
     || matchCount !== matches.length
     || maxDepth === undefined
     || includeHidden === undefined
+    || entryKind === undefined
     || capped === undefined
     || errorCount === undefined
     || !Array.isArray(reportedErrors)
     || (errorCount === 0 && reportedErrors.length !== 0)
     || depthLimitedDirectoryCount === undefined
+    || !matches.every((match) => validFindMatch(match, query, entryKind))
   ) {
     return undefined;
   }
@@ -228,6 +372,7 @@ function fileSearchEvidence(
     matchCount,
     maxDepth,
     includeHidden,
+    entryKind,
     capped,
     errorCount,
     depthLimitedDirectoryCount,
@@ -236,6 +381,25 @@ function fileSearchEvidence(
     tool: "find_files",
     ...callReference(call, step),
   };
+}
+
+function validFindMatch(
+  match: Record<string, unknown>,
+  query: string,
+  entryKind: "file" | "directory" | "symlink" | "any",
+): boolean {
+  const path = canonicalPath(match["absolutePath"]);
+  const actualKind = filesystemKind(match["kind"]);
+  return Boolean(
+    path
+    && (
+      actualKind === "file"
+      || actualKind === "directory"
+      || actualKind === "symlink"
+    )
+    && (entryKind === "any" || actualKind === entryKind)
+    && basename(path).toLowerCase().includes(query.toLowerCase()),
+  );
 }
 
 function fileMutationEvidence(
@@ -566,6 +730,17 @@ function readNumber(value: unknown): number | undefined {
 
 function readBoolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+function fileSearchEntryKind(
+  value: unknown,
+): "file" | "directory" | "symlink" | "any" | undefined {
+  return value === "file"
+    || value === "directory"
+    || value === "symlink"
+    || value === "any"
+    ? value
+    : undefined;
 }
 
 function readNonNegativeInteger(value: unknown): number | undefined {

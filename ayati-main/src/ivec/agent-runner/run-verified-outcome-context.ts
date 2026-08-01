@@ -5,6 +5,8 @@ import {
 } from "./run-verification-index.js";
 import type {
   FileReadValidationScope,
+  FileSearchCountValidation,
+  FileSearchMatchValidation,
   FileSearchValidationScope,
   TaskValidationOutcomeKind,
 } from "./task-validation-contracts.js";
@@ -20,6 +22,10 @@ export interface PromptVerifiedOutcome {
   kind: TaskValidationOutcomeKind;
   subject: string;
   actualKind?: "file" | "directory" | "symlink";
+  modeOctal?: string;
+  modeSymbolic?: string;
+  searchMatch?: FileSearchMatchValidation;
+  searchCount?: FileSearchCountValidation;
   searchScope?: FileSearchValidationScope;
   readScope?: FileReadValidationScope;
   artifactKind?: string;
@@ -64,6 +70,8 @@ function projectVerifiedOutcome(
       kind: outcome.kind,
       subject: outcome.subject,
       ...(outcome.actualKind ? { actualKind: outcome.actualKind } : {}),
+      ...(outcome.modeOctal ? { modeOctal: outcome.modeOctal } : {}),
+      ...(outcome.modeSymbolic ? { modeSymbolic: outcome.modeSymbolic } : {}),
       source,
     };
   }
@@ -92,6 +100,25 @@ function projectVerifiedOutcome(
   }
 
   if (outcome.family === "filesystem_search") {
+    if (outcome.kind === "file.search_count") {
+      return {
+        ...reference,
+        kind: "file.search_count",
+        subject: outcome.subject,
+        searchCount: outcome.searchCount,
+        source,
+      };
+    }
+    if (outcome.kind === "file.search_match") {
+      return {
+        ...reference,
+        kind: "file.search_match",
+        subject: outcome.subject,
+        actualKind: "file",
+        searchMatch: outcome.searchMatch,
+        source,
+      };
+    }
     return {
       ...reference,
       kind: "file.search_no_match",

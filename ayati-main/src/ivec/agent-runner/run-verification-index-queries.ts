@@ -9,6 +9,7 @@ import type {
 import { readOutcomeSatisfiesScope } from "./run-verification-read-scope.js";
 import type { ModeTransitionValidationCheck } from "./task-validation-contracts.js";
 import {
+  normalizeFileSearchCountValidation,
   normalizeFileSearchValidationScope,
   normalizeTaskValidationSubject,
 } from "./task-validation-outcome-registry.js";
@@ -104,6 +105,18 @@ export function findLatestVerifiedOutcomeForCheck(
       return outcome.family === "filesystem_read"
         && outcome.kind === "file.read_complete";
     }
+    if (check.kind === "file.search_match") {
+      return outcome.family === "filesystem_search"
+        && outcome.kind === "file.search_match"
+        && check.searchMatch !== undefined
+        && sameSearchMatch(outcome.searchMatch, check.searchMatch);
+    }
+    if (check.kind === "file.search_count") {
+      return outcome.family === "filesystem_search"
+        && outcome.kind === "file.search_count"
+        && check.searchCount !== undefined
+        && sameSearchCount(outcome.searchCount, check.searchCount);
+    }
     if (check.kind === "file.search_no_match") {
       return outcome.family === "filesystem_search"
         && outcome.kind === "file.search_no_match"
@@ -155,6 +168,18 @@ export function findLatestInvalidatedOutcomeForCheck(
       return entry.outcome.family === "filesystem_read"
         && entry.outcome.kind === "file.read_complete";
     }
+    if (check.kind === "file.search_match") {
+      return entry.outcome.family === "filesystem_search"
+        && entry.outcome.kind === "file.search_match"
+        && check.searchMatch !== undefined
+        && sameSearchMatch(entry.outcome.searchMatch, check.searchMatch);
+    }
+    if (check.kind === "file.search_count") {
+      return entry.outcome.family === "filesystem_search"
+        && entry.outcome.kind === "file.search_count"
+        && check.searchCount !== undefined
+        && sameSearchCount(entry.outcome.searchCount, check.searchCount);
+    }
     if (check.kind === "file.search_no_match") {
       return entry.outcome.family === "filesystem_search"
         && entry.outcome.kind === "file.search_no_match"
@@ -171,11 +196,28 @@ export function findLatestInvalidatedOutcomeForCheck(
 }
 
 function sameSearchScope(
-  outcome: RunVerifiedFileSearchOutcome,
+  outcome: Extract<RunVerifiedFileSearchOutcome, { kind: "file.search_no_match" }>,
   scope: NonNullable<ModeTransitionValidationCheck["searchScope"]>,
 ): boolean {
   return JSON.stringify(outcome.searchScope)
     === JSON.stringify(normalizeFileSearchValidationScope(scope));
+}
+
+function sameSearchMatch(
+  left: NonNullable<ModeTransitionValidationCheck["searchMatch"]>,
+  right: NonNullable<ModeTransitionValidationCheck["searchMatch"]>,
+): boolean {
+  return left.query === right.query
+    && left.line === right.line
+    && left.caseSensitive === right.caseSensitive;
+}
+
+function sameSearchCount(
+  left: NonNullable<ModeTransitionValidationCheck["searchCount"]>,
+  right: NonNullable<ModeTransitionValidationCheck["searchCount"]>,
+): boolean {
+  return JSON.stringify(normalizeFileSearchCountValidation(left))
+    === JSON.stringify(normalizeFileSearchCountValidation(right));
 }
 
 function latestOutcome<T extends RunVerifiedOutcome>(

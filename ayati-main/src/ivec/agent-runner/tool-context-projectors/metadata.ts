@@ -28,6 +28,20 @@ export function buildToolProjectionMetadata(tool: string, structuredContent: unk
       maxStringChars: 500,
     });
   }
+  if (tool === "search_in_files") {
+    const resultMode = structuredContent["resultMode"] === "snippets"
+      ? "snippets"
+      : structuredContent["resultMode"] === "count"
+        ? "count"
+        : "paths";
+    return sanitizeRecord(structuredContent, {
+      dropKeys: resultMode === "snippets"
+        ? new Set(["observation"])
+        : new Set(["observation", "before", "match", "after"]),
+      maxArrayItems: 40,
+      maxStringChars: 500,
+    });
+  }
   if (SEARCH_TOOLS.has(tool)) {
     return sanitizeRecord(structuredContent, {
       dropKeys: new Set(["observation"]),

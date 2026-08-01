@@ -43,6 +43,8 @@ interface ReadFilesFailureEntry {
   ok: false;
   error: string;
   code?: string;
+  actualKind?: "directory" | "other";
+  recommendedTool?: "list_directory" | "inspect_paths";
 }
 
 type ReadFilesEntry = ReadFilesSuccessEntry | ReadFilesFailureEntry;
@@ -113,6 +115,8 @@ export const readFilesTool: ToolDefinition = {
             endLine: { type: "integer" },
             error: { type: "string" },
             code: { type: "string" },
+            actualKind: { type: "string", enum: ["directory", "other"] },
+            recommendedTool: { type: "string", enum: ["list_directory", "inspect_paths"] },
             observation: { type: "object" },
           },
         },
@@ -152,11 +156,16 @@ export const readFilesTool: ToolDefinition = {
     for (const file of parsed.files) {
       const result = await readFileCoreTool.execute(file, context);
       if (!result.ok) {
+        const failure = asRecord(result.v2?.structuredContent);
+        const actualKind = readReadFailureKind(failure?.["actualKind"]);
+        const recommendedTool = readReadFailureTool(failure?.["recommendedTool"]);
         results.push({
           requestedPath: file.path,
           ok: false,
           error: result.error ?? result.v2?.message ?? "Failed to read file.",
           ...(result.v2?.code ? { code: result.v2.code } : {}),
+          ...(actualKind ? { actualKind } : {}),
+          ...(recommendedTool ? { recommendedTool } : {}),
         });
         continue;
       }
@@ -256,9 +265,18 @@ export const readFilesTool: ToolDefinition = {
     };
 
     if (!succeeded) {
-      const message = successCount > 0
-        ? `read_files failed for ${failureCount} file${failureCount === 1 ? "" : "s"}; set allowMissing=true to accept partial reads.`
-        : "read_files failed for every requested file.";
+      const failures = results.filter((entry): entry is ReadFilesFailureEntry => !entry.ok);
+      const wrongKindFailure = failures.find((entry) => entry.code === "NOT_A_FILE");
+      const message = wrongKindFailure && results.length === 1
+        ? wrongKindFailure.error
+        : successCount > 0
+          ? `read_files failed for ${failureCount} file${failureCount === 1 ? "" : "s"}; set allowMissing=true to accept partial reads.`
+          : "read_files failed for every requested file.";
+      const suggestedNextActions = wrongKindFailure
+        ? [wrongKindFailure.actualKind === "directory"
+            ? `Use list_directory with the same absolute path: ${wrongKindFailure.requestedPath}.`
+            : `Use inspect_paths for ${wrongKindFailure.requestedPath}, then choose a regular file path.`]
+        : ["Correct missing or invalid paths, or set allowMissing=true when partial read output is acceptable."];
       return {
         ok: false,
         output,
@@ -268,12 +286,14 @@ export const readFilesTool: ToolDefinition = {
         v2: failureV2({
           code: "READ_FILES_FAILED",
           message,
-          category: failureCount === results.length ? "missing_path" : "semantic",
+          category: wrongKindFailure
+            ? "semantic"
+            : failureCount === results.length
+              ? "missing_path"
+              : "semantic",
           retryable: true,
           recoverable: true,
-          suggestedNextActions: [
-            "Correct missing or invalid paths, or set allowMissing=true when partial read output is acceptable.",
-          ],
+          suggestedNextActions,
           structuredContent,
           diagnostics: meta,
         }),
@@ -330,6 +350,14 @@ function readCoverage(value: unknown): ReadFileCoverage {
     || value === "sampled"
     ? value
     : "partial";
+}
+
+function readReadFailureKind(value: unknown): "directory" | "other" | undefined {
+  return value === "directory" || value === "other" ? value : undefined;
+}
+
+function readReadFailureTool(value: unknown): "list_directory" | "inspect_paths" | undefined {
+  return value === "list_directory" || value === "inspect_paths" ? value : undefined;
 }
 
 function readFilesMetadataAdvisoryReason(results: ReadFilesEntry[], requestedFiles: ReadFileInput[]): string | undefined {

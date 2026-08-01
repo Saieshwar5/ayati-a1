@@ -1,5 +1,6 @@
 import type {
   FileReadValidationScope,
+  FileSearchMatchValidation,
   FileSearchValidationScope,
   TaskValidationOutcomeKind,
   ValidationCheckResult,
@@ -78,10 +79,16 @@ function completionReceiptValue(check: ValidationCheckResult): string {
   switch (check.kind) {
     case "path.exists":
       return bounded(
-        `Verified that ${subject} exists${check.actualKind ? ` as a ${check.actualKind}` : ""}.`,
+        `Verified that ${subject} exists${check.actualKind ? ` as a ${check.actualKind}` : ""}${check.modeOctal && check.modeSymbolic ? ` with Unix permissions ${check.modeOctal} (${check.modeSymbolic})` : ""}.`,
       );
     case "path.missing":
       return bounded(`Verified that ${subject} is absent.`);
+    case "file.search_match":
+      return bounded(searchMatchReceipt(subject, check.searchMatch));
+    case "file.search_count":
+      return bounded(
+        `Verified exactly ${check.searchCount?.totalMatchCount ?? 0} occurrence${check.searchCount?.totalMatchCount === 1 ? "" : "s"} of "${subject}" in the selected search scope.`,
+      );
     case "file.search_no_match":
       return bounded(searchScopeReceipt(subject, check.searchScope));
     case "file.read_complete":
@@ -135,14 +142,31 @@ function completionReceiptValue(check: ValidationCheckResult): string {
   }
 }
 
+function searchMatchReceipt(
+  subject: string,
+  match: FileSearchMatchValidation | undefined,
+): string {
+  if (!match) {
+    return `Verified a matching file-content search result in ${subject}.`;
+  }
+  return `Verified that ${subject} matches "${normalized(match.query)}" at line ${match.line}.`;
+}
+
 function searchScopeReceipt(
   subject: string,
   scope: FileSearchValidationScope | undefined,
 ): string {
   if (!scope) {
-    return `Verified no filename match for "${subject}".`;
+    return `Verified no file or directory name match for "${subject}".`;
   }
-  return `Verified no filename match for "${subject}" under ${scope.roots.join(", ")}.`;
+  const entryLabel = scope.entryKind === "file"
+    ? "file name"
+    : scope.entryKind === "directory"
+      ? "directory name"
+      : scope.entryKind === "symlink"
+        ? "symbolic link name"
+        : "file, directory, or symbolic link name";
+  return `Verified no ${entryLabel} match for "${subject}" under ${scope.roots.join(", ")}.`;
 }
 
 function readScopeReceipt(

@@ -1,4 +1,4 @@
-import { readdir } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { ToolDefinition, ToolResult } from "../../types.js";
 import {
@@ -8,13 +8,20 @@ import {
   type ToolContextObservation,
 } from "../../observations/context-observation.js";
 import { resolveWorkspacePath } from "../../workspace-paths.js";
-import { commonAnnotations, okResult, succeededContract, successV2 } from "../contract-helpers.js";
+import {
+  commonAnnotations,
+  errorResult,
+  errorResultFromUnknown,
+  okResult,
+  succeededContract,
+  successV2,
+} from "../contract-helpers.js";
 import { validateListDirectoryInput } from "./validators.js";
 
 interface EntryInfo {
   name: string;
   absolutePath: string;
-  type: "dir" | "file" | "other";
+  kind: "file" | "directory" | "symlink" | "other";
   depth: number;
 }
 
@@ -24,6 +31,7 @@ interface ListAccumulator {
   counts: {
     files: number;
     dirs: number;
+    symlinks: number;
     other: number;
   };
   capped: boolean;
@@ -45,11 +53,17 @@ async function listEntries(
     if (!showHidden && dirent.name.startsWith(".")) continue;
 
     const relName = prefix ? join(prefix, dirent.name) : dirent.name;
-    const type = dirent.isDirectory() ? "dir" : dirent.isFile() ? "file" : "other";
-    acc.counts[type === "dir" ? "dirs" : type === "file" ? "files" : "other"]++;
+    const kind = dirent.isDirectory()
+      ? "directory"
+      : dirent.isFile()
+        ? "file"
+        : dirent.isSymbolicLink()
+          ? "symlink"
+          : "other";
+    incrementEntryCount(acc.counts, kind);
 
     if (acc.entries.length < maxEntries) {
-      acc.entries.push({ name: relName, absolutePath: join(dirPath, dirent.name), type, depth });
+      acc.entries.push({ name: relName, absolutePath: join(dirPath, dirent.name), kind, depth });
     } else {
       acc.omittedCount++;
       acc.capped = true;
@@ -87,8 +101,29 @@ export const listDirectoryTool: ToolDefinition = {
     required: ["dirPath", "counts", "entries", "omittedCount", "capped", "observation"],
     properties: {
       dirPath: { type: "string" },
-      counts: { type: "object" },
-      entries: { type: "array", items: { type: "object" } },
+      counts: {
+        type: "object",
+        required: ["files", "dirs", "symlinks", "other"],
+        properties: {
+          files: { type: "integer" },
+          dirs: { type: "integer" },
+          symlinks: { type: "integer" },
+          other: { type: "integer" },
+        },
+      },
+      entries: {
+        type: "array",
+        items: {
+          type: "object",
+          required: ["name", "absolutePath", "kind", "depth"],
+          properties: {
+            name: { type: "string" },
+            absolutePath: { type: "string" },
+            kind: { type: "string", enum: ["file", "directory", "symlink", "other"] },
+            depth: { type: "integer" },
+          },
+        },
+      },
       omittedCount: { type: "integer" },
       capped: { type: "boolean" },
       observation: { type: "object" },
@@ -117,10 +152,37 @@ export const listDirectoryTool: ToolDefinition = {
     const start = Date.now();
 
     try {
+      const info = await stat(dirPath);
+      if (!info.isDirectory()) {
+        const actualKind = info.isFile() ? "file" : "other";
+        const message = actualKind === "file"
+          ? `list_directory accepts directories, but this target is a regular file: ${dirPath}. Use read_files with the same absolute path to inspect its content.`
+          : `list_directory accepts directories, but this target has kind ${actualKind}: ${dirPath}. Use inspect_paths to inspect its metadata.`;
+        return errorResult({
+          code: "NOT_A_DIRECTORY",
+          message,
+          category: "semantic",
+          target: dirPath,
+          retryable: true,
+          recoverable: true,
+          suggestedNextActions: [
+            actualKind === "file"
+              ? `Call read_files with path=${dirPath}.`
+              : `Call inspect_paths with path=${dirPath}.`,
+          ],
+          structuredContent: {
+            requestedPath: parsed.path,
+            path: dirPath,
+            actualKind,
+            recommendedTool: actualKind === "file" ? "read_files" : "inspect_paths",
+          },
+          meta: { durationMs: Date.now() - start, dirPath },
+        });
+      }
       const acc: ListAccumulator = {
         entries: [],
         omittedCount: 0,
-        counts: { files: 0, dirs: 0, other: 0 },
+        counts: { files: 0, dirs: 0, symlinks: 0, other: 0 },
         capped: false,
       };
       await listEntries(
@@ -184,11 +246,33 @@ export const listDirectoryTool: ToolDefinition = {
         rawOutput: formatRawEntries(acc.entries, acc.omittedCount),
       };
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown filesystem error";
-      return { ok: false, error: message, meta: { durationMs: Date.now() - start } };
+      return errorResultFromUnknown({
+        err,
+        fallbackMessage: "Unknown filesystem error",
+        target: dirPath,
+        suggestedNextActions: [
+          "Use inspect_paths to verify the exact path and kind, then retry with an accessible directory.",
+        ],
+        meta: { durationMs: Date.now() - start, dirPath },
+      });
     }
   },
 };
+
+function incrementEntryCount(
+  counts: ListAccumulator["counts"],
+  kind: EntryInfo["kind"],
+): void {
+  if (kind === "directory") {
+    counts.dirs++;
+  } else if (kind === "file") {
+    counts.files++;
+  } else if (kind === "symlink") {
+    counts.symlinks++;
+  } else {
+    counts.other++;
+  }
+}
 
 function buildDirectoryObservation(input: {
   dirPath: string;
@@ -198,20 +282,22 @@ function buildDirectoryObservation(input: {
   maxEntries: number;
   entries: EntryInfo[];
   omittedCount: number;
-  counts: { files: number; dirs: number; other: number };
+  counts: { files: number; dirs: number; symlinks: number; other: number };
   capped: boolean;
 }): ToolContextObservation {
-  const dirs = input.entries.filter((entry) => entry.type === "dir").slice(0, 80);
-  const files = input.entries.filter((entry) => entry.type === "file").slice(0, 120);
-  const other = input.entries.filter((entry) => entry.type === "other").slice(0, 40);
+  const dirs = input.entries.filter((entry) => entry.kind === "directory").slice(0, 80);
+  const files = input.entries.filter((entry) => entry.kind === "file").slice(0, 120);
+  const symlinks = input.entries.filter((entry) => entry.kind === "symlink").slice(0, 40);
+  const other = input.entries.filter((entry) => entry.kind === "other").slice(0, 40);
   const blocks = [
     dirs.length > 0 ? makeBlock({ title: "Directories", lines: dirs.map(formatEntry), maxChars: 2_000 }) : undefined,
     files.length > 0 ? makeBlock({ title: "Files", lines: files.map(formatEntry), maxChars: 3_000 }) : undefined,
+    symlinks.length > 0 ? makeBlock({ title: "Symbolic links", lines: symlinks.map(formatEntry), maxChars: 1_500 }) : undefined,
     other.length > 0 ? makeBlock({ title: "Other entries", lines: other.map(formatEntry), maxChars: 1_000 }) : undefined,
   ].filter((block): block is ToolContextBlock => block !== undefined);
   return {
     mode: input.capped ? "large_ref" : "focused",
-    summary: `Directory contains ${input.counts.dirs} director${input.counts.dirs === 1 ? "y" : "ies"}, ${input.counts.files} file${input.counts.files === 1 ? "" : "s"}, and ${input.counts.other} other entr${input.counts.other === 1 ? "y" : "ies"}.`,
+    summary: `Directory contains ${input.counts.dirs} director${input.counts.dirs === 1 ? "y" : "ies"}, ${input.counts.files} file${input.counts.files === 1 ? "" : "s"}, ${input.counts.symlinks} symbolic link${input.counts.symlinks === 1 ? "" : "s"}, and ${input.counts.other} other entr${input.counts.other === 1 ? "y" : "ies"}.`,
     stats: {
       dirPath: input.dirPath,
       recursive: input.recursive,
@@ -223,11 +309,13 @@ function buildDirectoryObservation(input: {
       capped: input.capped,
       files: input.counts.files,
       dirs: input.counts.dirs,
+      symlinks: input.counts.symlinks,
       other: input.counts.other,
     },
     highlights: [
       `${input.counts.dirs} directories`,
       `${input.counts.files} files`,
+      ...(input.counts.symlinks > 0 ? [`${input.counts.symlinks} symbolic links`] : []),
       ...(input.omittedCount > 0 ? [`${input.omittedCount} entries omitted`] : []),
     ],
     blocks,
@@ -240,7 +328,7 @@ function buildDirectoryObservation(input: {
 }
 
 function formatEntry(entry: EntryInfo): string {
-  return `[${entry.type}] ${entry.absolutePath}`;
+  return `[${entry.kind}] ${entry.absolutePath}`;
 }
 
 function formatRawEntries(entries: EntryInfo[], omittedCount: number): string {

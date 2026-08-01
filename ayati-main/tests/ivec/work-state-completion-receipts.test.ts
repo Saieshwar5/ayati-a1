@@ -10,6 +10,21 @@ import type { ImportantContextItem } from "../../src/ivec/agent-runner/work-stat
 const RUN_ID = "RUN-COMPLETION";
 
 describe("WorkState validation completion receipts", () => {
+  it("records exact inspected Unix permissions without file content", () => {
+    const check = passedCheck("path.exists", "/workspace/private-note.txt", 1);
+    check.modeOctal = "0640";
+    check.modeSymbolic = "rw-r-----";
+
+    expect(buildValidationCompletionReceipts({
+      runId: RUN_ID,
+      checks: [check],
+    })).toEqual([{
+      kind: "finding",
+      value: "Verified that /workspace/private-note.txt exists as a file with Unix permissions 0640 (rw-r-----).",
+      ref: `run:${RUN_ID}:step:1:call:call-1`,
+    }]);
+  });
+
   it("creates one compact deterministic receipt for a verified complete read", () => {
     const receipts = buildValidationCompletionReceipts({
       runId: RUN_ID,
@@ -43,6 +58,45 @@ describe("WorkState validation completion receipts", () => {
       kind: "finding",
       value: "Verified a read of lines 10-14 from /workspace/src/parser.ts.",
       ref: `run:${RUN_ID}:step:3:call:call-3`,
+    }]);
+  });
+
+  it("records a positive search match without copying matched file content", () => {
+    const receipts = buildValidationCompletionReceipts({
+      runId: RUN_ID,
+      checks: [{
+        ...passedCheck("file.search_match", "/workspace/letters/amber.txt", 4),
+        searchMatch: {
+          query: "Amber Marsh",
+          line: 12,
+          caseSensitive: false,
+        },
+      }],
+    });
+
+    expect(receipts).toEqual([{
+      kind: "finding",
+      value: "Verified that /workspace/letters/amber.txt matches \"Amber Marsh\" at line 12.",
+      ref: `run:${RUN_ID}:step:4:call:call-4`,
+    }]);
+  });
+
+  it("records the exact path kind covered by a no-match search", () => {
+    const check = passedCheck("file.search_no_match", "cedar", 5);
+    check.searchScope = {
+      roots: ["/workspace"],
+      maxDepth: 10,
+      includeHidden: false,
+      entryKind: "directory",
+    };
+
+    expect(buildValidationCompletionReceipts({
+      runId: RUN_ID,
+      checks: [check],
+    })).toEqual([{
+      kind: "finding",
+      value: "Verified no directory name match for \"cedar\" under /workspace.",
+      ref: `run:${RUN_ID}:step:5:call:call-5`,
     }]);
   });
 

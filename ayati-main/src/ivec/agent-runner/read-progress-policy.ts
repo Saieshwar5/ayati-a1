@@ -3,7 +3,6 @@ import type { ActOutput, ReadProgressState } from "../types.js";
 import type { RepairCode } from "./repair-policy.js";
 import { hasMutationEffect } from "../../skills/tool-taxonomy.js";
 
-const MAX_OBSERVATIONAL_STEPS_BEFORE_MUTATION = 3;
 const MAX_SIGNATURES_RETAINED = 40;
 
 const TRACKED_OBSERVATIONAL_TOOLS = new Set([
@@ -51,12 +50,12 @@ export function evaluateReadProgressGuard(
   if (duplicate?.signature) {
     return {
       code: "R_DUPLICATE_READ",
-      message: "The selected read repeats context that is already available in this workstream-bound run.",
+      message: "The selected read repeats an equivalent observation that is already current in this run.",
       blockedTargets: [duplicate.call.tool],
       allowedNextActions: [
-        "Use the current observations/evidence instead of reading the same target again.",
+        "If a matching outcomeRef is projected in context.run.verifiedOutcomes, select it and enter validation instead of reading again.",
         "If the user asked for a concrete file change, call patch_files or write_files next.",
-        "Ask one specific clarification if the missing detail blocks the requested change.",
+        "Change the read scope only when the current verified coverage is insufficient.",
       ],
       operatorDetails: {
         tool: duplicate.call.tool,
@@ -64,26 +63,6 @@ export function evaluateReadProgressGuard(
         observationalStepCount: progress.observationalStepCount,
         duplicateReadCount: progress.duplicateReadCount + 1,
         mutationStepCount: progress.mutationStepCount,
-      },
-    };
-  }
-
-  if (progress.observationalStepCount >= MAX_OBSERVATIONAL_STEPS_BEFORE_MUTATION) {
-    return {
-      code: "R_MUTATION_EXPECTED_AFTER_CONTEXT",
-      message: "This workstream-bound run has already gathered enough read context before making a change.",
-      blockedTargets: readCalls.map(({ call }) => call.tool),
-      allowedNextActions: [
-        "Use the current observations/evidence to make the requested change.",
-        "Call patch_files or write_files next when the user asked to build or update files.",
-        "Ask one specific clarification if the change cannot be made from the available context.",
-      ],
-      operatorDetails: {
-        attemptedTools: readCalls.map(({ call }) => call.tool),
-        attemptedSignatures: readCalls.map(({ signature }) => signature),
-        observationalStepCount: progress.observationalStepCount,
-        mutationStepCount: progress.mutationStepCount,
-        maxObservationalStepsBeforeMutation: MAX_OBSERVATIONAL_STEPS_BEFORE_MUTATION,
       },
     };
   }
@@ -150,7 +129,7 @@ function readSignature(call: Pick<AgentToolCallSpec, "tool" | "input">): string 
         allowMissing: input["allowMissing"],
       });
     case "search_in_files":
-      return stableSignature(call.tool, pick(input, ["query", "roots", "maxDepth", "caseSensitive", "contextLines", "maxResults"]));
+      return stableSignature(call.tool, normalizeSearchInFilesInput(input));
     case "find_files":
       return stableSignature(call.tool, pick(input, ["query", "roots", "maxDepth", "maxResults"]));
     case "list_directory":
@@ -158,6 +137,40 @@ function readSignature(call: Pick<AgentToolCallSpec, "tool" | "input">): string 
     default:
       return undefined;
   }
+}
+
+function normalizeSearchInFilesInput(
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  const resultMode = input["resultMode"] === "snippets"
+    ? "snippets"
+    : input["resultMode"] === "count"
+      ? "count"
+      : "paths";
+  const common = {
+    query: input["query"],
+    roots: normalizeStringArray(input["roots"]),
+    maxDepth: input["maxDepth"] ?? 10,
+    includeHidden: input["includeHidden"] ?? false,
+    caseSensitive: input["caseSensitive"] ?? false,
+    resultMode,
+  };
+  return {
+    ...common,
+    ...(resultMode === "count"
+      ? {}
+      : { maxResults: input["maxResults"] ?? 500 }),
+    ...(resultMode === "snippets"
+      ? { contextLines: input["contextLines"] ?? 1 }
+      : {}),
+  };
+}
+
+function normalizeStringArray(value: unknown): unknown {
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
+    return value;
+  }
+  return [...new Set(value)].sort();
 }
 
 function normalizeReadFilesInput(value: unknown): unknown {

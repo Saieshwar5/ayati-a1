@@ -123,14 +123,31 @@ export const readFileCoreTool: ToolDefinition = {
     try {
       const info = await stat(filePath);
       if (!info.isFile()) {
+        const actualKind = info.isDirectory() ? "directory" : "other";
+        const recommendedTool = actualKind === "directory"
+          ? "list_directory"
+          : "inspect_paths";
+        const message = actualKind === "directory"
+          ? `read_files accepts regular files, but this target is a directory: ${filePath}. Use list_directory with the same absolute path to inspect its entries.`
+          : `read_files accepts regular files, but this target has kind ${actualKind}: ${filePath}. Use inspect_paths to inspect its metadata and choose a regular file.`;
         return errorResult({
           code: "NOT_A_FILE",
-          message: `Not a file: ${filePath}`,
+          message,
           category: "semantic",
           target: filePath,
           retryable: true,
           recoverable: true,
-          suggestedNextActions: ["Use list_directory for directories or choose a regular file path."],
+          suggestedNextActions: [
+            actualKind === "directory"
+              ? `Call list_directory with path=${filePath}.`
+              : `Call inspect_paths with path=${filePath}, then choose a regular file path.`,
+          ],
+          structuredContent: {
+            requestedPath: parsed.path,
+            path: filePath,
+            actualKind,
+            recommendedTool,
+          },
           meta: { durationMs: Date.now() - start, filePath },
         });
       }

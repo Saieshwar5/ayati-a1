@@ -192,9 +192,10 @@ its full harness lifecycle. Shutdown drains active and queued work before
 stopping the provider. Ayati is a single-agent system, so deterministic run
 ordering is preferred over interleaved filesystem verification.
 
-A verified `find_files` call with multiple results adds a small factual
+A verified `find_files` call with one or more results adds a small factual
 `candidateSet` to that call's model-facing run context. It contains bounded
-exact paths and useful relative labels, and survives tool-output compaction.
+names, exact paths, actual kinds, and useful relative labels, and survives
+tool-output compaction.
 The model decides from the request whether to continue or ask through the
 normal needs-user-input path. The runtime still checks target provenance where
 required, resource authority, and every tool result, but it does not classify
@@ -569,12 +570,33 @@ scopes, automatic samples, narrower slices, and different search queries
 remain supporting evidence and do not pass. Later file mutation invalidates
 both complete and bounded read proof.
 
+A verified positive `search_in_files` result produces one
+`file.search_match` outcome per matched file. The outcome records only the
+canonical path, query, line, and case policy needed for validation. It proves
+that specific file matched; it does not prove that the search was exhaustive
+or that the result was unique. A later mutation of the matched file
+invalidates the outcome, while an unrelated file mutation does not.
+
+A complete `search_in_files` count produces `file.search_count` with the exact
+query, canonical roots, depth and hidden-file policy, case policy, count unit,
+and total. Sampled or incomplete searches do not produce this outcome. Any
+later filesystem mutation inside a counted root invalidates the count.
+An ordinary exhaustive content search with zero matches produces the same
+typed outcome with `totalMatchCount=0`; the absence remains valid only for its
+exact recorded scope.
+
 A conclusive zero-result `find_files` call produces
 `file.search_no_match`. Its exact `searchScope` records the canonical roots,
 depth, and hidden-file policy. The outcome exists only when traversal was
 uncapped, error-free, and did not skip a directory at the depth limit. A later
 filesystem mutation inside a searched root invalidates the negative proof.
 Incomplete zero-result searches cannot prove that a target is absent.
+
+Validation reuses these current outcomes rather than requesting fresh proof.
+Equivalent read-only work is repeated only when earlier coverage was
+insufficient or a later verified mutation invalidated it. Bounded overview
+responses may select exact profile or slice outcomes and must describe their
+coverage honestly instead of implying a complete-file read.
 
 Registered semantic kinds cover calculator, database, Pulse, process, Python,
 memory, and managed-artifact outcomes. `tool.call_succeeded` is an exact-call

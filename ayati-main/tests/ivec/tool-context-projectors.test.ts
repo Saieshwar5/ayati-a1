@@ -59,7 +59,9 @@ describe("tool context projectors", () => {
       projectionMetadata: {
         query: "ContextBudget",
         matchedFileCount: 2,
-        matchCount: 4,
+        returnedMatchCount: 4,
+        totalMatchCount: 9,
+        countComplete: true,
         capped: false,
         matches: [{ filePath: "src/context.ts", line: 10, match: "ContextBudget" }],
       },
@@ -68,6 +70,47 @@ describe("tool context projectors", () => {
     expect(projection.projectorId).toBe("filesystem_search_v1");
     expect(projection.call.input).toEqual({ query: "ContextBudget", roots: ["src"], maxResults: 20 });
     expect(projection.call.summary).toContain("matchedFileCount");
+  });
+
+  it("preserves the requested file-search entry kind", () => {
+    const projection = projectToolCallForPressure(call({
+      tool: "find_files",
+      input: { query: "cedar", kind: "directory", roots: ["/workspace"] },
+      projectionMetadata: {
+        query: "cedar",
+        kind: "directory",
+        matchCount: 1,
+      },
+    }), "summary");
+
+    expect(projection.call.input).toEqual({
+      query: "cedar",
+      kind: "directory",
+      roots: ["/workspace"],
+    });
+  });
+
+  it("removes content-search snippets from default path-only projection metadata", () => {
+    const metadata = buildToolProjectionMetadata("search_in_files", {
+      query: "Amber Marsh",
+      resultMode: "paths",
+      matches: [{
+        filePath: "/workspace/letter.txt",
+        line: 2,
+        before: ["private neighbor"],
+        match: "Amber Marsh sent the letter",
+        after: ["private ending"],
+      }],
+    });
+
+    expect(metadata).toEqual({
+      query: "Amber Marsh",
+      resultMode: "paths",
+      matches: [{
+        filePath: "/workspace/letter.txt",
+        line: 2,
+      }],
+    });
   });
 
   it("uses the process projector for non-test commands", () => {

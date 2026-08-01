@@ -13,6 +13,7 @@ export interface FileSearchCandidateSet {
   query?: string;
   matchCount: number;
   candidates: Array<{
+    name: string;
     label: string;
     path: string;
     kind?: string;
@@ -43,7 +44,7 @@ export function buildFileSearchCandidateSet(
     .filter((item): item is FileSearchCandidateSet["candidates"][number] => item !== undefined)
     .slice(0, MAX_PROMPT_CANDIDATES);
   const matchCount = readCount(metadata.matchCount) ?? candidates.length;
-  if (matchCount <= 1 || candidates.length === 0) return undefined;
+  if (matchCount === 0 || candidates.length === 0) return undefined;
 
   const omittedCandidateCount = Math.max(0, matchCount - candidates.length);
   const query = readString(metadata.query);
@@ -63,7 +64,9 @@ function candidate(
   const path = readString(value.absolutePath) ?? readString(value.path);
   if (!path) return undefined;
   const kind = readString(value.kind);
+  const name = readString(value.name) ?? (basename(path) || path);
   return {
+    name,
     label: relativeLabel(path, roots),
     path,
     ...(kind ? { kind } : {}),

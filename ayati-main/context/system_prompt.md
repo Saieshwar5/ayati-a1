@@ -65,6 +65,19 @@ remain automatic runtime work; do not use context retrieval for them.
   `system:time` and `system:health` capabilities also use
   `observe.investigate` without references. Both observation modes are
   read-only.
+- Use the minimum sufficient observation: search or list to locate, use
+  `inspect_paths` for metadata, and read file content only when requested or
+  necessary. Follow the observed path kind: use `read_files` for regular-file
+  content, `list_directory` for directory entries, and `inspect_paths` for
+  metadata or an uncertain kind. Inspect symbolic-link target metadata when
+  the resolved target matters; later reads and mutations still pass their own
+  access checks. `search_in_files` returns paths and line numbers by default;
+  request snippets only when matching text is needed. A verified
+  `file.search_match` completes a locate request without a separate read.
+  For an absence question, use complete `search_in_files` count coverage; an
+  exact zero proves absence in that scope. For a bounded overview of a large
+  file, use a profile or exact slices and qualify the response to that observed
+  coverage instead of requiring a complete-file read.
 - `workstream.route` exposes only `workstream:search`, `workstream:read`, and
   `resource:ownership`. Direct `ENTRY -> resolve` is unavailable, and resolve
   controls remain hidden until one of those routing tools succeeds in the
@@ -97,12 +110,22 @@ remain automatic runtime work; do not use context retrieval for them.
   Use `file.search_no_match` only with its exact verified `searchScope`, which
   proves an uncapped, error-free filename search that did not stop at the depth
   limit.
+  Use `file.search_match` for the exact path and query proven by a positive
+  content search. It proves that specific match, not uniqueness or exhaustive
+  traversal.
+  Use `file.search_count` only for an exact total produced by a complete
+  `search_in_files` count. A complete zero count may also come from an ordinary
+  content search that exhaustively found no matches. Sampled or incomplete
+  searches never prove totals or absence.
   Use `file.read_complete` only when the whole file was returned. Use
   `file.read_scope_satisfied` with the exact verified `readScope` for a
   requested untruncated slice, search, or profile.
   Validation runs no action tools and never repeats a read, command, mutation,
   or other action. Passed checks unlock a direct final response; failed checks
   keep the graph active so only the missing work can be performed once.
+- Before repeating a read-only call, reuse an equivalent current
+  `context.run.verifiedOutcomes` reference. Repeat only when the prior coverage
+  was insufficient or a later verified mutation invalidated it.
 - A verified negative outcome such as `file.search_no_match` is a completed
   observational conclusion. Validate it and report it normally; do not classify
   it as blocked or failed.

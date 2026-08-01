@@ -437,6 +437,7 @@ describe("current-run verification index", () => {
         roots: ["/workspace"],
         maxDepth: 10,
         includeHidden: false,
+        entryKind: "file",
       },
     }));
     expect(index.outcomes).not.toContainEqual(expect.objectContaining({
@@ -449,6 +450,7 @@ describe("current-run verification index", () => {
         roots: ["/workspace"],
         maxDepth: 10,
         includeHidden: false,
+        entryKind: "file",
       },
     })).toMatchObject({ source: { step: 1 } });
     expect(findLatestVerifiedOutcomeForCheck(index, {
@@ -458,8 +460,168 @@ describe("current-run verification index", () => {
         roots: ["/workspace/narrow"],
         maxDepth: 10,
         includeHidden: false,
+        entryKind: "file",
       },
     })).toBeUndefined();
+    expect(findLatestVerifiedOutcomeForCheck(index, {
+      kind: "file.search_no_match",
+      subject: "missing-report.txt",
+      searchScope: {
+        roots: ["/workspace"],
+        maxDepth: 10,
+        includeHidden: false,
+        entryKind: "directory",
+      },
+    })).toBeUndefined();
+  });
+
+  it("indexes a positive content-search match without requiring an exhaustive search", () => {
+    const search = verifiedCall(1, "search_in_files", [{
+      kind: "file_search_match",
+      path: "/workspace/letters/amber.txt",
+      query: "Amber Marsh",
+      line: 12,
+      caseSensitive: false,
+      actualKind: "file",
+      change: "observed",
+      tool: "search_in_files",
+      step: 1,
+      callId: "call-1",
+    }]);
+
+    const index = buildCurrentRunVerificationIndex({
+      runId: RUN_ID,
+      calls: [search],
+    });
+
+    expect(index.outcomes).toContainEqual(expect.objectContaining({
+      family: "filesystem_search",
+      kind: "file.search_match",
+      role: "completion",
+      subject: "/workspace/letters/amber.txt",
+      actualKind: "file",
+      searchMatch: {
+        query: "Amber Marsh",
+        line: 12,
+        caseSensitive: false,
+      },
+    }));
+    expect(findLatestVerifiedOutcomeForCheck(index, {
+      kind: "file.search_match",
+      subject: "/workspace/letters/amber.txt",
+      expectedKind: "file",
+      searchMatch: {
+        query: "Amber Marsh",
+        line: 12,
+        caseSensitive: false,
+      },
+    })).toMatchObject({ source: { step: 1 } });
+  });
+
+  it("indexes and invalidates an exact content-search count", () => {
+    const count = verifiedCall(1, "search_in_files", [{
+      kind: "file_search_count",
+      query: "Routine Greenbridge maintenance cycle",
+      roots: ["/workspace/reference"],
+      maxDepth: 10,
+      includeHidden: false,
+      caseSensitive: false,
+      returnedMatchCount: 0,
+      totalMatchCount: 2_196,
+      countComplete: true,
+      hasMore: false,
+      countUnit: "occurrences",
+      change: "observed",
+      tool: "search_in_files",
+      step: 1,
+      callId: "call-1",
+    }]);
+
+    const current = buildCurrentRunVerificationIndex({
+      runId: RUN_ID,
+      calls: [count],
+    });
+    expect(current.outcomes).toContainEqual(expect.objectContaining({
+      family: "filesystem_search",
+      kind: "file.search_count",
+      role: "completion",
+      subject: "Routine Greenbridge maintenance cycle",
+      searchCount: expect.objectContaining({
+        totalMatchCount: 2_196,
+        countUnit: "occurrences",
+      }),
+    }));
+
+    const write = verifiedCall(2, "write_files", [
+      pathEvidence(
+        "/workspace/reference/handbook.md",
+        true,
+        "file",
+        2,
+        "write",
+        "mutated",
+      ),
+    ]);
+    const stale = buildCurrentRunVerificationIndex({
+      runId: RUN_ID,
+      calls: [count, write],
+    });
+    expect(stale.outcomes).not.toContainEqual(expect.objectContaining({
+      kind: "file.search_count",
+    }));
+    expect(stale.invalidated).toContainEqual(expect.objectContaining({
+      outcome: expect.objectContaining({ kind: "file.search_count" }),
+      reason: "later_mutation",
+    }));
+  });
+
+  it("invalidates only the matched file when a positive search result becomes stale", () => {
+    const search = verifiedCall(1, "search_in_files", [{
+      kind: "file_search_match",
+      path: "/workspace/letters/amber.txt",
+      query: "Amber Marsh",
+      line: 12,
+      caseSensitive: false,
+      actualKind: "file",
+      change: "observed",
+      tool: "search_in_files",
+      step: 1,
+      callId: "call-1",
+    }]);
+    const unrelatedWrite = verifiedCall(2, "write_files", [
+      pathEvidence("/workspace/other.txt", true, "file", 2, "write", "mutated"),
+    ]);
+    const matchedWrite = verifiedCall(3, "write_files", [
+      pathEvidence(
+        "/workspace/letters/amber.txt",
+        true,
+        "file",
+        3,
+        "write",
+        "mutated",
+      ),
+    ]);
+
+    const stillCurrent = buildCurrentRunVerificationIndex({
+      runId: RUN_ID,
+      calls: [search, unrelatedWrite],
+    });
+    expect(stillCurrent.outcomes).toContainEqual(expect.objectContaining({
+      kind: "file.search_match",
+    }));
+
+    const stale = buildCurrentRunVerificationIndex({
+      runId: RUN_ID,
+      calls: [search, unrelatedWrite, matchedWrite],
+    });
+    expect(stale.outcomes).not.toContainEqual(expect.objectContaining({
+      kind: "file.search_match",
+    }));
+    expect(stale.invalidated).toContainEqual(expect.objectContaining({
+      outcome: expect.objectContaining({ kind: "file.search_match" }),
+      reason: "later_mutation",
+      invalidatedBy: expect.objectContaining({ step: 3 }),
+    }));
   });
 
   it("invalidates a no-match search after a later mutation inside its root", () => {
@@ -489,6 +651,7 @@ describe("current-run verification index", () => {
         roots: ["/workspace"],
         maxDepth: 10,
         includeHidden: false,
+        entryKind: "file",
       },
     })).toBeUndefined();
     expect(index.invalidated).toContainEqual(expect.objectContaining({
@@ -904,6 +1067,7 @@ function searchEvidence(
     matchCount: 0,
     maxDepth: 10,
     includeHidden: false,
+    entryKind: "file",
     capped: false,
     errorCount: 0,
     depthLimitedDirectoryCount: 0,

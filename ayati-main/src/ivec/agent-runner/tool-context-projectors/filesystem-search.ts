@@ -12,6 +12,7 @@ export const filesystemSearchProjector: ToolContextProjector = {
     const compactInput = compactInputFields(call.input, {
       keep: [
         "query",
+        "kind",
         "path",
         "roots",
         "pattern",
@@ -20,6 +21,7 @@ export const filesystemSearchProjector: ToolContextProjector = {
         "includeHidden",
         "caseSensitive",
         "contextLines",
+        "resultMode",
       ],
     });
     return projectStructuredCall({

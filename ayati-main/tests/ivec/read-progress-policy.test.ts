@@ -37,18 +37,104 @@ describe("read progress policy", () => {
     });
   });
 
-  it("blocks additional observational steps after enough context has been gathered", () => {
+  it("treats omitted and explicit path-only search modes as the same observation", () => {
+    const first = updateReadProgressAfterActOutput(undefined, outputFor(
+      "search_in_files",
+      { query: "Amber Marsh", roots: ["/workspace"] },
+    ));
+
+    expect(evaluateReadProgressGuard(first, actionFor("search_in_files", {
+      query: "Amber Marsh",
+      roots: ["/workspace"],
+      resultMode: "paths",
+      contextLines: 4,
+    }))).toMatchObject({
+      code: "R_DUPLICATE_READ",
+      blockedTargets: ["search_in_files"],
+    });
+  });
+
+  it("allows an explicit snippet search after a path-only locate result", () => {
+    const first = updateReadProgressAfterActOutput(undefined, outputFor(
+      "search_in_files",
+      { query: "Amber Marsh", roots: ["/workspace"] },
+    ));
+
+    expect(evaluateReadProgressGuard(first, actionFor("search_in_files", {
+      query: "Amber Marsh",
+      roots: ["/workspace"],
+      resultMode: "snippets",
+      contextLines: 1,
+    }))).toBeUndefined();
+  });
+
+  it("allows a complete count after a path-only locate result", () => {
+    const first = updateReadProgressAfterActOutput(undefined, outputFor(
+      "search_in_files",
+      { query: "Amber Marsh", roots: ["/workspace"] },
+    ));
+
+    expect(evaluateReadProgressGuard(first, actionFor("search_in_files", {
+      query: "Amber Marsh",
+      roots: ["/workspace"],
+      resultMode: "count",
+    }))).toBeUndefined();
+  });
+
+  it("treats equivalent complete counts as duplicates despite irrelevant output options", () => {
+    const first = updateReadProgressAfterActOutput(undefined, outputFor(
+      "search_in_files",
+      {
+        query: "swimming pool access code",
+        roots: ["/workspace/reference", "/workspace/archive"],
+        resultMode: "count",
+        maxResults: 1,
+      },
+    ));
+
+    expect(evaluateReadProgressGuard(first, actionFor("search_in_files", {
+      query: "swimming pool access code",
+      roots: ["/workspace/archive", "/workspace/reference"],
+      resultMode: "count",
+      maxDepth: 10,
+      includeHidden: false,
+      caseSensitive: false,
+      maxResults: 500,
+    }))).toMatchObject({
+      code: "R_DUPLICATE_READ",
+      blockedTargets: ["search_in_files"],
+      allowedNextActions: [
+        expect.stringContaining("outcomeRef"),
+        expect.any(String),
+        expect.any(String),
+      ],
+    });
+  });
+
+  it("allows a broader hidden-file search after a visible-only search", () => {
+    const first = updateReadProgressAfterActOutput(undefined, outputFor(
+      "search_in_files",
+      { query: "needle", roots: ["/workspace"], resultMode: "count" },
+    ));
+
+    expect(evaluateReadProgressGuard(first, actionFor("search_in_files", {
+      query: "needle",
+      roots: ["/workspace"],
+      resultMode: "count",
+      includeHidden: true,
+    }))).toBeUndefined();
+  });
+
+  it("allows more than three distinct observations when additional coverage is needed", () => {
     let state = createEmptyReadProgressState();
     state = updateReadProgressAfterActOutput(state, outputFor("read_files", { files: [{ path: "site/index.html" }] }));
     state = updateReadProgressAfterActOutput(state, outputFor("read_files", { files: [{ path: "site/styles.css" }] }));
     state = updateReadProgressAfterActOutput(state, outputFor("search_in_files", { query: "newsletter", roots: ["site"] }));
 
-    const violation = evaluateReadProgressGuard(state, actionFor("list_directory", { path: "site" }));
-
-    expect(violation).toMatchObject({
-      code: "R_MUTATION_EXPECTED_AFTER_CONTEXT",
-      blockedTargets: ["list_directory"],
-    });
+    expect(evaluateReadProgressGuard(
+      state,
+      actionFor("list_directory", { path: "site" }),
+    )).toBeUndefined();
   });
 
   it("resets read pressure after a successful mutation", () => {

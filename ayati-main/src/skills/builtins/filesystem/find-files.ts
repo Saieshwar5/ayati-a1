@@ -9,10 +9,19 @@ import {
   successV2,
 } from "../contract-helpers.js";
 import { validateFindFilesInput } from "./validators.js";
+import type { FindFilesInput } from "./types.js";
 
 interface SearchState {
   path: string;
   depth: number;
+}
+
+type MatchKind = "file" | "directory" | "symlink";
+
+interface FindMatch {
+  name: string;
+  absolutePath: string;
+  kind: MatchKind;
 }
 
 function matchQuery(name: string, query: string): boolean {
@@ -23,14 +32,23 @@ function hasWildcardSyntax(query: string): boolean {
   return /[*?[\]{}]/.test(query);
 }
 
+function matchesKind(actual: MatchKind, requested: NonNullable<FindFilesInput["kind"]>): boolean {
+  return requested === "any" || requested === actual;
+}
+
 export const findFilesTool: ToolDefinition = {
   name: "find_files",
-  description: "Find files by name across one or more roots with depth and result limits.",
+  description: "Find files, directories, or symbolic links by name across one or more roots with depth and result limits. Symbolic-link directories are reported but never traversed.",
   inputSchema: {
     type: "object",
     required: ["query"],
     properties: {
-      query: { type: "string", description: "File name fragment to search for." },
+      query: { type: "string", description: "File, directory, or symbolic-link name fragment to search for." },
+      kind: {
+        type: "string",
+        enum: ["file", "directory", "symlink", "any"],
+        description: "Kind of path to match. Defaults to any.",
+      },
       roots: {
         type: "array",
         items: { type: "string" },
@@ -45,6 +63,7 @@ export const findFilesTool: ToolDefinition = {
     type: "object",
     required: [
       "query",
+      "kind",
       "roots",
       "matches",
       "matchCount",
@@ -59,8 +78,20 @@ export const findFilesTool: ToolDefinition = {
     ],
     properties: {
       query: { type: "string" },
+      kind: { type: "string", enum: ["file", "directory", "symlink", "any"] },
       roots: { type: "array", items: { type: "string" } },
-      matches: { type: "array", items: { type: "object" } },
+      matches: {
+        type: "array",
+        items: {
+          type: "object",
+          required: ["name", "absolutePath", "kind"],
+          properties: {
+            name: { type: "string" },
+            absolutePath: { type: "string" },
+            kind: { type: "string", enum: ["file", "directory", "symlink"] },
+          },
+        },
+      },
       matchCount: { type: "integer" },
       maxDepth: { type: "integer" },
       maxResults: { type: "integer" },
@@ -110,6 +141,7 @@ export const findFilesTool: ToolDefinition = {
     const maxDepth = parsed.maxDepth ?? defaultMaxDepth;
     const maxResults = parsed.maxResults ?? defaultMaxResults;
     const includeHidden = parsed.includeHidden ?? false;
+    const kind = parsed.kind ?? "any";
 
     if (hasWildcardSyntax(parsed.query)) {
       return {
@@ -120,7 +152,7 @@ export const findFilesTool: ToolDefinition = {
 
     const roots = resolveWorkspaceRoots(parsed.roots, context?.resourceScope?.rootPath);
     const start = Date.now();
-    const matches: string[] = [];
+    const matches: FindMatch[] = [];
     const searchedRoots: string[] = [];
     const errors: Array<{ path: string; error: string }> = [];
     let depthLimitedDirectoryCount = 0;
@@ -147,9 +179,20 @@ export const findFilesTool: ToolDefinition = {
           for (const dirent of dirents) {
             if (!includeHidden && dirent.name.startsWith(".")) continue;
             const fullPath = join(current.path, dirent.name);
+            const matchKind: MatchKind | undefined = dirent.isFile()
+              ? "file"
+              : dirent.isDirectory()
+                ? "directory"
+                : dirent.isSymbolicLink()
+                  ? "symlink"
+                  : undefined;
 
-            if (dirent.isFile() && matchQuery(dirent.name, parsed.query)) {
-              matches.push(fullPath);
+            if (
+              matchKind
+              && matchesKind(matchKind, kind)
+              && matchQuery(dirent.name, parsed.query)
+            ) {
+              matches.push({ name: dirent.name, absolutePath: fullPath, kind: matchKind });
               if (matches.length >= maxResults) break;
             }
 
@@ -170,8 +213,9 @@ export const findFilesTool: ToolDefinition = {
         && depthLimitedDirectoryCount === 0;
       const structuredContent = {
         query: parsed.query,
+        kind,
         roots: searchedRoots,
-        matches: matches.map((absolutePath) => ({ absolutePath, kind: "file" as const })),
+        matches,
         matchCount: matches.length,
         maxDepth,
         maxResults,
@@ -185,6 +229,7 @@ export const findFilesTool: ToolDefinition = {
       const meta = {
         durationMs: Date.now() - start,
         query: parsed.query,
+        kind,
         roots: searchedRoots,
         matchCount: matches.length,
         maxDepth,
@@ -197,11 +242,13 @@ export const findFilesTool: ToolDefinition = {
         traversalComplete,
       };
       return okResult({
-        output: matches.length > 0 ? matches.join("\n") : "(no matches)",
+        output: matches.length > 0
+          ? matches.map((match) => `[${match.kind}] ${match.absolutePath}`).join("\n")
+          : "(no matches)",
         meta,
         v2: successV2({
           code: "FILES_FOUND",
-          message: `Found ${matches.length} matching file${matches.length === 1 ? "" : "s"}.`,
+          message: `Found ${matches.length} matching path${matches.length === 1 ? "" : "s"}.`,
           structuredContent,
           diagnostics: meta,
         }),

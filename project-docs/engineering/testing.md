@@ -105,6 +105,16 @@ Changes should prove the relevant invariants:
     A conclusive zero-match filename search is validated as
     `file.search_no_match`, not classified as blocked. Its proof must be
     uncapped, error-free, depth-complete, and tied to the exact search scope.
+    A positive content search is validated as `file.search_match` for its exact
+    path and query, without requiring a full file read. Default search output
+    contains paths and line numbers; snippets require explicit opt-in.
+    Exact occurrence totals require a complete `search_in_files` count and a
+    `file.search_count` outcome; returned samples never prove the total.
+    An exhaustive ordinary content search with zero matches also produces an
+    exact zero-count outcome. Test that negative content claims, bounded
+    profile/slice overviews, and exact positive lines validate from the first
+    current proof without a repeated tool call. Incomplete coverage must remain
+    non-conclusive, and later verified mutation must require fresh proof.
     Passed validation resolves an earlier validation-scoped terminal repair
     without clearing real action, binding, or permission failures unless an
     exact passed `tool.call_denied` check accounts for its own permission call.

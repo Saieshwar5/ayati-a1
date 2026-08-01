@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { lstat, open, readdir } from "node:fs/promises";
-import { extname } from "node:path";
+import { createReadStream, type Stats } from "node:fs";
+import { lstat, open, readdir, readlink, realpath, stat } from "node:fs/promises";
+import { dirname, extname, resolve } from "node:path";
+import { formatUnixFileMode } from "../../../shared/unix-file-mode.js";
 import type { ArtifactRef, ToolDefinition, ToolResult } from "../../types.js";
 import {
   makeBlock,
@@ -21,6 +22,7 @@ type RecommendedMode = "auto" | "profile" | "search" | "slice" | "full";
 interface DirectoryCounts {
   files: number;
   dirs: number;
+  symlinks: number;
   other: number;
 }
 
@@ -36,12 +38,18 @@ interface InspectPathEntry {
   ok: boolean;
   exists: boolean;
   kind: PathKind;
+  modeOctal?: string;
+  modeSymbolic?: string;
   sizeBytes?: number;
   lineCount?: number;
   extension?: string;
   language?: string;
   contentKind?: ContentKind;
   directoryCounts?: DirectoryCounts;
+  targetPath?: string;
+  targetKind?: "file" | "directory" | "other" | "missing";
+  targetExists?: boolean;
+  targetError?: string;
   sha256?: string;
   readRecommendation?: ReadRecommendation;
   error?: string;
@@ -52,7 +60,7 @@ const SAMPLE_BYTES = 8 * 1024;
 
 export const inspectPathsTool: ToolDefinition = {
   name: "inspect_paths",
-  description: "Inspect metadata for multiple files or directories before reading content: existence, kind, size, line count, type, and read recommendation.",
+  description: "Inspect metadata for multiple files or directories without returning their content: existence, kind, Unix permission bits, size, line count, type, and read recommendation.",
   inputSchema: {
     type: "object",
     required: ["paths"],
@@ -82,12 +90,28 @@ export const inspectPathsTool: ToolDefinition = {
             ok: { type: "boolean" },
             exists: { type: "boolean" },
             kind: { type: "string" },
+            modeOctal: {
+              type: "string",
+              description: "Four-digit Unix permission bits from lstat, such as 0644 or 4755.",
+              pattern: "^[0-7]{4}$",
+            },
+            modeSymbolic: {
+              type: "string",
+              description: "Nine-character symbolic Unix permission bits, such as rw-r--r--.",
+            },
             sizeBytes: { type: "integer" },
             lineCount: { type: "integer" },
             extension: { type: "string" },
             language: { type: "string" },
             contentKind: { type: "string" },
             directoryCounts: { type: "object" },
+            targetPath: { type: "string" },
+            targetKind: {
+              type: "string",
+              enum: ["file", "directory", "other", "missing"],
+            },
+            targetExists: { type: "boolean" },
+            targetError: { type: "string" },
             sha256: { type: "string" },
             readRecommendation: { type: "object" },
             error: { type: "string" },
@@ -146,18 +170,19 @@ export const inspectPathsTool: ToolDefinition = {
       missing: summary.missing,
       files: summary.files,
       directories: summary.directories,
+      symlinks: summary.symlinks,
     };
     const structuredContent = {
       results,
       summary,
       observation,
     };
-    const artifacts: ArtifactRef[] = results
-      .filter((entry) => entry.exists)
-      .map((entry) => ({
-        kind: entry.kind === "directory" ? "directory" : "file",
-        path: entry.path,
-      }));
+    const artifacts: ArtifactRef[] = results.flatMap((entry): ArtifactRef[] => {
+      if (!entry.exists || (entry.kind !== "file" && entry.kind !== "directory")) {
+        return [];
+      }
+      return [{ kind: entry.kind, path: entry.path }];
+    });
 
     return {
       ...okResult({
@@ -186,6 +211,7 @@ async function inspectOnePath(input: {
   const path = resolveWorkspacePath(input.requestedPath, input.rootPath);
   try {
     const info = await lstat(path);
+    const unixMode = formatUnixFileMode(info.mode);
     if (info.isDirectory()) {
       const directoryCounts = input.includeDirectoryCounts ? await countDirectoryChildren(path) : undefined;
       return compactEntry({
@@ -194,11 +220,27 @@ async function inspectOnePath(input: {
         ok: true,
         exists: true,
         kind: "directory",
+        ...unixMode,
         directoryCounts,
         readRecommendation: {
           tool: "list_directory",
           reason: "Path is a directory; list it or search within it before reading file content.",
         },
+      });
+    }
+
+    if (info.isSymbolicLink()) {
+      const target = await inspectSymlinkTarget(path);
+      return compactEntry({
+        requestedPath: input.requestedPath,
+        path,
+        ok: true,
+        exists: true,
+        kind: "symlink",
+        ...unixMode,
+        sizeBytes: info.size,
+        ...target,
+        readRecommendation: recommendSymlinkTarget(target),
       });
     }
 
@@ -208,11 +250,12 @@ async function inspectOnePath(input: {
         path,
         ok: true,
         exists: true,
-        kind: info.isSymbolicLink() ? "symlink" : "other",
+        kind: "other",
+        ...unixMode,
         sizeBytes: info.size,
         readRecommendation: {
           tool: "find_files",
-          reason: "Path is not a regular file; inspect the target or locate a regular file path.",
+          reason: "Path is not a regular file, directory, or symbolic link; locate a supported path before reading.",
         },
       });
     }
@@ -230,6 +273,7 @@ async function inspectOnePath(input: {
       ok: true,
       exists: true,
       kind: "file",
+      ...unixMode,
       sizeBytes: info.size,
       ...(lineCount !== undefined ? { lineCount } : {}),
       ...(extension ? { extension } : {}),
@@ -282,18 +326,94 @@ async function detectContentKind(path: string): Promise<ContentKind> {
 }
 
 async function countDirectoryChildren(path: string): Promise<DirectoryCounts> {
-  const counts: DirectoryCounts = { files: 0, dirs: 0, other: 0 };
+  const counts: DirectoryCounts = { files: 0, dirs: 0, symlinks: 0, other: 0 };
   const entries = await readdir(path, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.isDirectory()) {
       counts.dirs++;
     } else if (entry.isFile()) {
       counts.files++;
+    } else if (entry.isSymbolicLink()) {
+      counts.symlinks++;
     } else {
       counts.other++;
     }
   }
   return counts;
+}
+
+async function inspectSymlinkTarget(path: string): Promise<Pick<
+  InspectPathEntry,
+  "targetPath" | "targetKind" | "targetExists" | "targetError"
+>> {
+  const linkTarget = await readlink(path);
+  const lexicalTargetPath = resolve(dirname(path), linkTarget);
+  try {
+    const [targetPath, targetInfo] = await Promise.all([
+      realpath(path),
+      stat(path),
+    ]);
+    return {
+      targetPath,
+      targetKind: kindFromStats(targetInfo),
+      targetExists: true,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown symbolic-link target error";
+    if (isMissingFilesystemError(err)) {
+      return {
+        targetPath: lexicalTargetPath,
+        targetKind: "missing",
+        targetExists: false,
+      };
+    }
+    return {
+      targetPath: lexicalTargetPath,
+      targetError: message,
+    };
+  }
+}
+
+function kindFromStats(info: Stats): "file" | "directory" | "other" {
+  if (info.isFile()) return "file";
+  if (info.isDirectory()) return "directory";
+  return "other";
+}
+
+function isMissingFilesystemError(err: unknown): boolean {
+  if (!err || typeof err !== "object" || !("code" in err)) return false;
+  const code = String((err as { code?: unknown }).code);
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+function recommendSymlinkTarget(
+  target: Pick<InspectPathEntry, "targetPath" | "targetKind" | "targetExists" | "targetError">,
+): ReadRecommendation {
+  if (target.targetExists && target.targetKind === "file") {
+    return {
+      tool: "read_files",
+      mode: "auto",
+      reason: "The symbolic link resolves to a regular file. A content read will still validate the resolved target against read policy.",
+    };
+  }
+  if (target.targetExists && target.targetKind === "directory") {
+    return {
+      tool: "list_directory",
+      reason: "The symbolic link resolves to a directory. Listing will still validate the resolved target against read policy.",
+    };
+  }
+  if (target.targetKind === "missing") {
+    return {
+      tool: "find_files",
+      reason: "The symbolic link target is missing; locate the intended file or directory before reading.",
+    };
+  }
+  return {
+    tool: "find_files",
+    reason: target.targetError
+      ? "The symbolic link target could not be inspected; locate or inspect an accessible target before reading."
+      : "The symbolic link resolves to an unsupported path kind; locate a regular file or directory before reading.",
+  };
 }
 
 async function hashFile(path: string): Promise<string> {
@@ -341,6 +461,7 @@ function buildSummary(results: InspectPathEntry[]): {
   missing: number;
   files: number;
   directories: number;
+  symlinks: number;
   other: number;
   textFiles: number;
   binaryFiles: number;
@@ -352,7 +473,8 @@ function buildSummary(results: InspectPathEntry[]): {
     missing: results.filter((entry) => !entry.exists).length,
     files: results.filter((entry) => entry.kind === "file").length,
     directories: results.filter((entry) => entry.kind === "directory").length,
-    other: results.filter((entry) => entry.kind === "other" || entry.kind === "symlink").length,
+    symlinks: results.filter((entry) => entry.kind === "symlink").length,
+    other: results.filter((entry) => entry.kind === "other").length,
     textFiles: results.filter((entry) => entry.contentKind === "text").length,
     binaryFiles: results.filter((entry) => entry.contentKind === "binary").length,
     totalSizeBytes: results.reduce((total, entry) => total + (entry.sizeBytes ?? 0), 0),
@@ -362,14 +484,16 @@ function buildSummary(results: InspectPathEntry[]): {
 function buildObservation(results: InspectPathEntry[], summary: ReturnType<typeof buildSummary>): ToolContextObservation {
   const files = results.filter((entry) => entry.kind === "file");
   const directories = results.filter((entry) => entry.kind === "directory");
+  const symlinks = results.filter((entry) => entry.kind === "symlink");
   const missing = results.filter((entry) => !entry.exists);
   return {
     mode: "focused",
-    summary: `Found ${summary.found}/${summary.requested} path${summary.requested === 1 ? "" : "s"}: ${summary.files} file${summary.files === 1 ? "" : "s"}, ${summary.directories} director${summary.directories === 1 ? "y" : "ies"}, ${summary.missing} missing.`,
+    summary: `Found ${summary.found}/${summary.requested} path${summary.requested === 1 ? "" : "s"}: ${summary.files} file${summary.files === 1 ? "" : "s"}, ${summary.directories} director${summary.directories === 1 ? "y" : "ies"}, ${summary.symlinks} symbolic link${summary.symlinks === 1 ? "" : "s"}, ${summary.missing} missing.`,
     stats: summary,
     highlights: [
       `${summary.files} files`,
       `${summary.directories} directories`,
+      ...(summary.symlinks > 0 ? [`${summary.symlinks} symbolic links`] : []),
       ...(summary.missing > 0 ? [`${summary.missing} missing`] : []),
       `${summary.totalSizeBytes} total bytes`,
     ],
@@ -382,6 +506,11 @@ function buildObservation(results: InspectPathEntry[], summary: ReturnType<typeo
       directories.length > 0 ? makeBlock({
         title: "Directories",
         lines: directories.map(formatEntryLine),
+        maxChars: 2_000,
+      }) : undefined,
+      symlinks.length > 0 ? makeBlock({
+        title: "Symbolic links",
+        lines: symlinks.map(formatEntryLine),
         maxChars: 2_000,
       }) : undefined,
       missing.length > 0 ? makeBlock({
@@ -402,12 +531,19 @@ function formatEntryLine(entry: InspectPathEntry): string {
   const parts = [
     entry.path,
     entry.kind,
+    entry.modeOctal && entry.modeSymbolic
+      ? `mode=${entry.modeOctal} (${entry.modeSymbolic})`
+      : "",
     entry.sizeBytes !== undefined ? `${entry.sizeBytes} bytes` : "",
     entry.lineCount !== undefined ? `${entry.lineCount} lines` : "",
     entry.sha256 ? `sha256=${entry.sha256}` : "",
     entry.language ? entry.language : "",
     entry.contentKind ? entry.contentKind : "",
     entry.directoryCounts ? `${entry.directoryCounts.dirs} dirs/${entry.directoryCounts.files} files` : "",
+    entry.targetPath ? `target=${entry.targetPath}` : "",
+    entry.targetKind ? `targetKind=${entry.targetKind}` : "",
+    entry.targetExists !== undefined ? `targetExists=${entry.targetExists}` : "",
+    entry.targetError ? `targetError=${entry.targetError}` : "",
     entry.readRecommendation ? `recommend ${entry.readRecommendation.tool}${entry.readRecommendation.mode ? `:${entry.readRecommendation.mode}` : ""}` : "",
     entry.error ? `error=${entry.error}` : "",
   ];

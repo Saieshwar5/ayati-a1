@@ -33,25 +33,34 @@ function fail(msg: string): ToolResult {
   return { ok: false, error: `Invalid input: ${msg}` };
 }
 
-function absolutePath(value: string, field: string): string | ToolResult {
+function absolutePath(
+  value: string,
+  field: string,
+  recoveryMessage?: string,
+): string | ToolResult {
   const result = requireAbsolutePath(value, field);
   if (result.ok) return result.absolutePath;
+  const message = recoveryMessage
+    ? `${result.message} ${recoveryMessage}`
+    : result.message;
   return {
     ok: false,
-    error: result.message,
+    error: message,
     v2: {
       transportOk: true,
       operationStatus: "failed",
       code: result.code,
-      message: result.message,
+      message,
       error: {
         category: "validation",
         code: result.code,
-        message: result.message,
+        message,
         retryable: true,
         recoverable: true,
         target: value,
-        suggestedNextActions: ["Use a canonical absolute filesystem path and retry."],
+        suggestedNextActions: [
+          recoveryMessage ?? "Use a canonical absolute filesystem path and retry.",
+        ],
       },
     },
   };
@@ -83,7 +92,11 @@ export function validateReadFileInput(input: unknown): ReadFileInput | ToolResul
   if (!isObject(input)) return fail("expected object.");
   const v = input as Partial<ReadFileInput>;
   if (!isNonEmptyString(v.path)) return fail("path must be a non-empty string.");
-  const path = absolutePath(v.path, "path");
+  const path = absolutePath(
+    v.path,
+    "path",
+    "Move to observe.locate and call find_files using the supplied filename or relative path. If one result is found, read its verified absolute path; if multiple results are found, ask the user to choose.",
+  );
   if (typeof path !== "string") return path;
   if (
     v.mode !== undefined
@@ -565,7 +578,23 @@ function validateSearchCommon(
 }
 
 export function validateFindFilesInput(input: unknown): FindFilesInput | ToolResult {
-  return validateSearchCommon(input);
+  const base = validateSearchCommon(input);
+  if ("ok" in base) return base;
+
+  const v = input as Partial<FindFilesInput>;
+  if (
+    v.kind !== undefined
+    && v.kind !== "file"
+    && v.kind !== "directory"
+    && v.kind !== "symlink"
+    && v.kind !== "any"
+  ) {
+    return fail('kind must be "file", "directory", "symlink", or "any".');
+  }
+  return {
+    ...base,
+    kind: v.kind,
+  };
 }
 
 export function validateSearchInFilesInput(input: unknown): SearchInFilesInput | ToolResult {
@@ -579,6 +608,19 @@ export function validateSearchInFilesInput(input: unknown): SearchInFilesInput |
   if (v.contextLines !== undefined && !isNonNegativeInt(v.contextLines)) {
     return fail("contextLines must be a non-negative integer.");
   }
+  if (
+    v.resultMode !== undefined
+    && v.resultMode !== "paths"
+    && v.resultMode !== "snippets"
+    && v.resultMode !== "count"
+  ) {
+    return fail('resultMode must be "paths", "snippets", or "count".');
+  }
 
-  return { ...base, caseSensitive: v.caseSensitive, contextLines: v.contextLines };
+  return {
+    ...base,
+    caseSensitive: v.caseSensitive,
+    contextLines: v.contextLines,
+    resultMode: v.resultMode,
+  };
 }

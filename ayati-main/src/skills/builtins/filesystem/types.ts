@@ -247,6 +247,7 @@ export interface SetPermissionsResult {
 
 export interface FindFilesInput {
   query: string;
+  kind?: "file" | "directory" | "symlink" | "any";
   roots?: string[];
   maxDepth?: number;
   maxResults?: number;
@@ -261,4 +262,5 @@ export interface SearchInFilesInput {
   includeHidden?: boolean;
   caseSensitive?: boolean;
   contextLines?: number;
+  resultMode?: "paths" | "snippets" | "count";
 }

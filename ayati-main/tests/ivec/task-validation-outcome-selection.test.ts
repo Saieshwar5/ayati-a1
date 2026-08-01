@@ -10,6 +10,30 @@ import type {
 const RUN_ID = "RUN-VALIDATION-SELECTION";
 
 describe("task validation outcome selection", () => {
+  it("keeps runtime-owned Unix permission metadata on an inspected path check", () => {
+    const index = buildCurrentRunVerificationIndex({
+      runId: RUN_ID,
+      calls: [verifiedCall(1, "inspect_paths", [{
+        ...pathEvidence("/workspace/private-note.txt", 1, "observed", "inspect"),
+        modeOctal: "0640",
+        modeSymbolic: "rw-r-----",
+      }])],
+    });
+    const outcomeRef = `run:${RUN_ID}:step:1:call:call-1:outcome:0`;
+
+    expect(resolveValidationOutcomeRefs(index, [outcomeRef])).toEqual({
+      ok: true,
+      checks: [{
+        outcomeRef,
+        kind: "path.exists",
+        subject: "/workspace/private-note.txt",
+        expectedKind: "file",
+        modeOctal: "0640",
+        modeSymbolic: "rw-r-----",
+      }],
+    });
+  });
+
   it("resolves an exact current completion reference into a runtime-owned check", () => {
     const index = buildCurrentRunVerificationIndex({
       runId: RUN_ID,
@@ -42,6 +66,82 @@ describe("task validation outcome selection", () => {
           mode: "slice",
           startLine: 10,
           endLine: 20,
+        },
+      }],
+    });
+  });
+
+  it("resolves a positive content-search result without requiring a file read", () => {
+    const index = buildCurrentRunVerificationIndex({
+      runId: RUN_ID,
+      calls: [verifiedCall(1, "search_in_files", [{
+        kind: "file_search_match",
+        path: "/workspace/letters/amber.txt",
+        query: "Amber Marsh",
+        line: 12,
+        caseSensitive: false,
+        actualKind: "file",
+        change: "observed",
+        tool: "search_in_files",
+        step: 1,
+        callId: "call-1",
+      }])],
+    });
+    const outcomeRef = `run:${RUN_ID}:step:1:call:call-1:outcome:0`;
+
+    expect(resolveValidationOutcomeRefs(index, [outcomeRef])).toEqual({
+      ok: true,
+      checks: [{
+        outcomeRef,
+        kind: "file.search_match",
+        subject: "/workspace/letters/amber.txt",
+        expectedKind: "file",
+        searchMatch: {
+          query: "Amber Marsh",
+          line: 12,
+          caseSensitive: false,
+        },
+      }],
+    });
+  });
+
+  it("resolves only a complete exact content count into validation", () => {
+    const index = buildCurrentRunVerificationIndex({
+      runId: RUN_ID,
+      calls: [verifiedCall(1, "search_in_files", [{
+        kind: "file_search_count",
+        query: "needle",
+        roots: ["/workspace"],
+        maxDepth: 10,
+        includeHidden: false,
+        caseSensitive: false,
+        returnedMatchCount: 0,
+        totalMatchCount: 42,
+        countComplete: true,
+        hasMore: false,
+        countUnit: "occurrences",
+        change: "observed",
+        tool: "search_in_files",
+        step: 1,
+        callId: "call-1",
+      }])],
+    });
+    const outcomeRef = `run:${RUN_ID}:step:1:call:call-1:outcome:0`;
+
+    expect(resolveValidationOutcomeRefs(index, [outcomeRef])).toEqual({
+      ok: true,
+      checks: [{
+        outcomeRef,
+        kind: "file.search_count",
+        subject: "needle",
+        searchCount: {
+          query: "needle",
+          roots: ["/workspace"],
+          maxDepth: 10,
+          includeHidden: false,
+          caseSensitive: false,
+          countUnit: "occurrences",
+          totalMatchCount: 42,
         },
       }],
     });

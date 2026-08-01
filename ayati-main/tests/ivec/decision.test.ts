@@ -136,11 +136,11 @@ describe("callAgentDecision", () => {
     const messages = generateTurn.mock.calls[0]?.[0]?.messages ?? [];
     const systemPrompt = messages.find((message) => message.role === "system")?.content ?? "";
     expect(systemPrompt).toContain("Every run starts at ENTRY");
-    expect(systemPrompt).toContain("Use observe.locate when unknown");
+    expect(systemPrompt).toContain("otherwise use find_files");
     expect(systemPrompt).toContain(
-      "Known absolute path: use observe.investigate/file:read; skip pre-checks",
+      "File reads require an exact absolute user/verified path",
     );
-    expect(systemPrompt).toContain("read_files validates it; other targets need grounding");
+    expect(systemPrompt).toContain("Never invent a path");
     expect(systemPrompt).toContain("Before any unbound mutation, collect durable-owner evidence");
     expect(systemPrompt).toContain("workstream.route is the control-only path from verified ownership evidence to resolve");
     expect(systemPrompt).toContain(

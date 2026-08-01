@@ -89,9 +89,52 @@ bound and unbound runs. The scope policy permits symbolic-link targets outside
 the workspace; content reads follow the target while metadata tools retain
 their own link semantics. It does not bypass host permissions, elevate
 privileges, or treat devices and other non-regular paths as ordinary files.
+`inspect_paths` reports the four-digit octal and nine-character symbolic Unix
+permission bits returned by `lstat` without exposing file contents. Those
+exact values remain attached to the current-run verified path outcome for
+validation.
 Existing file-size, traversal, depth, entry-count, and
 model-facing output bounds still apply. Searches with omitted roots default to
 `<AYATI_ROOT_DIR>/workspace/`; broader discovery requires explicit roots.
+
+`search_in_files` uses `resultMode: "paths"` by default. Its model-facing
+observation contains matching canonical paths and line numbers but no matching
+or neighboring text. A caller may explicitly request `resultMode: "snippets"`
+when the user's task needs content, or `resultMode: "count"` for an exact
+occurrence total without returned matching text. Every result separates
+`returnedMatchCount` from `totalMatchCount`; sampled positive searches report
+`totalMatchCount: null` and `countComplete: false`. Count mode reports an exact
+total only after the complete allowed scope was scanned without skipped files.
+The full structured result remains available to deterministic verification and
+durable evidence storage.
+
+An ordinary content search that exhaustively returns zero matches is also an
+exact zero count. It produces the same typed `file.search_count` proof as count
+mode, so an absence question can finish without rerunning the search. A zero
+from incomplete coverage remains supporting information only.
+
+`find_files` searches path names and accepts `kind: "file" | "directory" |
+"symlink" | "any"`, defaulting to `"any"`. Every match carries its name,
+canonical absolute path, and actual kind. Symbolic links are returned as
+`kind: "symlink"`; discovery never follows a symbolic-link directory while
+walking the tree. A directory match is therefore an exact verified path
+observation and does not require a second metadata call merely to establish
+that the directory exists. Complete zero-match evidence also retains the
+requested kind; a no-file result cannot be reused as proof that no matching
+directory or symbolic link exists.
+
+`list_directory` uses the same `file | directory | symlink | other` entry
+kinds and does not recurse through symbolic links. `inspect_paths` keeps
+`lstat` metadata for the link itself and reports bounded resolved-target
+metadata (`targetPath`, `targetKind`, and `targetExists`) without reading
+target content. A later `read_files`, `list_directory`, or mutation call still
+passes the normal resolved-target access and authority checks.
+
+Tool choice follows the observed kind: `read_files` reads regular-file
+content, `list_directory` lists directory entries, and `inspect_paths` answers
+metadata questions or resolves an uncertain kind. A wrong-tool rejection
+names the observed kind and the correct tool so the next decision can recover
+without another discovery cycle.
 
 Machine-read authority grants no workstream ownership or mutation authority.
 With `mutationScope=workspace`, each relative direct-filesystem effect is first
@@ -378,6 +421,12 @@ reads are not promoted. Completion proofs are eligible only when their exact own
 call has a passed per-call verification record. Older records that only
 contain `verificationPassed` remain readable during migration, but new calls
 derive that Boolean from the per-call record.
+
+A profile or exact slice may prove a deliberately bounded overview when the
+response is qualified to that observed coverage. It cannot prove exhaustive
+claims about unread content. Current matching outcomes are reused by
+`outcomeRef`; only insufficient coverage or later verified mutation requires
+another observation.
 
 The validation request uses `{ outcomeRefs: string[] }`. Each value must be an
 exact reference copied from `context.run.verifiedOutcomes`. The runtime—not

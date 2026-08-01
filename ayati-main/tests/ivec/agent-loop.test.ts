@@ -13,6 +13,7 @@ import { noopRunRecorder } from "../../src/ivec/noop-run-recorder.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
 import { inspectPathsTool } from "../../src/skills/builtins/filesystem/inspect-paths.js";
 import { findFilesTool } from "../../src/skills/builtins/filesystem/find-files.js";
+import { searchInFilesTool } from "../../src/skills/builtins/filesystem/search-in-files.js";
 import { readFilesTool } from "../../src/skills/builtins/filesystem/read-files.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
@@ -1663,6 +1664,114 @@ describe("agentLoop one-run lifecycle", () => {
     }
   });
 
+  it("validates a bounded file profile for a qualified overview without rereading", async () => {
+    const dataDir = makeTmpDir();
+    const runId = "R-bounded-overview";
+    try {
+      const target = join(dataDir, "community-handbook.md");
+      writeFileSync(
+        target,
+        [
+          "# Community handbook",
+          ...Array.from(
+            { length: 240 },
+            (_, index) => `Section ${index + 1}: community maintenance and safety procedures.`,
+          ),
+        ].join("\n"),
+        "utf8",
+      );
+      const provider = createProvider([
+        {
+          kind: "transition_mode",
+          request: {
+            to: "observe.investigate",
+            purpose: "Read a bounded profile for the requested short overview.",
+            capabilities: ["file:read"],
+            references: [{ kind: "filesystem", path: target }],
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "profile-handbook",
+              tool: "read_files",
+              input: {
+                files: [{
+                  path: target,
+                  mode: "profile",
+                }],
+              },
+              dependsOn: [],
+              purpose: "Read one bounded profile of the handbook",
+            }],
+            allowedTools: ["read_files"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "transition_mode",
+          request: {
+            to: "validation",
+            purpose: "Validate the bounded profile used for the overview.",
+            capabilities: ["task:validation"],
+            outcomeRefs: [
+              `run:${runId}:step:1:call:profile-handbook:outcome:1`,
+            ],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: "Based on the bounded profile, the handbook mainly covers community maintenance and safety procedures.",
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor: createToolExecutor([readFilesTool]),
+        toolDefinitions: [readFilesTool],
+        runRecorder: noopRunRecorder,
+        runHandle: runHandle(runId),
+        clientId: "c1",
+        initialUserMessage: `Read ${target} enough to give me a short overview without loading the whole file.`,
+        dataDir,
+        systemContext: "test system context",
+        harnessContext: unboundContext(
+          runId,
+          `Read ${target} enough to give me a short overview without loading the whole file.`,
+        ),
+      });
+
+      expect(result).toMatchObject({
+        runId,
+        outcome: "done",
+        totalIterations: 4,
+        totalToolCalls: 1,
+        content: "Based on the bounded profile, the handbook mainly covers community maintenance and safety procedures.",
+      });
+      const validationInput = vi.mocked(provider.generateTurn).mock.calls[2]?.[0];
+      const validationState = extractStateView(
+        validationInput.messages.find((message) => message.role === "user")?.content ?? "",
+      );
+      expect(validationState.context.run.verifiedOutcomes).toContainEqual({
+        outcomeRef: `run:${runId}:step:1:call:profile-handbook:outcome:1`,
+        kind: "file.read_scope_satisfied",
+        subject: target,
+        actualKind: "file",
+        readScope: { mode: "profile" },
+        source: {
+          step: 1,
+          callId: "profile-handbook",
+          tool: "read_files",
+        },
+      });
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
   it("lets accepted validation recover after an unnecessary duplicate read is blocked", async () => {
     const dataDir = makeTmpDir();
     try {
@@ -2895,6 +3004,7 @@ describe("agentLoop one-run lifecycle", () => {
           roots: [dataDir],
           maxDepth: 10,
           includeHidden: false,
+          entryKind: "any",
         },
         source: {
           step: 1,
@@ -2911,6 +3021,211 @@ describe("agentLoop one-run lifecycle", () => {
           resolvedCount: 1,
         }),
       }));
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("validates a positive content search without reading or exposing the file", async () => {
+    const dataDir = makeTmpDir();
+    const runId = "R-verified-search-match";
+    const letterPath = join(dataDir, "amber-marsh-letter.txt");
+    const privateLine = "Amber Marsh confirms the private greenhouse key.";
+    try {
+      writeFileSync(letterPath, `Private heading\n${privateLine}\nPrivate ending\n`, "utf8");
+      const provider = createProvider([
+        {
+          kind: "transition_mode",
+          request: {
+            to: "observe.locate",
+            purpose: "Find the file containing the requested name.",
+            capabilities: ["file:search"],
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "search-amber-marsh",
+              tool: "search_in_files",
+              input: {
+                query: "Amber Marsh",
+                roots: [dataDir],
+              },
+              dependsOn: [],
+              purpose: "Locate the file containing Amber Marsh without reading it",
+            }],
+            allowedTools: ["search_in_files"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "transition_mode",
+          request: {
+            to: "validation",
+            purpose: "Validate the exact positive search result.",
+            capabilities: ["task:validation"],
+            outcomeRefs: [
+              `run:${runId}:step:1:call:search-amber-marsh:outcome:0`,
+            ],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: `I found it at ${letterPath}.`,
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor: createToolExecutor([searchInFilesTool]),
+        toolDefinitions: [searchInFilesTool],
+        runRecorder: noopRunRecorder,
+        runHandle: runHandle(runId),
+        clientId: "c1",
+        initialUserMessage: "Find the file that mentions Amber Marsh. Do not show its contents.",
+        dataDir,
+        systemContext: "test system context",
+        harnessContext: unboundContext(
+          runId,
+          "Find the file that mentions Amber Marsh. Do not show its contents.",
+        ),
+      });
+
+      expect(result).toMatchObject({
+        outcome: "done",
+        totalIterations: 4,
+        totalToolCalls: 1,
+        content: `I found it at ${letterPath}.`,
+      });
+      const validationInput = vi.mocked(provider.generateTurn).mock.calls[2]?.[0];
+      const validationState = extractStateView(
+        validationInput.messages.find((message) => message.role === "user")?.content ?? "",
+      );
+      expect(validationState.context.run.verifiedOutcomes).toContainEqual({
+        outcomeRef: `run:${runId}:step:1:call:search-amber-marsh:outcome:0`,
+        kind: "file.search_match",
+        subject: letterPath,
+        actualKind: "file",
+        searchMatch: {
+          query: "Amber Marsh",
+          line: 2,
+          caseSensitive: false,
+        },
+        source: {
+          step: 1,
+          callId: "search-amber-marsh",
+          tool: "search_in_files",
+        },
+      });
+      expect(JSON.stringify(validationState.context.run.toolCalls)).not.toContain(privateLine);
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("validates an exhaustive negative content search without searching again", async () => {
+    const dataDir = makeTmpDir();
+    const runId = "R-verified-content-no-match";
+    const handbookPath = join(dataDir, "community-handbook.md");
+    try {
+      writeFileSync(
+        handbookPath,
+        "# Community handbook\n\nEmergency contacts and maintenance procedures.\n",
+        "utf8",
+      );
+      const provider = createProvider([
+        {
+          kind: "transition_mode",
+          request: {
+            to: "observe.locate",
+            purpose: "Search the handbook for the requested access code.",
+            capabilities: ["file:search"],
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "search-pool-code",
+              tool: "search_in_files",
+              input: {
+                query: "swimming pool access code",
+                roots: [dataDir],
+              },
+              dependsOn: [],
+              purpose: "Search the complete handbook scope once",
+            }],
+            allowedTools: ["search_in_files"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "transition_mode",
+          request: {
+            to: "validation",
+            purpose: "Validate the exhaustive zero-match content search.",
+            capabilities: ["task:validation"],
+            outcomeRefs: [
+              `run:${runId}:step:1:call:search-pool-code:outcome:0`,
+            ],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: "I searched the complete handbook scope and found no swimming-pool access code.",
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor: createToolExecutor([searchInFilesTool]),
+        toolDefinitions: [searchInFilesTool],
+        runRecorder: noopRunRecorder,
+        runHandle: runHandle(runId),
+        clientId: "c1",
+        initialUserMessage: "Search the handbook for a swimming-pool access code. If it is absent, say so clearly.",
+        dataDir,
+        systemContext: "test system context",
+        harnessContext: unboundContext(
+          runId,
+          "Search the handbook for a swimming-pool access code. If it is absent, say so clearly.",
+        ),
+      });
+
+      expect(result).toMatchObject({
+        outcome: "done",
+        totalIterations: 4,
+        totalToolCalls: 1,
+        content: "I searched the complete handbook scope and found no swimming-pool access code.",
+      });
+      const validationInput = vi.mocked(provider.generateTurn).mock.calls[2]?.[0];
+      const validationState = extractStateView(
+        validationInput.messages.find((message) => message.role === "user")?.content ?? "",
+      );
+      expect(validationState.context.run.verifiedOutcomes).toContainEqual({
+        outcomeRef: `run:${runId}:step:1:call:search-pool-code:outcome:0`,
+        kind: "file.search_count",
+        subject: "swimming pool access code",
+        searchCount: {
+          query: "swimming pool access code",
+          roots: [dataDir],
+          maxDepth: 10,
+          includeHidden: false,
+          caseSensitive: false,
+          countUnit: "occurrences",
+          totalMatchCount: 0,
+        },
+        source: {
+          step: 1,
+          callId: "search-pool-code",
+          tool: "search_in_files",
+        },
+      });
     } finally {
       cleanup(dataDir);
     }

@@ -4,6 +4,7 @@ import { requireAbsoluteFilesystemPath } from "../../shared/filesystem-paths.js"
 import type { ToolCallVerifiedFact } from "./tool-call-verification-contracts.js";
 import {
   isFilesystemTaskValidationOutcomeKind,
+  type FileSearchCountValidation,
   type FileReadValidationScope,
   type FileSearchValidationScope,
   type TaskValidationOutcomeKind,
@@ -79,6 +80,24 @@ export function normalizeFileSearchValidationScope(
     roots: [...new Set(roots)].sort(),
     maxDepth: scope.maxDepth,
     includeHidden: scope.includeHidden,
+    entryKind: scope.entryKind,
+  };
+}
+
+export function normalizeFileSearchCountValidation(
+  count: FileSearchCountValidation,
+): FileSearchCountValidation {
+  return {
+    query: count.query.trim(),
+    roots: [...new Set(count.roots.map((root) => {
+      const required = requireAbsoluteFilesystemPath(root.trim());
+      return required.ok ? resolve(required.absolutePath) : root.trim();
+    }))].sort(),
+    maxDepth: count.maxDepth,
+    includeHidden: count.includeHidden,
+    caseSensitive: count.caseSensitive,
+    countUnit: "occurrences",
+    totalMatchCount: count.totalMatchCount,
   };
 }
 

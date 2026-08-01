@@ -1,7 +1,9 @@
 export const TASK_VALIDATION_OUTCOME_KINDS = [
   "path.exists",
   "path.missing",
+  "file.search_match",
   "file.search_no_match",
+  "file.search_count",
   "file.read_complete",
   "file.read_scope_satisfied",
   "file.written",
@@ -37,10 +39,29 @@ export type ValidationExpectedPathKind =
   | "either";
 export type ValidationCheckStatus = "pending" | "passed" | "failed";
 
+export type FileSearchEntryKind = "file" | "directory" | "symlink" | "any";
+
 export interface FileSearchValidationScope {
   roots: string[];
   maxDepth: number;
   includeHidden: boolean;
+  entryKind: FileSearchEntryKind;
+}
+
+export interface FileSearchMatchValidation {
+  query: string;
+  line: number;
+  caseSensitive: boolean;
+}
+
+export interface FileSearchCountValidation {
+  query: string;
+  roots: string[];
+  maxDepth: number;
+  includeHidden: boolean;
+  caseSensitive: boolean;
+  countUnit: "occurrences";
+  totalMatchCount: number;
 }
 
 export type FileReadValidationScope =
@@ -69,6 +90,10 @@ export interface ModeTransitionValidationCheck {
   kind: TaskValidationOutcomeKind;
   subject: string;
   expectedKind?: ValidationExpectedPathKind;
+  modeOctal?: string;
+  modeSymbolic?: string;
+  searchMatch?: FileSearchMatchValidation;
+  searchCount?: FileSearchCountValidation;
   searchScope?: FileSearchValidationScope;
   readScope?: FileReadValidationScope;
   denialCode?: string;
@@ -111,6 +136,7 @@ export function isFilesystemTaskValidationOutcomeKind(
 ): boolean {
   return kind === "path.exists"
     || kind === "path.missing"
+    || kind === "file.search_match"
     || kind === "file.read_complete"
     || kind === "file.read_scope_satisfied"
     || kind === "file.written"

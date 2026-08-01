@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { inspectPathsTool } from "../../../src/skills/builtins/filesystem/inspect-paths.js";
@@ -63,6 +63,41 @@ describe("inspectPathsTool", () => {
           extension: ".css",
           language: "css",
           contentKind: "text",
+        },
+      ],
+    });
+  });
+
+  it("reports exact Unix permission metadata without exposing file content", async () => {
+    const file = join(tmp, "private-note.txt");
+    const directory = join(tmp, "private-directory");
+    await writeFile(file, "secret content must not appear", "utf-8");
+    await mkdir(directory);
+    await chmod(file, 0o640);
+    await chmod(directory, 0o750);
+
+    const result = await inspectPathsTool.execute({
+      paths: [file, directory],
+      includeLineCount: false,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain("mode=0640 (rw-r-----)");
+    expect(result.output).toContain("mode=0750 (rwxr-x---)");
+    expect(result.output).not.toContain("secret content must not appear");
+    expect(result.v2?.structuredContent).toMatchObject({
+      results: [
+        {
+          path: file,
+          kind: "file",
+          modeOctal: "0640",
+          modeSymbolic: "rw-r-----",
+        },
+        {
+          path: directory,
+          kind: "directory",
+          modeOctal: "0750",
+          modeSymbolic: "rwxr-x---",
         },
       ],
     });
@@ -152,6 +187,61 @@ describe("inspectPathsTool", () => {
           readRecommendation: {
             tool: "find_files",
           },
+        },
+      ],
+    });
+  });
+
+  it("reports symbolic-link and resolved-target metadata without reading target content", async () => {
+    const file = join(tmp, "letter.txt");
+    const directory = join(tmp, "archive");
+    const fileLink = join(tmp, "latest-letter.txt");
+    const directoryLink = join(tmp, "latest-archive");
+    const brokenLink = join(tmp, "missing-letter.txt");
+    await writeFile(file, "private target content", "utf-8");
+    await mkdir(directory);
+    await symlink(file, fileLink);
+    await symlink(directory, directoryLink);
+    await symlink(join(tmp, "does-not-exist.txt"), brokenLink);
+
+    const result = await inspectPathsTool.execute({
+      paths: [fileLink, directoryLink, brokenLink],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).not.toContain("private target content");
+    expect(result.output).toContain(`target=${file}`);
+    expect(result.v2?.structuredContent).toMatchObject({
+      summary: {
+        requested: 3,
+        found: 3,
+        symlinks: 3,
+        missing: 0,
+      },
+      results: [
+        {
+          path: fileLink,
+          kind: "symlink",
+          targetPath: file,
+          targetKind: "file",
+          targetExists: true,
+          readRecommendation: { tool: "read_files" },
+        },
+        {
+          path: directoryLink,
+          kind: "symlink",
+          targetPath: directory,
+          targetKind: "directory",
+          targetExists: true,
+          readRecommendation: { tool: "list_directory" },
+        },
+        {
+          path: brokenLink,
+          kind: "symlink",
+          targetPath: join(tmp, "does-not-exist.txt"),
+          targetKind: "missing",
+          targetExists: false,
+          readRecommendation: { tool: "find_files" },
         },
       ],
     });

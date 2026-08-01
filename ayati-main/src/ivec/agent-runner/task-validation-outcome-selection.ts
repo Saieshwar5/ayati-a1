@@ -80,6 +80,8 @@ function validationCheckFromOutcome(
       ...base,
       kind: outcome.kind,
       ...(outcome.actualKind ? { expectedKind: outcome.actualKind } : {}),
+      ...(outcome.modeOctal ? { modeOctal: outcome.modeOctal } : {}),
+      ...(outcome.modeSymbolic ? { modeSymbolic: outcome.modeSymbolic } : {}),
     };
   }
   if (outcome.family === "filesystem_read") {
@@ -101,6 +103,21 @@ function validationCheckFromOutcome(
     return undefined;
   }
   if (outcome.family === "filesystem_search") {
+    if (outcome.kind === "file.search_count") {
+      return {
+        ...base,
+        kind: "file.search_count",
+        searchCount: outcome.searchCount,
+      };
+    }
+    if (outcome.kind === "file.search_match") {
+      return {
+        ...base,
+        kind: "file.search_match",
+        expectedKind: "file",
+        searchMatch: outcome.searchMatch,
+      };
+    }
     return {
       ...base,
       kind: "file.search_no_match",
