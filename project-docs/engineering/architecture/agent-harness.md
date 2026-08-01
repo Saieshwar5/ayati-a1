@@ -744,13 +744,16 @@ and then performs synchronous deterministic/semantic recovery. A request is
 never sent beyond its admission limit.
 
 Conversation checkpoint generation happens only in `context.maintain`. It uses
-a structured schema, exact message-sequence anchors, a 1,200-token default
-target, and at most one repair. Generation is read-only; commit and active-
-pointer update occur only at validated adoption. The summary retains active
-requests, constraints, corrections, unresolved questions, commitments, and
-needed references before durable decisions and facts; it drops filler,
-repetition, resolved or superseded material, transient failures, speculation,
-long quotations, and raw logs first.
+a structured schema, exact message-sequence anchors, a strict 1,200-token
+default budget, and at most one semantic model call per source identity. A
+valid oversized candidate is deterministically fitted; invalid or unavailable
+semantic output becomes a bounded exact-message fallback without another
+model call. Generation is read-only; commit recomputes the serialized size,
+and checkpoint plus active-pointer update occur only at validated atomic
+adoption. The summary retains active requests, constraints, corrections,
+unresolved questions, commitments, and needed references before durable
+decisions and facts; it drops filler, repetition, resolved or superseded
+material, transient failures, speculation, long quotations, and raw logs first.
 
 Run maintenance never generates a conversation checkpoint. The model sees at
 most 32 deterministic candidate records and may name at most 12 exceptions per

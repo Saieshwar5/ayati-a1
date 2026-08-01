@@ -109,10 +109,12 @@ describe("OpenRouter provider", () => {
         { role: "system", content: "System" },
         { role: "user", content: "Hi" },
       ],
+      maxOutputTokens: 1_200,
     });
 
     expect(mockCreate).toHaveBeenCalledWith({
       model: "nvidia/nemotron-3-super-120b-a12b:free",
+      max_tokens: 1_200,
       messages: [
         { role: "system", content: "System" },
         { role: "user", content: "Hi" },

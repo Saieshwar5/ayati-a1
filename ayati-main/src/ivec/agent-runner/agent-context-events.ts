@@ -1,8 +1,11 @@
-import type {
-  AssistantFeedbackKind,
-  AssistantResponseKind,
-  MessageAttachmentRef,
-  StreamMessage,
+import {
+  CONTEXT_CHECKPOINT_CATEGORY_MAX_ITEMS,
+  CONTEXT_CHECKPOINT_NARRATIVE_MAX_CHARS,
+  CONTEXT_CHECKPOINT_STATEMENT_MAX_CHARS,
+  type AssistantFeedbackKind,
+  type AssistantResponseKind,
+  type MessageAttachmentRef,
+  type StreamMessage,
 } from "ayati-context-engine";
 
 export type AgentTemporalExactEvent =
@@ -82,7 +85,11 @@ const CHECKPOINT_STATEMENT_SCHEMA = {
   type: "object",
   properties: {
     seq: { type: "integer", minimum: 1 },
-    text: { type: "string", minLength: 1 },
+    text: {
+      type: "string",
+      minLength: 1,
+      maxLength: CONTEXT_CHECKPOINT_STATEMENT_MAX_CHARS,
+    },
   },
   required: ["seq", "text"],
   additionalProperties: false,
@@ -98,7 +105,11 @@ export const AGENT_STREAM_CHECKPOINT_SUMMARY_SCHEMA: Record<string, unknown> = {
     importantFacts: checkpointStatementArraySchema(),
     unresolvedQuestions: checkpointStatementArraySchema(),
     references: checkpointStatementArraySchema(),
-    narrative: { type: "string", minLength: 1 },
+    narrative: {
+      type: "string",
+      minLength: 1,
+      maxLength: CONTEXT_CHECKPOINT_NARRATIVE_MAX_CHARS,
+    },
   },
   required: [
     "userRequests",
@@ -117,6 +128,6 @@ function checkpointStatementArraySchema(): Record<string, unknown> {
   return {
     type: "array",
     items: CHECKPOINT_STATEMENT_SCHEMA,
-    maxItems: 64,
+    maxItems: CONTEXT_CHECKPOINT_CATEGORY_MAX_ITEMS,
   };
 }

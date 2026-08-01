@@ -83,10 +83,12 @@ describe("OpenAI provider", () => {
         { role: "system", content: "System" },
         { role: "user", content: "Hi" },
       ],
+      maxOutputTokens: 1_200,
     });
 
     expect(mockCreate).toHaveBeenCalledWith({
       model: "gpt-4o",
+      max_completion_tokens: 1_200,
       messages: [
         { role: "system", content: "System" },
         { role: "user", content: "Hi" },
@@ -240,6 +242,7 @@ describe("OpenAI provider", () => {
     const deltas: string[] = [];
     const out = await provider.streamTurn?.({
       messages: [{ role: "user", content: "Hi" }],
+      maxOutputTokens: 1_200,
     }, {
       onTextDelta: (delta) => deltas.push(delta),
     });
@@ -248,6 +251,7 @@ describe("OpenAI provider", () => {
       model: "gpt-4o",
       messages: [{ role: "user", content: "Hi" }],
       stream: true,
+      max_completion_tokens: 1_200,
     });
     expect(deltas).toEqual(["Hello", " streaming"]);
     expect(out).toEqual({ type: "assistant", content: "Hello streaming" });

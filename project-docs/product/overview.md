@@ -38,6 +38,9 @@ checkpoint. Whole-request pressure instead enters a run-only maintenance mode,
 checkpoints the small WorkState handoff, and replaces eligible older tool
 payloads with typed projections or exact journal references. Exact older
 discussion and run evidence remain available through explicit history reads.
+Checkpoint creation makes one bounded semantic attempt and then uses
+deterministic fitting or exact-message fallback, so context pressure cannot
+become an open-ended summary retry loop.
 
 Durable work is represented by two separate concepts:
 

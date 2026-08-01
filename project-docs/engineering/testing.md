@@ -39,9 +39,12 @@ Changes should prove the relevant invariants:
    completed turn exactly, validates exact anchors, and atomically moves the
    active pointer. Whole-request pressure cannot create one.
 9. `context.maintain` exposes no task tools or normal reply, consumes no task
-   step or binding attempt, restores the exact preceding mode after success or
-   failure, permits one generation repair, and does not retry the same failed
-   source within one run. A failed generation does not mutate durable state.
+   step or binding attempt, and restores the exact preceding mode. Checkpoint
+   generation makes at most one semantic call per source identity. Oversized
+   valid output is deterministically fitted; malformed, unanchored, truncated,
+   or failed output uses a bounded exact-message fallback. Context Engine
+   recomputes serialized size, and failed adoption does not mutate durable
+   state or advance the active pointer.
 10. Whole-request soft pressure with reducible run material enters
     `run.maintain`. It exposes only `decision_maintain_run_context`, preserves
     the latest six calls, failures, unrecoverable calls, active process state,

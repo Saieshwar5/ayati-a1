@@ -258,6 +258,9 @@ const provider: LlmProvider = {
     const request = {
       model,
       messages,
+      ...(input.maxOutputTokens !== undefined
+        ? { max_tokens: Math.max(1, Math.trunc(input.maxOutputTokens)) }
+        : {}),
       ...(responseFormat ? { response_format: responseFormat as any } : {}),
       ...(responseTools
         ? {

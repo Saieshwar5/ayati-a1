@@ -137,14 +137,14 @@ describe("prepared main-context admission", () => {
     });
   });
 
-  it("restores the task mode and does not retry a failed maintenance source", async () => {
+  it("installs a deterministic fallback after one malformed maintenance response", async () => {
     const fixture = await preparedDurableFixture();
     fixture.provider.generateTurn = vi.fn().mockResolvedValue({
       type: "assistant" as const,
       content: "not valid checkpoint json",
     });
     const enter = vi.fn();
-    const exit = vi.fn(() => fixture.originalState);
+    const exit = vi.fn(() => fixture.freshState);
 
     const compile = async () => await compilePreparedMainContext({
       provider: fixture.provider,
@@ -162,24 +162,25 @@ describe("prepared main-context admission", () => {
       contextMaintenance: { enter, exit },
     });
 
-    const first = await compile();
-    expect(first.receipt).toMatchObject({
-      candidateAction: "rejected",
-      candidate: { kind: "durable_checkpoint", status: "failed" },
+    const compilation = await compile();
+    expect(compilation.receipt).toMatchObject({
+      mode: "stream_checkpoint",
+      candidateAction: "adopted",
+      candidate: { kind: "durable_checkpoint", status: "adopted" },
     });
     expect(enter).toHaveBeenCalledTimes(1);
     expect(exit).toHaveBeenCalledTimes(1);
     expect(exit).toHaveBeenCalledWith(expect.objectContaining({
-      status: "failed",
+      status: "completed",
+      checkpointId: "CHK-adopted",
     }));
-    const generationCallsAfterFirstAttempt = vi.mocked(fixture.provider.generateTurn).mock.calls.length;
-    expect(generationCallsAfterFirstAttempt).toBeGreaterThan(0);
-
-    await compile();
-    expect(enter).toHaveBeenCalledTimes(1);
-    expect(exit).toHaveBeenCalledTimes(1);
-    expect(fixture.provider.generateTurn).toHaveBeenCalledTimes(generationCallsAfterFirstAttempt);
-    expect(fixture.commit).not.toHaveBeenCalled();
+    expect(fixture.provider.generateTurn).toHaveBeenCalledTimes(1);
+    expect(fixture.commit).toHaveBeenCalledTimes(1);
+    expect(fixture.manager.currentCandidate()?.checkpointGeneration).toMatchObject({
+      status: "success",
+      generationMethod: "deterministic_fallback",
+      attempts: [{ status: "failed", providerCalled: true }],
+    });
   });
 
   it("runs conversation maintenance independently of tool-projection shadow mode", async () => {
@@ -804,7 +805,7 @@ function pendingFocusJob(pending: Promise<void>): ContextPreparationJob {
       canonicalSourceHashes: {},
       sourceRefs: ["step:1", "step:2"],
       requiredExactEvidenceRefs: [],
-      policyVersion: 1,
+      policyVersion: 2,
       modelProfileVersion: "test:test-model:128000:auto:8192:55000:60000:70000:100000",
       deterministicTransformations: [],
       coveredSourceRefs: [],

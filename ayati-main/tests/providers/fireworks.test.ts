@@ -88,11 +88,13 @@ describe("Fireworks provider", () => {
         { role: "system", content: "System" },
         { role: "user", content: "Hi" },
       ],
+      maxOutputTokens: 1_200,
     });
 
     expect(mockCreate).toHaveBeenCalledWith({
       model: "fireworks/minimax-m2p5",
       reasoning_effort: "high",
+      max_tokens: 1_200,
       messages: [
         { role: "system", content: "System" },
         { role: "user", content: "Hi" },
@@ -355,6 +357,7 @@ describe("Fireworks provider", () => {
     const deltas: string[] = [];
     const out = await provider.streamTurn?.({
       messages: [{ role: "user", content: "Hi" }],
+      maxOutputTokens: 1_200,
     }, {
       onTextDelta: (delta) => deltas.push(delta),
     });
@@ -364,6 +367,7 @@ describe("Fireworks provider", () => {
       reasoning_effort: "high",
       messages: [{ role: "user", content: "Hi" }],
       stream: true,
+      max_tokens: 1_200,
     });
     expect(deltas).toEqual(["Hello", " Fireworks"]);
     expect(out).toEqual({ type: "assistant", content: "Hello Fireworks" });

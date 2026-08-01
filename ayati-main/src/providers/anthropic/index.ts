@@ -191,7 +191,9 @@ const provider: LlmProvider = {
 
     const request = {
       model,
-      max_tokens: 4096,
+      max_tokens: input.maxOutputTokens !== undefined
+        ? Math.max(1, Math.trunc(input.maxOutputTokens))
+        : 4096,
       ...(payload.system ? { system: payload.system } : {}),
       messages: payload.messages as any,
       ...(tools ? { tools: tools as any } : {}),

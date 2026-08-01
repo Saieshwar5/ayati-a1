@@ -398,6 +398,10 @@ export interface ContextCheckpointStatement {
   text: string;
 }
 
+export const CONTEXT_CHECKPOINT_CATEGORY_MAX_ITEMS = 12;
+export const CONTEXT_CHECKPOINT_STATEMENT_MAX_CHARS = 600;
+export const CONTEXT_CHECKPOINT_NARRATIVE_MAX_CHARS = 800;
+
 export interface ContextCheckpointSummary {
   userRequests: ContextCheckpointStatement[];
   constraints: ContextCheckpointStatement[];

@@ -38,8 +38,14 @@ describe("generateStreamCheckpoint", () => {
     expect(result.status).toBe("success");
     expect(result.summary).toEqual(summary);
     expect(result.attempts).toEqual([
-      expect.objectContaining({ attempt: 1, status: "success", errors: [] }),
+      expect.objectContaining({
+        attempt: 1,
+        status: "success",
+        providerCalled: true,
+        errors: [],
+      }),
     ]);
+    expect(result.generationMethod).toBe("model");
     expect(result.tokenCount).toBeGreaterThan(0);
     const request = generateTurn.mock.calls[0]?.[0];
     expect(request?.responseFormat).toMatchObject({
@@ -47,6 +53,7 @@ describe("generateStreamCheckpoint", () => {
       name: "agent_stream_checkpoint_summary",
       strict: true,
     });
+    expect(request?.maxOutputTokens).toBe(1_200);
     const sourceContent = request?.messages[1]?.content;
     if (typeof sourceContent !== "string") throw new Error("Checkpoint source prompt is missing.");
     const source = JSON.parse(sourceContent) as {
@@ -75,94 +82,127 @@ describe("generateStreamCheckpoint", () => {
     expect(JSON.stringify(request?.messages)).not.toContain("workState");
   });
 
-  it("treats the requested size as a target while accepting a safe larger candidate", async () => {
-    const summary = validSummary();
-    summary.narrative = "x".repeat(5_200);
-    const { provider, generateTurn } = providerWith([
-      { type: "assistant", content: JSON.stringify(summary) },
-    ]);
-
-    const result = await generateStreamCheckpoint({ provider, plan: checkpointPlan() });
-
-    expect(result.status).toBe("success");
-    expect(result.tokenCount).toBeGreaterThan(1_200);
-    expect(result.tokenCount).toBeLessThanOrEqual(2_400);
-    expect(generateTurn).toHaveBeenCalledTimes(1);
-  });
-
-  it("uses its single repair attempt when a statement cites a non-source sequence", async () => {
+  it("uses deterministic fallback after one invalid anchored response", async () => {
     const invalid = validSummary();
     invalid.importantFacts = [{ seq: 99, text: "This anchor does not exist." }];
-    const repaired = validSummary();
     const { provider, generateTurn } = providerWith([
       { type: "assistant", content: JSON.stringify(invalid) },
-      { type: "assistant", content: JSON.stringify(repaired) },
     ]);
 
     const result = await generateStreamCheckpoint({ provider, plan: checkpointPlan() });
 
     expect(result.status).toBe("success");
-    expect(result.attempts.map((attempt) => attempt.status)).toEqual(["failed", "success"]);
-    expect(generateTurn).toHaveBeenCalledTimes(2);
-    const repairPrompt = generateTurn.mock.calls[1]?.[0].messages[0]?.content;
-    expect(repairPrompt).toContain("Repair these validation failures");
-    expect(repairPrompt).toContain("sequence 99 is not an exact source anchor");
+    expect(result.generationMethod).toBe("deterministic_fallback");
+    expect(result.recoveryReason).toContain("sequence 99 is not an exact source anchor");
+    expect(result.attempts.map((attempt) => attempt.status)).toEqual(["failed"]);
+    expect(result.summary?.importantFacts.some((fact) => fact.seq === 99)).toBe(false);
+    expect(generateTurn).toHaveBeenCalledTimes(1);
   });
 
   it("does not allow the protected exact tail to become a checkpoint anchor", async () => {
     const invalid = validSummary();
     invalid.importantFacts = [{ seq: 4, text: "Protected current context must remain exact." }];
-    const repaired = validSummary();
     const { provider, generateTurn } = providerWith([
       { type: "assistant", content: JSON.stringify(invalid) },
-      { type: "assistant", content: JSON.stringify(repaired) },
     ]);
 
     const result = await generateStreamCheckpoint({ provider, plan: checkpointPlan() });
 
     expect(result.status).toBe("success");
-    expect(result.attempts.map((attempt) => attempt.status)).toEqual(["failed", "success"]);
-    expect(generateTurn.mock.calls[1]?.[0].messages[0]?.content)
-      .toContain("sequence 4 is not an exact source anchor");
+    expect(result.generationMethod).toBe("deterministic_fallback");
+    expect(result.recoveryReason).toContain("sequence 4 is not an exact source anchor");
+    expect(result.summary?.importantFacts.some((fact) => fact.seq === 4)).toBe(false);
+    expect(generateTurn).toHaveBeenCalledTimes(1);
   });
 
-  it("uses its single repair when prompt recovery needs a stricter summary ceiling", async () => {
+  it("uses deterministic fallback after one malformed response", async () => {
+    const { provider, generateTurn } = providerWith([
+      { type: "assistant", content: "not json" },
+    ]);
+
+    const result = await generateStreamCheckpoint({ provider, plan: checkpointPlan() });
+
+    expect(result.status).toBe("success");
+    expect(result.generationMethod).toBe("deterministic_fallback");
+    expect(result.recoveryReason).toContain("checkpoint response is not valid JSON");
+    expect(result.attempts).toHaveLength(1);
+    expect(generateTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("deterministically fits an oversized valid model checkpoint", async () => {
+    const plan = checkpointPlan();
+    plan.estimatedCheckpointTokens = 200;
     const oversized = validSummary();
-    oversized.narrative = "x".repeat(5_200);
-    const repaired = validSummary();
+    oversized.constraints = Array.from({ length: 12 }, (_, index) => ({
+      seq: 2,
+      text: `Constraint ${index + 1}: ${"preserve this bounded context ".repeat(20)}`,
+    }));
     const { provider, generateTurn } = providerWith([
       { type: "assistant", content: JSON.stringify(oversized) },
-      { type: "assistant", content: JSON.stringify(repaired) },
+    ]);
+
+    const result = await generateStreamCheckpoint({ provider, plan });
+
+    expect(result.status).toBe("success");
+    expect(result.generationMethod).toBe("model_fitted");
+    expect(result.modelTokenCount).toBeGreaterThan(200);
+    expect(result.tokenCount).toBeLessThanOrEqual(200);
+    expect(result.attempts).toHaveLength(1);
+    expect(generateTurn).toHaveBeenCalledTimes(1);
+    expect(generateTurn.mock.calls[0]?.[0].maxOutputTokens).toBe(200);
+  });
+
+  it("honors a stricter recovery ceiling without another provider call", async () => {
+    const oversized = validSummary();
+    oversized.constraints = Array.from({ length: 12 }, (_, index) => ({
+      seq: 2,
+      text: `Constraint ${index + 1}: ${"retain this context ".repeat(20)}`,
+    }));
+    const { provider, generateTurn } = providerWith([
+      { type: "assistant", content: JSON.stringify(oversized) },
     ]);
 
     const result = await generateStreamCheckpoint({
       provider,
       plan: checkpointPlan(),
-      maximumSummaryTokens: 1_200,
+      maximumSummaryTokens: 200,
     });
 
     expect(result.status).toBe("success");
-    expect(result.attempts.map((attempt) => attempt.status)).toEqual(["failed", "success"]);
-    expect(generateTurn).toHaveBeenCalledTimes(2);
-    expect(generateTurn.mock.calls[0]?.[0].messages[0]?.content)
-      .toContain("must not exceed the 1200-token safety ceiling");
-    expect(generateTurn.mock.calls[1]?.[0].messages[0]?.content)
-      .toContain("above safety ceiling 1200");
+    expect(result.generationMethod).toBe("model_fitted");
+    expect(result.tokenCount).toBeLessThanOrEqual(200);
+    expect(generateTurn).toHaveBeenCalledTimes(1);
+    expect(generateTurn.mock.calls[0]?.[0].maxOutputTokens).toBe(200);
   });
 
-  it("stops after two failed generations", async () => {
-    const { provider, generateTurn } = providerWith([
-      { type: "assistant", content: "not json" },
-      { type: "assistant", content: "still not json" },
-      { type: "assistant", content: JSON.stringify(validSummary()) },
-    ]);
+  it("falls back locally when provider generation fails", async () => {
+    const { provider, generateTurn } = providerWith([]);
 
     const result = await generateStreamCheckpoint({ provider, plan: checkpointPlan() });
 
-    expect(result.status).toBe("failed");
-    expect(result.attempts).toHaveLength(2);
-    expect(result.errors).toContain("checkpoint response is not valid JSON");
-    expect(generateTurn).toHaveBeenCalledTimes(2);
+    expect(result.status).toBe("success");
+    expect(result.generationMethod).toBe("deterministic_fallback");
+    expect(result.attempts).toEqual([
+      expect.objectContaining({ status: "failed", providerCalled: true }),
+    ]);
+    expect(generateTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back without calling the provider when source input exceeds capacity", async () => {
+    const { provider, generateTurn } = providerWith([]);
+
+    const result = await generateStreamCheckpoint({
+      provider,
+      plan: checkpointPlan(),
+      maxInputTokens: 1,
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.generationMethod).toBe("deterministic_fallback");
+    expect(result.attempts).toEqual([
+      expect.objectContaining({ status: "failed", providerCalled: false }),
+    ]);
+    expect(generateTurn).not.toHaveBeenCalled();
   });
 });
 

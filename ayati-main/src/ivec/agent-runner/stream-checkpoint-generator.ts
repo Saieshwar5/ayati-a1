@@ -1,19 +1,30 @@
-import type {
-  ContextCheckpointPlan,
-  ContextCheckpointStatement,
-  ContextCheckpointSummary,
+import {
+  CONTEXT_CHECKPOINT_CATEGORY_MAX_ITEMS,
+  CONTEXT_CHECKPOINT_NARRATIVE_MAX_CHARS,
+  CONTEXT_CHECKPOINT_STATEMENT_MAX_CHARS,
+  type ContextCheckpointPlan,
+  type ContextCheckpointStatement,
+  type ContextCheckpointSummary,
 } from "ayati-context-engine";
-import { contextCheckpointMaximumTokens } from "ayati-context-engine";
 import type { LlmProvider } from "../../core/contracts/provider.js";
 import type { LlmCostEstimate, LlmTokenUsage } from "../../core/contracts/llm-protocol.js";
 import { correctLocalInputTokenEstimate } from "../../prompt/context-token-counter.js";
-import { estimateTextTokens, estimateTurnInputTokens } from "../../prompt/token-estimator.js";
+import { estimateTurnInputTokens } from "../../prompt/token-estimator.js";
 import { AGENT_STREAM_CHECKPOINT_SUMMARY_SCHEMA } from "./agent-context-events.js";
 import { withEvaluationModelOperation } from "../../evaluation/capture-runtime.js";
+import {
+  checkpointModelTargetTokens,
+  checkpointPlanAnchors,
+  checkpointSummaryTokenCount,
+  createDeterministicCheckpointFallback,
+  fitCheckpointToBudget,
+  type StreamCheckpointSummaryKey,
+} from "./stream-checkpoint-fitter.js";
 
 export interface StreamCheckpointGenerationAttempt {
   attempt: number;
   status: "success" | "failed";
+  providerCalled: boolean;
   durationMs: number;
   errors: string[];
   usage?: LlmTokenUsage;
@@ -26,9 +37,13 @@ export interface StreamCheckpointGenerationResult {
   errors: string[];
   summary?: ContextCheckpointSummary;
   tokenCount?: number;
+  generationMethod?: "model" | "model_fitted" | "deterministic_fallback";
+  recoveryReason?: string;
+  modelTokenCount?: number;
+  droppedCounts?: Record<StreamCheckpointSummaryKey, number>;
+  truncatedCounts?: Record<StreamCheckpointSummaryKey, number>;
 }
 
-const MAX_GENERATION_ATTEMPTS = 2;
 const SUMMARY_ARRAY_KEYS = [
   "userRequests",
   "constraints",
@@ -58,115 +73,144 @@ export async function generateStreamCheckpoint(input: {
   }
   const attempts: StreamCheckpointGenerationAttempt[] = [];
   const maximumTokens = Math.min(
-    contextCheckpointMaximumTokens(input.plan.estimatedCheckpointTokens),
+    input.plan.estimatedCheckpointTokens,
     Math.max(1, Math.trunc(
-      input.maximumSummaryTokens
-        ?? contextCheckpointMaximumTokens(input.plan.estimatedCheckpointTokens),
+      input.maximumSummaryTokens ?? input.plan.estimatedCheckpointTokens,
     )),
   );
-  let previousErrors: string[] = [];
-  for (let attempt = 1; attempt <= MAX_GENERATION_ATTEMPTS; attempt++) {
-    const startedAt = Date.now();
-    try {
-      const turnInput = {
-        messages: checkpointMessages(input.plan, maximumTokens, previousErrors),
-        responseFormat: {
-          type: "json_schema",
-          name: "agent_stream_checkpoint_summary",
-          schema: AGENT_STREAM_CHECKPOINT_SUMMARY_SCHEMA,
-          strict: true,
-        },
-      } as const;
-      const correctedInputTokens = correctLocalInputTokenEstimate(
-        estimateTurnInputTokens(turnInput).totalTokens,
-      );
-      if (input.maxInputTokens !== undefined && correctedInputTokens > input.maxInputTokens) {
-        previousErrors = [
-          `checkpoint generator input requires ${correctedInputTokens} tokens, exceeding capacity ${input.maxInputTokens}`,
-        ];
-        attempts.push({
-          attempt,
-          status: "failed",
-          durationMs: Date.now() - startedAt,
-          errors: previousErrors,
-        });
-        break;
-      }
-      const response = await withEvaluationModelOperation({
-        purpose: "durable_checkpoint_summary",
-      }, async () => await input.provider.generateTurn(turnInput));
-      if (response.type !== "assistant") {
-        previousErrors = ["checkpoint provider returned tool calls instead of assistant JSON"];
-        attempts.push({
-          attempt,
-          status: "failed",
-          durationMs: Date.now() - startedAt,
-          errors: previousErrors,
-          usage: response.usage,
-          cost: response.cost,
-        });
-        continue;
-      }
-      const parsed = parseSummary(response.content);
-      const validationErrors = parsed.summary
-        ? validateSummary(parsed.summary, input.plan)
-        : parsed.errors;
-      const tokenCount = parsed.summary
-        ? estimateTextTokens(JSON.stringify(parsed.summary))
-        : undefined;
-      if (tokenCount !== undefined && tokenCount > maximumTokens) {
-        validationErrors.push(
-          `checkpoint uses ${tokenCount} tokens, above safety ceiling ${maximumTokens}`,
-        );
-      }
-      if (!parsed.summary || tokenCount === undefined || validationErrors.length > 0) {
-        previousErrors = compactErrors(validationErrors);
-        attempts.push({
-          attempt,
-          status: "failed",
-          durationMs: Date.now() - startedAt,
-          errors: previousErrors,
-          usage: response.usage,
-          cost: response.cost,
-        });
-        continue;
-      }
+  const startedAt = Date.now();
+  let providerCalled = false;
+  try {
+    const turnInput = {
+      messages: checkpointMessages(input.plan, maximumTokens),
+      responseFormat: {
+        type: "json_schema",
+        name: "agent_stream_checkpoint_summary",
+        schema: AGENT_STREAM_CHECKPOINT_SUMMARY_SCHEMA,
+        strict: true,
+      },
+      maxOutputTokens: maximumTokens,
+    } as const;
+    const correctedInputTokens = correctLocalInputTokenEstimate(
+      estimateTurnInputTokens(turnInput).totalTokens,
+    );
+    if (input.maxInputTokens !== undefined && correctedInputTokens > input.maxInputTokens) {
+      const errors = [
+        `checkpoint generator input requires ${correctedInputTokens} tokens, exceeding capacity ${input.maxInputTokens}`,
+      ];
       attempts.push({
-        attempt,
-        status: "success",
+        attempt: 1,
+        status: "failed",
+        providerCalled: false,
         durationMs: Date.now() - startedAt,
-        errors: [],
+        errors,
+      });
+      return fallbackResult(input.plan, attempts, errors.join("; "), maximumTokens);
+    }
+    providerCalled = true;
+    const response = await withEvaluationModelOperation({
+      purpose: "durable_checkpoint_summary",
+    }, async () => await input.provider.generateTurn(turnInput));
+    if (response.type !== "assistant") {
+      const errors = ["checkpoint provider returned tool calls instead of assistant JSON"];
+      attempts.push({
+        attempt: 1,
+        status: "failed",
+        providerCalled: true,
+        durationMs: Date.now() - startedAt,
+        errors,
         usage: response.usage,
         cost: response.cost,
+      });
+      return fallbackResult(input.plan, attempts, errors[0]!, maximumTokens);
+    }
+    const parsed = parseSummary(response.content);
+    const validationErrors = parsed.summary
+      ? validateSummary(parsed.summary, input.plan)
+      : parsed.errors;
+    const modelTokenCount = parsed.summary
+      ? checkpointSummaryTokenCount(parsed.summary)
+      : undefined;
+    if (!parsed.summary || validationErrors.length > 0 || modelTokenCount === undefined) {
+      const errors = compactErrors(validationErrors);
+      attempts.push({
+        attempt: 1,
+        status: "failed",
+        providerCalled: true,
+        durationMs: Date.now() - startedAt,
+        errors,
+        usage: response.usage,
+        cost: response.cost,
+      });
+      return fallbackResult(input.plan, attempts, errors.join("; "), maximumTokens, modelTokenCount);
+    }
+    const modelBoundsError = checkpointBoundsError(parsed.summary);
+    if (modelTokenCount > maximumTokens || modelBoundsError) {
+      const errors = [modelBoundsError
+        ?? `checkpoint uses ${modelTokenCount} tokens, above budget ${maximumTokens}`];
+      attempts.push({
+        attempt: 1,
+        status: "failed",
+        providerCalled: true,
+        durationMs: Date.now() - startedAt,
+        errors,
+        usage: response.usage,
+        cost: response.cost,
+      });
+      const fitted = fitCheckpointToBudget({
+        summary: parsed.summary,
+        validAnchors: checkpointPlanAnchors(input.plan),
+        maximumTokens,
       });
       return {
         status: "success",
         attempts,
         errors: [],
-        summary: parsed.summary,
-        tokenCount,
+        summary: fitted.summary,
+        tokenCount: fitted.tokenCount,
+        generationMethod: "model_fitted",
+        recoveryReason: errors[0],
+        modelTokenCount,
+        droppedCounts: fitted.droppedCounts,
+        truncatedCounts: fitted.truncatedCounts,
       };
-    } catch (error) {
-      previousErrors = compactErrors([error instanceof Error ? error.message : String(error)]);
+    }
+    attempts.push({
+      attempt: 1,
+      status: "success",
+      providerCalled: true,
+      durationMs: Date.now() - startedAt,
+      errors: [],
+      usage: response.usage,
+      cost: response.cost,
+    });
+    return {
+      status: "success",
+      attempts,
+      errors: [],
+      summary: parsed.summary,
+      tokenCount: modelTokenCount,
+      generationMethod: "model",
+      modelTokenCount,
+    };
+  } catch (error) {
+    const errors = compactErrors([error instanceof Error ? error.message : String(error)]);
+    if (attempts.length === 0) {
       attempts.push({
-        attempt,
+        attempt: 1,
         status: "failed",
+        providerCalled,
         durationMs: Date.now() - startedAt,
-        errors: previousErrors,
+        errors,
       });
     }
+    return fallbackResult(input.plan, attempts, errors.join("; "), maximumTokens);
   }
-  return {
-    status: "failed",
-    attempts,
-    errors: compactErrors(attempts.flatMap((attempt) => attempt.errors)),
-  };
 }
 
 function checkpointMessages(
   plan: ContextCheckpointPlan,
   maximumTokens: number,
-  previousErrors: string[],
 ): Array<{ role: "system" | "user"; content: string }> {
   return [
     {
@@ -184,12 +228,9 @@ function checkpointMessages(
         "Treat assistant responseKind and feedbackKind as exact relationship metadata. Preserve an unanswered feedback question under unresolvedQuestions.",
         "Treat attachmentRefs as belonging only to their exact user-message sequence. Preserve important attachment identities under references.",
         "Do not include tool action logs, WorkState, workstream state, or personal memory.",
-        `Aim to keep the JSON within ${plan.estimatedCheckpointTokens} estimated tokens.`,
-        `The JSON must not exceed the ${maximumTokens}-token safety ceiling.`,
+        `Prefer a concise result within ${checkpointModelTargetTokens(maximumTokens)} estimated tokens.`,
+        `The complete JSON must never exceed ${maximumTokens} estimated tokens.`,
         "Return only the requested JSON object.",
-        ...(previousErrors.length > 0
-          ? [`Repair these validation failures: ${previousErrors.join("; ")}`]
-          : []),
       ].join("\n"),
     },
     {
@@ -219,6 +260,43 @@ function checkpointMessage(
       ? { attachmentRefs: message.attachmentRefs }
       : {}),
   };
+}
+
+function fallbackResult(
+  plan: ContextCheckpointPlan,
+  attempts: StreamCheckpointGenerationAttempt[],
+  recoveryReason: string,
+  maximumTokens: number,
+  modelTokenCount?: number,
+): StreamCheckpointGenerationResult {
+  try {
+    const fallback = createDeterministicCheckpointFallback({
+      plan,
+      maximumTokens,
+    });
+    return {
+      status: "success",
+      attempts,
+      errors: [],
+      summary: fallback.summary,
+      tokenCount: fallback.tokenCount,
+      generationMethod: "deterministic_fallback",
+      recoveryReason,
+      ...(modelTokenCount !== undefined ? { modelTokenCount } : {}),
+      droppedCounts: fallback.droppedCounts,
+      truncatedCounts: fallback.truncatedCounts,
+    };
+  } catch (error) {
+    return {
+      status: "failed",
+      attempts,
+      errors: compactErrors([
+        recoveryReason,
+        `deterministic checkpoint fallback failed: ${error instanceof Error ? error.message : String(error)}`,
+      ]),
+      ...(modelTokenCount !== undefined ? { modelTokenCount } : {}),
+    };
+  }
 }
 
 function parseSummary(content: string): {
@@ -298,6 +376,23 @@ function validateSummary(
     }
   }
   return errors;
+}
+
+function checkpointBoundsError(summary: ContextCheckpointSummary): string | undefined {
+  if (summary.narrative.length > CONTEXT_CHECKPOINT_NARRATIVE_MAX_CHARS) {
+    return `checkpoint narrative exceeds ${CONTEXT_CHECKPOINT_NARRATIVE_MAX_CHARS} characters`;
+  }
+  for (const key of SUMMARY_ARRAY_KEYS) {
+    if (summary[key].length > CONTEXT_CHECKPOINT_CATEGORY_MAX_ITEMS) {
+      return `checkpoint ${key} contains more than ${CONTEXT_CHECKPOINT_CATEGORY_MAX_ITEMS} items`;
+    }
+    if (summary[key].some((statement) => {
+      return statement.text.length > CONTEXT_CHECKPOINT_STATEMENT_MAX_CHARS;
+    })) {
+      return `checkpoint ${key} contains a statement above ${CONTEXT_CHECKPOINT_STATEMENT_MAX_CHARS} characters`;
+    }
+  }
+  return undefined;
 }
 
 function compactErrors(errors: string[]): string[] {

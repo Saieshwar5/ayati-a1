@@ -410,15 +410,16 @@ For each maintenance attempt:
    before the protected exact tail. The current input and newest completed
    user/system-event turn with its assistant response are never summarized.
 2. Refuse a plan whose checkpoint would not provide the requested savings.
-3. Generate a structured summary from the previous checkpoint plus newly
-   selected older messages. Retain active requests, constraints, corrections,
-   unresolved questions, assistant commitments, and needed references first;
-   then durable decisions, confirmed facts, preferences, and definitions.
-   Forget filler, repetition, resolved or superseded material, abandoned
-   alternatives, transient failures, unsolicited offers, speculation, long
-   quotations, and raw logs first. Allow at most one repair, but do not commit
-   yet. The 1,200-token value is a preferred target; a shared bounded safety
-   ceiling determines structural validity.
+3. Make at most one bounded semantic generation call over the previous
+   checkpoint plus newly selected older messages. Accept a valid result,
+   deterministically fit a structurally valid oversized result, or construct a
+   deterministic exact-message fallback when generation is invalid or fails.
+   Retain active requests, constraints, corrections, unresolved questions,
+   assistant commitments, and needed references first; then durable decisions,
+   confirmed facts, preferences, and definitions. Forget filler, repetition,
+   resolved or superseded material, abandoned alternatives, transient failures,
+   unsolicited offers, speculation, long quotations, and raw logs first. Do not
+   commit the candidate yet.
 4. Preview the candidate with its exact tail and measure the complete provider
    request before committing it. At a forced barrier, a candidate that cannot
    reduce the request is rejected.
@@ -427,14 +428,23 @@ For each maintenance attempt:
 6. Replace the loop projection with the fresh commit response, then rebuild and
    measure checkpoint plus exact tail.
 
-The default checkpoint target is 1,200 tokens. A checkpoint never grants
-authority; every statement cites an exact retained message sequence. One
-failed candidate is terminal for the same source during the current run; a
-later run or changed source may try again. Failed or unnecessary plans do not
-change durable state. Whole-request pressure is separate: it compacts older
-tool output and may create a disposable run-focus overlay, but it cannot create
-or rewrite the conversation checkpoint. Current work and resource records stay
-with their authoritative owners and are not pressure-managed prompt lanes.
+The default checkpoint budget is a strict 1,200 estimated tokens. Semantic
+generation targets a smaller result and receives a provider-side output
+ceiling. The deterministic fitter validates anchors, removes exact duplicates,
+orders statement categories by continuity priority, and measures the complete
+serialized summary after every admitted item. If semantic output is malformed,
+truncated, unanchored, or unavailable, the fallback combines the previous
+checkpoint with bounded exact excerpts from the selected message prefix. The
+same source-identity job is attempted only once.
+
+A checkpoint never grants authority; every statement cites an exact retained
+message sequence. The current input and exact recent tail remain outside the
+checkpoint, and exact older messages remain recoverable through history tools.
+WorkState, current-run tools and evidence, active documents, resource authority,
+failures, workstream state, and personal memory are never fallback source
+material. Failed or unnecessary plans do not change durable state. Whole-request
+pressure is separate: it compacts older tool output and may create a disposable
+run-focus overlay, but it cannot create or rewrite the conversation checkpoint.
 
 ## Current-Run Context Maintenance
 

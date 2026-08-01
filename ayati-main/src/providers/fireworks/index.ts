@@ -267,6 +267,9 @@ const provider: LlmProvider = {
     const request: Record<string, unknown> = {
       model,
       messages,
+      ...(input.maxOutputTokens !== undefined
+        ? { max_tokens: Math.max(1, Math.trunc(input.maxOutputTokens)) }
+        : {}),
       ...(responseFormat ? { response_format: responseFormat } : {}),
       ...(responseTools
         ? {
@@ -351,6 +354,9 @@ const provider: LlmProvider = {
       model,
       messages,
       stream: true,
+      ...(input.maxOutputTokens !== undefined
+        ? { max_tokens: Math.max(1, Math.trunc(input.maxOutputTokens)) }
+        : {}),
       ...(responseFormat ? { response_format: responseFormat } : {}),
       ...(responseTools
         ? {

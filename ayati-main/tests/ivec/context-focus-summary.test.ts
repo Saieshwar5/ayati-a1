@@ -178,7 +178,7 @@ describe("anchored run-focus preparation", () => {
       modelProfileVersion: "profile:1",
     })).toMatchObject({ valid: false, reason: "wrong_lane" });
     expect(validateMainCandidate({
-      candidate: { ...candidate, policyVersion: 2 },
+      candidate: { ...candidate, policyVersion: 3 },
       laneId: manager.laneId,
       stateView: appended,
       modelProfileVersion: "profile:1",

@@ -360,6 +360,12 @@ export class ContextPreparationManager {
       this.emit("context_candidate_ready", {
         candidateId: candidate.candidateId,
         kind: candidate.kind,
+        generationMethod: this.slot.checkpointGeneration?.generationMethod,
+        recoveryReason: this.slot.checkpointGeneration?.recoveryReason,
+        modelTokenCount: this.slot.checkpointGeneration?.modelTokenCount,
+        checkpointTokenCount: this.slot.checkpointGeneration?.tokenCount,
+        droppedCounts: this.slot.checkpointGeneration?.droppedCounts,
+        truncatedCounts: this.slot.checkpointGeneration?.truncatedCounts,
         estimatedSavingsTokens: this.slot.estimatedSavingsTokens,
         estimatedFinalInputTokens: this.slot.estimatedFinalInputTokens,
         targetReached: this.slot.targetReached,
@@ -370,6 +376,7 @@ export class ContextPreparationManager {
         this.emit("context_background_summary_completed", {
           candidateId: candidate.candidateId,
           kind: candidate.kind,
+          generationMethod: this.slot.checkpointGeneration?.generationMethod,
           durationMs: this.slot.background.durationMs,
           attempts: this.slot.background.attempts,
           inputTokens: this.slot.background.usage?.inputTokens,

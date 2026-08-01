@@ -83,11 +83,12 @@ describe("Anthropic provider", () => {
         { role: "system", content: "System" },
         { role: "user", content: "Hi" },
       ],
+      maxOutputTokens: 1_200,
     });
 
     expect(mockCreate).toHaveBeenCalledWith({
       model: "claude-sonnet-4-5-20250929",
-      max_tokens: 4096,
+      max_tokens: 1_200,
       system: "System",
       messages: [{ role: "user", content: "Hi" }],
     });

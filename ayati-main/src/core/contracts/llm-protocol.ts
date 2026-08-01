@@ -65,6 +65,8 @@ export interface LlmTurnInput {
   toolChoice?: LlmToolChoice;
   parallelToolCalls?: boolean;
   responseFormat?: LlmResponseFormat;
+  /** Optional provider-side ceiling for this response only. */
+  maxOutputTokens?: number;
 }
 
 export interface LlmTurnStreamCallbacks {

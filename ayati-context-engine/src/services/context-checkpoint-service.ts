@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
-import { contextCheckpointMaximumTokens } from "../context-checkpoint-token-policy.js";
-import type {
-  CommitContextCheckpointRequest,
-  ContextCheckpointPlan,
-  ContextCheckpointRecord,
-  ContextCheckpointSummary,
-  PlanContextCheckpointRequest,
-  StreamMessage,
+import {
+  CONTEXT_CHECKPOINT_CATEGORY_MAX_ITEMS,
+  CONTEXT_CHECKPOINT_NARRATIVE_MAX_CHARS,
+  CONTEXT_CHECKPOINT_STATEMENT_MAX_CHARS,
+  type CommitContextCheckpointRequest,
+  type ContextCheckpointPlan,
+  type ContextCheckpointRecord,
+  type ContextCheckpointSummary,
+  type PlanContextCheckpointRequest,
+  type StreamMessage,
 } from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
 import { ContextEngineServiceError } from "../errors.js";
@@ -133,11 +135,10 @@ export class ContextCheckpointService {
     if (sourceHash !== input.plan.sourceHash) {
       throw sourceChanged(input.plan.streamId, "The exact checkpoint source changed after planning.");
     }
-    this.validateSummary(input.summary, {
+    const tokenCount = this.validateSummary(input.summary, {
       streamId: input.plan.streamId,
       coveredFromSeq: input.plan.coveredFromSeq,
       coveredToSeq: input.plan.coveredToSeq,
-      tokenCount: input.tokenCount,
       estimatedCheckpointTokens: input.plan.estimatedCheckpointTokens,
     });
     const exactAnchors = checkpointAnchors(input.summary);
@@ -149,7 +150,7 @@ export class ContextCheckpointService {
       sourceHash,
       summary: input.summary,
       exactAnchors,
-      tokenCount: input.tokenCount,
+      tokenCount,
       provider: input.provider,
       model: input.model,
       at: input.at,
@@ -197,23 +198,20 @@ export class ContextCheckpointService {
     streamId: string;
     coveredFromSeq: number;
     coveredToSeq: number;
-    tokenCount: number;
     estimatedCheckpointTokens: number;
-  }): void {
+  }): number {
     const statements = SUMMARY_KEYS.flatMap((key) => summary[key]);
-    if (summary.narrative.trim().length === 0 || summary.narrative.length > 8_000
+    if (summary.narrative.trim().length === 0
+      || summary.narrative.length > CONTEXT_CHECKPOINT_NARRATIVE_MAX_CHARS
       || statements.some((statement) => statement.text.trim().length === 0
-        || statement.text.length > 2_000)
-      || SUMMARY_KEYS.some((key) => summary[key].length > 64)) {
+        || statement.text.length > CONTEXT_CHECKPOINT_STATEMENT_MAX_CHARS)
+      || SUMMARY_KEYS.some((key) => {
+        return summary[key].length > CONTEXT_CHECKPOINT_CATEGORY_MAX_ITEMS;
+      })) {
       throw invalidCheckpoint("Checkpoint summary does not satisfy the bounded V1 schema.");
     }
-    const estimatedTextTokens = estimateTextTokens([
-      summary.narrative,
-      ...statements.map((statement) => statement.text),
-    ].join("\n"));
-    const maximumTokens = contextCheckpointMaximumTokens(input.estimatedCheckpointTokens);
-    if (input.tokenCount <= 0 || input.tokenCount > maximumTokens
-      || estimatedTextTokens > Math.ceil(input.tokenCount * 1.25)) {
+    const tokenCount = estimateTextTokens(JSON.stringify(summary));
+    if (tokenCount > input.estimatedCheckpointTokens) {
       throw invalidCheckpoint("Checkpoint summary exceeds its validated token budget.");
     }
     for (const statement of statements) {
@@ -226,6 +224,7 @@ export class ContextCheckpointService {
         });
       }
     }
+    return tokenCount;
   }
 
   private messageSequenceExists(streamId: string, sequence: number): boolean {

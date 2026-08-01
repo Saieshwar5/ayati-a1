@@ -237,6 +237,9 @@ const provider: LlmProvider = {
     const request = {
       model,
       messages,
+      ...(input.maxOutputTokens !== undefined
+        ? { max_completion_tokens: Math.max(1, Math.trunc(input.maxOutputTokens)) }
+        : {}),
       ...(responseFormat ? { response_format: responseFormat as any } : {}),
       ...(responseTools
         ? {
@@ -314,6 +317,9 @@ const provider: LlmProvider = {
       model,
       messages,
       stream: true,
+      ...(input.maxOutputTokens !== undefined
+        ? { max_completion_tokens: Math.max(1, Math.trunc(input.maxOutputTokens)) }
+        : {}),
       ...(responseFormat ? { response_format: responseFormat as any } : {}),
       ...(responseTools
         ? {

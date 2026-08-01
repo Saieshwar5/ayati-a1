@@ -159,5 +159,5 @@ export interface ContextPreparationAdmissionState {
   atForcedBarrier: boolean;
 }
 
-export const CONTEXT_PREPARATION_POLICY_VERSION = 1;
+export const CONTEXT_PREPARATION_POLICY_VERSION = 2;
 export const RUN_FOCUS_SUMMARY_MAX_TOKENS = 1_600;

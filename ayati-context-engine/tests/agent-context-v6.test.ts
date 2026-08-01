@@ -124,6 +124,7 @@ describe("current-schema agent-facing context", () => {
       coveredToSeq: 4,
       reason: "context_pressure",
       exactAnchors: [1, 4],
+      tokenCount: checkpointTokens(summary),
     });
     expect(committed.context.stream?.checkpoint?.checkpointId)
       .toBe(committed.checkpoint.checkpointId);
@@ -181,7 +182,7 @@ describe("current-schema agent-facing context", () => {
       at: "2026-07-20T10:04:01+05:30",
     });
 
-    expect(firstCommit.checkpoint.tokenCount).toBe(190);
+    expect(firstCommit.checkpoint.tokenCount).toBe(checkpointTokens(checkpointSummary(1, 2)));
     expect(secondPlan).toMatchObject({
       triggered: true,
       previousCheckpoint: { checkpointId: firstCommit.checkpoint.checkpointId },
@@ -216,6 +217,42 @@ describe("current-schema agent-facing context", () => {
         importantFacts: [{ seq: 999, text: "Invented anchor." }],
       },
       tokenCount: 100,
+      provider: "test",
+      model: "test",
+      at: "2026-07-20T10:02:02+05:30",
+    })).rejects.toMatchObject({ code: "CHECKPOINT_INVALID" });
+    expect(fixture.database.prepare(
+      "SELECT active_checkpoint_id FROM agent_streams WHERE stream_id = ?",
+    ).get(fixture.prepared.stream.streamId)).toEqual({ active_checkpoint_id: null });
+  });
+
+  it("recomputes checkpoint size and rejects a summary above the strict plan budget", async () => {
+    const fixture = await createFixture("oversized-summary", "old " + "a".repeat(2_000));
+    await finalize(fixture, "answer " + "b".repeat(2_000), "old");
+    fixture.prepared = await fixture.service.prepareAgentRun(prepare(
+      "REQ-oversized-current",
+      "Current exact input.",
+      "2026-07-20T10:02:00+05:30",
+    ));
+    const plan = await fixture.service.planContextCheckpoint({
+      requestId: "REQ-oversized-plan",
+      streamId: fixture.prepared.stream.streamId,
+      protectFromSeq: fixture.prepared.message.sequence,
+      requiredSavingsTokens: 1,
+      estimatedCheckpointTokens: 200,
+      at: "2026-07-20T10:02:01+05:30",
+    });
+    const summary = checkpointSummary(1, 2);
+    summary.importantFacts = Array.from({ length: 12 }, (_, index) => ({
+      seq: 2,
+      text: `Fact ${index + 1}: ${"bounded context detail ".repeat(20)}`,
+    }));
+
+    await expect(fixture.service.commitContextCheckpoint({
+      requestId: "REQ-oversized-commit",
+      plan,
+      summary,
+      tokenCount: 1,
       provider: "test",
       model: "test",
       at: "2026-07-20T10:02:02+05:30",
@@ -641,4 +678,8 @@ function checkpointSummary(first: number, last: number): ContextCheckpointSummar
     references: [],
     narrative: "Earlier exact exchanges were completed and remain available through history.",
   };
+}
+
+function checkpointTokens(summary: ContextCheckpointSummary): number {
+  return Math.max(1, Math.ceil(Buffer.byteLength(JSON.stringify(summary), "utf8") / 4));
 }

@@ -71,15 +71,22 @@ describe("context preparation candidate lifecycle", () => {
 
   it("turns background errors into failed candidates without unhandled rejection", async () => {
     const manager = new ContextPreparationManager({ laneId: "main:RUN-2", provider: fakeProvider() });
-    const job = preparationJob(async () => {
+    const prepare = vi.fn(async () => {
       throw new Error("summary failed");
     });
+    const job = preparationJob(prepare);
     manager.startBackground(job);
     await manager.awaitRelevant(job.jobKey);
     expect(manager.currentCandidate()).toMatchObject({
       status: "failed",
       failureReason: "summary failed",
     });
+    expect(manager.startBackground(job)).toMatchObject({
+      status: "deduplicated",
+      candidate: { status: "failed" },
+    });
+    await expect(manager.prepareSynchronously(job)).resolves.toBeUndefined();
+    expect(prepare).toHaveBeenCalledTimes(1);
   });
 
   it("does not regenerate the same failed source during one run", async () => {
@@ -186,7 +193,7 @@ function preparationJob(
       canonicalSourceHashes: { "seq:1": "sha256:source" },
       sourceRefs: ["seq:1"],
       requiredExactEvidenceRefs: ["seq:2"],
-      policyVersion: 1,
+      policyVersion: 2,
       modelProfileVersion: "test-profile",
       deterministicTransformations: [],
       coveredSourceRefs: [],

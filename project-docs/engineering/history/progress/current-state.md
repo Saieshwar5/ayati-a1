@@ -39,8 +39,9 @@ context pack -> decision -> action executor -> deterministic verification -> pro
 - Structured `recordRunStep` persistence with ordered tool calls,
   verification, WorkState, and resource-versioned observations.
 - Runtime-owned `context.maintain` conversation checkpoints with an exact
-  current/recent tail, explicit retention priority, exact anchors, one repair,
-  and atomic active-pointer update.
+  current/recent tail, explicit retention priority, exact anchors, one bounded
+  semantic attempt, deterministic fitting/fallback, and atomic active-pointer
+  update.
 - Runtime-triggered `run.maintain` for whole-request pressure: one bounded
   WorkState-and-retention decision, deterministic per-tool projection policy,
   recoverable exact journal references, unknown-tool fail-safe retention, and
