@@ -4,6 +4,26 @@ import type {
   ValidationCheckResult,
   ValidationCheckStatus,
 } from "./task-validation-contracts.js";
+import type { ContextMaintainModeProgress } from "./context-maintain-mode.js";
+import type { RunMaintainModeProgress } from "./run-maintain-mode.js";
+
+export {
+  enterContextMaintainMode,
+  restoreVirtualModeAfterContextMaintenance,
+} from "./context-maintain-mode.js";
+export type {
+  ContextMaintainModeProgress,
+  ContextMaintainReturnState,
+} from "./context-maintain-mode.js";
+export {
+  enterRunMaintainMode,
+  recordRunMaintainAttempt,
+  restoreVirtualModeAfterRunMaintenance,
+} from "./run-maintain-mode.js";
+export type {
+  RunMaintainModeProgress,
+  RunMaintainReturnState,
+} from "./run-maintain-mode.js";
 
 export type {
   FileReadValidationScope,
@@ -16,6 +36,8 @@ export type {
 } from "./task-validation-contracts.js";
 
 export const VIRTUAL_MODE_NAMES = [
+  "context.maintain",
+  "run.maintain",
   "context.retrieve",
   "observe.locate",
   "observe.investigate",
@@ -26,7 +48,10 @@ export const VIRTUAL_MODE_NAMES = [
 
 export type VirtualModeName = (typeof VIRTUAL_MODE_NAMES)[number];
 
-export type VirtualModeTransitionTarget = VirtualModeName | "resolve";
+export type VirtualModeTransitionTarget = Exclude<
+  VirtualModeName,
+  "context.maintain" | "run.maintain"
+> | "resolve";
 
 export type VirtualModeSource = "ENTRY" | VirtualModeName;
 
@@ -64,7 +89,10 @@ export type ModeTransitionMutationScope =
     };
 
 export interface ValidationModeProgress {
-  returnMode: Exclude<VirtualModeName, "validation" | "context.retrieve">;
+  returnMode: Exclude<
+    VirtualModeName,
+    "validation" | "context.maintain" | "run.maintain" | "context.retrieve"
+  >;
   status: ValidationCheckStatus;
   checks: ValidationCheckResult[];
   resourceMetadata?: ResourceMetadataProposal[];
@@ -72,7 +100,10 @@ export interface ValidationModeProgress {
 
 export interface ContextRetrieveModeProgress {
   returnState: {
-    active: Exclude<VirtualModeName, "context.retrieve"> | null;
+    active: Exclude<
+      VirtualModeName,
+      "context.maintain" | "run.maintain" | "context.retrieve"
+    > | null;
     purpose?: string;
     capabilities: string[];
     targets: string[];
@@ -117,6 +148,8 @@ export interface VirtualModeState {
   enteredAtIteration?: number;
   validation?: ValidationModeProgress;
   contextRetrieve?: ContextRetrieveModeProgress;
+  contextMaintain?: ContextMaintainModeProgress;
+  runMaintain?: RunMaintainModeProgress;
 }
 
 export interface VirtualModeCard {
@@ -130,6 +163,14 @@ export interface VirtualModeCard {
   contextRetrieve?: {
     returnTo: Exclude<VirtualModeSource, "context.retrieve">;
   };
+  contextMaintain?: {
+    reason: ContextMaintainModeProgress["reason"];
+    returnTo: Exclude<VirtualModeSource, "context.maintain">;
+    protectFromSeq: number;
+    continuityMaxTokens: number;
+    unloadedRanges: ContextMaintainModeProgress["unloadedRanges"];
+  };
+  runMaintain?: import("./run-context-maintenance-contracts.js").PromptRunContextMaintenanceCard;
 }
 
 export type VirtualModeRepairCode =
@@ -159,6 +200,8 @@ export interface VirtualModeRepair {
 
 export const VIRTUAL_MODE_GRAPH: Readonly<Record<VirtualModeSource, readonly VirtualModeTransitionTarget[]>> = {
   ENTRY: ["context.retrieve", "observe.locate", "observe.investigate"],
+  "context.maintain": [],
+  "run.maintain": [],
   "context.retrieve": [],
   "observe.locate": ["context.retrieve", "observe.locate", "observe.investigate", "workstream.route", "validation"],
   "observe.investigate": ["context.retrieve", "observe.locate", "observe.investigate", "workstream.route", "validation"],
@@ -299,9 +342,18 @@ export function buildVirtualModeCard(
   }
   if (source === "validation" && current.validation?.status === "passed") {
     allowedNext.unshift("normal_reply");
-  } else if (source !== "ENTRY" && source !== "context.retrieve") {
+  } else if (
+    source !== "ENTRY"
+    && source !== "context.maintain"
+    && source !== "run.maintain"
+    && source !== "context.retrieve"
+  ) {
     allowedNext.push("stop");
-  } else if (isVirtualGraphActive(current)) {
+  } else if (
+    source !== "context.maintain"
+    && source !== "run.maintain"
+    && isVirtualGraphActive(current)
+  ) {
     allowedNext.push("stop");
   }
   return {
@@ -324,6 +376,28 @@ export function buildVirtualModeCard(
     ...(current.contextRetrieve ? {
       contextRetrieve: {
         returnTo: current.contextRetrieve.returnState.active ?? "ENTRY",
+      },
+    } : {}),
+    ...(current.contextMaintain ? {
+      contextMaintain: {
+        reason: current.contextMaintain.reason,
+        returnTo: current.contextMaintain.returnState.active ?? "ENTRY",
+        protectFromSeq: current.contextMaintain.protectFromSeq,
+        continuityMaxTokens: current.contextMaintain.continuityMaxTokens,
+        unloadedRanges: current.contextMaintain.unloadedRanges.map((range) => ({ ...range })),
+      },
+    } : {}),
+    ...(current.runMaintain ? {
+      runMaintain: {
+        reason: current.runMaintain.reason,
+        maintenanceId: current.runMaintain.plan.maintenanceId,
+        returnTo: current.runMaintain.returnState.active ?? "ENTRY",
+        expectedWorkStateRevision: current.runMaintain.plan.expectedWorkStateRevision,
+        sourceThroughStep: current.runMaintain.plan.sourceThroughStep,
+        requiredSavingsTokens: current.runMaintain.plan.requiredSavingsTokens,
+        candidates: current.runMaintain.plan.inventory.map((candidate) => ({ ...candidate })),
+        omittedCandidateCount: current.runMaintain.plan.omittedCandidateCount,
+        protectedRefs: [...current.runMaintain.plan.protectedRefs],
       },
     } : {}),
   };
@@ -436,6 +510,8 @@ function createValidationModeProgress(
 ): ValidationModeProgress {
   const returnMode = previous.active
     && previous.active !== "validation"
+    && previous.active !== "context.maintain"
+    && previous.active !== "run.maintain"
     && previous.active !== "context.retrieve"
     ? previous.active
     : "observe.investigate";
@@ -458,7 +534,11 @@ function createContextRetrieveModeProgress(
 ): ContextRetrieveModeProgress {
   return {
     returnState: {
-      active: previous.active === "context.retrieve" ? null : previous.active,
+      active: previous.active === "context.retrieve"
+        || previous.active === "context.maintain"
+        || previous.active === "run.maintain"
+        ? null
+        : previous.active,
       ...(previous.purpose ? { purpose: previous.purpose } : {}),
       capabilities: [...previous.capabilities],
       targets: [...previous.targets],

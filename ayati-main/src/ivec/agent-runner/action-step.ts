@@ -28,6 +28,7 @@ import {
 import { deriveFilesystemCompletionEvidence } from "./filesystem-completion-evidence.js";
 import { toolCallVerificationPassed } from "./tool-call-verification.js";
 import { isAbsolute } from "node:path";
+import { compactSupersededConversationPages } from "./conversation-page-context.js";
 
 const noopRunRecorder: RunRecorder = {
   recordToolCall(): void {
@@ -214,17 +215,18 @@ export function buildUpdatedToolContext(
     stepKind?: RunToolCallContext["stepKind"];
   } = {},
 ): LoopState["toolContext"] {
+  const toolCalls = compactSupersededConversationPages([
+    ...(state.toolContext?.toolCalls ?? []),
+    ...execution.actOutput.toolCalls.map((call) => toRunToolCallContext(
+      state.runId,
+      stepNumber,
+      call,
+      options,
+    )),
+  ]);
   return compactToolContext({
     recent: getLatestObservations(execution),
-    toolCalls: [
-      ...(state.toolContext?.toolCalls ?? []),
-      ...execution.actOutput.toolCalls.map((call) => toRunToolCallContext(
-        state.runId,
-        stepNumber,
-        call,
-        options,
-      )),
-    ],
+    toolCalls,
   });
 }
 

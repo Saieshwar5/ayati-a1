@@ -72,6 +72,24 @@ describe("context pressure state", () => {
     expect(laterFull.mode).toBe("tool_compact");
   });
 
+  it("does not turn conversation-only maintenance into run context pressure", () => {
+    const state = updateContextPressureState({
+      receipt: receipt({
+        mode: "stream_checkpoint",
+        candidateInputTokens: 12_000,
+        finalInputTokens: 10_000,
+        softLimitExceeded: false,
+        targetReached: true,
+        needsEscalation: false,
+      }),
+      iteration: 2,
+    });
+
+    expect(state.mode).toBe("full");
+    expect(state.softLimitBreachCount).toBe(0);
+    expect(state.unresolvedPressureStreak).toBe(0);
+  });
+
   it("recommends an agent-stream checkpoint after two unresolved iterations", () => {
     const first = updateContextPressureState({
       receipt: unresolvedReceipt(),
@@ -87,7 +105,7 @@ describe("context pressure state", () => {
     expect(first.recommendedMode).toBeUndefined();
     expect(second.mode).toBe("tool_compact");
     expect(second.unresolvedPressureStreak).toBe(2);
-    expect(second.recommendedMode).toBe("stream_checkpoint");
+    expect(second.recommendedMode).toBe("step_ledger");
     expect(second.escalationReason).toBe("repeated_unresolved_pressure");
   });
 
@@ -112,7 +130,7 @@ describe("context pressure state", () => {
 
     expect(first.mode).toBe("full");
     expect(first.unresolvedPressureStreak).toBe(1);
-    expect(second.recommendedMode).toBe("stream_checkpoint");
+    expect(second.recommendedMode).toBe("step_ledger");
   });
 
   it("does not advance unresolved pressure from a shadow projection", () => {
@@ -139,7 +157,7 @@ describe("context pressure state", () => {
     });
 
     expect(state.unresolvedPressureStreak).toBe(1);
-    expect(state.recommendedMode).toBe("stream_checkpoint");
+    expect(state.recommendedMode).toBe("step_ledger");
     expect(state.escalationReason).toBe("near_admission_limit");
   });
 
@@ -207,7 +225,7 @@ describe("context pressure state", () => {
       iteration: 3,
     });
 
-    expect(recovered.recommendedMode).toBe("stream_checkpoint");
+    expect(recovered.recommendedMode).toBe("step_ledger");
     expect(recovered.escalationReason).toBe("near_admission_limit");
     expect(recovered.unresolvedPressureStreak).toBe(0);
   });

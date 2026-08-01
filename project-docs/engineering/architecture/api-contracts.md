@@ -50,7 +50,7 @@ The service owns:
 
 - atomic agent-run preparation;
 - agent streams and immutable messages;
-- pressure checkpoints and bounded exact history access;
+- conversation-continuity checkpoints and bounded exact history access;
 - one-run lifecycle and structured steps;
 - workstream/request catalog, full request lifecycle, typed routing,
   discovery, creation, activation, and stars;

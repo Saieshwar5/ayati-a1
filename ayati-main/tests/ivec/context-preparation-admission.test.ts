@@ -10,7 +10,6 @@ import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { AgentStateView } from "../../src/ivec/agent-runner/state-view.js";
 import { buildCoreCapsule } from "../../src/ivec/agent-runner/core-capsule.js";
 import { compilePreparedMainContext } from "../../src/ivec/context-preparation/main-admission.js";
-import { createMainPreparationJob } from "../../src/ivec/context-preparation/main-candidates.js";
 import {
   ContextPreparationManager,
   type ContextPreparationJob,
@@ -20,7 +19,7 @@ import type { AgentContextCheckpointCoordinator } from "../../src/ivec/types.js"
 const AT = "2026-07-21T10:00:00.000Z";
 
 describe("prepared main-context admission", () => {
-  it("generates a durable candidate without committing, then adopts the fresh commit projection", async () => {
+  it("generates and commits a durable checkpoint only through context maintenance", async () => {
     const fixture = await preparedDurableFixture();
 
     expect(fixture.commit).not.toHaveBeenCalled();
@@ -33,10 +32,11 @@ describe("prepared main-context admission", () => {
       policy: "enforce",
       manager: fixture.manager,
       contextCheckpoint: fixture.coordinator,
+      contextMaintenance: fixture.contextMaintenance,
       buildPrompt: prompt,
       applyAuthoritativeContext: fixture.applyAuthoritativeContext,
       allowBackgroundPreparation: false,
-      allowSynchronousSemanticRecovery: false,
+      allowSynchronousSemanticRecovery: true,
     });
 
     expect(fixture.commit).toHaveBeenCalledTimes(1);
@@ -52,25 +52,15 @@ describe("prepared main-context admission", () => {
     expect(finalPrompt).toContain("FRESH-WORK");
     if (typeof finalPrompt !== "string") throw new Error("Expected a serialized state prompt.");
     const finalState = JSON.parse(finalPrompt.slice(finalPrompt.indexOf("{"))) as AgentStateView;
-    expect(finalState.context.core.continuity.recentExact).toEqual([]);
-    expect(finalState.context.core.current.input.seq).toBe(3);
+    expect(finalState.context.core.continuity.recentExact.map((event) => event.seq)).toEqual([3, 4]);
+    expect(finalState.context.core.current.input.seq).toBe(5);
     expect(finalState.context.core.continuity.checkpoint?.coveredToSeq).toBe(2);
+    expect(fixture.contextMaintenance.enter).toHaveBeenCalledTimes(1);
+    expect(fixture.contextMaintenance.exit).toHaveBeenCalledTimes(1);
   });
 
-  it("maintains the Core Capsule below whole-prompt pressure when its own budget is exceeded", async () => {
-    const fixture = await preparedDurableFixture(false);
-    fixture.originalState.context.core = buildCoreCapsule({
-      revision: "core:oversized",
-      runId: "RUN-1",
-      continuityMaxTokens: 300,
-      timeline: [
-        { kind: "user", seq: 1, timestamp: AT, content: "A".repeat(6_000) },
-        { kind: "assistant", seq: 2, timestamp: AT, content: "B".repeat(6_000) },
-        { kind: "user", seq: 3, timestamp: AT, content: "CURRENT", current: true },
-      ],
-      routing: { status: "unbound" },
-    });
-    expect(fixture.originalState.context.core.continuity.maintenanceRequired).toBe(true);
+  it("does not create a durable checkpoint outside the context-maintenance lifecycle", async () => {
+    const fixture = await preparedDurableFixture();
 
     const compilation = await compilePreparedMainContext({
       provider: fixture.provider,
@@ -87,9 +77,59 @@ describe("prepared main-context admission", () => {
       allowSynchronousSemanticRecovery: true,
     });
 
+    expect(fixture.coordinator.plan).not.toHaveBeenCalled();
+    expect(fixture.commit).not.toHaveBeenCalled();
+    expect(compilation.receipt.candidateAction).toBe("none");
+  });
+
+  it("maintains the Core Capsule below whole-prompt pressure when its own budget is exceeded", async () => {
+    const fixture = await preparedDurableFixture();
+    fixture.originalState.context.core = buildCoreCapsule({
+      revision: "core:oversized",
+      runId: "RUN-1",
+      continuityMaxTokens: 300,
+      timeline: [
+        { kind: "user", seq: 1, timestamp: AT, content: "A".repeat(6_000) },
+        { kind: "assistant", seq: 2, timestamp: AT, content: "B".repeat(6_000) },
+        { kind: "user", seq: 3, timestamp: AT, content: "Recent request" },
+        { kind: "assistant", seq: 4, timestamp: AT, content: "Recent response" },
+        { kind: "user", seq: 5, timestamp: AT, content: "CURRENT", current: true },
+      ],
+      routing: { status: "unbound" },
+    });
+    expect(fixture.originalState.context.core.continuity.maintenanceRequired).toBe(true);
+    const enter = vi.fn();
+    const exit = vi.fn(() => fixture.freshState);
+
+    const compilation = await compilePreparedMainContext({
+      provider: fixture.provider,
+      stateView: fixture.originalState,
+      turnInput: turnInput(),
+      contextLimits: limits(),
+      decisionAttempt: 1,
+      policy: "enforce",
+      manager: fixture.manager,
+      contextCheckpoint: fixture.coordinator,
+      buildPrompt: prompt,
+      applyAuthoritativeContext: fixture.applyAuthoritativeContext,
+      allowBackgroundPreparation: false,
+      allowSynchronousSemanticRecovery: true,
+      contextMaintenance: { enter, exit },
+    });
+
     expect(compilation.candidateBudget.measuredInputTokens).toBeLessThan(55_000);
     expect(fixture.coordinator.plan).toHaveBeenCalledTimes(1);
     expect(fixture.commit).toHaveBeenCalledTimes(1);
+    expect(enter).toHaveBeenCalledWith(expect.objectContaining({
+      reason: "continuity_budget",
+      protectFromSeq: 3,
+      continuityMaxTokens: 300,
+    }));
+    expect(exit).toHaveBeenCalledWith(expect.objectContaining({
+      status: "completed",
+      reason: "checkpoint_committed",
+      checkpointId: "CHK-adopted",
+    }));
     expect(compilation.receipt).toMatchObject({
       mode: "stream_checkpoint",
       candidateAction: "adopted",
@@ -97,7 +137,52 @@ describe("prepared main-context admission", () => {
     });
   });
 
-  it("measures but never mounts or commits a ready candidate in shadow mode", async () => {
+  it("restores the task mode and does not retry a failed maintenance source", async () => {
+    const fixture = await preparedDurableFixture();
+    fixture.provider.generateTurn = vi.fn().mockResolvedValue({
+      type: "assistant" as const,
+      content: "not valid checkpoint json",
+    });
+    const enter = vi.fn();
+    const exit = vi.fn(() => fixture.originalState);
+
+    const compile = async () => await compilePreparedMainContext({
+      provider: fixture.provider,
+      stateView: fixture.originalState,
+      turnInput: turnInput(),
+      contextLimits: limits(),
+      decisionAttempt: 1,
+      policy: "enforce",
+      manager: fixture.manager,
+      contextCheckpoint: fixture.coordinator,
+      buildPrompt: prompt,
+      applyAuthoritativeContext: fixture.applyAuthoritativeContext,
+      allowBackgroundPreparation: false,
+      allowSynchronousSemanticRecovery: true,
+      contextMaintenance: { enter, exit },
+    });
+
+    const first = await compile();
+    expect(first.receipt).toMatchObject({
+      candidateAction: "rejected",
+      candidate: { kind: "durable_checkpoint", status: "failed" },
+    });
+    expect(enter).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(expect.objectContaining({
+      status: "failed",
+    }));
+    const generationCallsAfterFirstAttempt = vi.mocked(fixture.provider.generateTurn).mock.calls.length;
+    expect(generationCallsAfterFirstAttempt).toBeGreaterThan(0);
+
+    await compile();
+    expect(enter).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledTimes(1);
+    expect(fixture.provider.generateTurn).toHaveBeenCalledTimes(generationCallsAfterFirstAttempt);
+    expect(fixture.commit).not.toHaveBeenCalled();
+  });
+
+  it("runs conversation maintenance independently of tool-projection shadow mode", async () => {
     const fixture = await preparedDurableFixture();
     const compilation = await compilePreparedMainContext({
       provider: fixture.provider,
@@ -108,22 +193,25 @@ describe("prepared main-context admission", () => {
       policy: "shadow",
       manager: fixture.manager,
       contextCheckpoint: fixture.coordinator,
+      contextMaintenance: fixture.contextMaintenance,
       buildPrompt: prompt,
       applyAuthoritativeContext: fixture.applyAuthoritativeContext,
       allowBackgroundPreparation: false,
-      allowSynchronousSemanticRecovery: false,
+      allowSynchronousSemanticRecovery: true,
     });
 
-    expect(fixture.commit).not.toHaveBeenCalled();
-    expect(fixture.applyAuthoritativeContext).not.toHaveBeenCalled();
+    expect(fixture.commit).toHaveBeenCalledTimes(1);
+    expect(fixture.coordinator.plan).toHaveBeenCalledTimes(1);
+    expect(fixture.applyAuthoritativeContext).toHaveBeenCalledWith(fixture.freshContext);
+    expect(fixture.contextMaintenance.enter).toHaveBeenCalledTimes(1);
+    expect(fixture.contextMaintenance.exit).toHaveBeenCalledTimes(1);
     expect(compilation.receipt).toMatchObject({
-      mode: "full",
-      candidateAction: "measured",
-      candidateReason: "shadow_policy",
-      candidate: { status: "discarded" },
+      mode: "stream_checkpoint",
+      candidateAction: "adopted",
+      toolProjectionPolicy: "shadow",
     });
     expect(compilation.finalTurnInput.messages.find((message) => message.role === "user")?.content)
-      .toContain("Earlier request");
+      .toContain("FRESH-WORK");
   });
 
   it("rejects a changed checkpoint base without moving the durable pointer", async () => {
@@ -139,9 +227,10 @@ describe("prepared main-context admission", () => {
       policy: "enforce",
       manager: fixture.manager,
       contextCheckpoint: fixture.coordinator,
+      contextMaintenance: fixture.contextMaintenance,
       buildPrompt: prompt,
       allowBackgroundPreparation: false,
-      allowSynchronousSemanticRecovery: false,
+      allowSynchronousSemanticRecovery: true,
     });
 
     expect(fixture.commit).not.toHaveBeenCalled();
@@ -166,9 +255,10 @@ describe("prepared main-context admission", () => {
       policy: "enforce",
       manager: fixture.manager,
       contextCheckpoint: fixture.coordinator,
+      contextMaintenance: fixture.contextMaintenance,
       buildPrompt: prompt,
       allowBackgroundPreparation: false,
-      allowSynchronousSemanticRecovery: false,
+      allowSynchronousSemanticRecovery: true,
     });
 
     expect(compilation.receipt).toMatchObject({
@@ -177,6 +267,43 @@ describe("prepared main-context admission", () => {
       candidate: { status: "stale" },
     });
     expect(fixture.coordinator.currentContext().agentStream.checkpoint).toBeUndefined();
+  });
+
+  it("does not commit a checkpoint that cannot reduce context at the forced barrier", async () => {
+    const fixture = await preparedDurableFixture();
+    fixture.originalState.context.hot.loaded[0]!.content = "x".repeat(300_000);
+    const countInputTokens = vi.fn().mockResolvedValue({
+      provider: "test",
+      model: "test-model",
+      inputTokens: 90_000,
+      exact: true,
+    });
+    const provider: LlmProvider = {
+      ...fixture.provider,
+      countInputTokens,
+    };
+
+    const compilation = await compilePreparedMainContext({
+      provider,
+      stateView: fixture.originalState,
+      turnInput: turnInput(),
+      contextLimits: limits(),
+      decisionAttempt: 1,
+      policy: "enforce",
+      manager: fixture.manager,
+      contextCheckpoint: fixture.coordinator,
+      contextMaintenance: fixture.contextMaintenance,
+      buildPrompt: prompt,
+      allowBackgroundPreparation: false,
+      allowSynchronousSemanticRecovery: true,
+    });
+
+    expect(fixture.commit).not.toHaveBeenCalled();
+    expect(compilation.receipt).toMatchObject({
+      candidateAction: "rejected",
+      candidateReason: "checkpoint_candidate_did_not_reduce_context",
+      candidate: { status: "stale" },
+    });
   });
 
   it("rejects a durable candidate that overlaps an active focus owner", async () => {
@@ -208,9 +335,10 @@ describe("prepared main-context admission", () => {
       policy: "enforce",
       manager: fixture.manager,
       contextCheckpoint: fixture.coordinator,
+      contextMaintenance: fixture.contextMaintenance,
       buildPrompt: prompt,
       allowBackgroundPreparation: false,
-      allowSynchronousSemanticRecovery: false,
+      allowSynchronousSemanticRecovery: true,
     });
 
     expect(fixture.commit).not.toHaveBeenCalled();
@@ -430,7 +558,7 @@ describe("prepared main-context admission", () => {
   });
 });
 
-async function preparedDurableFixture(prepareCandidate = true) {
+async function preparedDurableFixture() {
   const generateTurn = vi.fn().mockResolvedValue({
     type: "assistant" as const,
     content: JSON.stringify(checkpointSummary()),
@@ -444,9 +572,11 @@ async function preparedDurableFixture(prepareCandidate = true) {
     generateTurn,
   };
   let authoritativeContext = machineContext();
+  let checkpointCommitted = false;
   const plan = checkpointPlan();
   const freshContext = machineContext(adoptedCheckpoint());
   const commit = vi.fn(async () => {
+    checkpointCommitted = true;
     authoritativeContext = freshContext;
     return { checkpoint: adoptedCheckpoint(), context: freshContext };
   });
@@ -456,33 +586,47 @@ async function preparedDurableFixture(prepareCandidate = true) {
     currentContext: () => authoritativeContext,
   };
   const originalState = stateView("ORIGINAL-WORK", true);
+  originalState.context.core = buildCoreCapsule({
+    revision: "core:maintenance-required",
+    runId: "RUN-1",
+    continuityMaxTokens: 1,
+    timeline: [
+      { kind: "user", seq: 1, timestamp: AT, content: "Earlier request" },
+      { kind: "assistant", seq: 2, timestamp: AT, content: "Earlier response" },
+      { kind: "user", seq: 3, timestamp: AT, content: "Recent request" },
+      { kind: "assistant", seq: 4, timestamp: AT, content: "Recent response" },
+      { kind: "user", seq: 5, timestamp: AT, content: "CURRENT", current: true },
+    ],
+    routing: { status: "unbound" },
+  });
   const freshState = stateView("FRESH-WORK", false, adoptedCheckpoint());
+  freshState.context.core = buildCoreCapsule({
+    revision: "checkpoint:CHK-adopted",
+    runId: "RUN-1",
+    continuityMaxTokens: 1,
+    checkpoint: adoptedCheckpoint(),
+    timeline: [
+      { kind: "user", seq: 3, timestamp: AT, content: "Recent request" },
+      { kind: "assistant", seq: 4, timestamp: AT, content: "Recent response" },
+      { kind: "user", seq: 5, timestamp: AT, content: "CURRENT", current: true },
+    ],
+    routing: { status: "unbound" },
+  });
+  const contextMaintenance = {
+    enter: vi.fn(),
+    exit: vi.fn(() => checkpointCommitted ? freshState : originalState),
+  };
   const applyAuthoritativeContext = vi.fn(() => freshState);
   const manager = new ContextPreparationManager({ laneId: "main:RUN-1", provider });
-  if (prepareCandidate) {
-    const job = createMainPreparationJob({
-      provider,
-      laneId: manager.laneId,
-      stateView: originalState,
-      currentInputTokens: 80_000,
-      predictedInputTokens: 95_000,
-      recoveryTargetTokens: 60_000,
-      contextLimits: limits(),
-      modelProfileVersion: "test:test-model:128000:auto:8192:55000:60000:70000:100000",
-      contextCheckpoint: coordinator,
-      synchronous: true,
-    });
-    if (!job) throw new Error("Expected a durable checkpoint job.");
-    const candidate = await manager.prepareSynchronously(job);
-    if (!candidate) throw new Error("Expected a ready durable checkpoint candidate.");
-  }
   return {
     provider,
     manager,
     coordinator,
     commit,
     originalState,
+    freshState,
     freshContext,
+    contextMaintenance,
     applyAuthoritativeContext,
     setAuthoritativeContext(value: ContextEngineMachineContext) {
       authoritativeContext = value;
@@ -550,7 +694,11 @@ function checkpointPlan(): ContextCheckpointPlan {
       message(1, "user", "Earlier request"),
       message(2, "assistant", "Earlier response"),
     ],
-    exactTail: [message(3, "user", "CURRENT")],
+    exactTail: [
+      message(3, "user", "Recent request"),
+      message(4, "assistant", "Recent response"),
+      message(5, "user", "CURRENT"),
+    ],
     coveredFromSeq: 1,
     coveredToSeq: 2,
     sourceHash: "sha256:source",
@@ -605,17 +753,21 @@ function machineContext(checkpoint?: ContextCheckpointRecord): ContextEngineMach
         scopeKey: "default",
         createdAt: AT,
         updatedAt: AT,
-        lastMessageSequence: 3,
+        lastMessageSequence: 5,
         lastRunSequence: 1,
         resourceCount: 0,
       },
       ...(checkpoint ? { checkpoint } : {}),
-      recentMessages: [message(3, "user", "CURRENT")],
+      recentMessages: [
+        message(3, "user", "Recent request"),
+        message(4, "assistant", "Recent response"),
+        message(5, "user", "CURRENT"),
+      ],
       recentWorkstreams: [],
       recentFiles: [],
       resources: [],
     },
-    current: { inputSeq: 3, runId: "RUN-1", routing: { status: "unbound" } },
+    current: { inputSeq: 5, runId: "RUN-1", routing: { status: "unbound" } },
     focus: { status: "none" },
     warnings: [],
   };
@@ -648,9 +800,9 @@ function pendingFocusJob(pending: Promise<void>): ContextPreparationJob {
     jobKey: "main:RUN-1:prefix:pending:1:run_focus",
     kind: "run_focus",
     seed: {
-      messagePrefixThroughSeq: 2,
+      runStepPrefixThrough: 2,
       canonicalSourceHashes: {},
-      sourceRefs: ["seq:1", "seq:2"],
+      sourceRefs: ["step:1", "step:2"],
       requiredExactEvidenceRefs: [],
       policyVersion: 1,
       modelProfileVersion: "test:test-model:128000:auto:8192:55000:60000:70000:100000",
@@ -665,7 +817,7 @@ function pendingFocusJob(pending: Promise<void>): ContextPreparationJob {
       return {
         focusSummary: {
           schemaVersion: 1,
-          coveredMessageRange: { fromSeq: 1, toSeq: 2 },
+          coveredStepRange: { fromStep: 1, toStep: 2 },
           goal: "Keep the current run focused.",
           constraints: [],
           decisions: [],
@@ -675,7 +827,7 @@ function pendingFocusJob(pending: Promise<void>): ContextPreparationJob {
           unresolvedQuestions: [],
           references: [],
         },
-        coveredSourceRefs: ["seq:1", "seq:2"],
+        coveredSourceRefs: ["step:1", "step:2"],
       };
     },
   };

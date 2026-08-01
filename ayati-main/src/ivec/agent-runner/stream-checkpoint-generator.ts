@@ -3,6 +3,7 @@ import type {
   ContextCheckpointStatement,
   ContextCheckpointSummary,
 } from "ayati-context-engine";
+import { contextCheckpointMaximumTokens } from "ayati-context-engine";
 import type { LlmProvider } from "../../core/contracts/provider.js";
 import type { LlmCostEstimate, LlmTokenUsage } from "../../core/contracts/llm-protocol.js";
 import { correctLocalInputTokenEstimate } from "../../prompt/context-token-counter.js";
@@ -42,6 +43,8 @@ export async function generateStreamCheckpoint(input: {
   provider: LlmProvider;
   plan: ContextCheckpointPlan;
   maxInputTokens?: number;
+  /** Optional stricter ceiling required to recover the current prompt. */
+  maximumSummaryTokens?: number;
 }): Promise<StreamCheckpointGenerationResult> {
   if (!input.plan.triggered
     || input.plan.coveredFromSeq === undefined
@@ -54,12 +57,19 @@ export async function generateStreamCheckpoint(input: {
     };
   }
   const attempts: StreamCheckpointGenerationAttempt[] = [];
+  const maximumTokens = Math.min(
+    contextCheckpointMaximumTokens(input.plan.estimatedCheckpointTokens),
+    Math.max(1, Math.trunc(
+      input.maximumSummaryTokens
+        ?? contextCheckpointMaximumTokens(input.plan.estimatedCheckpointTokens),
+    )),
+  );
   let previousErrors: string[] = [];
   for (let attempt = 1; attempt <= MAX_GENERATION_ATTEMPTS; attempt++) {
     const startedAt = Date.now();
     try {
       const turnInput = {
-        messages: checkpointMessages(input.plan, previousErrors),
+        messages: checkpointMessages(input.plan, maximumTokens, previousErrors),
         responseFormat: {
           type: "json_schema",
           name: "agent_stream_checkpoint_summary",
@@ -104,9 +114,9 @@ export async function generateStreamCheckpoint(input: {
       const tokenCount = parsed.summary
         ? estimateTextTokens(JSON.stringify(parsed.summary))
         : undefined;
-      if (tokenCount !== undefined && tokenCount > input.plan.estimatedCheckpointTokens) {
+      if (tokenCount !== undefined && tokenCount > maximumTokens) {
         validationErrors.push(
-          `checkpoint uses ${tokenCount} tokens, above budget ${input.plan.estimatedCheckpointTokens}`,
+          `checkpoint uses ${tokenCount} tokens, above safety ceiling ${maximumTokens}`,
         );
       }
       if (!parsed.summary || tokenCount === undefined || validationErrors.length > 0) {
@@ -155,20 +165,27 @@ export async function generateStreamCheckpoint(input: {
 
 function checkpointMessages(
   plan: ContextCheckpointPlan,
+  maximumTokens: number,
   previousErrors: string[],
 ): Array<{ role: "system" | "user"; content: string }> {
   return [
     {
       role: "system",
       content: [
-        "Create a structured continuity checkpoint for one agent stream.",
-        "Use only the supplied previous checkpoint and exact messages; never invent facts.",
+        "Create a structured conversation-continuity checkpoint for one agent stream.",
+        "Summarize only the supplied previous checkpoint and messagesToSummarize; never invent facts.",
+        "protectedRecentContext remains exact outside the checkpoint. Use it only to detect repetition, resolution, or newer corrections; do not copy it into the checkpoint and do not cite it.",
         "Every array item must cite the exact message sequence that supports it.",
-        "Preserve requests, constraints, decisions, corrections, important facts, unresolved questions, and literal references.",
+        "Retention priority 1: active user requests, explicit constraints, user corrections, unresolved questions, assistant commitments, and literal references or attachment identities needed later.",
+        "Retention priority 2: durable decisions and rationale, confirmed facts, stable user preferences, and definitions that still affect later discussion.",
+        "Forget first: greetings, thanks, social filler, repetition, already-resolved explanations, superseded instructions, abandoned alternatives, transient errors, unsolicited follow-up offers, speculation, long quotations, and raw logs.",
+        "A newer user correction overrides older conflicting text. Omit the superseded statement instead of preserving both as current truth.",
+        "Never turn an assistant suggestion into a user request, an unverified assistant claim into a fact, or historical conversation into permission or execution evidence.",
         "Treat assistant responseKind and feedbackKind as exact relationship metadata. Preserve an unanswered feedback question under unresolvedQuestions.",
         "Treat attachmentRefs as belonging only to their exact user-message sequence. Preserve important attachment identities under references.",
         "Do not include tool action logs, WorkState, workstream state, or personal memory.",
-        `Keep the JSON within ${plan.estimatedCheckpointTokens} estimated tokens.`,
+        `Aim to keep the JSON within ${plan.estimatedCheckpointTokens} estimated tokens.`,
+        `The JSON must not exceed the ${maximumTokens}-token safety ceiling.`,
         "Return only the requested JSON object.",
         ...(previousErrors.length > 0
           ? [`Repair these validation failures: ${previousErrors.join("; ")}`]
@@ -181,20 +198,27 @@ function checkpointMessages(
         coveredFromSeq: plan.coveredFromSeq,
         coveredToSeq: plan.coveredToSeq,
         previousCheckpoint: plan.previousCheckpoint?.summary ?? null,
-        messages: plan.selectedMessages.map((message) => ({
-          seq: message.sequence,
-          role: message.role,
-          at: message.at,
-          content: message.content,
-          ...(message.responseKind ? { responseKind: message.responseKind } : {}),
-          ...(message.feedbackKind ? { feedbackKind: message.feedbackKind } : {}),
-          ...(message.attachmentRefs && message.attachmentRefs.length > 0
-            ? { attachmentRefs: message.attachmentRefs }
-            : {}),
-        })),
+        messagesToSummarize: plan.selectedMessages.map(checkpointMessage),
+        protectedRecentContext: plan.exactTail.map(checkpointMessage),
       }, null, 2),
     },
   ];
+}
+
+function checkpointMessage(
+  message: ContextCheckpointPlan["selectedMessages"][number],
+): Record<string, unknown> {
+  return {
+    seq: message.sequence,
+    role: message.role,
+    at: message.at,
+    content: message.content,
+    ...(message.responseKind ? { responseKind: message.responseKind } : {}),
+    ...(message.feedbackKind ? { feedbackKind: message.feedbackKind } : {}),
+    ...(message.attachmentRefs && message.attachmentRefs.length > 0
+      ? { attachmentRefs: message.attachmentRefs }
+      : {}),
+  };
 }
 
 function parseSummary(content: string): {

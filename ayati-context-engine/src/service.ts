@@ -33,6 +33,8 @@ import type {
   PrepareAgentRunResponse,
   PrepareResourceMutationRequest,
   PrepareResourceMutationResponse,
+  ReadAgentConversationRequest,
+  ReadAgentConversationResponse,
   ReadAgentHistoryRequest,
   ReadAgentHistoryResponse,
   ReadWorkstreamRequest,
@@ -64,6 +66,9 @@ export interface ContextEngineService {
     input: CommitContextCheckpointRequest,
   ): Promise<CommitContextCheckpointResponse>;
   searchAgentHistory(input: SearchAgentHistoryRequest): Promise<SearchAgentHistoryResponse>;
+  readAgentConversation(
+    input: ReadAgentConversationRequest,
+  ): Promise<ReadAgentConversationResponse>;
   readAgentHistory(input: ReadAgentHistoryRequest): Promise<ReadAgentHistoryResponse>;
   startWorkstreamResolution(
     input: StartWorkstreamResolutionRequest,

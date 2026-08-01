@@ -73,6 +73,15 @@ export function buildToolProjectionMetadata(tool: string, structuredContent: unk
       maxStringChars: 500,
     });
   }
+  if (tool === "agent_conversation_read") {
+    return pickFields(structuredContent, [
+      "page",
+      "contentTruncated",
+      "continuationRef",
+      "continuationOffsetChars",
+      "hasMore",
+    ], 1_000);
+  }
   if (tool.startsWith("git_context_")) {
     return sanitizeRecord(structuredContent, {
       dropKeys: new Set(["content", "observation", "rawOutput"]),

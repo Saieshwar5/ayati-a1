@@ -66,10 +66,20 @@ Mode behavior:
 | `resolve` | binding-required mutation responsibility | no lifecycle tools; the deterministic gate binds, then mounts the matching execute surface |
 | `execute` | bound mutation, verification, or bound control | tools permitted by the bound workstream and selected destination or existing-resource policy |
 | `validation` | final typed task-outcome proof | no executable tools; queries the derived current-run verification index |
+| `context.maintain` | runtime-only conversation checkpointing | no capability or task-tool surface; the model cannot select it |
+| `run.maintain` | runtime-triggered current-run context reduction | no task tools; one bounded `decision_maintain_run_context` control |
 
 A mode change replaces the full earlier surface. Tools do not accumulate
 across modes. An authority change that invalidates any active tool clears the
 whole surface so a partially authorized capability cannot remain active.
+`context.maintain` is the deliberate exception to model navigation: the
+runtime enters it deterministically at the conversation-continuity budget and
+restores the preceding surface afterward.
+`run.maintain` is also runtime-triggered, but it uses one normal decision-loop
+control because semantic next-action judgment is useful. The model can only
+update the bounded WorkState and select listed retention exceptions; the
+runtime owns eligibility, projector choice, exact-reference validation,
+source freshness, token accounting, and mode restoration.
 For an unbound mutation, neither `workstream.route` nor `resolve` is
 graph-legal from `ENTRY`. The model first uses `workstream:search` or
 `resource:ownership` in `observe.locate`, or `workstream:read` in

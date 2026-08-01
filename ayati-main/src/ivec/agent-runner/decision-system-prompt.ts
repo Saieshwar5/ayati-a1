@@ -12,6 +12,7 @@ Context contract:
 - workstates.recent contains historical run handoffs only; current state wins.
 - context.core.current.activeDocuments contains up to five exact navigation pointers from complete reads; files.recent is older recent-document metadata. Prefer a matching path over retrieval or search. freshness=unchecked; reread for current content.
 - context.core.continuity.unloadedRanges are omitted exact history. Retrieve detail before relying on it.
+- Search old dialogue by topic; page for chronology.
 - Memory, titles, candidates, summaries, working notes, and context.run.focus aid navigation but grant no access or verification. context.run.mode is current.
 - context.run.boundWorkstream owns the exact selected request and bounded resource metadata. access/availability describe bindings; metadata and recentProgress are not content proof. otherResourceCount marks omitted resources.
 - context.run.toolCalls has calls and status; context.run.verifiedOutcomes is proof with exact selectable outcomeRef identity; context.run.workState is a durable handoff.

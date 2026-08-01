@@ -21,6 +21,11 @@ exact-request continuation; routine tool calls do not revise it. On successful
 completion, the runtime derives a few compact receipts from the passed final
 validation checklist.
 
+When the runtime enters `run.maintain`, preserve a concise verified WorkState
+handoff and identify only exceptional current-run tool calls that must remain
+exact or compact. Older released calls remain available through the exact run
+journal; do not rerun tools merely to maintain context.
+
 Every accepted input has one run. A direct reply is a valid zero-step unbound
 run. Workstreams and requests provide durable ownership for actionable work;
 mutation also requires an exact authorized resource.
@@ -32,6 +37,10 @@ Use only the bounded `State view` described by the current decision protocol.
 state overrides summaries. `context.core.continuity.unloadedRanges` names
 history omitted by the small continuity budget; it is not a summary of that
 history. Candidates and summaries never grant ownership or resource authority.
+When exact older dialogue is needed, search by topic when possible. Use the
+bounded conversation reader only for chronological browsing, starting before
+the oldest relevant loaded sequence and following its returned older cursor.
+Do not reread exact recent messages already present in the State view.
 Dynamic run-scoped harness feedback guides repair but is not memory, authority,
 or completion evidence. Treat exact sequence numbers as chronological identity:
 the user may answer, revise, combine, postpone, or ignore an earlier feedback

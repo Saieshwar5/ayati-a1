@@ -2042,6 +2042,113 @@ describe("callAgentDecision", () => {
     });
   });
 
+  it("exposes only the bounded run-maintenance control in run.maintain", async () => {
+    const input = {
+      maintenanceId: "RUNCTX-1",
+      expectedWorkStateRevision: 2,
+      workState: {
+        summary: "The first implementation step is verified.",
+        plan: [{ id: "finish", task: "Finish validation.", status: "active" }],
+        importantContext: [{
+          kind: "finding",
+          value: "The implementation file exists.",
+          ref: "call:read-1",
+        }],
+        nextAction: "Finish validation.",
+      },
+      keepExactRefs: ["call:read-1"],
+      keepCompactRefs: [],
+      releaseRefs: ["call:read-2"],
+    };
+    const { provider, generateTurn } = createNativeToolProvider([{
+      type: "tool_calls",
+      calls: [{
+        id: "maintain-1",
+        name: "decision_maintain_run_context",
+        input,
+      }],
+    }]);
+    const stateView = createStateView({
+      context: {
+        run: {
+          mode: {
+            active: "run.maintain",
+            revision: 4,
+            capabilities: [],
+            targets: [],
+            allowedNext: [],
+            runMaintain: {
+              reason: "run_context_pressure",
+              maintenanceId: "RUNCTX-1",
+              returnTo: "execute",
+              expectedWorkStateRevision: 2,
+              sourceThroughStep: 8,
+              requiredSavingsTokens: 10_000,
+              candidates: [
+                {
+                  ref: "call:read-1",
+                  step: 1,
+                  callId: "read-1",
+                  tool: "read_files",
+                  status: "success",
+                  verificationStatus: "passed",
+                  currentMode: "full",
+                  policy: "projectable",
+                  recommendedMode: "summary",
+                  mandatoryExact: false,
+                  estimatedCurrentTokens: 4_000,
+                  estimatedRecommendedTokens: 200,
+                },
+                {
+                  ref: "call:read-2",
+                  step: 2,
+                  callId: "read-2",
+                  tool: "read_files",
+                  status: "success",
+                  verificationStatus: "passed",
+                  currentMode: "full",
+                  policy: "projectable",
+                  recommendedMode: "summary",
+                  mandatoryExact: false,
+                  estimatedCurrentTokens: 4_000,
+                  estimatedRecommendedTokens: 200,
+                },
+              ],
+              omittedCandidateCount: 0,
+              protectedRefs: ["call:latest"],
+            },
+          },
+        },
+      } as AgentStateView["context"],
+    });
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView,
+      toolDefinitions: [],
+      modeTransitionAvailable: false,
+      runContextMaintenanceAvailable: true,
+    });
+
+    expect(generateTurn.mock.calls[0]?.[0]?.tools.map((tool: { name: string }) => tool.name))
+      .toEqual(["decision_maintain_run_context"]);
+    expect(decision).toEqual({
+      kind: "maintain_run_context",
+      selection: {
+        maintenanceId: "RUNCTX-1",
+        expectedWorkStateRevision: 2,
+        workState: {
+          reason: "context_pressure",
+          ...input.workState,
+        },
+        keepExactRefs: ["call:read-1"],
+        keepCompactRefs: [],
+        releaseRefs: ["call:read-2"],
+      },
+      workingNotes: undefined,
+    });
+  });
+
   it("exposes selected executable tools as native tools", async () => {
     const { provider, generateTurn } = createProvider([
       JSON.stringify({ kind: "reply", status: "completed", message: "Hi!" }),

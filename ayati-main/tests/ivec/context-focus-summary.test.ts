@@ -121,7 +121,10 @@ describe("anchored run-focus preparation", () => {
 
   it("accepts append-only tail growth and rejects a changed covered source", async () => {
     const state = promptState();
-    const generateTurn = vi.fn().mockResolvedValue(assistant(focusSummary(), usage(20, 5)));
+    const generateTurn = vi.fn().mockResolvedValue(assistant(
+      focusSummary({ includeMessages: false }),
+      usage(20, 5),
+    ));
     const llm = provider(generateTurn);
     const manager = new ContextPreparationManager({ laneId: "main:RUN-1", provider: llm });
     const job = createMainPreparationJob({
@@ -143,6 +146,16 @@ describe("anchored run-focus preparation", () => {
     appended.context.run!.toolCalls!.push(toolCall(9));
 
     expect(validateMainCandidate({
+      candidate: { ...candidate, sourceRefs: [...candidate.sourceRefs, "seq:1"] },
+      laneId: manager.laneId,
+      stateView: appended,
+      modelProfileVersion: "profile:1",
+    })).toMatchObject({
+      valid: false,
+      reason: "conversation_source_requires_context_maintenance",
+    });
+
+    expect(validateMainCandidate({
       candidate,
       laneId: manager.laneId,
       stateView: appended,
@@ -150,14 +163,13 @@ describe("anchored run-focus preparation", () => {
     })).toEqual({ valid: true, reason: "source_hash_and_tail_valid" });
 
     const changed = structuredClone(appended);
-    const first = changed.context.core.continuity.recentExact[0];
-    if (first && "content" in first) first.content = "Changed after preparation";
+    changed.context.run!.toolCalls![0]!.output = "Changed after preparation";
     expect(validateMainCandidate({
       candidate,
       laneId: manager.laneId,
       stateView: changed,
       modelProfileVersion: "profile:1",
-    })).toMatchObject({ valid: false, reason: "source_hash_changed:seq:1" });
+    })).toMatchObject({ valid: false, reason: "source_hash_changed:step:1" });
 
     expect(validateMainCandidate({
       candidate,
@@ -271,19 +283,24 @@ function toolCall(step: number, status: "success" | "failed" = "success") {
   };
 }
 
-function focusSummary(input: { importantRefs?: string[] } = {}): RunFocusSummary {
+function focusSummary(input: {
+  importantRefs?: string[];
+  includeMessages?: boolean;
+} = {}): RunFocusSummary {
   return {
     schemaVersion: 1,
-    coveredMessageRange: { fromSeq: 1, toSeq: 2 },
+    ...(input.includeMessages !== false
+      ? { coveredMessageRange: { fromSeq: 1, toSeq: 2 } }
+      : {}),
     coveredStepRange: { fromStep: 1, toStep: 2 },
     goal: "Continue the current run.",
     constraints: [],
     decisions: [],
     completedWork: [],
-    importantFindings: [{ text: "Earlier context remains relevant.", refs: input.importantRefs ?? ["seq:1"] }],
+    importantFindings: [{ text: "Earlier context remains relevant.", refs: input.importantRefs ?? ["step:1"] }],
     artifacts: [],
     unresolvedQuestions: [],
-    references: ["seq:1"],
+    references: ["step:1"],
   };
 }
 

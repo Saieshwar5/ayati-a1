@@ -50,25 +50,44 @@ describe("generateStreamCheckpoint", () => {
     const sourceContent = request?.messages[1]?.content;
     if (typeof sourceContent !== "string") throw new Error("Checkpoint source prompt is missing.");
     const source = JSON.parse(sourceContent) as {
-      messages: Array<{
+      messagesToSummarize: Array<{
         seq: number;
         responseKind?: string;
         feedbackKind?: string;
         attachmentRefs?: Array<{ resourceId: string }>;
       }>;
+      protectedRecentContext: Array<{ seq: number }>;
     };
-    expect(source.messages.map((message) => message.seq)).toEqual([2, 3]);
-    expect(source.messages[0]?.attachmentRefs).toEqual([{
+    expect(source.messagesToSummarize.map((message) => message.seq)).toEqual([2, 3]);
+    expect(source.messagesToSummarize[0]?.attachmentRefs).toEqual([{
       resourceId: "RES-0123456789ABCDEF01234567",
       kind: "document",
       displayName: "context-plan.md",
     }]);
-    expect(source.messages[1]).toMatchObject({
+    expect(source.messagesToSummarize[1]).toMatchObject({
       responseKind: "feedback",
       feedbackKind: "confirmation",
     });
+    expect(source.protectedRecentContext.map((message) => message.seq)).toEqual([4]);
+    expect(request?.messages[0]?.content).toContain("Forget first:");
+    expect(request?.messages[0]?.content).toContain("newer user correction overrides");
     expect(JSON.stringify(request?.messages)).not.toContain("toolCalls");
     expect(JSON.stringify(request?.messages)).not.toContain("workState");
+  });
+
+  it("treats the requested size as a target while accepting a safe larger candidate", async () => {
+    const summary = validSummary();
+    summary.narrative = "x".repeat(5_200);
+    const { provider, generateTurn } = providerWith([
+      { type: "assistant", content: JSON.stringify(summary) },
+    ]);
+
+    const result = await generateStreamCheckpoint({ provider, plan: checkpointPlan() });
+
+    expect(result.status).toBe("success");
+    expect(result.tokenCount).toBeGreaterThan(1_200);
+    expect(result.tokenCount).toBeLessThanOrEqual(2_400);
+    expect(generateTurn).toHaveBeenCalledTimes(1);
   });
 
   it("uses its single repair attempt when a statement cites a non-source sequence", async () => {
@@ -88,6 +107,47 @@ describe("generateStreamCheckpoint", () => {
     const repairPrompt = generateTurn.mock.calls[1]?.[0].messages[0]?.content;
     expect(repairPrompt).toContain("Repair these validation failures");
     expect(repairPrompt).toContain("sequence 99 is not an exact source anchor");
+  });
+
+  it("does not allow the protected exact tail to become a checkpoint anchor", async () => {
+    const invalid = validSummary();
+    invalid.importantFacts = [{ seq: 4, text: "Protected current context must remain exact." }];
+    const repaired = validSummary();
+    const { provider, generateTurn } = providerWith([
+      { type: "assistant", content: JSON.stringify(invalid) },
+      { type: "assistant", content: JSON.stringify(repaired) },
+    ]);
+
+    const result = await generateStreamCheckpoint({ provider, plan: checkpointPlan() });
+
+    expect(result.status).toBe("success");
+    expect(result.attempts.map((attempt) => attempt.status)).toEqual(["failed", "success"]);
+    expect(generateTurn.mock.calls[1]?.[0].messages[0]?.content)
+      .toContain("sequence 4 is not an exact source anchor");
+  });
+
+  it("uses its single repair when prompt recovery needs a stricter summary ceiling", async () => {
+    const oversized = validSummary();
+    oversized.narrative = "x".repeat(5_200);
+    const repaired = validSummary();
+    const { provider, generateTurn } = providerWith([
+      { type: "assistant", content: JSON.stringify(oversized) },
+      { type: "assistant", content: JSON.stringify(repaired) },
+    ]);
+
+    const result = await generateStreamCheckpoint({
+      provider,
+      plan: checkpointPlan(),
+      maximumSummaryTokens: 1_200,
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.attempts.map((attempt) => attempt.status)).toEqual(["failed", "success"]);
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+    expect(generateTurn.mock.calls[0]?.[0].messages[0]?.content)
+      .toContain("must not exceed the 1200-token safety ceiling");
+    expect(generateTurn.mock.calls[1]?.[0].messages[0]?.content)
+      .toContain("above safety ceiling 1200");
   });
 
   it("stops after two failed generations", async () => {

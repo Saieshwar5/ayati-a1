@@ -11,8 +11,14 @@ export function projectStructuredCall(input: {
   previewSource?: string;
 }): ToolContextProjection {
   const base = compactPromptToolCall(input.call, input.mode, "context_budget");
-  const previewChars = input.mode === "preview" ? 4_000 : 1_200;
-  const preview = boundedHeadTail(input.previewSource ?? input.call.output ?? "", previewChars);
+  const previewChars = input.mode === "preview"
+    ? 4_000
+    : input.mode === "summary"
+      ? 1_200
+      : 0;
+  const preview = previewChars > 0
+    ? boundedHeadTail(input.previewSource ?? input.call.output ?? "", previewChars)
+    : "";
   return {
     projectorId: input.projectorId,
     call: {

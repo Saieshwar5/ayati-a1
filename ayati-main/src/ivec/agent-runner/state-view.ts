@@ -2,6 +2,7 @@ import type { LoopState, ToolContextState, ToolObservation } from "../types.js";
 import type { RepairPromptCard } from "./repair-policy.js";
 import { buildPromptToolCallsForRun } from "./run-tool-call-context.js";
 import type { PromptToolCalls } from "./run-tool-call-context.js";
+import { applyRunContextProjectionOverlay } from "./run-context-maintenance-planner.js";
 import { buildPromptVerifiedOutcomes } from "./run-verified-outcome-context.js";
 import type { PromptVerifiedOutcomes } from "./run-verified-outcome-context.js";
 import type { CapabilitySurfaceResult } from "./capabilities/contracts.js";
@@ -111,7 +112,10 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
   const workingFeedback = buildWorkingFeedbackView(state);
   const observations = buildObservationsView(state.toolContext);
   const contextPack = buildAgentContextPack(state);
-  const toolCalls = buildPromptToolCallsForRun(state.toolContext?.toolCalls);
+  const exactToolCalls = buildPromptToolCallsForRun(state.toolContext?.toolCalls);
+  const toolCalls = exactToolCalls
+    ? applyRunContextProjectionOverlay(exactToolCalls, state.runContextProjection)
+    : undefined;
   const verifiedOutcomes = buildPromptVerifiedOutcomes({
     runId: state.runId,
     calls: state.toolContext?.toolCalls,

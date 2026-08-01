@@ -34,6 +34,8 @@ import {
   type PrepareAgentRunResponse,
   type PrepareResourceMutationRequest,
   type PrepareResourceMutationResponse,
+  type ReadAgentConversationRequest,
+  type ReadAgentConversationResponse,
   type ReadAgentHistoryRequest,
   type ReadAgentHistoryResponse,
   type ReadWorkstreamRequest,
@@ -90,6 +92,12 @@ export class ContractOnlyContextEngineService implements ContextEngineService {
   async searchAgentHistory(
     _input: SearchAgentHistoryRequest,
   ): Promise<SearchAgentHistoryResponse> {
+    throw notReady();
+  }
+
+  async readAgentConversation(
+    _input: ReadAgentConversationRequest,
+  ): Promise<ReadAgentConversationResponse> {
     throw notReady();
   }
 

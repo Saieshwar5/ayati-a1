@@ -8,7 +8,11 @@ import {
 } from "../contract-helpers.js";
 
 export function createAgentHistoryTools(service: ContextEngineService): ToolDefinition[] {
-  return [searchAgentHistoryTool(service), readAgentHistoryTool(service)];
+  return [
+    searchAgentHistoryTool(service),
+    readAgentConversationTool(service),
+    readAgentHistoryTool(service),
+  ];
 }
 
 function searchAgentHistoryTool(service: ContextEngineService): ToolDefinition {
@@ -65,6 +69,115 @@ function searchAgentHistoryTool(service: ContextEngineService): ToolDefinition {
         });
       } catch (error) {
         return historyError(errorMessage(error));
+      }
+    },
+  };
+}
+
+function readAgentConversationTool(service: ContextEngineService): ToolDefinition {
+  return {
+    name: "agent_conversation_read",
+    description: [
+      "Page backward through exact user, assistant, and system-event messages from the current stream; each returned page is chronological.",
+      "Omit cursor and beforeSeq for the latest page; use olderCursor for the next older page.",
+      "If contentTruncated is true, continue that message with agent_history_read using continuationRef and continuationOffsetChars.",
+      "Use agent_history_search instead when a known topic or phrase can locate the needed history directly.",
+    ].join(" "),
+    inputSchema: {
+      type: "object",
+      properties: {
+        cursor: {
+          type: "string",
+          minLength: 1,
+          description: "Exact olderCursor returned by the preceding agent_conversation_read page.",
+        },
+        beforeSeq: {
+          type: "integer",
+          minimum: 1,
+          description: "On the first page only, return messages strictly before this exact sequence.",
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 50,
+          description: "Maximum stored messages/events. Defaults to 50.",
+        },
+        maxChars: { type: "integer", minimum: 1, maximum: 32000 },
+      },
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        messages: { type: "array", items: { type: "object" } },
+        page: { type: "object" },
+        contentTruncated: { type: "boolean" },
+        continuationRef: { type: "string" },
+        continuationOffsetChars: { type: "integer" },
+        hasMore: { type: "boolean" },
+      },
+      required: ["messages", "page", "contentTruncated", "hasMore"],
+      additionalProperties: false,
+    },
+    annotations: readAnnotations(),
+    observationPolicy: {
+      outputImportance: "decision_context",
+      rawStorage: "always",
+      maxObservationChars: 32_000,
+    },
+    resultContract: succeededContract(),
+    async execute(input, context): Promise<ToolResult> {
+      const record = objectInput(input);
+      const streamId = currentStreamId(context);
+      const cursor = stringField(record, "cursor");
+      const beforeSeq = optionalInteger(record["beforeSeq"]);
+      const limit = optionalInteger(record["limit"]);
+      const maxChars = optionalInteger(record["maxChars"]);
+      const cursorProvided = record["cursor"] !== undefined;
+      const beforeProvided = record["beforeSeq"] !== undefined;
+      if (!streamId
+        || (cursorProvided && !cursor)
+        || (beforeProvided && (beforeSeq === undefined || beforeSeq < 1))
+        || (cursorProvided && beforeProvided)
+        || (record["limit"] !== undefined && (limit === undefined || limit < 1 || limit > 50))
+        || (record["maxChars"] !== undefined
+          && (maxChars === undefined || maxChars < 1 || maxChars > 32_000))) {
+        return conversationError(
+          "Conversation read requires the current stream, either cursor or beforeSeq (not both), a limit from 1 to 50, and maxChars from 1 to 32000.",
+        );
+      }
+      try {
+        const result = await service.readAgentConversation({
+          streamId,
+          ...(cursor ? { cursor } : {}),
+          ...(beforeSeq !== undefined ? { beforeSeq } : {}),
+          ...(limit !== undefined ? { limit } : {}),
+          ...(maxChars !== undefined ? { maxChars } : {}),
+        });
+        const hasMore = result.page.hasOlder || result.contentTruncated;
+        const structuredContent = {
+          page: result.page,
+          contentTruncated: result.contentTruncated,
+          ...(result.continuationRef ? { continuationRef: result.continuationRef } : {}),
+          ...(result.continuationOffsetChars !== undefined
+            ? { continuationOffsetChars: result.continuationOffsetChars }
+            : {}),
+          hasMore,
+          messages: result.messages,
+        };
+        return okJsonResult({
+          code: "AGENT_CONVERSATION_READ",
+          message: result.page.count === 0
+            ? "No conversation messages are available in this range."
+            : result.contentTruncated
+              ? `Read part of one exact conversation message; continue it from offset ${result.continuationOffsetChars ?? 0} with agent_history_read.`
+              : hasMore
+              ? `Read ${result.page.count} exact conversation message(s); more exact history is available.`
+              : `Read ${result.page.count} exact conversation message(s).`,
+          structuredContent,
+        });
+      } catch (error) {
+        return conversationError(errorMessage(error));
       }
     },
   };
@@ -197,6 +310,18 @@ function historyError(message: string): ToolResult {
     category: "validation",
     retryable: false,
     suggestedNextActions: ["Search history again or use an exact returned reference/continuation cursor."],
+  });
+}
+
+function conversationError(message: string): ToolResult {
+  return errorResult({
+    code: "AGENT_CONVERSATION_READ_FAILED",
+    message,
+    category: "validation",
+    retryable: false,
+    suggestedNextActions: [
+      "Use the exact olderCursor returned by the previous page, or omit it to read the latest page.",
+    ],
   });
 }
 

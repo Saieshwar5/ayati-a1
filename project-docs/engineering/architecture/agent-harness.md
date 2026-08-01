@@ -97,6 +97,8 @@ workstream.route -> context.retrieve | observe.locate | observe.investigate | re
 resolve --accepted--> execute
 execute -> context.retrieve | execute | observe.locate | observe.investigate | validation
 context.retrieve --after context_load--> preceding mode
+[continuity budget] -> context.maintain --after checkpoint attempt--> preceding mode
+[whole-request soft pressure] -> run.maintain --after WorkState + projection--> preceding mode
 validation(failed) -> work mode | stop
 validation(passed) -> direct reply
 ```
@@ -105,7 +107,15 @@ validation(passed) -> direct reply
 proof-only mode so its small checklist and result remain visible across
 decisions. `context.retrieve` is a transient stored detour: it exposes only
 bounded context-loading tools, never compacts context, and restores the
-preceding mode after the load. The other stored modes are `observe.locate`,
+preceding mode after the load. `context.maintain` is a runtime-only detour:
+the model cannot select it, it exposes no task tools or normal reply, and it
+restores the complete preceding task-mode state whether checkpoint generation
+succeeds or fails. It creates no task step, binding attempt, request, or
+WorkState. `run.maintain` is a separate runtime-triggered, control-only detour.
+It exposes one bounded maintenance control, checkpoints an in-progress
+WorkState, applies deterministic per-tool projection rules over exact journal
+records, and restores the preceding mode. It does not rerun validation, mutate
+resources, append `progress.md`, or delete run evidence. The other stored modes are `observe.locate`,
 `observe.investigate`, `workstream.route`, and `execute`. A bound execute run
 may temporarily observe and return directly to execute; it never resolves
 again because the run binding is immutable.
@@ -325,7 +335,13 @@ invoke the lifecycle operations directly.
 Older stream continuity is accessed with:
 
 - `agent_history_search`
+- `agent_conversation_read`
 - `agent_history_read`
+
+Search locates a known topic, conversation read pages exact user, assistant,
+and stored system-event messages backward from a stable stream snapshot, and
+history read opens one exact message, range, run, or evidence reference. Hidden
+system prompts and policies are not stream messages and are never returned.
 
 Binding uses the already prepared agent stream and run; it never allocates a
 second run. Existing workstreams require an explicit request operation:
@@ -338,7 +354,7 @@ stored for replay.
 
 Prompt context uses explicit bounded lanes:
 
-- `core`: one exact current input and routing state plus a strict-budget
+- `core`: one exact current input and routing state plus a continuity-target
   checkpoint, whole recent exact turns, and explicit unloaded ranges;
 - `hot`: metadata for optional typed context plus bounded run-scoped entries
   mounted through `context.retrieve`, including recent-file navigation that
@@ -698,11 +714,15 @@ soft threshold. One low-priority semantic preparation call may overlap a
 foreground call on the same provider. The candidate remains in memory and
 foreground work does not wait below the forced barrier.
 
-The 4K Core Capsule continuity budget is independent of these whole-request
-thresholds. When older whole turns do not fit, the prompt remains bounded
-immediately and names the unloaded exact sequence range. The runtime may
-synchronously adopt a beneficial durable checkpoint before the first decision
-even when the complete prompt is far below 55K.
+The 4K Core Capsule continuity target is independent of these whole-request
+thresholds. The current input and newest completed user/system-event turn with
+its assistant response remain exact, even when that one turn exceeds the
+target. When additional older whole turns do not fit, the prompt names their
+unloaded exact sequence range. Before the task decision, the runtime
+deterministically enters `context.maintain`, rolls the prior checkpoint and
+eligible older complete turns into one replacement checkpoint, then restores
+the preceding task mode. This may happen even when the complete prompt is far
+below 55K.
 
 Recovery order is:
 
@@ -710,8 +730,10 @@ Recovery order is:
 2. replace recoverable older output with typed previews and refs;
 3. deterministically bound candidates and resources while preserving failures
    and the six-call hot window;
-4. adopt a durable checkpoint candidate over complete terminal runs;
-5. if still needed, adopt a run-scoped anchored focus summary;
+4. at measured soft pressure, enter `run.maintain`, persist a concise WorkState
+   handoff, and adopt a source-hashed prompt-only tool projection;
+5. if still needed, adopt a run-scoped anchored focus summary over eligible
+   older current-run tool material;
 6. rebuild and remeasure the whole request.
 
 The next-decision reserve is `max(8K, soft - recovery)`. The forced barrier is
@@ -721,18 +743,33 @@ hard limit. At the barrier, the foreground waits once for a relevant candidate
 and then performs synchronous deterministic/semantic recovery. A request is
 never sent beyond its admission limit.
 
-Checkpoint generation uses a structured schema, exact message-sequence
-anchors, a 1,200-token default estimate, and at most one repair. Generation is
-read-only; commit and active-pointer update occur only at validated adoption.
+Conversation checkpoint generation happens only in `context.maintain`. It uses
+a structured schema, exact message-sequence anchors, a 1,200-token default
+target, and at most one repair. Generation is read-only; commit and active-
+pointer update occur only at validated adoption. The summary retains active
+requests, constraints, corrections, unresolved questions, commitments, and
+needed references before durable decisions and facts; it drops filler,
+repetition, resolved or superseded material, transient failures, speculation,
+long quotations, and raw logs first.
+
+Run maintenance never generates a conversation checkpoint. The model sees at
+most 32 deterministic candidate records and may name at most 12 exceptions per
+retention list. The latest six calls, failures, unrecoverable calls, active
+process controls, WorkState-referenced calls, and unknown tool types remain
+exact. Specialized known tools use typed projectors. Known tools without a
+specialized projector may become a reference only when explicitly released;
+unknown tools fail safe as exact. A released call is removed only from active
+prompt payload: its exact run/step/call record remains retrievable.
 A temporary focus summary is limited to 1,600 estimated tokens and one repair,
 must anchor every statement, cannot replace current input, authority,
 WorkState, unresolved failures, or completion evidence, and disappears at run
 finalization/interruption/restart. If the final candidate is still unsafe, the
 run ends as `incomplete/context_limit`.
 
-The existing projection policy remains operational: `shadow` prepares,
-validates, and measures candidates without mounting or committing them;
-`enforce` adopts valid candidates and activates forced-barrier behavior.
+The existing whole-request projection policy remains operational: `shadow`
+prepares, validates, and measures run-focus/tool projections without mounting
+them; `enforce` adopts valid candidates and activates forced-barrier behavior.
+It does not disable required conversation maintenance.
 Decision repairs reuse the active projection without starting background
 jobs. Final-response generation may reuse it and run deterministic safety
 recovery but starts no new semantic work.

@@ -59,7 +59,9 @@ export function updateContextPressureState(input: {
 
   return {
     ...current,
-    mode: laterContextMode(current.mode, input.receipt.mode),
+    mode: input.receipt.softLimitExceeded || current.mode !== "full"
+      ? laterContextMode(current.mode, input.receipt.mode)
+      : current.mode,
     ...recovery,
     softLimitBreachCount: current.softLimitBreachCount + (isNewSoftBreach ? 1 : 0),
     admissionRejectionCount: current.admissionRejectionCount + (input.receipt.admitted ? 0 : 1),
@@ -132,7 +134,7 @@ function evaluateRecovery(input: {
     unresolvedPressureStreak: nextStreak,
     lastRecoveryEvaluationIteration: input.iteration,
     ...(shouldRecommendTimeline ? {
-      recommendedMode: laterRecommendedMode(input.current.recommendedMode, "stream_checkpoint"),
+      recommendedMode: laterRecommendedMode(input.current.recommendedMode, "step_ledger"),
       escalationReason: nearAdmissionLimit || input.current.escalationReason === "near_admission_limit"
         ? "near_admission_limit"
         : input.current.escalationReason ?? "repeated_unresolved_pressure",

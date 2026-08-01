@@ -76,6 +76,7 @@ export class ContextPreparationManager {
   private closed = false;
   private generation = 0;
   private overlay?: unknown;
+  private readonly terminalJobKeys = new Set<string>();
   private readonly unreportedBackgroundUsage: ContextPreparationBackgroundUsage[] = [];
   private readonly events: ContextPreparationEvent[] = [];
 
@@ -89,7 +90,7 @@ export class ContextPreparationManager {
   startBackground(job: ContextPreparationJob): ContextPreparationStartResult {
     if (this.closed) return this.skipped("lane_closed");
     const existing = this.slot;
-    if (existing && existing.jobKey === job.jobKey && existing.status !== "failed") {
+    if (existing && existing.jobKey === job.jobKey) {
       this.emit("context_preparation_deduplicated", {
         candidateId: existing.candidateId,
         jobKey: job.jobKey,
@@ -97,6 +98,14 @@ export class ContextPreparationManager {
         status: existing.status,
       });
       return { status: "deduplicated", candidate: structuredClone(existing) };
+    }
+    if (this.terminalJobKeys.has(job.jobKey)) {
+      this.emit("context_preparation_deduplicated", {
+        jobKey: job.jobKey,
+        kind: job.kind,
+        status: "terminal",
+      });
+      return { status: "deduplicated" };
     }
     if (existing && ["preparing", "ready"].includes(existing.status)) {
       return this.skipped("candidate_slot_occupied");
@@ -126,12 +135,21 @@ export class ContextPreparationManager {
     if (this.slot?.jobKey === job.jobKey && this.slot.status === "ready") {
       return structuredClone(this.slot);
     }
-    if (this.slot?.jobKey === job.jobKey && this.slot.status !== "failed") {
+    if (this.slot?.jobKey === job.jobKey) {
       this.emit("context_preparation_deduplicated", {
         candidateId: this.slot.candidateId,
         jobKey: job.jobKey,
         kind: this.slot.kind,
         status: this.slot.status,
+        synchronous: true,
+      });
+      return undefined;
+    }
+    if (this.terminalJobKeys.has(job.jobKey)) {
+      this.emit("context_preparation_deduplicated", {
+        jobKey: job.jobKey,
+        kind: job.kind,
+        status: "terminal",
         synchronous: true,
       });
       return undefined;
@@ -169,6 +187,10 @@ export class ContextPreparationManager {
 
   currentCandidate(): ContextPreparationCandidate | undefined {
     return this.slot ? structuredClone(this.slot) : undefined;
+  }
+
+  hasTerminalJob(jobKey: string): boolean {
+    return this.terminalJobKeys.has(jobKey);
   }
 
   consumeBackgroundUsage(): ContextPreparationBackgroundUsage | undefined {
@@ -251,6 +273,13 @@ export class ContextPreparationManager {
 
   recordSkip(reason: string, data: Record<string, unknown> = {}): void {
     this.emit("context_preparation_skipped", { reason, ...data });
+  }
+
+  recordContextMaintenance(
+    event: "entered" | "completed" | "failed",
+    data: Record<string, unknown> = {},
+  ): void {
+    this.emit(`context_maintenance_${event}`, data);
   }
 
   recordLimitTermination(data: Record<string, unknown>): void {
@@ -377,6 +406,7 @@ export class ContextPreparationManager {
         updatedAt: this.now().toISOString(),
         failureReason: error instanceof Error ? error.message : String(error),
       };
+      this.terminalJobKeys.add(candidate.jobKey);
       if (background) this.unreportedBackgroundUsage.push(structuredClone(background));
       this.emit("context_candidate_failed", {
         candidateId: candidate.candidateId,
@@ -420,6 +450,7 @@ export class ContextPreparationManager {
       lifecycleReason: reason,
       updatedAt: this.now().toISOString(),
     };
+    this.terminalJobKeys.add(this.slot.jobKey);
     const event = status === "adopted"
       ? "context_candidate_adopted"
       : status === "stale"

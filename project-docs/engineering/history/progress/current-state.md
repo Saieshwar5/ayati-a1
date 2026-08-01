@@ -1,6 +1,6 @@
 # Current State
 
-Last updated: 2026-07-29
+Last updated: 2026-08-01
 
 Ayati uses one-run execution, long-lived workstreams, bounded requests, a
 shared context notebook, and a searchable resource catalog.
@@ -38,8 +38,14 @@ context pack -> decision -> action executor -> deterministic verification -> pro
   any acceptance criterion from the bound request.
 - Structured `recordRunStep` persistence with ordered tool calls,
   verification, WorkState, and resource-versioned observations.
-- Pressure-only durable checkpoints with exact anchors, deterministic
-  projection, one repair, and atomic active-pointer update.
+- Runtime-owned `context.maintain` conversation checkpoints with an exact
+  current/recent tail, explicit retention priority, exact anchors, one repair,
+  and atomic active-pointer update.
+- Runtime-triggered `run.maintain` for whole-request pressure: one bounded
+  WorkState-and-retention decision, deterministic per-tool projection policy,
+  recoverable exact journal references, unknown-tool fail-safe retention, and
+  exact task-mode restoration. A disposable current-run focus overlay remains
+  only a later forced-recovery fallback.
 - Bounded exact history search/read over messages, runs, and evidence.
 - Checkpoint-range personal-memory extraction and independent Hot Context.
 - One truthful finalization operation with immutable assistant-message append,

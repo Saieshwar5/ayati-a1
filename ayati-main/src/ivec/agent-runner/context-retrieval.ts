@@ -31,7 +31,12 @@ export function completeContextRetrieval(input: {
   if (!input.capabilitySurfaceManager) {
     return;
   }
-  if (!active || capabilities.length === 0) {
+  if (
+    !active
+    || active === "context.maintain"
+    || active === "run.maintain"
+    || capabilities.length === 0
+  ) {
     input.capabilitySurfaceManager.resetRun(input.toolContext);
     return;
   }

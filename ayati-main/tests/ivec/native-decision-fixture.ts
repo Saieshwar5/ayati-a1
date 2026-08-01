@@ -42,6 +42,16 @@ export function nativeDecisionFixture(response: unknown): LlmTurnOutput {
         ...(parsed["workingNotes"] ? { workingNotes: parsed["workingNotes"] } : {}),
       });
     }
+    case "maintain_run_context": {
+      const selection = objectRecord(parsed["selection"]);
+      const workState = objectRecord(selection["workState"]);
+      const { reason: _reason, ...workStateInput } = workState;
+      return toolTurn("decision_maintain_run_context", {
+        ...selection,
+        workState: workStateInput,
+        ...(parsed["workingNotes"] ? { workingNotes: parsed["workingNotes"] } : {}),
+      });
+    }
     case "act":
       return actionTurn(parsed);
     default:

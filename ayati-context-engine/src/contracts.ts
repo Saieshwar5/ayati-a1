@@ -1380,6 +1380,37 @@ export interface SearchAgentHistoryResponse {
   hits: AgentHistoryHit[];
 }
 
+export interface ReadAgentConversationRequest {
+  streamId: AgentStreamId;
+  /** Server-issued cursor returned by the previous page. */
+  cursor?: string;
+  /** Read messages strictly before this sequence on the first page. */
+  beforeSeq?: number;
+  /** Maximum whole messages returned. Defaults to and cannot exceed 50. */
+  limit?: number;
+  /** Maximum combined message-content characters. */
+  maxChars?: number;
+}
+
+export interface AgentConversationPage {
+  /** Stable high-water mark captured by the first page. */
+  snapshotToSeq: number;
+  fromSeq?: number;
+  toSeq?: number;
+  count: number;
+  hasOlder: boolean;
+  olderCursor?: string;
+}
+
+export interface ReadAgentConversationResponse {
+  messages: StreamMessage[];
+  page: AgentConversationPage;
+  /** True only when one oversized message was returned as a bounded chunk. */
+  contentTruncated: boolean;
+  continuationRef?: string;
+  continuationOffsetChars?: number;
+}
+
 export type ReadAgentHistoryRequest =
   | { streamId: AgentStreamId; ref: string; maxChars?: number; offsetChars?: number }
   | { streamId: AgentStreamId; fromSeq: number; toSeq: number; maxChars?: number };
@@ -1701,6 +1732,19 @@ export function isSearchAgentHistoryRequest(
         && value["kinds"].every(isAgentHistoryKind)))
     && (value["limit"] === undefined
       || (isPositiveSafeInteger(value["limit"]) && Number(value["limit"]) <= 25));
+}
+
+export function isReadAgentConversationRequest(
+  value: unknown,
+): value is ReadAgentConversationRequest {
+  if (!isRecord(value) || !isNonEmptyString(value["streamId"])) return false;
+  if (value["cursor"] !== undefined && value["beforeSeq"] !== undefined) return false;
+  return (value["cursor"] === undefined || isBoundedString(value["cursor"], 200))
+    && (value["beforeSeq"] === undefined || isPositiveSafeInteger(value["beforeSeq"]))
+    && (value["limit"] === undefined
+      || (isPositiveSafeInteger(value["limit"]) && Number(value["limit"]) <= 50))
+    && (value["maxChars"] === undefined
+      || (isPositiveSafeInteger(value["maxChars"]) && Number(value["maxChars"]) <= 32_000));
 }
 
 export function isReadAgentHistoryRequest(

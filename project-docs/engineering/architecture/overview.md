@@ -20,17 +20,25 @@ context SQLite and context-only Git writes. The daemon depends on its typed
    and returns the authoritative agent-facing projection.
 3. The projection separates slow stream continuity from fast run state. Its
    model-facing Core Capsule contains the exact current input and routing, up
-   to five active-document navigation pointers, plus a strict-budget
+   to five active-document navigation pointers, plus a bounded continuity
    checkpoint and exact tail. The model-facing pack contains
    only Core Capsule, optional Hot Context, current capabilities, harness
    feedback, and current-run truth. Authoritative work and resources stay
    outside the prompt.
 4. Before each primary decision, the runtime builds a structured prompt
-   manifest. Core Capsule maintenance runs from its own continuity budget;
-   whole-request preparation separately measures the complete serialized
-   provider request. Disposable checkpoint or focus candidates may be
-   prepared beside foreground model work; they are not agents or model-facing
-   tools.
+   manifest. When the Core Capsule continuity budget is exceeded, the runtime
+   deterministically enters the tool-free `context.maintain` mode, summarizes
+   the previous checkpoint plus the eligible older complete turns, commits one
+   validated replacement checkpoint, and restores the exact preceding task
+   mode. The current input and newest completed turn remain exact. Whole-
+   request preparation separately measures the complete serialized provider
+   request. At soft pressure with reducible current-run tool material, the
+   runtime suspends task work in control-only `run.maintain`. One bounded model
+   decision updates the in-progress WorkState and identifies exceptional calls
+   to keep exact, compact, or release to journal references. Deterministic code
+   validates and applies the projection, then restores the exact preceding
+   task mode. A disposable run-focus candidate remains a forced-recovery
+   fallback, not a second durable summary.
 5. Every run starts at `ENTRY`. The decision model may reply directly for
    conversation or a focused clarification, briefly enter read-only
    `context.retrieve` to mount optional context, or enter a read-only
@@ -62,19 +70,22 @@ context SQLite and context-only Git writes. The daemon depends on its typed
    execution. `recordRunStep`
    persists each ordered step, its calls, and
    verification without revising WorkState. The model creates a sparse
-   WorkState checkpoint only for a material plan or context pressure; terminal
+   WorkState checkpoint only for a material plan or through `run.maintain` at
+   context pressure; terminal
    finalization and exact-request continuation update it deterministically. A
    successful terminal update also promotes at most four selected passed
    validation outcomes into compact important-context receipts with exact
    proof references.
 7. Context recovery removes duplicate/invalid projections, compacts
-   recoverable outputs, and applies deterministic bounds first. Both Core
-   Capsule maintenance and whole-prompt pressure prefer the same durable
-   source-anchored stream checkpoint. Whole-prompt recovery may additionally
-   use a temporary anchored run-focus overlay when durable recovery is
-   insufficient. Durable candidates commit only when adopted, and the
-   commit's fresh Context Engine projection replaces the loop projection
-   before prompt rebuild.
+   recoverable outputs, and applies deterministic bounds first. Conversation
+   continuity has one durable summary owner: `context.maintain`. Whole-prompt
+   pressure does not create a second conversation checkpoint. `run.maintain`
+   creates one prompt-only typed projection over the exact run journal; a
+   temporary anchored run-focus overlay is only a later forced-recovery
+   fallback over eligible older current-run tool material.
+   A durable checkpoint commits only after source validation, and the commit's
+   fresh Context Engine projection replaces the loop projection before prompt
+   rebuild.
 8. `finalizeRun` closes the run, appends the immutable assistant message,
    records verified filesystem and resource-scoped effects, appends one
    request-scoped progress entry for a bound run, registers verified outputs,
@@ -104,10 +115,13 @@ agent stream (slow growth, many runs)
 
 run context (fast growth, one accepted input)
   run-scoped virtual mode and revision
+  transient runtime-only context.maintain mode with exact return state
+  transient control-only run.maintain mode with exact return state
   WorkState
   ordered steps and tool calls
   verification and audit evidence
   context-pressure state
+  typed tool-call projection overlay (runtime only; exact journal unchanged)
   disposable anchored focus overlay (runtime only)
 
 personal memory (independent)

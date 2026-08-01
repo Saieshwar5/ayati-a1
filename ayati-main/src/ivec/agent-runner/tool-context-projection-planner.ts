@@ -106,6 +106,7 @@ function projectionCandidate(
   }
   const mode = projectionMode(call);
   const projection = projectToolCallForPressure(call, mode);
+  if (!projection) return undefined;
   const projected = projection.call;
   const tokensBefore = estimateProjectionTokens(call);
   const tokensAfter = estimateProjectionTokens(projected);

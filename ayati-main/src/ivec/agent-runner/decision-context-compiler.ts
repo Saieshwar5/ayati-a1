@@ -4,7 +4,6 @@ import type { LlmTurnInput } from "../../core/contracts/llm-protocol.js";
 import type { ContextBudgetReport } from "../../prompt/context-budget.js";
 import {
   buildFullContextCompilationReceipt,
-  buildStreamCheckpointCompilationReceipt,
   buildToolCompactContextCompilationReceipt,
 } from "../../prompt/context-compilation-receipt.js";
 import type { ContextCompilationReceipt } from "../../prompt/context-compilation-receipt.js";
@@ -18,11 +17,10 @@ import type { AgentPromptStateView } from "./prompt-context.js";
 import type { AgentStateView } from "./state-view.js";
 import { planToolContextProjection } from "./tool-context-projection-planner.js";
 import { buildToolContextProjectionCandidate } from "./tool-context-shadow.js";
-import { generateStreamCheckpoint } from "./stream-checkpoint-generator.js";
-import { buildCommittedStreamCheckpointTurnInput } from "./stream-checkpoint-projection.js";
 import type { ContextPreparationManager } from "../context-preparation/manager.js";
 import { compilePreparedMainContext } from "../context-preparation/main-admission.js";
 import type { DecisionContextCompilation } from "../context-preparation/admission-types.js";
+import type { ContextMaintenanceLifecycle } from "../context-preparation/context-maintenance.js";
 
 export type { DecisionContextCompilation } from "../context-preparation/admission-types.js";
 
@@ -38,6 +36,7 @@ export async function compileDecisionContext(input: {
   applyAuthoritativeContext?: (context: ContextEngineMachineContext) => AgentStateView;
   allowBackgroundPreparation?: boolean;
   allowSynchronousSemanticRecovery?: boolean;
+  contextMaintenance?: ContextMaintenanceLifecycle;
   buildPrompt: (stateView: AgentPromptStateView) => string;
 }): Promise<DecisionContextCompilation> {
   if (input.contextPreparation) {
@@ -124,111 +123,12 @@ export async function compileDecisionContext(input: {
     return toolCompilation;
   }
 
-  const projectedToolCalls = input.policy === "enforce" && toolTransformations.length > 0
-    ? toolPlan.projectedCalls
-    : undefined;
-
-  const protectFromSeq = currentInputSequence(input.stateView);
-  if (!input.contextCheckpoint || protectFromSeq === undefined) {
-    return exhaustedCompilation({
-      ...toolCompilation,
-      finalBudget: intermediateBudget,
-      finalTurnInput: intermediateTurnInput,
-      finalBudgetMeasured: true,
-    });
-  }
-  const checkpointPlan = await input.contextCheckpoint.plan({
-    protectFromSeq,
-    requiredSavingsTokens: Math.max(
-      1,
-      intermediateBudget.measuredInputTokens - intermediateBudget.recoveryTargetTokens,
-    ),
-    estimatedCheckpointTokens: 1_200,
-  });
-  if (!checkpointPlan.triggered) {
-    return exhaustedCompilation({
-      ...toolCompilation,
-      finalBudget: intermediateBudget,
-      finalTurnInput: intermediateTurnInput,
-      finalBudgetMeasured: true,
-      streamCheckpoint: { plan: checkpointPlan },
-    });
-  }
-
-  const generation = await generateStreamCheckpoint({
-    provider: input.provider,
-    plan: checkpointPlan,
-    maxInputTokens: input.contextLimits.maxInputTokens
-      ?? input.contextLimits.contextWindowTokens - input.contextLimits.outputReserveTokens,
-  });
-  if (generation.status !== "success" || !generation.summary || generation.tokenCount === undefined) {
-    return exhaustedCompilation({
-      ...toolCompilation,
-      finalBudget: intermediateBudget,
-      finalTurnInput: intermediateTurnInput,
-      finalBudgetMeasured: true,
-      streamCheckpoint: { plan: checkpointPlan, generation },
-    });
-  }
-  const committed = await input.contextCheckpoint.commit({
-    plan: checkpointPlan,
-    summary: generation.summary,
-    tokenCount: generation.tokenCount,
-    provider: input.provider.name,
-    model: input.provider.version,
-  });
-  const checkpoint = committed.checkpoint;
-  const finalTurnInput = buildCommittedStreamCheckpointTurnInput({
-    stateView: input.stateView,
-    turnInput: intermediateTurnInput,
-    plan: checkpointPlan,
-    checkpoint,
-    ...(projectedToolCalls ? { projectedToolCalls } : {}),
-    buildPrompt: input.buildPrompt,
-  });
-  const finalBudget = await measureTurnContext({
-    provider: input.provider,
-    turnInput: finalTurnInput,
-    limits: input.contextLimits,
-  });
-  const checkpointTransformation = {
-    kind: "stream_checkpoint",
-    from: "exact_events",
-    to: "durable_checkpoint_and_exact_tail",
-    reason: "unresolved_context_pressure",
-    coveredFromSeq: checkpoint.coveredFromSeq,
-    coveredToSeq: checkpoint.coveredToSeq,
-    sourceHash: checkpoint.sourceHash,
-    tokensBefore: intermediateBudget.measuredInputTokens,
-    tokensAfter: finalBudget.measuredInputTokens,
-  };
-  return {
-    candidateBudget,
-    intermediateBudget,
-    finalBudget,
-    finalTurnInput,
+  return exhaustedCompilation({
+    ...toolCompilation,
+    finalBudget: intermediateBudget,
+    finalTurnInput: intermediateTurnInput,
     finalBudgetMeasured: true,
-    receipt: buildStreamCheckpointCompilationReceipt({
-      candidate: candidateBudget,
-      intermediate: intermediateBudget,
-      final: finalBudget,
-      decisionAttempt: input.decisionAttempt,
-      transformations: [...toolTransformations, checkpointTransformation],
-      checkpoint: {
-        coveredFromSeq: checkpoint.coveredFromSeq,
-        coveredToSeq: checkpoint.coveredToSeq,
-        sourceEventCount: checkpointPlan.selectedMessages.length
-          + (checkpointPlan.previousCheckpoint ? 1 : 0),
-        sourceHash: checkpoint.sourceHash,
-        checkpointTokens: checkpoint.tokenCount,
-        cacheStatus: "generated",
-        generationAttempts: generation.attempts.length,
-      },
-      recoveryExhausted: finalBudget.softLimitExceeded,
-    }),
-    ...(projectionResult ? { projection: projectionResult } : {}),
-    streamCheckpoint: { plan: checkpointPlan, generation, checkpoint },
-  };
+  });
 }
 
 function exhaustedCompilation(
@@ -284,12 +184,6 @@ function enforcedToolCompilation(input: {
     },
     projection: input.projection,
   };
-}
-
-function currentInputSequence(stateView: AgentStateView): number | undefined {
-  return stateView.context.core.current.input.seq > 0
-    ? stateView.context.core.current.input.seq
-    : undefined;
 }
 
 function fullCompilation(

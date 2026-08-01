@@ -91,7 +91,7 @@ describe("Core Capsule", () => {
     expect(capsule.budget.estimatedContinuityTokens).toBeLessThanOrEqual(260);
   });
 
-  it("keeps the continuity budget strict when the newest complete turn is oversized", () => {
+  it("keeps the newest complete turn exact when that turn exceeds the continuity target", () => {
     const capsule = buildCoreCapsule({
       revision: "context:3",
       runId: "RUN-3",
@@ -103,7 +103,27 @@ describe("Core Capsule", () => {
       ],
     });
 
-    expect(capsule.continuity.recentExact).toEqual([]);
+    expect(capsule.continuity.recentExact.map((event) => event.seq)).toEqual([1, 2]);
+    expect(capsule.continuity.unloadedRanges).toEqual([]);
+    expect(capsule.continuity.maintenanceRequired).toBe(false);
+    expect(capsule.budget.estimatedContinuityTokens).toBeGreaterThan(160);
+  });
+
+  it("keeps the newest completed system-event turn exact", () => {
+    const capsule = buildCoreCapsule({
+      revision: "context:system-event",
+      runId: "RUN-SYSTEM",
+      continuityMaxTokens: 180,
+      timeline: [
+        user(1, "Older request ".repeat(80)),
+        assistant(2, "Older response ".repeat(80)),
+        systemEvent(3, "A scheduled import completed."),
+        assistant(4, "The import completed successfully."),
+        user(5, "What changed?", true),
+      ],
+    });
+
+    expect(capsule.continuity.recentExact.map((event) => event.seq)).toEqual([3, 4]);
     expect(capsule.continuity.unloadedRanges).toEqual([{
       fromSeq: 1,
       toSeq: 2,
@@ -111,7 +131,6 @@ describe("Core Capsule", () => {
       sourceRef: "seq:1-2",
       reason: "continuity_budget",
     }]);
-    expect(capsule.budget.estimatedContinuityTokens).toBeLessThanOrEqual(160);
   });
 
   it("keeps current-input size outside the historical continuity budget", () => {
@@ -188,6 +207,17 @@ function assistant(seq: number, content: string): AgentTemporalEvent {
     seq,
     timestamp: AT,
     content,
+  };
+}
+
+function systemEvent(seq: number, summary: string): AgentTemporalEvent {
+  return {
+    kind: "system_event",
+    seq,
+    timestamp: AT,
+    source: "scheduler",
+    event: "import.completed",
+    summary,
   };
 }
 

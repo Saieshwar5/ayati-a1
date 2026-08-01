@@ -193,8 +193,9 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
   ),
   capability("resource:binding", "Bind resources to the active workstream.", "Use after ownership is resolved and the run is bound.", MUTATION, ["git_context_bind_resources"]),
   capability("workstream:preferences", "Update an explicit workstream preference.", "Use only for an explicit star or preference change.", EXECUTE, ["git_context_set_workstream_star"]),
-  capability("history:read", "Search and read exact older agent-stream history.", "Use when exact older discussion or evidence is required.", OBSERVE_BOTH, [
+  capability("history:read", "Search, page, and read exact older agent-stream history.", "Use when exact older discussion or evidence is required. Search by topic when possible; page chronologically only when sequence context matters.", OBSERVE_BOTH, [
     "agent_history_search",
+    "agent_conversation_read",
     "agent_history_read",
   ]),
 

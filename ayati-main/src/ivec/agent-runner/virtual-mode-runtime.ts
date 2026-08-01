@@ -408,6 +408,22 @@ export function buildVirtualCapabilitySummary(definitions: ToolDefinition[]): st
 }
 
 export function directResponseRepair(state: LoopState): VirtualModeRepair | undefined {
+  if (state.virtualMode.active === "context.maintain") {
+    return repair(
+      "MODE_EDGE_PROHIBITED",
+      "Runtime context maintenance must finish before task decisions resume.",
+      [],
+      ["Wait for context maintenance to restore the preceding task mode."],
+    );
+  }
+  if (state.virtualMode.active === "run.maintain") {
+    return repair(
+      "MODE_EDGE_PROHIBITED",
+      "Run-context maintenance must finish before task decisions resume.",
+      [],
+      ["Submit the bounded run-context maintenance decision."],
+    );
+  }
   if (state.virtualMode.active === "context.retrieve") {
     return repair(
       "MODE_EDGE_PROHIBITED",
@@ -840,6 +856,7 @@ function filterToolsForMode(
   mode: VirtualModeName,
   toolNames: string[],
 ): string[] {
+  if (mode === "context.maintain" || mode === "run.maintain") return [];
   const policy = deriveWorkstreamBindingCapabilityPolicy(state);
   return [...new Set(toolNames)].filter((toolName) => {
     if (!getToolTaxonomy(toolName)) return false;

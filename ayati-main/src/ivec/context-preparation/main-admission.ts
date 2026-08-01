@@ -36,6 +36,12 @@ import {
 } from "./policy.js";
 import { buildPromptContextManifest } from "./prompt-manifest.js";
 import type { ContextPreparationCandidate } from "./types.js";
+import {
+  createContextMaintenanceJob,
+  planContextMaintenance,
+  type ContextMaintenanceLifecycle,
+  type ContextMaintenanceFinish,
+} from "./context-maintenance.js";
 
 export interface PreparedMainAdmissionInput {
   provider: LlmProvider;
@@ -50,6 +56,7 @@ export interface PreparedMainAdmissionInput {
   applyAuthoritativeContext?: (context: ContextEngineMachineContext) => AgentStateView;
   allowBackgroundPreparation: boolean;
   allowSynchronousSemanticRecovery: boolean;
+  contextMaintenance?: ContextMaintenanceLifecycle;
 }
 
 interface CandidateOutcome {
@@ -84,6 +91,7 @@ export async function compilePreparedMainContext(
   const considerCandidate = async (
     candidate: ContextPreparationCandidate,
     waited = false,
+    enforceAdoption = false,
   ): Promise<boolean> => {
     const validation = validateMainCandidate({
       candidate,
@@ -103,8 +111,9 @@ export async function compilePreparedMainContext(
       return false;
     }
     manager.markValidated(candidate.candidateId, validation.reason);
+    const tokensBefore = currentBudget.measuredInputTokens;
 
-    if (input.policy === "shadow") {
+    if (input.policy === "shadow" && !enforceAdoption) {
       const previewState = candidate.kind === "durable_checkpoint"
         ? previewDurableCheckpointCandidate({ stateView: workingState, candidate })
         : applyMainFocusOverlay(workingState, overlayFromCandidate(candidate));
@@ -137,6 +146,27 @@ export async function compilePreparedMainContext(
           candidate: manager.currentCandidate() ?? candidate,
           action: "rejected",
           reason: "checkpoint_candidate_incomplete",
+        };
+        return false;
+      }
+      const previewState = previewDurableCheckpointCandidate({
+        stateView: workingState,
+        candidate,
+      });
+      const previewTurn = rebuildTurnInput(workingTurnInput, previewState, input.buildPrompt);
+      const previewManifest = buildPromptContextManifest({
+        stateView: previewState,
+        turnInput: previewTurn,
+      });
+      manager.recordManifest(previewManifest, input.contextLimits.hardInputTokens);
+      const previewBudget = await measure(input, previewTurn);
+      if (atForcedBarrier(currentBudget)
+        && previewBudget.measuredInputTokens >= currentBudget.measuredInputTokens) {
+        manager.markStale(candidate.candidateId, "checkpoint_candidate_did_not_reduce_context");
+        candidateOutcome = {
+          candidate: manager.currentCandidate() ?? candidate,
+          action: "rejected",
+          reason: "checkpoint_candidate_did_not_reduce_context",
         };
         return false;
       }
@@ -177,7 +207,6 @@ export async function compilePreparedMainContext(
       mode = "step_ledger";
     }
 
-    const tokensBefore = currentBudget.measuredInputTokens;
     workingTurnInput = rebuildTurnInput(workingTurnInput, workingState, input.buildPrompt);
     currentBudget = await measure(input, workingTurnInput);
     finalBudgetMeasured = true;
@@ -208,37 +237,111 @@ export async function compilePreparedMainContext(
   };
 
   const ready = manager.readyCandidate();
-  if (ready) await considerCandidate(ready);
+  if (ready?.kind === "durable_checkpoint") {
+    manager.markStale(ready.candidateId, "durable_checkpoint_requires_context_maintenance");
+    candidateOutcome = {
+      candidate: manager.currentCandidate() ?? ready,
+      action: "rejected",
+      reason: "durable_checkpoint_requires_context_maintenance",
+    };
+  } else if (ready) {
+    await considerCandidate(ready);
+  }
 
   if (
-    input.policy === "enforce"
-    && workingState.context.core.continuity.maintenanceRequired
+    workingState.context.core.continuity.maintenanceRequired
     && input.allowSynchronousSemanticRecovery
     && input.contextCheckpoint
+    && input.contextMaintenance
   ) {
-    const job = createMainPreparationJob({
-      provider: input.provider,
-      laneId: manager.laneId,
+    const maintenance = await planContextMaintenance({
       stateView: workingState,
-      currentInputTokens: currentBudget.measuredInputTokens,
-      predictedInputTokens: currentBudget.measuredInputTokens + 1,
-      recoveryTargetTokens: currentBudget.measuredInputTokens,
-      contextLimits: input.contextLimits,
-      modelProfileVersion: profileVersion,
       contextCheckpoint: input.contextCheckpoint,
-      activeOverlay,
-      synchronous: true,
-      intent: "core_capsule",
     });
-    if (job) {
-      const capsuleCandidate = await manager.prepareSynchronously(job);
-      if (capsuleCandidate) {
-        await considerCandidate(capsuleCandidate, true);
-      }
-    } else {
+    if (!maintenance) {
       manager.recordSkip("core_capsule_has_no_eligible_checkpoint_prefix", {
         unloadedRanges: workingState.context.core.continuity.unloadedRanges,
       });
+    } else {
+      const job = createContextMaintenanceJob({
+        provider: input.provider,
+        laneId: manager.laneId,
+        stateView: workingState,
+        currentInputTokens: currentBudget.measuredInputTokens,
+        contextLimits: input.contextLimits,
+        modelProfileVersion: profileVersion,
+        maintenance,
+      });
+      const existing = manager.currentCandidate();
+      if (manager.hasTerminalJob(job.jobKey)) {
+        manager.recordSkip("context_maintenance_source_already_failed", {
+          ...(existing?.jobKey === job.jobKey ? {
+            candidateId: existing.candidateId,
+            status: existing.status,
+            reason: existing.failureReason ?? existing.lifecycleReason,
+          } : {}),
+        });
+      } else {
+        input.contextMaintenance.enter(maintenance);
+        manager.recordContextMaintenance("entered", {
+          reason: maintenance.reason,
+          protectFromSeq: maintenance.protectFromSeq,
+          continuityMaxTokens: maintenance.continuityMaxTokens,
+          unloadedRanges: maintenance.unloadedRanges,
+        });
+        let finish: ContextMaintenanceFinish = {
+          status: "failed",
+          reason: "checkpoint_candidate_unavailable",
+        };
+        try {
+          const capsuleCandidate = await manager.prepareSynchronously(job);
+          if (capsuleCandidate) {
+            const adopted = await considerCandidate(capsuleCandidate, true, true);
+            finish = adopted
+              ? {
+                  status: "completed",
+                  reason: "checkpoint_committed",
+                  ...(adoptedCheckpoint ? {
+                    checkpointId: adoptedCheckpoint.checkpointId,
+                    coveredFromSeq: adoptedCheckpoint.coveredFromSeq,
+                    coveredToSeq: adoptedCheckpoint.coveredToSeq,
+                  } : {}),
+                }
+              : {
+                  status: "failed",
+                  reason: candidateOutcome.reason ?? "checkpoint_candidate_rejected",
+                };
+          } else {
+            const failed = manager.currentCandidate();
+            candidateOutcome = {
+              ...(failed ? { candidate: failed } : {}),
+              action: "rejected",
+              reason: failed?.failureReason ?? "checkpoint_generation_failed",
+            };
+            finish = {
+              status: "failed",
+              reason: candidateOutcome.reason ?? "checkpoint_generation_failed",
+            };
+          }
+        } finally {
+          manager.recordContextMaintenance(
+            finish.status === "failed" ? "failed" : "completed",
+            { ...finish },
+          );
+          const restored = input.contextMaintenance.exit(finish);
+          workingState = applyMainFocusOverlay(
+            projectAgentStateViewForPrompt(restored),
+            activeOverlay,
+          );
+          workingTurnInput = rebuildTurnInput(
+            workingTurnInput,
+            workingState,
+            input.buildPrompt,
+          );
+          currentBudget = await measure(input, workingTurnInput);
+          finalBudgetMeasured = true;
+        }
+      }
     }
   }
 
@@ -288,7 +391,6 @@ export async function compilePreparedMainContext(
       recoveryTargetTokens: currentBudget.recoveryTargetTokens,
       contextLimits: input.contextLimits,
       modelProfileVersion: profileVersion,
-      contextCheckpoint: input.contextCheckpoint,
       activeOverlay,
       synchronous: true,
     });
@@ -333,7 +435,6 @@ export async function compilePreparedMainContext(
       recoveryTargetTokens: currentBudget.recoveryTargetTokens,
       contextLimits: input.contextLimits,
       modelProfileVersion: profileVersion,
-      contextCheckpoint: input.contextCheckpoint,
       activeOverlay,
       synchronous: false,
     });

@@ -36,6 +36,8 @@ import {
   type PrepareAgentRunResponse,
   type PrepareResourceMutationRequest,
   type PrepareResourceMutationResponse,
+  type ReadAgentConversationRequest,
+  type ReadAgentConversationResponse,
   type ReadAgentHistoryRequest,
   type ReadAgentHistoryResponse,
   type ReadWorkstreamRequest,
@@ -396,6 +398,15 @@ export class SqliteContextEngineService implements ContextEngineService {
     return await this.queue.enqueue(async () => {
       await this.ensureStartupRecovery();
       return this.history.search(input);
+    });
+  }
+
+  async readAgentConversation(
+    input: ReadAgentConversationRequest,
+  ): Promise<ReadAgentConversationResponse> {
+    return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
+      return this.history.readConversation(input);
     });
   }
 

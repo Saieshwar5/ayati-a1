@@ -130,7 +130,7 @@ The capsule has three explicit parts:
   pointers;
 - `continuity`: an optional durable checkpoint, recent whole exact turns, and
   any older sequence ranges not mounted in the capsule;
-- `budget`: the strict continuity limit and current estimate.
+- `budget`: the continuity target and current estimate.
 
 Every exact event keeps its authoritative stream sequence. Assistant events
 also project response/feedback kind, and user events project only the
@@ -146,9 +146,11 @@ The current input is stored once under `core.current.input` and is not charged
 to the historical continuity budget. The initial continuity budget is 4,000
 estimated tokens, including checkpoint, exact tail, and continuity metadata.
 Selection is newest-first by complete turn; an individual message is never
-partially cut. If even the newest historical turn cannot fit, it is named in
-an unloaded range and becomes eligible checkpoint source rather than silently
-overflowing the capsule.
+partially cut. The newest completed user/system-event turn and its assistant
+response are the minimum exact tail and remain exact even when that one turn
+exceeds the continuity target. Additional older turns become unloaded ranges
+and eligible checkpoint source. Whole-request admission remains the hard
+provider safety boundary.
 
 `core.current.activeDocuments` is derived from the newest verified successful
 complete historical file reads belonging to stable terminal runs in the same
@@ -170,16 +172,17 @@ Capsule evolution is automatic:
 2. Before a decision, the runtime builds the capsule from the active durable
    checkpoint and exact journal tail.
 3. If it fits, no summary call or checkpoint write occurs.
-4. If it does not fit, the model-facing capsule immediately remains bounded
-   and reports exact `unloadedRanges`; the source messages remain unchanged.
-5. Independently of whole-prompt pressure, the runtime asks Context Engine for
-   a source-hashed plan over complete terminal runs before the current input.
+4. If older turns do not fit, the capsule keeps its minimum exact tail, reports
+   exact `unloadedRanges`, and leaves the source messages unchanged.
+5. Independently of whole-prompt pressure, the runtime enters
+   `context.maintain` and asks Context Engine for a source-hashed plan over
+   complete terminal runs before the protected exact tail.
 6. A beneficial plan is summarized with exact sequence anchors, revalidated,
    committed atomically, and replaced by the commit's fresh checkpoint plus
    exact tail.
-7. If no beneficial complete prefix exists or generation fails, no durable
-   state changes. The explicit unloaded range remains recoverable through
-   exact history search/read.
+7. The runtime restores the exact prior task mode. If no beneficial complete
+   prefix exists or generation fails, no durable state changes; the explicit
+   unloaded range remains recoverable through exact history search/read.
 
 The capsule itself is never the recovery source. After a crash or restart,
 Ayati rehydrates immutable messages, assistant-response metadata, message
@@ -327,8 +330,11 @@ evidence is cold context and is retrieved only when needed:
 
 1. `agent_history_search` searches messages, WorkState summaries, or exact
    run-step call records.
-2. An evidence hit returns a stable `run:*:step:*:call:*` reference.
-3. `agent_history_read` reads that exact journal record with deterministic
+2. `agent_conversation_read` pages exact stream messages chronologically when
+   topic search is insufficient. Older successful page payloads are replaced
+   in active prompt context when the next page arrives; exact records remain.
+3. An evidence hit returns a stable `run:*:step:*:call:*` reference.
+4. `agent_history_read` reads that exact journal record with deterministic
    character bounds and continuation.
 
 This keeps one source of truth and prevents repeated reads from creating an
@@ -363,11 +369,12 @@ material WorkState, failures, the completion-only verified-outcome catalog,
 and the latest six main calls are always rebuilt from current authoritative
 state.
 
-The manager identifies a stable source prefix by canonical hashes and
-message/step watermarks. At 55K in the default profile, or when current input
-plus the 15K lead predicts crossing 70K, it may prepare one disposable hybrid
-candidate beside foreground model work. One semantic call may be active per
-provider. Identical prefix/policy/profile jobs deduplicate; errors become
+The manager identifies a stable source prefix by canonical hashes and step
+watermarks. At 55K in the default profile, or when current input plus the 15K
+lead predicts crossing 70K, it may prepare one disposable run-focus candidate
+from eligible older current-run tool material beside foreground model work.
+It does not summarize conversation messages. One semantic call may be active
+per provider. Identical prefix/policy/profile jobs deduplicate; errors become
 failed candidates, and late results after lane closure are measured and
 discarded.
 
@@ -385,38 +392,84 @@ unchanged older prefix, but it cannot restore an unbound mode, replace the
 selected request, or replace newly mounted execute authority. Finalization
 closes the lane; late results are recorded and discarded.
 
-## Durable Continuity and Pressure Checkpoints
+## Conversation Context Maintenance
 
-The same source-anchored checkpoint mechanism serves two triggers:
+The durable source-anchored checkpoint mechanism has one trigger and one
+runtime owner:
 
-- Core Capsule maintenance when its small continuity budget is exceeded;
-- whole-provider-request recovery when the complete prompt approaches model
-  pressure.
+- `context.maintain` runs when the Core Capsule continuity budget is exceeded.
 
-For either trigger:
+The model cannot select this mode. The runtime enters it before the next task
+decision, exposes no task tools or normal reply, and restores the exact prior
+mode after success or failure. It does not create a run step, request,
+workstream, binding attempt, or WorkState checkpoint.
+
+For each maintenance attempt:
 
 1. Ask Context Engine for a plan over a complete prefix of terminal runs
-   before the protected current input.
+   before the protected exact tail. The current input and newest completed
+   user/system-event turn with its assistant response are never summarized.
 2. Refuse a plan whose checkpoint would not provide the requested savings.
-3. Generate a structured summary with exact message-sequence anchors, allowing
-   at most one repair, but do not commit it yet.
-4. At adoption, revalidate the base/source and atomically commit the checkpoint
+3. Generate a structured summary from the previous checkpoint plus newly
+   selected older messages. Retain active requests, constraints, corrections,
+   unresolved questions, assistant commitments, and needed references first;
+   then durable decisions, confirmed facts, preferences, and definitions.
+   Forget filler, repetition, resolved or superseded material, abandoned
+   alternatives, transient failures, unsolicited offers, speculation, long
+   quotations, and raw logs first. Allow at most one repair, but do not commit
+   yet. The 1,200-token value is a preferred target; a shared bounded safety
+   ceiling determines structural validity.
+4. Preview the candidate with its exact tail and measure the complete provider
+   request before committing it. At a forced barrier, a candidate that cannot
+   reduce the request is rejected.
+5. At adoption, revalidate the base/source and atomically commit the checkpoint
    and active pointer through Context Engine.
-5. Replace the loop projection with the fresh commit response, then rebuild and
+6. Replace the loop projection with the fresh commit response, then rebuild and
    measure checkpoint plus exact tail.
 
-The default checkpoint estimate is 1,200 tokens. A checkpoint never grants
-authority; every statement cites an exact retained message sequence. Failed or
-unnecessary plans do not change durable state. Whole-request pressure still
-compacts older tool output before it escalates to semantic checkpoint or focus
-preparation. Current work and resource records stay with their authoritative
-owners and are not pressure-managed prompt lanes.
+The default checkpoint target is 1,200 tokens. A checkpoint never grants
+authority; every statement cites an exact retained message sequence. One
+failed candidate is terminal for the same source during the current run; a
+later run or changed source may try again. Failed or unnecessary plans do not
+change durable state. Whole-request pressure is separate: it compacts older
+tool output and may create a disposable run-focus overlay, but it cannot create
+or rewrite the conversation checkpoint. Current work and resource records stay
+with their authoritative owners and are not pressure-managed prompt lanes.
+
+## Current-Run Context Maintenance
+
+Whole-request soft pressure is handled separately from conversation
+checkpointing. When older current-run tool material can be reduced, the
+runtime suspends the current task mode in `run.maintain`. The prompt contains
+one bounded source-hashed inventory and exposes only
+`decision_maintain_run_context`.
+
+That decision supplies a concise in-progress WorkState handoff and at most
+twelve references in each of three exception lists: keep exact, keep a typed
+compact preview, or release to a recoverable journal reference. The model does
+not provide token counts, verifier status, projector ids, or authority. The
+runtime rechecks the maintenance id, WorkState revision, exact run-journal
+source hash, allowed references, mandatory exact calls, and per-tool policy.
+
+The resulting overlay is active-prompt state only. It never edits or deletes
+the exact run-step journal and never updates `progress.md` before finalization.
+New tool calls append exact after the maintained prefix. If later calls create
+new pressure, a new source hash may trigger maintenance again; the same source
+cannot loop. Invalid semantic input receives one bounded retry, then the
+runtime uses its safest deterministic defaults. Unknown tools remain exact.
+After WorkState persistence and overlay adoption, the exact preceding task
+mode and capability surface are restored.
+
+The current-run WorkState is the semantic handoff owner. A temporary focus
+overlay below is only a forced-capacity fallback and must not become a second
+durable WorkState or conversation summary.
 
 ## Temporary Focus Overlays
 
-When an eligible durable checkpoint cannot recover enough space, the runtime
-may summarize only covered older prompt material into `context.run.focus`.
-Every statement cites a valid message, step, call, evidence, or artifact ref;
+When whole-request recovery needs more space, the runtime may summarize only
+eligible older current-run tool previews and a prior focus into
+`context.run.focus`. It does not summarize conversation messages. Every
+statement cites a valid step, call, evidence, artifact, or prior-focus ref;
 the complete summary is limited to 1,600 estimated tokens and one repair.
 Current input, the bound selected-request context, WorkState,
 binding/resources, unresolved failures, and completion evidence are never
@@ -431,13 +484,19 @@ search/read.
 ## Exact History Access
 
 `agent_history_search` searches older messages, run summaries, and evidence.
-It returns stable refs such as `message:*`, `seq:*`, `run:*`, or an exact
-run/step/call evidence ref. `agent_history_read` reads a ref or inclusive
-sequence range with deterministic bounds and continuation cursors.
+`agent_conversation_read` returns the latest page, or messages before an exact
+sequence, and follows a stable `olderCursor`. The first page pins a sequence
+high-water mark, so later appends cannot duplicate or skip entries while the
+agent pages backward. Each page contains at most 50 stored user, assistant, or
+system-event messages in chronological order. `agent_history_read` reads a
+stable `message:*`, `seq:*`, `run:*`, or exact run/step/call reference, or an
+inclusive sequence range, with deterministic character bounds and content
+continuation.
 
-Search defaults to 10 hits and caps at 25. Reads cap at 50 messages and 32,000
-characters. History retrieval does not inject unbounded transcripts into every
-decision.
+Search defaults to 10 hits and caps at 25. Conversation and range reads cap at
+50 messages and 32,000 message-content characters. Retrieval is current-stream
+only and does not expose hidden system prompts. It does not inject unbounded
+transcripts into every decision.
 
 ## Personal and Episodic Memory
 

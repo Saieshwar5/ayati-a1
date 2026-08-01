@@ -6,6 +6,7 @@ import {
   isFinalizeRunRequest,
   isPlanContextCheckpointRequest,
   isPrepareAgentRunRequest,
+  isReadAgentConversationRequest,
   isReadAgentHistoryRequest,
   isReadWorkstreamRequest,
   isRecordRunStepRequest,
@@ -269,6 +270,19 @@ describe("Context Engine contracts", () => {
       limit: 25,
     })).toBe(true);
     expect(isSearchAgentHistoryRequest({ streamId: STREAM_ID, query: "x", limit: 26 })).toBe(false);
+    expect(isReadAgentConversationRequest({ streamId: STREAM_ID })).toBe(true);
+    expect(isReadAgentConversationRequest({
+      streamId: STREAM_ID,
+      cursor: "conversation:v1:abc123def456:100:51",
+      limit: 50,
+      maxChars: 32_000,
+    })).toBe(true);
+    expect(isReadAgentConversationRequest({ streamId: STREAM_ID, limit: 51 })).toBe(false);
+    expect(isReadAgentConversationRequest({
+      streamId: STREAM_ID,
+      cursor: "conversation:v1:abc123def456:100:51",
+      beforeSeq: 51,
+    })).toBe(false);
     expect(isReadAgentHistoryRequest({ streamId: STREAM_ID, ref: "seq:4", maxChars: 32_000 })).toBe(true);
     expect(isReadAgentHistoryRequest({ streamId: STREAM_ID, fromSeq: 2, toSeq: 8 })).toBe(true);
     expect(isReadAgentHistoryRequest({ streamId: STREAM_ID, fromSeq: 8, toSeq: 2 })).toBe(false);

@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type {
   AgentHistoryHit,
+  ReadAgentConversationRequest,
+  ReadAgentConversationResponse,
   ReadAgentHistoryRequest,
   ReadAgentHistoryResponse,
   RunStepToolCall,
@@ -14,6 +16,7 @@ import { readAgentStream } from "../repositories/agent-stream-records.js";
 import {
   readStreamMessage,
   readStreamMessages,
+  readStreamMessagesBefore,
   searchStreamMessages,
 } from "../repositories/message-records.js";
 import {
@@ -27,6 +30,7 @@ const MAX_SEARCH_LIMIT = 25;
 const DEFAULT_READ_CHARS = 32_000;
 const MAX_READ_CHARS = 32_000;
 const MAX_READ_MESSAGES = 50;
+const CONVERSATION_CURSOR_PREFIX = "conversation:v1:";
 
 export class AgentHistoryService {
   constructor(private readonly database: ContextDatabase) {}
@@ -76,6 +80,38 @@ export class AgentHistoryService {
       return boundedMessages(messages, maxChars, input.toSeq);
     }
     return this.readRef(input.streamId, input.ref, input.offsetChars ?? 0, maxChars);
+  }
+
+  readConversation(input: ReadAgentConversationRequest): ReadAgentConversationResponse {
+    const stream = this.requireStream(input.streamId);
+    if (input.cursor !== undefined && input.beforeSeq !== undefined) {
+      throw invalidConversationCursor("Conversation read accepts a cursor or beforeSeq, not both.");
+    }
+    const limit = Math.min(Math.max(input.limit ?? MAX_READ_MESSAGES, 1), MAX_READ_MESSAGES);
+    const maxChars = Math.min(Math.max(input.maxChars ?? DEFAULT_READ_CHARS, 1), MAX_READ_CHARS);
+    const position = input.cursor !== undefined
+      ? parseConversationCursor(input.cursor, input.streamId, stream.lastMessageSequence)
+      : {
+          snapshotToSeq: stream.lastMessageSequence,
+          beforeSeq: input.beforeSeq ?? stream.lastMessageSequence + 1,
+        };
+    if (position.beforeSeq < 1 || position.beforeSeq > position.snapshotToSeq + 1) {
+      throw invalidConversationCursor("Conversation cursor is outside its snapshot range.");
+    }
+
+    const source = readStreamMessagesBefore(this.database, {
+      streamId: input.streamId,
+      snapshotToSeq: position.snapshotToSeq,
+      beforeSeq: position.beforeSeq,
+      limit: limit + 1,
+    });
+    source.forEach(verifyMessageHash);
+    return conversationPage(source, {
+      streamId: input.streamId,
+      limit,
+      maxChars,
+      snapshotToSeq: position.snapshotToSeq,
+    });
   }
 
   private readRef(
@@ -260,15 +296,120 @@ export class AgentHistoryService {
     return rows.map((row) => row.resource_id);
   }
 
-  private requireStream(streamId: string): void {
-    if (!readAgentStream(this.database, streamId)) {
+  private requireStream(streamId: string): NonNullable<ReturnType<typeof readAgentStream>> {
+    const stream = readAgentStream(this.database, streamId);
+    if (!stream) {
       throw new ContextEngineServiceError({
         code: "AGENT_STREAM_NOT_FOUND",
         message: "Agent stream does not exist.",
         details: { streamId },
       });
     }
+    return stream;
   }
+}
+
+function conversationPage(
+  source: StreamMessage[],
+  input: { streamId: string; limit: number; maxChars: number; snapshotToSeq: number },
+): ReadAgentConversationResponse {
+  const selected: StreamMessage[] = [];
+  let remaining = input.maxChars;
+  for (const message of source.slice(0, input.limit)) {
+    if (message.content.length > remaining) {
+      if (selected.length === 0) {
+        const content = message.content.slice(0, input.maxChars);
+        const contentTruncated = content.length < message.content.length;
+        const hasOlder = source.length > 1;
+        return {
+          messages: [{ ...message, content }],
+          page: {
+            snapshotToSeq: input.snapshotToSeq,
+            fromSeq: message.sequence,
+            toSeq: message.sequence,
+            count: 1,
+            hasOlder,
+            ...(hasOlder
+              ? { olderCursor: conversationCursor(input.streamId, input.snapshotToSeq, message.sequence) }
+              : {}),
+          },
+          contentTruncated,
+          ...(contentTruncated
+            ? {
+                continuationRef: "message:" + message.messageId,
+                continuationOffsetChars: content.length,
+              }
+            : {}),
+        };
+      }
+      break;
+    }
+    selected.push(message);
+    remaining -= message.content.length;
+  }
+
+  const chronological = [...selected].reverse();
+  const oldest = chronological[0];
+  const newest = chronological.at(-1);
+  const hasOlder = source.length > selected.length;
+  return {
+    messages: chronological,
+    page: {
+      snapshotToSeq: input.snapshotToSeq,
+      ...(oldest ? { fromSeq: oldest.sequence } : {}),
+      ...(newest ? { toSeq: newest.sequence } : {}),
+      count: chronological.length,
+      hasOlder,
+      ...(hasOlder && oldest
+        ? { olderCursor: conversationCursor(input.streamId, input.snapshotToSeq, oldest.sequence) }
+        : {}),
+    },
+    contentTruncated: false,
+  };
+}
+
+function conversationCursor(streamId: string, snapshotToSeq: number, beforeSeq: number): string {
+  return `${CONVERSATION_CURSOR_PREFIX}${streamCursorIdentity(streamId)}:${snapshotToSeq}:${beforeSeq}`;
+}
+
+function parseConversationCursor(
+  cursor: string,
+  streamId: string,
+  currentLastSequence: number,
+): { snapshotToSeq: number; beforeSeq: number } {
+  const match = cursor.match(/^conversation:v1:([0-9a-f]{12}):(\d+):(\d+)$/);
+  const snapshotToSeq = Number(match?.[2]);
+  const beforeSeq = Number(match?.[3]);
+  if (!match
+    || match[1] !== streamCursorIdentity(streamId)
+    || !Number.isSafeInteger(snapshotToSeq)
+    || snapshotToSeq < 0
+    || snapshotToSeq > currentLastSequence
+    || !Number.isSafeInteger(beforeSeq)
+    || beforeSeq < 1
+    || beforeSeq > snapshotToSeq + 1) {
+    throw invalidConversationCursor("Conversation cursor is invalid or no longer available.");
+  }
+  return { snapshotToSeq, beforeSeq };
+}
+
+function streamCursorIdentity(streamId: string): string {
+  return createHash("sha256").update(streamId).digest("hex").slice(0, 12);
+}
+
+function verifyMessageHash(message: StreamMessage): void {
+  const actual = createHash("sha256").update(message.content).digest("hex");
+  if (actual !== message.contentHash) {
+    throw new ContextEngineServiceError({
+      code: "HISTORY_INTEGRITY_FAILED",
+      message: "Stored conversation content failed its integrity check.",
+      details: { sequence: message.sequence, messageId: message.messageId },
+    });
+  }
+}
+
+function invalidConversationCursor(message: string): ContextEngineServiceError {
+  return new ContextEngineServiceError({ code: "HISTORY_CURSOR_INVALID", message });
 }
 
 function boundedMessages(

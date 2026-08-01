@@ -38,6 +38,7 @@ import type { RunMetrics } from "../metrics.js";
 import { recordOptimizationEvent, recordPromptMetric, recordProviderUsageMetric, recordRunMetric } from "../metrics.js";
 import type { AgentContextCheckpointCoordinator, ToolContextProjectionPolicy } from "../types.js";
 import type { ContextPreparationManager } from "../context-preparation/manager.js";
+import type { ContextMaintenanceLifecycle } from "../context-preparation/context-maintenance.js";
 import type { ContextEngineMachineContext } from "../../context-engine/index.js";
 import { compileDecisionContext } from "./decision-context-compiler.js";
 import { buildDecisionSystemSections } from "./decision-system-prompt.js";
@@ -70,6 +71,17 @@ import type { ModeCapabilityOptions } from "./capabilities/contracts.js";
 import type { WorkStateUpdateInput } from "./work-state/contracts.js";
 import { WORK_STATE_LIMITS } from "./work-state/contracts.js";
 import { normalizeWorkStateUpdateInput } from "./work-state/checkpoint.js";
+import type {
+  PromptRunContextMaintenanceCard,
+  RunContextMaintenanceSelection,
+} from "./run-context-maintenance-contracts.js";
+import {
+  normalizeRunContextMaintenanceSelection,
+} from "./run-context-maintenance-contracts.js";
+import {
+  buildRunContextMaintenanceControlTool,
+  RUN_CONTEXT_MAINTENANCE_TOOL_NAME,
+} from "./run-context-maintenance-control.js";
 import {
   detectAssistantTextToolCall,
   looksLikeToolCallRecord,
@@ -134,6 +146,11 @@ export type AgentDecision =
       kind: "checkpoint_work_state";
       update: WorkStateUpdateInput;
       workingNotes?: string[];
+    }
+  | {
+      kind: "maintain_run_context";
+      selection: RunContextMaintenanceSelection;
+      workingNotes?: string[];
     };
 
 interface CallAgentDecisionInput {
@@ -145,6 +162,7 @@ interface CallAgentDecisionInput {
   modeTransitionAvailable?: boolean;
   terminalStopAvailable?: boolean;
   workStateCheckpointAvailable?: boolean;
+  runContextMaintenanceAvailable?: boolean;
   systemContext?: string;
   metrics?: RunMetrics;
   feedbackLedger?: AgentFeedbackLedger;
@@ -152,6 +170,7 @@ interface CallAgentDecisionInput {
   toolContextProjectionPolicy?: ToolContextProjectionPolicy;
   contextCheckpoint?: AgentContextCheckpointCoordinator;
   contextPreparation?: ContextPreparationManager;
+  contextMaintenance?: ContextMaintenanceLifecycle;
   applyAuthoritativeContext?: (context: ContextEngineMachineContext) => AgentStateView;
   contextPreparationMode?: "primary" | "final_response";
   evaluationIteration?: number;
@@ -231,6 +250,8 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
       modeTransitionAvailable: input.modeTransitionAvailable !== false,
       terminalStopAvailable: input.terminalStopAvailable === true,
       workStateCheckpointAvailable: input.workStateCheckpointAvailable === true,
+      runContextMaintenanceAvailable: input.runContextMaintenanceAvailable === true,
+      runContextMaintenance: input.stateView.context.run?.mode?.runMaintain,
       modeCapabilityOptions: input.modeCapabilityOptions ?? DEFAULT_MODE_CAPABILITY_OPTIONS,
       allowedModeDestinations: allowedModeDestinations(input.stateView),
     });
@@ -383,6 +404,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         modeTransitionAvailable: input.modeTransitionAvailable !== false,
         terminalStopAvailable: input.terminalStopAvailable === true,
         workStateCheckpointAvailable: input.workStateCheckpointAvailable === true,
+        runContextMaintenanceAvailable: input.runContextMaintenanceAvailable === true,
       });
       if (violation) {
         const repair = createToolProtocolRepairSignal(violation, attempt + 1);
@@ -529,6 +551,7 @@ async function generateTurnWithEmptyResponseRetry(
     policy: input.toolContextProjectionPolicy ?? "shadow",
     contextCheckpoint: input.contextCheckpoint,
     contextPreparation: input.contextPreparation,
+    contextMaintenance: input.contextMaintenance,
     applyAuthoritativeContext: input.applyAuthoritativeContext
       ? (context) => {
           const refreshed = input.applyAuthoritativeContext!(context);
@@ -793,6 +816,16 @@ function summarizeDecisionForFeedback(decision: AgentDecision): Record<string, u
       summary: decision.update.summary,
     };
   }
+  if (decision.kind === "maintain_run_context") {
+    return {
+      kind: decision.kind,
+      maintenanceId: decision.selection.maintenanceId,
+      keepExactCount: decision.selection.keepExactRefs.length,
+      keepCompactCount: decision.selection.keepCompactRefs.length,
+      releaseCount: decision.selection.releaseRefs.length,
+      summary: decision.selection.workState.summary,
+    };
+  }
   return {
     kind: decision.kind,
     mode: decision.action.mode,
@@ -939,6 +972,7 @@ function validateToolProtocol(
     modeTransitionAvailable: boolean;
     terminalStopAvailable: boolean;
     workStateCheckpointAvailable: boolean;
+    runContextMaintenanceAvailable: boolean;
   },
 ): ToolProtocolViolation | null {
   const selectedTools = selectedToolDefinitions.map((tool) => tool.name);
@@ -976,6 +1010,20 @@ function validateToolProtocol(
         kind: "tool_protocol_violation",
         reason: "WorkState checkpoints are available only during active graph work",
         invalidTools: [WORK_STATE_CHECKPOINT_TOOL_NAME],
+        selectedTools,
+        controlToolUsedAsAction: false,
+        mutationRequiresWorkstreamBinding: false,
+      };
+    }
+    return null;
+  }
+
+  if (decision.kind === "maintain_run_context") {
+    if (!options.runContextMaintenanceAvailable) {
+      return {
+        kind: "tool_protocol_violation",
+        reason: "Run-context maintenance is available only while run.maintain is active",
+        invalidTools: [RUN_CONTEXT_MAINTENANCE_TOOL_NAME],
         selectedTools,
         controlToolUsedAsAction: false,
         mutationRequiresWorkstreamBinding: false,
@@ -1283,6 +1331,8 @@ function buildNativeDecisionTools(
     modeTransitionAvailable: boolean;
     terminalStopAvailable: boolean;
     workStateCheckpointAvailable: boolean;
+    runContextMaintenanceAvailable: boolean;
+    runContextMaintenance?: PromptRunContextMaintenanceCard;
     modeCapabilityOptions: ModeCapabilityOptions;
     allowedModeDestinations: VirtualModeTransitionTarget[];
   },
@@ -1314,6 +1364,9 @@ function buildNativeDecisionTools(
   }
   if (options.workStateCheckpointAvailable) {
     controlTools.push(workStateCheckpointTool());
+  }
+  if (options.runContextMaintenanceAvailable && options.runContextMaintenance) {
+    controlTools.push(buildRunContextMaintenanceControlTool(options.runContextMaintenance));
   }
   const executableTools = selectedTools
     .filter((tool) => !isNativeControlToolName(tool.name))
@@ -1500,6 +1553,12 @@ function nativeDecisionToolCallToPayload(toolName: string, input: Record<string,
         update: normalizeWorkStateUpdateInput(input),
         ...(input["workingNotes"] ? { workingNotes: input["workingNotes"] } : {}),
       };
+    case RUN_CONTEXT_MAINTENANCE_TOOL_NAME:
+      return {
+        kind: "maintain_run_context",
+        selection: normalizeRunContextMaintenanceSelection(input),
+        ...(input["workingNotes"] ? { workingNotes: input["workingNotes"] } : {}),
+      };
     case TERMINAL_STOP_TOOL_NAME:
       return {
         kind: "stop",
@@ -1531,6 +1590,12 @@ function nativeDecisionToolCallToDecision(toolName: string, input: Record<string
       return {
         kind: "checkpoint_work_state",
         update: normalizeWorkStateUpdateInput(input),
+        workingNotes: normalizeWorkingNotes(input["workingNotes"]),
+      };
+    case RUN_CONTEXT_MAINTENANCE_TOOL_NAME:
+      return {
+        kind: "maintain_run_context",
+        selection: normalizeRunContextMaintenanceSelection(input),
         workingNotes: normalizeWorkingNotes(input["workingNotes"]),
       };
     case TERMINAL_STOP_TOOL_NAME:

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { contextCheckpointMaximumTokens } from "../context-checkpoint-token-policy.js";
 import type {
   CommitContextCheckpointRequest,
   ContextCheckpointPlan,
@@ -55,7 +56,9 @@ export class ContextCheckpointService {
       limit: MAX_SOURCE_MESSAGES,
     });
     const selectedMessages = this.completeTerminalPrefix(candidates, input.protectFromSeq);
-    const estimatedSavings = estimateMessageTokens(selectedMessages) - estimatedCheckpointTokens;
+    const estimatedSavings = (previousCheckpoint?.tokenCount ?? 0)
+      + estimateMessageTokens(selectedMessages)
+      - estimatedCheckpointTokens;
     if (selectedMessages.length === 0 || estimatedSavings < input.requiredSavingsTokens) {
       return idlePlan(input, previousCheckpoint, estimatedCheckpointTokens, candidates);
     }
@@ -208,7 +211,7 @@ export class ContextCheckpointService {
       summary.narrative,
       ...statements.map((statement) => statement.text),
     ].join("\n"));
-    const maximumTokens = Math.min(4_000, Math.max(input.estimatedCheckpointTokens * 2, 1_600));
+    const maximumTokens = contextCheckpointMaximumTokens(input.estimatedCheckpointTokens);
     if (input.tokenCount <= 0 || input.tokenCount > maximumTokens
       || estimatedTextTokens > Math.ceil(input.tokenCount * 1.25)) {
       throw invalidCheckpoint("Checkpoint summary exceeds its validated token budget.");

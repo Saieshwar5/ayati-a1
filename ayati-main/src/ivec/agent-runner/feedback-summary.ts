@@ -200,6 +200,16 @@ export function summarizeDecision(decision: AgentDecision): Record<string, unkno
       summaryPreview: previewString(decision.update.summary, 240),
     };
   }
+  if (decision.kind === "maintain_run_context") {
+    return {
+      kind: "maintain_run_context",
+      maintenanceId: decision.selection.maintenanceId,
+      keepExactCount: decision.selection.keepExactRefs.length,
+      keepCompactCount: decision.selection.keepCompactRefs.length,
+      releaseCount: decision.selection.releaseRefs.length,
+      summaryPreview: previewString(decision.selection.workState.summary, 240),
+    };
+  }
   return {
     kind: "act",
     action: summarizeAgentAction(decision.action),

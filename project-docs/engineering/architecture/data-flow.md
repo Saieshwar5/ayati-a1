@@ -64,15 +64,21 @@ compact important-context receipts with exact run/step/call references.
 
 ## Pressure and History
 
-The compiler measures the whole provider candidate. Recoverable tool-result
-projection runs before semantic recovery. A durable checkpoint is generated
-without mutation and commits only after adoption validation; its fresh Context
-Engine projection replaces the loop projection. If durable recovery is
-insufficient, a 1,600-token anchored focus overlay may replace only covered
-older prompt material for the rest of that run.
+Conversation continuity and whole-request pressure have separate owners. When
+the Core Capsule continuity target is exceeded, the runtime enters tool-free
+`context.maintain`, summarizes the prior checkpoint plus eligible older
+complete turns, commits only after adoption validation, refreshes the Context
+Engine projection, and restores the preceding task mode. The current input and
+newest completed turn stay exact.
 
-Older content is recovered explicitly with `agent_history_search` and
-`agent_history_read`; it is not copied into every prompt.
+Separately, the compiler measures the whole provider candidate. Recoverable
+tool-result projection runs before semantic recovery. A disposable 1,600-token
+anchored focus overlay may replace only eligible older current-run tool
+material for the rest of that run; it never rewrites conversation continuity.
+
+Older content is recovered explicitly with topic-directed
+`agent_history_search`, stable backward `agent_conversation_read` pages, and
+exact-reference `agent_history_read`; it is not copied into every prompt.
 
 ## Workstreams and Resources
 

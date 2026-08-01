@@ -6,9 +6,13 @@ import {
   applyVirtualModeTransition,
   buildVirtualModeCard,
   createEntryVirtualModeState,
+  enterContextMaintainMode,
+  enterRunMaintainMode,
   identicalVirtualModeRequest,
   isVirtualModeTransitionAllowed,
   restoreVirtualModeAfterContextRetrieval,
+  restoreVirtualModeAfterContextMaintenance,
+  restoreVirtualModeAfterRunMaintenance,
   type VirtualModeName,
   type VirtualModeState,
   type VirtualModeTransitionTarget,
@@ -29,6 +33,12 @@ describe("virtual mode graph", () => {
   it("accepts every declared edge and rejects every undeclared edge", () => {
     const states: Array<["ENTRY" | VirtualModeName, VirtualModeState]> = [
       ["ENTRY", createEntryVirtualModeState()],
+      ["context.maintain", enterContextMaintainMode(createEntryVirtualModeState(), {
+        protectFromSeq: 3,
+        continuityMaxTokens: 4_000,
+        unloadedRanges: [{ fromSeq: 1, toSeq: 2 }],
+      }, 1)],
+      ["run.maintain", enterRunMaintainMode(mode("execute"), maintenancePlan(), 2)],
       ["context.retrieve", mode("context.retrieve")],
       ["observe.locate", mode("observe.locate")],
       ["observe.investigate", mode("observe.investigate")],
@@ -192,6 +202,76 @@ describe("virtual mode graph", () => {
     });
   });
 
+  it("suspends and restores the exact task mode during runtime-only context maintenance", () => {
+    const executing = mode("execute");
+    const maintaining = enterContextMaintainMode(executing, {
+      protectFromSeq: 7,
+      continuityMaxTokens: 4_000,
+      unloadedRanges: [{ fromSeq: 1, toSeq: 6 }],
+    }, 5);
+
+    expect(buildVirtualModeCard(maintaining, { workstreamBound: true })).toMatchObject({
+      active: "context.maintain",
+      revision: 2,
+      capabilities: [],
+      targets: [],
+      allowedNext: [],
+      contextMaintain: {
+        reason: "continuity_budget",
+        returnTo: "execute",
+        protectFromSeq: 7,
+        continuityMaxTokens: 4_000,
+        unloadedRanges: [{ fromSeq: 1, toSeq: 6 }],
+      },
+    });
+    expect(maintaining.operational).toBe(true);
+    expect(restoreVirtualModeAfterContextMaintenance(maintaining)).toMatchObject({
+      active: "execute",
+      revision: 3,
+      operational: true,
+      purpose: "Use execute.",
+      capabilities: ["file:write"],
+      targets: ["known.txt"],
+    });
+
+    const fromEntry = enterContextMaintainMode(createEntryVirtualModeState(), {
+      protectFromSeq: 3,
+      continuityMaxTokens: 4_000,
+      unloadedRanges: [{ fromSeq: 1, toSeq: 2 }],
+    }, 1);
+    expect(restoreVirtualModeAfterContextMaintenance(fromEntry)).toMatchObject({
+      active: null,
+      revision: 2,
+      operational: false,
+    });
+  });
+
+  it("uses a separate control-only run maintenance mode and restores execute exactly", () => {
+    const maintaining = enterRunMaintainMode(mode("execute"), maintenancePlan(), 7);
+
+    expect(buildVirtualModeCard(maintaining, { workstreamBound: true })).toMatchObject({
+      active: "run.maintain",
+      capabilities: [],
+      targets: [],
+      allowedNext: [],
+      runMaintain: {
+        reason: "run_context_pressure",
+        maintenanceId: "RUNCTX-1",
+        returnTo: "execute",
+        expectedWorkStateRevision: 3,
+        sourceThroughStep: 8,
+        requiredSavingsTokens: 12_000,
+      },
+    });
+    expect(restoreVirtualModeAfterRunMaintenance(maintaining)).toMatchObject({
+      active: "execute",
+      operational: true,
+      purpose: "Use execute.",
+      capabilities: ["file:write"],
+      targets: ["known.txt"],
+    });
+  });
+
   it("detects identical self-transitions and resets every new run to ENTRY", () => {
     const request = {
       to: "execute" as const,
@@ -267,6 +347,24 @@ function mode(active: VirtualModeName): VirtualModeState {
     targets: active === "context.retrieve" || active === "workstream.route"
       ? []
       : ["known.txt"],
+    mutationScopes: [],
     enteredAtIteration: 1,
+  };
+}
+
+function maintenancePlan() {
+  return {
+    schemaVersion: 1 as const,
+    maintenanceId: "RUNCTX-1",
+    sourceHash: "sha256:source",
+    sourceThroughStep: 8,
+    expectedWorkStateRevision: 3,
+    candidateInputTokens: 72_000,
+    recoveryTargetTokens: 60_000,
+    requiredSavingsTokens: 12_000,
+    inventory: [],
+    omittedCandidateCount: 0,
+    protectedRefs: ["call:latest"],
+    entries: [],
   };
 }

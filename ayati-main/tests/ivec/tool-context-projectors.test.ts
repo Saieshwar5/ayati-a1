@@ -146,11 +146,22 @@ describe("tool context projectors", () => {
     });
   });
 
-  it("falls back to the deterministic generic projector for unknown tools", () => {
+  it("keeps unknown tools exact instead of applying an unsafe generic projector", () => {
     const projection = projectToolCallForPressure(call({ tool: "custom_tool" }), "summary");
 
-    expect(projection.projectorId).toBe("generic_v1");
-    expect(projection.call.mode).toBe("summary");
+    expect(projection).toBeUndefined();
+  });
+
+  it("allows a known unspecialized tool to become a recoverable reference only", () => {
+    const projection = projectToolCallForPressure(call({
+      tool: "calculator",
+      input: { expression: "2 + 2", privateScratch: "omit from active context" },
+    }), "reference");
+
+    expect(projection?.projectorId).toBe("typed_reference_v1");
+    expect(projection?.call.mode).toBe("reference");
+    expect(projection?.call.outputPreview).toBeUndefined();
+    expect(projection?.call.input).toEqual({});
   });
 
   it("preserves Git-context identifiers and bounded result metadata", () => {

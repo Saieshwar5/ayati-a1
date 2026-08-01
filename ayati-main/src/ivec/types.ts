@@ -45,6 +45,7 @@ import type { AgentFeedbackLedger } from "./feedback-ledger.js";
 import type { HarnessContext, HarnessContextInput } from "./harness-context.js";
 import type { ContextPressureState } from "./context-pressure-state.js";
 import type { VirtualModeState } from "./agent-runner/virtual-mode.js";
+import type { RunContextProjectionOverlay } from "./agent-runner/run-context-maintenance-contracts.js";
 import type {
   HotContextProjection,
   HotContextRuntime,
@@ -291,6 +292,8 @@ export interface LoopState {
   runPath: string;
   failureHistory: FailureRecord[];
   contextPressure?: ContextPressureState;
+  runContextProjection?: RunContextProjectionOverlay;
+  runContextMaintenanceBudgetCredits?: number;
   contextLimitReached?: boolean;
   runLimitReached?: boolean;
   interrupted?: boolean;

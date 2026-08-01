@@ -82,6 +82,48 @@ describe("context preparation candidate lifecycle", () => {
     });
   });
 
+  it("does not regenerate the same failed source during one run", async () => {
+    const manager = new ContextPreparationManager({ laneId: "main:RUN-2", provider: fakeProvider() });
+    const prepare = vi.fn().mockRejectedValue(new Error("summary failed"));
+    const job = preparationJob(prepare);
+
+    await manager.prepareSynchronously(job);
+
+    expect(await manager.prepareSynchronously(job)).toBeUndefined();
+    expect(manager.startBackground(job)).toMatchObject({
+      status: "deduplicated",
+      candidate: { status: "failed", failureReason: "summary failed" },
+    });
+    expect(prepare).toHaveBeenCalledTimes(1);
+  });
+
+  it("remembers a failed source after another candidate replaces the slot", async () => {
+    const manager = new ContextPreparationManager({ laneId: "main:RUN-2", provider: fakeProvider() });
+    const failedPrepare = vi.fn().mockRejectedValue(new Error("summary failed"));
+    const failedJob = preparationJob(failedPrepare);
+    await manager.prepareSynchronously(failedJob);
+
+    const replacementJob = {
+      ...preparationJob(vi.fn().mockResolvedValue({
+        estimatedSavingsTokens: 100,
+        estimatedFinalInputTokens: 50,
+        targetReached: true,
+      })),
+      jobKey: "main:RUN-2:prefix:replacement:run_focus",
+    };
+    const replacement = await manager.prepareSynchronously(replacementJob);
+    if (!replacement) throw new Error("Expected the replacement candidate.");
+    manager.markAdopted(replacement.candidateId, "test_adoption");
+
+    expect(manager.currentCandidate()).toMatchObject({
+      jobKey: replacementJob.jobKey,
+      status: "adopted",
+    });
+    expect(manager.hasTerminalJob(failedJob.jobKey)).toBe(true);
+    expect(await manager.prepareSynchronously(failedJob)).toBeUndefined();
+    expect(failedPrepare).toHaveBeenCalledTimes(1);
+  });
+
   it("does not rerun an identical terminal candidate", async () => {
     const manager = new ContextPreparationManager({ laneId: "main:RUN-3", provider: fakeProvider() });
     const prepare = vi.fn().mockResolvedValue({

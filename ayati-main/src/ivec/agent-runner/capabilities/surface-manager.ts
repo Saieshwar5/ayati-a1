@@ -120,7 +120,7 @@ export class CapabilitySurfaceManager {
     }
 
     const mode = state.virtualMode.active;
-    if (!mode) {
+    if (!mode || mode === "context.maintain" || mode === "run.maintain") {
       const previousTools = [...runState.tools];
       runState.capabilities = [];
       runState.tools = [];
@@ -128,7 +128,9 @@ export class CapabilitySurfaceManager {
       return {
         ...emptySurfaceResult("partial", []),
         evicted: previousTools,
-        message: "Cleared the capability surface because no operational mode is active.",
+        message: mode === "context.maintain" || mode === "run.maintain"
+          ? "Cleared the capability surface while runtime context maintenance is active."
+          : "Cleared the capability surface because no operational mode is active.",
       };
     }
 

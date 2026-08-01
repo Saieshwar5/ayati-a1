@@ -2,19 +2,11 @@ import type { LlmProvider } from "../../core/contracts/provider.js";
 import { estimateTextTokens } from "../../prompt/token-estimator.js";
 import type { ResolvedModelContextLimits } from "../../providers/shared/model-context-limits.js";
 import type { AgentContextCheckpointCoordinator } from "../types.js";
-import type { AgentTemporalEvent } from "../agent-runner/agent-context-events.js";
 import { replaceCoreCapsuleRecentExact } from "../agent-runner/core-capsule.js";
 import type { AgentPromptStateView } from "../agent-runner/prompt-context.js";
 import { compactPromptToolCall } from "../agent-runner/run-tool-call-context.js";
-import { generateStreamCheckpoint } from "../agent-runner/stream-checkpoint-generator.js";
 import { canonicalHash } from "./canonical.js";
 import { generateFocusSummary, type FocusSummarySource } from "./focus-summary.js";
-import {
-  checkpointCandidateBackground,
-  checkpointSourceHashes,
-  checkpointSourceRefs,
-  checkpointSourceTokens,
-} from "./main-checkpoint-candidate.js";
 import type {
   ContextPreparationCandidate,
   ContextPreparationLaneId,
@@ -58,45 +50,30 @@ export function createMainPreparationJob(input: {
   recoveryTargetTokens: number;
   contextLimits: ResolvedModelContextLimits;
   modelProfileVersion: string;
-  contextCheckpoint?: AgentContextCheckpointCoordinator;
   activeOverlay?: MainFocusOverlay;
   synchronous: boolean;
-  intent?: "pressure_recovery" | "core_capsule";
 }): ContextPreparationJob | undefined {
   const source = buildMainSourceSnapshot(
     input.stateView,
     input.activeOverlay,
     Math.max(1, Math.min(MAX_FOCUS_SOURCE_TOKENS, input.contextLimits.hardInputTokens - 8_000)),
   );
-  const protectFromSeq = input.stateView.context.core.current.input.seq;
-  const canPlanCheckpoint = Boolean(input.contextCheckpoint && protectFromSeq > 0);
-  if (!canPlanCheckpoint && (input.intent === "core_capsule" || !source.focusSource)) {
-    return undefined;
-  }
-  const requiredSavingsTokens = Math.max(
-    1,
-    input.predictedInputTokens - input.recoveryTargetTokens,
-  );
+  if (!source.focusSource) return undefined;
   const sourcePrefixHash = canonicalHash({
     source: source.sourcePrefixHash,
-    checkpoint: input.stateView.context.core.continuity.checkpoint ?? null,
-    protectFromSeq,
   });
   const jobKey = [
     input.laneId,
     sourcePrefixHash,
     CONTEXT_PREPARATION_POLICY_VERSION,
     input.modelProfileVersion,
-    input.intent ?? "pressure_recovery",
+    "pressure_recovery",
   ].join(":");
 
   return {
     jobKey,
-    kind: canPlanCheckpoint ? "durable_checkpoint" : "run_focus",
+    kind: "run_focus",
     seed: {
-      ...(source.messagePrefixThroughSeq !== undefined
-        ? { messagePrefixThroughSeq: source.messagePrefixThroughSeq }
-        : {}),
       ...(source.runStepPrefixThrough !== undefined
         ? { runStepPrefixThrough: source.runStepPrefixThrough }
         : {}),
@@ -105,9 +82,6 @@ export function createMainPreparationJob(input: {
       requiredExactEvidenceRefs: source.requiredExactEvidenceRefs,
       policyVersion: CONTEXT_PREPARATION_POLICY_VERSION,
       modelProfileVersion: input.modelProfileVersion,
-      ...(input.contextCheckpoint?.currentContext?.().agentStream.checkpoint?.checkpointId
-        ? { checkpointBaseId: input.contextCheckpoint.currentContext().agentStream.checkpoint!.checkpointId }
-        : {}),
       deterministicTransformations: [...DETERMINISTIC_TRANSFORMATIONS],
       coveredSourceRefs: [],
       estimatedSavingsTokens: 0,
@@ -117,7 +91,6 @@ export function createMainPreparationJob(input: {
     prepare: async (context) => await prepareMainCandidate({
       ...input,
       source,
-      requiredSavingsTokens,
       context,
     }),
   };
@@ -156,6 +129,13 @@ export function validateMainCandidate(input: {
     if (!currentRefs.has(ref)) return invalid(`missing_required_ref:${ref}`);
   }
   if (candidate.kind === "run_focus") {
+    const ownsConversationSource = candidate.messagePrefixThroughSeq !== undefined
+      || candidate.sourceRefs.some((ref) => ref.startsWith("seq:"))
+      || candidate.coveredSourceRefs.some((ref) => ref.startsWith("seq:"))
+      || Object.keys(candidate.canonicalSourceHashes).some((ref) => ref.startsWith("seq:"));
+    if (ownsConversationSource) {
+      return invalid("conversation_source_requires_context_maintenance");
+    }
     if (!candidate.focusSummary) return invalid("focus_summary_missing");
     const currentHashes = mainRefHashes(input.stateView, input.activeOverlay);
     for (const [ref, expected] of Object.entries(candidate.canonicalSourceHashes)) {
@@ -220,65 +200,12 @@ async function prepareMainCandidate(input: {
   currentInputTokens: number;
   recoveryTargetTokens: number;
   contextLimits: ResolvedModelContextLimits;
-  contextCheckpoint?: AgentContextCheckpointCoordinator;
   source: MainSourceSnapshot;
-  requiredSavingsTokens: number;
   synchronous: boolean;
-  intent?: "pressure_recovery" | "core_capsule";
   context: ContextPreparationJobContext;
 }): Promise<Partial<ContextPreparationCandidate>> {
-  if (input.contextCheckpoint) {
-    const plan = await input.contextCheckpoint.plan({
-      protectFromSeq: input.stateView.context.core.current.input.seq,
-      requiredSavingsTokens: input.requiredSavingsTokens,
-      estimatedCheckpointTokens: 1_200,
-    });
-    if (plan.triggered) {
-      const semantic = await runSemantic(input, `checkpoint:${plan.planId}`, async () => {
-        return await generateStreamCheckpoint({
-          provider: input.provider,
-          plan,
-          maxInputTokens: input.contextLimits.hardInputTokens,
-        });
-      });
-      if (semantic.status !== "success" || !semantic.value) {
-        throw new Error(semantic.error ?? "checkpoint background generation failed");
-      }
-      const generation = semantic.value;
-      const background = checkpointCandidateBackground(generation, semantic.durationMs);
-      if (generation.status !== "success" || !generation.summary || generation.tokenCount === undefined) {
-        throw new ContextPreparationJobError(
-          generation.errors.join("; ") || "checkpoint generation failed",
-          background,
-        );
-      }
-      const sourceTokens = checkpointSourceTokens(plan);
-      const estimatedSavingsTokens = Math.max(0, sourceTokens - generation.tokenCount);
-      const estimatedFinalInputTokens = Math.max(0, input.currentInputTokens - estimatedSavingsTokens);
-      return {
-        kind: "durable_checkpoint",
-        ...(plan.coveredToSeq !== undefined ? { messagePrefixThroughSeq: plan.coveredToSeq } : {}),
-        canonicalSourceHashes: checkpointSourceHashes(plan),
-        sourceRefs: checkpointSourceRefs(plan),
-        ...(plan.previousCheckpoint?.checkpointId
-          ? { checkpointBaseId: plan.previousCheckpoint.checkpointId }
-          : {}),
-        checkpointPlan: plan,
-        checkpointGeneration: generation,
-        coveredSourceRefs: plan.selectedMessages.map((message) => `seq:${message.sequence}`),
-        estimatedSavingsTokens,
-        estimatedFinalInputTokens,
-        targetReached: estimatedFinalInputTokens <= input.recoveryTargetTokens,
-        background,
-      };
-    }
-  }
-
-  if (input.intent === "core_capsule") {
-    throw new Error("no eligible durable checkpoint prefix for Core Capsule maintenance");
-  }
   if (!input.source.focusSource) {
-    throw new Error("no eligible durable checkpoint prefix or focus-summary source");
+    throw new Error("no eligible focus-summary source");
   }
   const semantic = await runSemantic(input, `focus:${input.source.sourcePrefixHash}`, async () => {
     return await generateFocusSummary({
@@ -333,7 +260,6 @@ interface MainSourceSnapshot {
   sourceRefs: string[];
   coveredSourceRefs: string[];
   requiredExactEvidenceRefs: string[];
-  messagePrefixThroughSeq?: number;
   runStepPrefixThrough?: number;
   focusSource?: FocusSummarySource;
   focusSourceTokens: number;
@@ -347,21 +273,6 @@ function buildMainSourceSnapshot(
   let selectedSourceTokens = activeOverlay
     ? estimateTextTokens(JSON.stringify(activeOverlay.summary))
     : 0;
-  const messages: FocusSummarySource["messages"] = [];
-  const messageCandidates = [...stateView.context.core.continuity.recentExact]
-    .sort((left, right) => left.seq - right.seq);
-  for (const event of messageCandidates) {
-    const message = {
-      ref: `seq:${event.seq}`,
-      seq: event.seq,
-      role: event.kind,
-      content: eventContent(event),
-    };
-    const tokens = estimateTextTokens(JSON.stringify(message));
-    if (selectedSourceTokens + tokens > maxSourceTokens) break;
-    messages.push(message);
-    selectedSourceTokens += tokens;
-  }
   const calls = stateView.context.run?.toolCalls ?? [];
   const hotStart = Math.max(0, calls.length - HOT_MAIN_CALL_COUNT);
   const eligibleCalls: FocusSummarySource["steps"] = [];
@@ -384,27 +295,24 @@ function buildMainSourceSnapshot(
   }
   const priorRefs = activeOverlay ? focusRefs(activeOverlay.summary) : [];
   const validRefs = [...new Set([
-    ...messages.map((message) => message.ref),
     ...eligibleCalls.flatMap((call) => call.refs),
     ...priorRefs,
   ])].sort();
-  const hasSource = messages.length > 0 || eligibleCalls.length > 0 || Boolean(activeOverlay);
+  const hasSource = eligibleCalls.length > 0 || Boolean(activeOverlay);
   const focusSource: FocusSummarySource | undefined = hasSource ? {
     goal: "Preserve relevant prior context for the current run.",
     validRefs,
-    messages,
+    messages: [],
     steps: eligibleCalls,
     ...(activeOverlay ? { priorFocus: activeOverlay.summary } : {}),
   } : undefined;
   const canonicalSourceHashes: Record<string, string> = {};
-  for (const message of messages) canonicalSourceHashes[message.ref] = canonicalHash(message);
   for (const call of eligibleCalls) {
     const hash = canonicalHash(call);
     for (const ref of call.refs) canonicalSourceHashes[ref] = hash;
   }
   if (activeOverlay) canonicalSourceHashes["focus:previous"] = canonicalHash(activeOverlay.summary);
   const coveredSourceRefs = [
-    ...messages.map((message) => message.ref),
     ...eligibleCalls.flatMap((call) => call.refs),
     ...(activeOverlay?.coveredSourceRefs ?? []),
   ];
@@ -415,7 +323,6 @@ function buildMainSourceSnapshot(
     sourceRefs: validRefs,
     coveredSourceRefs: [...new Set(coveredSourceRefs)].sort(),
     requiredExactEvidenceRefs: requiredMainRefs(stateView),
-    ...(messages.at(-1) ? { messagePrefixThroughSeq: messages.at(-1)!.seq } : {}),
     ...(eligibleCalls.at(-1) ? { runStepPrefixThrough: eligibleCalls.at(-1)!.step } : {}),
     focusSource,
     focusSourceTokens: focusSource ? estimateTextTokens(JSON.stringify(focusSource)) : 0,
@@ -489,15 +396,6 @@ function mainRefHashes(
   activeOverlay?: MainFocusOverlay,
 ): Map<string, string> {
   const hashes = new Map<string, string>();
-  for (const event of stateView.context.core.continuity.recentExact) {
-    const value = {
-      ref: `seq:${event.seq}`,
-      seq: event.seq,
-      role: event.kind,
-      content: eventContent(event),
-    };
-    hashes.set(value.ref, canonicalHash(value));
-  }
   for (const call of stateView.context.run?.toolCalls ?? []) {
     const value = {
       refs: [
@@ -528,14 +426,8 @@ function focusRefs(summary: RunFocusSummary): string[] {
   ])];
 }
 
-function eventContent(event: AgentTemporalEvent): string {
-  if ("content" in event) return event.content;
-  return `${event.source}:${event.event}: ${event.summary}`;
-}
-
 function isValidatedSourceRef(ref: string): boolean {
-  return ref.startsWith("seq:")
-    || ref.startsWith("step:")
+  return ref.startsWith("step:")
     || ref.startsWith("call:")
     || ref === "focus:previous";
 }

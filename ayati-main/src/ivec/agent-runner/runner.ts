@@ -134,6 +134,12 @@ import {
   createBindingAttemptPolicyState,
   recordBindingAttempt,
 } from "./binding-attempt-policy.js";
+import { createContextMaintenanceLifecycle } from "./context-maintenance-runtime.js";
+import {
+  enterRunContextMaintenance,
+  handleRunContextMaintenanceDecision,
+  planRunContextMaintenance,
+} from "./run-context-maintenance-runtime.js";
 
 export async function runAgentLoop(
   deps: AgentLoopDeps,
@@ -319,7 +325,10 @@ export async function runAgentLoop(
     syncHarnessContext(state, deps, inputHandle);
   }
 
-  while (state.status === "running" && state.iteration < config.maxIterations) {
+  while (
+    state.status === "running"
+    && state.iteration - (state.runContextMaintenanceBudgetCredits ?? 0) < config.maxIterations
+  ) {
     if (deps.signal?.aborted) {
       state.interrupted = true;
       state.status = "failed";
@@ -369,7 +378,11 @@ export async function runAgentLoop(
     });
     const capabilityPolicy = deriveWorkstreamBindingCapabilityPolicy(state);
     const graphActive = isVirtualGraphActive(state.virtualMode);
+    const runContextMaintenanceActive = state.virtualMode.active === "run.maintain";
     const workStateCheckpointAvailable = graphActive
+      && !runContextMaintenanceActive
+      && deps.checkpointWorkState !== undefined;
+    const runContextMaintenanceAvailable = runContextMaintenanceActive
       && deps.checkpointWorkState !== undefined;
     const allowedModeDestinations = stateView.context.run?.mode?.allowedNext
       .filter((value): value is VirtualModeTransitionTarget => (
@@ -386,7 +399,10 @@ export async function runAgentLoop(
       ...(workStateCheckpointAvailable
         ? ["decision_checkpoint_workstate"]
         : []),
-      ...(graphActive ? ["decision_stop"] : []),
+      ...(runContextMaintenanceAvailable
+        ? ["decision_maintain_run_context"]
+        : []),
+      ...(graphActive && !runContextMaintenanceActive ? ["decision_stop"] : []),
     ];
     const decisionToolPolicyAudit = auditToolPolicy({
       policy: capabilityPolicy,
@@ -424,12 +440,33 @@ export async function runAgentLoop(
         toolDefinitions: selectedTools,
         toolRoutingSummary,
         modeCapabilityOptions: deps.capabilitySurfaceManager?.getModeCapabilityOptions(state),
-        modeTransitionAvailable: true,
-        terminalStopAvailable: graphActive,
+        modeTransitionAvailable: !runContextMaintenanceActive,
+        terminalStopAvailable: graphActive && !runContextMaintenanceActive,
         workStateCheckpointAvailable,
+        runContextMaintenanceAvailable,
         toolContextProjectionPolicy: config.toolContextProjectionPolicy,
         contextCheckpoint: deps.contextCheckpoint,
         contextPreparation: deps.contextPreparation,
+        contextMaintenance: createContextMaintenanceLifecycle({
+          state,
+          buildStateView: () => buildAgentStateView(state, {
+            activeTools: selectedTools.map((tool) => tool.name),
+            workspaceRoot,
+          }),
+          onEvent: (event, data) => {
+            recordFeedback(
+              deps,
+              inputHandle,
+              runHandle.runId,
+              "virtual_mode",
+              `context_maintenance_${event}`,
+              {
+                iteration: state.iteration,
+                ...data,
+              },
+            );
+          },
+        }),
         evaluationIteration: state.iteration,
         applyAuthoritativeContext: (context) => applyAuthoritativeContextToLoop({
           deps,
@@ -481,6 +518,117 @@ export async function runAgentLoop(
         context: state.harnessContext.contextEngine,
       }),
     });
+
+    if (
+      !runContextMaintenanceActive
+      && graphActive
+      && deps.checkpointWorkState
+    ) {
+      const maintenancePlan = planRunContextMaintenance(state);
+      if (maintenancePlan) {
+        enterRunContextMaintenance(state, maintenancePlan);
+        recordFeedback(
+          deps,
+          inputHandle,
+          runHandle.runId,
+          "virtual_mode",
+          "run_context_maintenance_entered",
+          {
+            iteration: state.iteration,
+            maintenanceId: maintenancePlan.maintenanceId,
+            returnMode: state.virtualMode.runMaintain?.returnState.active ?? "ENTRY",
+            sourceThroughStep: maintenancePlan.sourceThroughStep,
+            expectedWorkStateRevision: maintenancePlan.expectedWorkStateRevision,
+            requiredSavingsTokens: maintenancePlan.requiredSavingsTokens,
+            candidateCount: maintenancePlan.inventory.length,
+            omittedCandidateCount: maintenancePlan.omittedCandidateCount,
+            protectedRefCount: maintenancePlan.protectedRefs.length,
+          },
+        );
+        recordStateSnapshotMetric("run_context_maintenance_entered");
+        continue;
+      }
+    }
+
+    if (decision.kind === "maintain_run_context") {
+      if (!deps.checkpointWorkState) {
+        throw new Error("WorkState checkpoint persistence is unavailable for run-context maintenance.");
+      }
+      const maintenance = await handleRunContextMaintenanceDecision({
+        state,
+        selection: decision.selection,
+        checkpointWorkState: deps.checkpointWorkState,
+        afterStep: durableStepCount,
+        at: new Date().toISOString(),
+      });
+      if (maintenance.status === "retry") {
+        recordVirtualModeRepair(state, {
+          code: "MODE_INPUT_INVALID",
+          message: maintenance.reason,
+          blockedTargets: [],
+          allowedNextActions: [
+            "Retry decision_maintain_run_context using the current maintenance id, WorkState revision, and only listed candidate references.",
+          ],
+        }, "validation_error");
+        recordFeedback(
+          deps,
+          inputHandle,
+          runHandle.runId,
+          "virtual_mode",
+          "run_context_maintenance_rejected",
+          {
+            iteration: state.iteration,
+            attempt: maintenance.attempt,
+            reason: maintenance.reason,
+          },
+        );
+        continue;
+      }
+      if (maintenance.status === "failed") {
+        state.contextLimitReached = true;
+        state.status = "stuck";
+        state.workState = preserveWorkStateForContextLimit(state);
+        state.finalOutput = "This run could not safely reduce its active context. I preserved the verified handoff so the work can continue in a new turn.";
+        recordFeedback(
+          deps,
+          inputHandle,
+          runHandle.runId,
+          "guard",
+          "run_context_maintenance_failed",
+          {
+            iteration: state.iteration,
+            reason: maintenance.reason,
+          },
+        );
+        return finalize({ status: "stuck", content: state.finalOutput });
+      }
+      if (maintenance.context) {
+        applyPersistedStepContext(deps, state, inputHandle, maintenance.context);
+      }
+      deps.contextPreparation?.clearOverlay();
+      recordFeedback(
+        deps,
+        inputHandle,
+        runHandle.runId,
+        "virtual_mode",
+        "run_context_maintenance_completed",
+        {
+          iteration: state.iteration,
+          maintenanceId: maintenance.plan.maintenanceId,
+          restoredMode: state.virtualMode.active ?? "ENTRY",
+          workStateRevision: state.workStateRuntime.revision,
+          transformationCount: maintenance.transformationCount,
+          estimatedSavingsTokens: maintenance.estimatedSavingsTokens,
+          targetReached: maintenance.targetReached,
+          usedFallback: maintenance.usedFallback,
+          ...(maintenance.priorRejection
+            ? { priorRejection: maintenance.priorRejection }
+            : {}),
+        },
+      );
+      recordStateSnapshotMetric("run_context_maintenance_completed");
+      continue;
+    }
 
     if (
       requiresContextPressureCheckpoint(state)

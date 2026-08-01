@@ -166,6 +166,10 @@ function selectRecentExactHistory(
       omitted: input.history.filter((event) => !candidateSequences.has(event.seq)),
     });
     if (estimateTextTokens(JSON.stringify(candidateContinuity)) > input.continuityMaxTokens) {
+      // The newest completed turn is the minimum exact continuity tail. It may
+      // exceed the continuity target by itself; whole-request admission remains
+      // the hard safety boundary for the provider request.
+      if (selectedGroups.length === 0) selectedGroups.unshift(group);
       break;
     }
     selectedGroups.unshift(group);

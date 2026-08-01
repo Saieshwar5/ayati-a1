@@ -15,6 +15,7 @@ describe("model-facing capability contract", () => {
     expect(capabilityCatalog.get("attachment:read")?.coreTools).toContain("attachment_read");
     expect(capabilityCatalog.get("history:read")?.coreTools).toEqual([
       "agent_history_search",
+      "agent_conversation_read",
       "agent_history_read",
     ]);
     expect(capabilityCatalog.list().flatMap((capability) => capability.coreTools)).not.toContain(

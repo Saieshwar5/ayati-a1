@@ -31,7 +31,8 @@ Context Engine has a separate SQLite database, normally at
 SQLite tools.
 
 It stores operational indexes and lifecycle state such as agent streams,
-immutable messages, runs and steps, WorkState, pressure checkpoints,
+immutable messages, runs and steps, WorkState, conversation-continuity
+checkpoints,
 workstreams, every request, compact progress projections, shared-repository
 state, resource mutation authority, finalization records, and idempotency
 data. The current harness binds through atomic workstream/request lifecycle

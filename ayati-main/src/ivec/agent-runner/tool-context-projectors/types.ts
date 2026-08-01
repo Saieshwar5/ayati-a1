@@ -3,7 +3,15 @@ import type {
   PromptRunToolCallMode,
 } from "../run-tool-call-context.js";
 
-export type PressureProjectionMode = Extract<PromptRunToolCallMode, "preview" | "summary">;
+export type PressureProjectionMode = Extract<
+  PromptRunToolCallMode,
+  "preview" | "summary" | "reference"
+>;
+
+export type ToolContextCompactionPolicy =
+  | "projectable"
+  | "referenceable"
+  | "exact_only";
 
 export interface ToolContextProjection {
   projectorId: string;

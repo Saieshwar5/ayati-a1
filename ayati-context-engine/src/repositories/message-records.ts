@@ -170,6 +170,26 @@ export function readRecentStreamMessages(database: ContextDatabase, input: {
   return streamMessages(database, rows.reverse());
 }
 
+export function readStreamMessagesBefore(database: ContextDatabase, input: {
+  streamId: string;
+  snapshotToSeq: number;
+  beforeSeq: number;
+  limit: number;
+}): StreamMessage[] {
+  const limit = Math.max(1, Math.min(input.limit, 10_000));
+  const rows = database.prepare([
+    messageSelect(),
+    "WHERE m.stream_id = ? AND m.sequence <= ? AND m.sequence < ?",
+    "ORDER BY m.sequence DESC LIMIT ?",
+  ].join(" ")).all(
+    input.streamId,
+    input.snapshotToSeq,
+    input.beforeSeq,
+    limit,
+  ) as unknown as MessageRow[];
+  return streamMessages(database, rows);
+}
+
 export function searchStreamMessages(database: ContextDatabase, input: {
   streamId: string;
   query: string;

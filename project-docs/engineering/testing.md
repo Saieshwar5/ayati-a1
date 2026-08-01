@@ -33,22 +33,37 @@ Changes should prove the relevant invariants:
    search returns stable run/step/call references directly from that journal.
 7. History search defaults to 10 and caps at 25; reads cap at 50 messages and
    32,000 characters and return deterministic continuations.
-8. A checkpoint is planned only for Core Capsule maintenance or measured
-   whole-request pressure, covers complete terminal runs, preserves the current
-   input, validates exact anchors, and atomically moves the active pointer.
-9. Checkpoint generation permits one repair and a failed generation does not
-   mutate durable state.
-10. Personal-memory extraction consumes only the newly committed checkpoint's
+8. A conversation checkpoint is planned only in runtime-owned
+   `context.maintain` after the Core Capsule continuity target is exceeded. It
+   covers complete terminal runs, preserves the current input and newest
+   completed turn exactly, validates exact anchors, and atomically moves the
+   active pointer. Whole-request pressure cannot create one.
+9. `context.maintain` exposes no task tools or normal reply, consumes no task
+   step or binding attempt, restores the exact preceding mode after success or
+   failure, permits one generation repair, and does not retry the same failed
+   source within one run. A failed generation does not mutate durable state.
+10. Whole-request soft pressure with reducible run material enters
+    `run.maintain`. It exposes only `decision_maintain_run_context`, preserves
+    the latest six calls, failures, unrecoverable calls, active process state,
+    WorkState references, and unknown tools exactly, and restores the exact
+    preceding task mode after one accepted maintenance decision.
+11. Run maintenance checkpoints only an in-progress WorkState and installs a
+    source-hashed prompt projection. Reference mode never deletes the exact
+    run journal or updates `progress.md`; new calls append exact. Stale ids,
+    revisions, hashes, conflicts, fabricated refs, and forbidden projection
+    modes are rejected with one bounded retry and a safe deterministic
+    fallback.
+12. Personal-memory extraction consumes only the newly committed checkpoint's
     exact user/assistant range.
-11. Finalization appends at most one assistant message and closes the run
+13. Finalization appends at most one assistant message and closes the run
     truthfully. Every finalized bound run appends exactly one progress entry
     and creates exactly one shared-repository commit; unbound runs create
     neither. Deliverables are never staged.
-12. Restart/recovery preserves verified dirty resource state and blocks unsafe
+14. Restart/recovery preserves verified dirty resource state and blocks unsafe
     continuation.
-13. Context Engine is the serialization owner. Step persistence returns the
+15. Context Engine is the serialization owner. Step persistence returns the
     updated authoritative projection without a harness-side reread or cache.
-14. An unbound mutation first observes ownership through workstream search or
+16. An unbound mutation first observes ownership through workstream search or
     resource-owner lookup in `observe.locate`, or exact workstream read in
     `observe.investigate`. Those calls produce exact routing references but
     cannot satisfy task-completion evidence. A successful current-run
@@ -56,14 +71,14 @@ Changes should prove the relevant invariants:
     empty. Direct `ENTRY -> workstream.route`, `ENTRY -> resolve`, and
     observation-to-resolve transitions are unavailable. Route may return to
     observation or proceed to resolve.
-15. The deterministic resolve gate makes zero model calls, accepts one typed
+17. The deterministic resolve gate makes zero model calls, accepts one typed
     continuation, amendment, activation, resumption, creation, defer-and-switch,
     or new-workstream proposal, rechecks authoritative candidate/resource
     state, and binds at most one workstream/request on the existing run. One
     corrected proposal is allowed only after a retryable rejection explicitly
     recorded before any route plan or binding; all uncertain failures close
     binding immediately.
-16. Whole-task validation is a stored proof-only mode with no executable
+18. Whole-task validation is a stored proof-only mode with no executable
     tools. It checks a small absolute-path checklist against compact completion
     evidence emitted by deterministically verified current-run calls; it does
     not repeat reads, replay all steps, or accept routing observations and
@@ -83,23 +98,27 @@ Changes should prove the relevant invariants:
     terminal completion promotes at most four selected
     passed checks into bounded WorkState receipts with exact proof references;
     failed checks and raw verifier payloads are excluded.
-17. Context candidates are disposable, lane-scoped, source-hashed, and valid
+19. Context candidates are disposable, lane-scoped, source-hashed, and valid
     across append-only tail growth only. Restart loses no authoritative data.
-18. Background semantic work has one provider-scoped slot, never blocks
+20. Background run-focus work has one provider-scoped slot, never blocks
     foreground work below the forced barrier, and records failed/rejected
-    usage exactly once.
-19. Durable checkpoint generation does not commit. Adoption revalidates and
-    rebuilds from the fresh Context Engine commit projection.
-20. A run focus summary anchors every statement, stays within 1,600
-    estimated tokens and one repair, and cannot replace current input,
-    authority, failures, WorkState, or completion evidence.
-21. Every run begins at `ENTRY`; virtual modes never survive finalization,
+    usage exactly once. Conversation maintenance is synchronous and
+    deterministic at its mode boundary.
+21. Durable checkpoint generation does not commit. Adoption revalidates and
+    rebuilds from the fresh Context Engine commit projection. The next
+    checkpoint rolls the previous checkpoint plus newly eligible older
+    messages forward rather than accumulating summaries.
+22. A run focus summary anchors every statement, stays within 1,600 estimated
+    tokens and one repair, summarizes only eligible older current-run tool
+    material or prior focus, and cannot replace conversation messages, current
+    input, authority, failures, WorkState, or completion evidence.
+23. Every run begins at `ENTRY`; virtual modes never survive finalization,
     interruption, restart, or the next accepted input.
-22. Observation modes expose only read-only effects. `workstream.route`
+24. Observation modes expose only read-only effects. `workstream.route`
     exposes no executable effects and clears the observation tool surface.
     Mode changes replace the complete tool surface, and execute cannot
     re-enter routing or resolution.
-23. Passed validation unlocks a direct final response. Failed checks preserve
+25. Passed validation unlocks a direct final response. Failed checks preserve
     the graph for repair, while `decision_stop` is reserved for supported
     needs-input, blocked, or failed outcomes.
     A conclusive zero-match filename search is validated as
@@ -118,7 +137,7 @@ Changes should prove the relevant invariants:
     Passed validation resolves an earlier validation-scoped terminal repair
     without clearing real action, binding, or permission failures unless an
     exact passed `tool.call_denied` check accounts for its own permission call.
-24. Read-only host references and existing mutation scopes reject relative
+26. Read-only host references and existing mutation scopes reject relative
     paths and file URIs. Resource children remain explicitly relative to a
     resource id. New-workstream targets instead require `{ kind,
     relativePath }` beneath the configured workspace. Direct filesystem
@@ -128,7 +147,7 @@ Changes should prove the relevant invariants:
     and unbound runs when read scope is `machine`; omitted search roots remain
     workspace-local, host permission failures return no content, and
     non-regular devices are not normal files.
-25. A focused filesystem call uses runtime-derived destination authority.
+27. A focused filesystem call uses runtime-derived destination authority.
     `write_files` and `patch_files` may batch across several separately
     selected roots only after every target maps to one root before execution;
     one unmatched target rejects the complete batch. Other focused mutation
@@ -141,16 +160,16 @@ Changes should prove the relevant invariants:
     filesystem binding already marked `mutate`, excluding read-only, missing,
     deleted, non-filesystem, and relative locators. A narrower filesystem
     boundary in the current user message filters those roots.
-26. Explicit create-new ownership survives a focused clarification; ambiguity
+28. Explicit create-new ownership survives a focused clarification; ambiguity
     without a binding consumes no binding authority. A lifecycle-state
     rejection proven to have made no change permits one corrected resolve
     proposal, while a second rejection closes binding for the run.
-27. File-content validation rejects a silently substituted source.
-28. Assistant response/feedback kinds survive finalization and restart, while
+29. File-content validation rejects a silently substituted source.
+30. Assistant response/feedback kinds survive finalization and restart, while
     attachment resource identities remain associated only with their exact
     user-message sequence. Core Capsule projection preserves both without
     creating an automatic adjacency-based reply binding.
-29. `workstates.recent` is absent when no material terminal handoff exists,
+31. `workstates.recent` is absent when no material terminal handoff exists,
     advertises metadata without WorkState content, loads content only on
     explicit request, excludes active/recovery/initial and trivial completed
     records, orders newest first, caps at five distinct runs, and remains
@@ -158,7 +177,7 @@ Changes should prove the relevant invariants:
     A terminal WorkState summary never copies the full assistant response: it
     preserves a meaningful checkpoint or derives a compact deterministic
     handoff.
-30. The recent-document registry is rebuilt only from exact verified successful
+32. The recent-document registry is rebuilt only from exact verified successful
     complete-read steps belonging to stable terminal runs. It preserves valid
     reads from done, incomplete, failed, blocked, and needs-input outcomes while
     excluding running/recovery-required runs and failed or unverified calls. It
@@ -167,7 +186,7 @@ Changes should prove the relevant invariants:
     `files.recent`, and preserves both views through restart/checkpoint
     projection. These are navigation pointers, not read admission, mutation
     authority, or current-content proof.
-31. `system:time` and `system:health` enter investigation without a resource
+33. `system:time` and `system:health` enter investigation without a resource
     reference, while target-backed or mixed investigation capabilities still
     require one. An exact filesystem-only `file:read` reference may enter
     without earlier grounding evidence; its tool boundary still validates the
@@ -175,56 +194,56 @@ Changes should prove the relevant invariants:
     references retain provenance checks. System outputs are bounded,
     privacy-safe, contract-verified, and become typed current-run validation
     outcomes without a second sample.
-32. A verified multi-match `find_files` call projects a bounded factual
+34. A verified multi-match `find_files` call projects a bounded factual
     candidate set through normal and compacted tool-call context while keeping
     private projection metadata hidden. Candidate choice and clarification
     remain model-driven; the runtime does not classify natural-language
     selections.
-33. A whole assistant-text JSON object matching the required top-level
+35. A whole assistant-text JSON object matching the required top-level
     signature of a currently exposed native control is never accepted as a
     direct reply or executed automatically. The harness requests one native
     tool-call repair, while unrelated JSON assistant replies remain valid.
     Provider tool choice is `auto` only when `normal_reply` is graph-legal;
     active graph states require one native tool call, and a known repair target
     may pin only a native tool that remains exposed.
-34. A failed permission call produces `tool.call_denied` only with exact call
+36. A failed permission call produces `tool.call_denied` only with exact call
     identity, stable denial code, and deterministic evidence that the requested
     operation did not occur. Exact denial validation resolves only the matching
     action failure as `denial_reported`; unrelated failures remain active, the
     step remains failed, and denial cannot satisfy any success outcome.
-35. Filesystem policy defaults and environment overrides are strict and
+37. Filesystem policy defaults and environment overrides are strict and
     model-independent: machine reads do not grant binding or mutation
     authority, focused filesystem mutation still requires workstream binding,
     a selected root, containment, and target-local verification, and
     `bound_resource` can be restored only by operator configuration.
-36. Requests use only `queued`, `active`, `blocked`, `done`, and `dropped`.
+38. Requests use only `queued`, `active`, `blocked`, `done`, and `dropped`.
     At most one is active per workstream; `done` and `dropped` are terminal.
     Incomplete and failed runs do not rewrite the request file. Contract
     amendment preserves request identity, path, and creation time, and trusted
     policy cannot silently remove acceptance criteria. Completion evidence
     must represent every acceptance criterion in the bound request.
-37. Shared Git has exactly one `.git/` beneath `workstreams/`. A commit to one
+39. Shared Git has exactly one `.git/` beneath `workstreams/`. A commit to one
     `W-*` path changes global HEAD without changing another workstream's
     path-specific last commit or making it stale.
-38. Activation loads at most the five newest progress entries for the run's
+40. Activation loads at most the five newest progress entries for the run's
     selected request. Older progress remains searchable and rebuildable.
-39. Finalization recovery retries an exact journal before a commit and
+41. Finalization recovery retries an exact journal before a commit and
     acknowledges an already-created commit by `Ayati-Run` trailer without
     duplicating either progress or Git history. Recovery completes partial
     journaled file writes and cleans only matching abandoned atomic temp files;
     unrelated dirt is preserved and rejected. Restart cleanup removes only
     unbound, uncommitted provisional workstreams and retains bound provisional
     state for finalization recovery.
-40. Nested-repository migration is preview-first, refuses dirty or
+42. Nested-repository migration is preview-first, refuses dirty or
     non-context repositories, preserves originals in an archive, converts v2
     cards and requests, creates an empty progress baseline when the legacy
     ledger is absent, creates one shared baseline commit, and rebuilds an empty
     V9 catalog.
-41. Request FTS participates in workstream discovery for terminal as well as
+43. Request FTS participates in workstream discovery for terminal as well as
     unfinished requests. An exact historical-request read returns its final
     outcome and at most five recent progress entries without binding the run
     or reopening the request.
-42. Every bound primary-model prompt contains the exact selected request
+44. Every bound primary-model prompt contains the exact selected request
     contract and distilled workstream context. A different active request is
     identified without replacing the selected request; progress is limited to
     the five newest selected-request summaries. At most ten deterministic
@@ -235,7 +254,7 @@ Changes should prove the relevant invariants:
     unrelated requests, and complete history stay outside the prompt.
     WorkState does not repeat workstream or request identity. Context-pressure
     projection preserves the bound-workstream lane exactly.
-43. Every primary-model prompt contains the exact configured absolute
+45. Every primary-model prompt contains the exact configured absolute
     `context.run.workspaceRoot` once. Chat and actionable system-event runs use
     the same runtime value; prompt compaction and post-binding refresh preserve
     it. The model treats workspace aliases and relative output destinations as
@@ -244,7 +263,7 @@ Changes should prove the relevant invariants:
     derives canonical absolute roots and current-run routing evidence without
     pre-registering a missing resource. Normal binding, containment, and
     verification gates remain required.
-44. `decision_resolve_create` exposes no creation `kind`, absolute mutation
+46. `decision_resolve_create` exposes no creation `kind`, absolute mutation
     scope, resource id, or evidence field. Its native schema deeply validates
     every workspace target and the complete initial-request contract before
     dispatch. Invalid nested fields receive one bounded repair and never reach
@@ -254,16 +273,16 @@ Changes should prove the relevant invariants:
     mutable roots from authoritative activated bindings, repository HEAD, and
     evidence, and rejects stale or mismatched state. Read-only, missing, and
     deleted resources never become mutation roots.
-45. `create_directory`, `write_files`, `patch_files`, `copy`, `move`,
+47. `create_directory`, `write_files`, `patch_files`, `copy`, `move`,
     `delete`, and `set_permissions` report exact completed, unchanged,
     partial, and failed target effects. The verifier re-observes only declared
     targets and reported parent/cleanup paths, rejects stale preconditions, and
     never accepts tool prose as mutation truth.
-46. Verified filesystem effects enter resource lifecycle finalization
+48. Verified filesystem effects enter resource lifecycle finalization
     independently of the larger run outcome. Create/restore, modify,
     permission change, move, copy, and delete preserve the correct identities,
     former locators, tombstones, versions, and fallback/enriched metadata.
-47. Chat and system-event entry share one FIFO agent-run queue. A later input
+49. Chat and system-event entry share one FIFO agent-run queue. A later input
     cannot prepare or execute while an earlier run still owns target-local
     verification, and shutdown drains the queue.
 
@@ -297,8 +316,9 @@ internal storage paths, observation authority fields, idempotency state, and
 reusable action context.
 
 Pressure tests must measure the whole candidate and prove recovery order:
-recoverable output projection, durable checkpoint, temporary anchored focus
-only when necessary, and final whole-request remeasurement. They must
+recoverable output projection, durable conversation checkpoint,
+runtime-triggered `run.maintain`, temporary anchored focus only when necessary,
+and final whole-request remeasurement. They must
 also cover the 55K preparation trigger, predicted-growth trigger, 60K target,
 70K soft pressure, local/exact forced barriers, background/foreground overlap,
 candidate deduplication/staleness, shadow versus enforce, late completion, and
@@ -340,7 +360,8 @@ verify deliberate clean-state recovery while preserving workspace output.
 Start the ordinary configured daemon with `pnpm eval:agent -- live`. Exercise
 conversation through the real WebSocket/client path across multiple clients,
 system events, resource reads, ambiguous ownership, new workstream creation,
-mutation, continuation, pressure checkpointing, exact history recovery, and
+mutation, continuation, conversation maintenance, whole-request pressure
+recovery, exact history recovery, and
 restart behavior. Use the configured real provider, tools, Context Engine,
 memory, resources, schedulers, and background services.
 

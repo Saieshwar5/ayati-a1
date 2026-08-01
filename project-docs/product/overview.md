@@ -33,9 +33,11 @@ machine.
 
 Continuity lives in one slow-growing agent stream across clients and runs.
 Fast-growing WorkState, steps, tool calls, and verification remain inside the
-current run. Under measured pressure Ayati creates a durable anchored
-checkpoint, while exact older discussion and evidence remain available through
-explicit history search/read tools.
+current run. Conversation-budget pressure creates a durable anchored stream
+checkpoint. Whole-request pressure instead enters a run-only maintenance mode,
+checkpoints the small WorkState handoff, and replaces eligible older tool
+payloads with typed projections or exact journal references. Exact older
+discussion and run evidence remain available through explicit history reads.
 
 Durable work is represented by two separate concepts:
 

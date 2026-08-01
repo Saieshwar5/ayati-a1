@@ -113,6 +113,9 @@ export interface ContextPreparationEvent {
     | "context_candidate_failed"
     | "context_candidate_discarded"
     | "context_candidate_validated"
+    | "context_maintenance_entered"
+    | "context_maintenance_completed"
+    | "context_maintenance_failed"
     | "context_background_summary_completed"
     | "context_synchronous_fallback"
     | "context_limit_termination";

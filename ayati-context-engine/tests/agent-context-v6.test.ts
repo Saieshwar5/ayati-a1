@@ -135,6 +135,62 @@ describe("current-schema agent-facing context", () => {
     });
   });
 
+  it("rolls a previous checkpoint forward when the new exact prefix alone is smaller than the target", async () => {
+    const fixture = await createFixture("checkpoint-roll-forward", "first " + "a".repeat(2_000));
+    await finalize(fixture, "first answer " + "b".repeat(2_000), "checkpoint-roll-forward-first");
+    fixture.prepared = await fixture.service.prepareAgentRun(prepare(
+      "REQ-checkpoint-roll-forward-second",
+      "follow-up " + "c".repeat(250),
+      "2026-07-20T10:02:00+05:30",
+    ));
+
+    const firstPlan = await fixture.service.planContextCheckpoint({
+      requestId: "REQ-checkpoint-roll-forward-plan-1",
+      streamId: fixture.prepared.stream.streamId,
+      protectFromSeq: fixture.prepared.message.sequence,
+      requiredSavingsTokens: 1,
+      estimatedCheckpointTokens: 200,
+      at: "2026-07-20T10:02:01+05:30",
+    });
+    const firstCommit = await fixture.service.commitContextCheckpoint({
+      requestId: "REQ-checkpoint-roll-forward-commit-1",
+      plan: firstPlan,
+      summary: checkpointSummary(1, 2),
+      tokenCount: 190,
+      provider: "test",
+      model: "test",
+      at: "2026-07-20T10:02:02+05:30",
+    });
+    await finalize(
+      fixture,
+      "follow-up answer " + "d".repeat(250),
+      "checkpoint-roll-forward-second",
+    );
+    fixture.prepared = await fixture.service.prepareAgentRun(prepare(
+      "REQ-checkpoint-roll-forward-current",
+      "Current exact input.",
+      "2026-07-20T10:04:00+05:30",
+    ));
+
+    const secondPlan = await fixture.service.planContextCheckpoint({
+      requestId: "REQ-checkpoint-roll-forward-plan-2",
+      streamId: fixture.prepared.stream.streamId,
+      protectFromSeq: fixture.prepared.message.sequence,
+      requiredSavingsTokens: 1,
+      estimatedCheckpointTokens: 200,
+      at: "2026-07-20T10:04:01+05:30",
+    });
+
+    expect(firstCommit.checkpoint.tokenCount).toBe(190);
+    expect(secondPlan).toMatchObject({
+      triggered: true,
+      previousCheckpoint: { checkpointId: firstCommit.checkpoint.checkpointId },
+      coveredFromSeq: 1,
+      coveredToSeq: 4,
+    });
+    expect(secondPlan.selectedMessages.map((message) => message.sequence)).toEqual([3, 4]);
+  });
+
   it("rejects non-exact checkpoint anchors without moving the active pointer", async () => {
     const fixture = await createFixture("invalid-anchor", "old " + "a".repeat(2_000));
     await finalize(fixture, "answer " + "b".repeat(2_000), "old");
@@ -209,6 +265,131 @@ describe("current-schema agent-facing context", () => {
     });
     expect(evidence.evidence?.content).toContain("config/cobalt.json");
     expect(evidence.truncated).toBe(false);
+  });
+
+  it("pages exact conversation backward from a stable snapshot", async () => {
+    const fixture = await createFixture("conversation-pages", "turn 1");
+    await finalize(fixture, "answer 1", "conversation-pages-1");
+    for (let turn = 2; turn <= 27; turn++) {
+      fixture.prepared = await fixture.service.prepareAgentRun(prepare(
+        `REQ-conversation-pages-${turn}`,
+        `turn ${turn}`,
+        `2026-07-20T11:${String(turn).padStart(2, "0")}:00+05:30`,
+      ));
+      await finalize(fixture, `answer ${turn}`, `conversation-pages-${turn}`);
+    }
+    fixture.prepared = await fixture.service.prepareAgentRun({
+      ...prepare(
+        "REQ-conversation-pages-system",
+        "Scheduled reminder fired.",
+        "2026-07-20T11:28:00+05:30",
+      ),
+      role: "system_event",
+    });
+    await finalize(fixture, "Reminder handled.", "conversation-pages-system");
+
+    const first = await fixture.service.readAgentConversation({
+      streamId: fixture.prepared.stream.streamId,
+    });
+    expect(first.page).toMatchObject({
+      snapshotToSeq: 56,
+      fromSeq: 7,
+      toSeq: 56,
+      count: 50,
+      hasOlder: true,
+    });
+    expect(first.messages.map((message) => message.sequence)).toEqual(
+      Array.from({ length: 50 }, (_, index) => index + 7),
+    );
+    expect(first.messages).toContainEqual(expect.objectContaining({
+      sequence: 55,
+      role: "system_event",
+      content: "Scheduled reminder fired.",
+    }));
+
+    fixture.prepared = await fixture.service.prepareAgentRun(prepare(
+      "REQ-conversation-pages-new",
+      "new message after paging began",
+      "2026-07-20T11:29:00+05:30",
+    ));
+    await finalize(fixture, "new answer", "conversation-pages-new");
+
+    const second = await fixture.service.readAgentConversation({
+      streamId: fixture.prepared.stream.streamId,
+      cursor: first.page.olderCursor!,
+    });
+    expect(second.page).toEqual({
+      snapshotToSeq: 56,
+      fromSeq: 1,
+      toSeq: 6,
+      count: 6,
+      hasOlder: false,
+    });
+    expect(second.messages.map((message) => message.sequence)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(new Set([
+      ...first.messages.map((message) => message.sequence),
+      ...second.messages.map((message) => message.sequence),
+    ]).size).toBe(56);
+  });
+
+  it("chunks one oversized conversation message and rejects malformed cursors", async () => {
+    const content = "large exact message " + "x".repeat(40_000);
+    const fixture = await createFixture("conversation-large", content);
+
+    const page = await fixture.service.readAgentConversation({
+      streamId: fixture.prepared.stream.streamId,
+      maxChars: 1_000,
+    });
+    expect(page).toMatchObject({
+      messages: [expect.objectContaining({ sequence: 1, role: "user" })],
+      page: { snapshotToSeq: 1, fromSeq: 1, toSeq: 1, count: 1, hasOlder: false },
+      contentTruncated: true,
+      continuationRef: expect.stringMatching(/^message:/),
+      continuationOffsetChars: 1_000,
+    });
+    expect(page.messages[0]?.content).toHaveLength(1_000);
+    await expect(fixture.service.readAgentConversation({
+      streamId: fixture.prepared.stream.streamId,
+      cursor: "conversation:v1:999:10",
+    })).rejects.toMatchObject({ code: "HISTORY_CURSOR_INVALID" });
+    await expect(fixture.service.readAgentConversation({
+      streamId: fixture.prepared.stream.streamId,
+      cursor: "",
+    })).rejects.toMatchObject({ code: "HISTORY_CURSOR_INVALID" });
+  });
+
+  it("binds conversation cursors to their originating stream", async () => {
+    const first = await createFixture("conversation-cursor-first", "first stream");
+    await finalize(first, "first answer", "conversation-cursor-first");
+    const page = await first.service.readAgentConversation({
+      streamId: first.prepared.stream.streamId,
+      limit: 1,
+    });
+    const second = await first.service.prepareAgentRun({
+      ...prepare(
+        "REQ-conversation-cursor-second",
+        "second stream",
+        "2026-07-20T12:00:00+05:30",
+      ),
+      scopeKey: "other",
+    });
+
+    await expect(first.service.readAgentConversation({
+      streamId: second.stream.streamId,
+      cursor: page.page.olderCursor!,
+    })).rejects.toMatchObject({ code: "HISTORY_CURSOR_INVALID" });
+  });
+
+  it("refuses conversation content that no longer matches its stored hash", async () => {
+    const fixture = await createFixture("conversation-integrity", "original message");
+    fixture.database.exec("DROP TRIGGER messages_immutable_update");
+    fixture.database.prepare([
+      "UPDATE messages SET content = ? WHERE stream_id = ? AND sequence = 1",
+    ].join(" ")).run("tampered message", fixture.prepared.stream.streamId);
+
+    await expect(fixture.service.readAgentConversation({
+      streamId: fixture.prepared.stream.streamId,
+    })).rejects.toMatchObject({ code: "HISTORY_INTEGRITY_FAILED" });
   });
 
   it("keeps verified reads in run history without materializing a reusable context lane", async () => {
