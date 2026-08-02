@@ -20,7 +20,6 @@ import {
   type WorkstreamResourceDiscoveryIndex,
 } from "../repositories/resource-records.js";
 import {
-  readPreviousBoundWorkstreamId,
   readWorkstreamDiscoveryRows,
   recordWorkstreamAccess,
   searchWorkstreamIds,
@@ -37,7 +36,6 @@ const MAX_LIMIT = 50;
 const ACTIVE_CONTEXT_LIMIT = 20;
 const STRONG_GROUP_LIMIT = 5;
 const TEXT_GROUP_LIMIT = 5;
-const REFERENTIAL_CONTINUATION = /\b(continue|resume|keep going|carry on|pick up|where we left|same (?:workstream|project|work)|that (?:workstream|project|work)|previous (?:workstream|project|work)|next step)\b/i;
 
 export class WorkstreamDiscoveryService {
   constructor(
@@ -97,9 +95,6 @@ export class WorkstreamDiscoveryService {
       strictFtsExpression(query),
       Math.max(limit * 20, 200),
     );
-    const previousWorkstreamId = input.streamId && REFERENTIAL_CONTINUATION.test(input.currentText ?? "")
-      ? readPreviousBoundWorkstreamId(this.database, input.streamId)
-      : undefined;
     const exactTitleCounts = new Map<string, number>();
     for (const row of rows) {
       const title = normalizeText(row.title);
@@ -128,7 +123,6 @@ export class WorkstreamDiscoveryService {
       uniqueTextMatch: textMatchCount === 1,
       exactTitleUnique: exactTitleCounts.get(normalizeText(row.title)) === 1,
       paths: input.paths ?? [],
-      previousWorkstreamId,
       explicitResourceIds,
       matchingResourceIds,
       resources: resourceIndex.get(row.workstreamId),
@@ -234,7 +228,6 @@ function candidateForRow(input: {
   uniqueTextMatch: boolean;
   exactTitleUnique: boolean;
   paths: string[];
-  previousWorkstreamId?: string;
   explicitResourceIds: ReadonlySet<string>;
   matchingResourceIds: ReadonlySet<string>;
   resources?: WorkstreamResourceDiscoveryIndex;
@@ -258,7 +251,6 @@ function candidateForRow(input: {
   if (input.paths.some((path) => resources.some((resource) => resourceOwnsPath(resource, path)))) {
     reasons.push("owned_resource");
   }
-  if (input.previousWorkstreamId === input.row.workstreamId) reasons.push("direct_continuation");
   if (input.matchingRequests.length > 0
     || (input.query && input.row.unfinishedRequests.some(
       (request) => textOverlaps(input.query, request.title),
@@ -281,8 +273,7 @@ function candidateForRow(input: {
     reason === "exact_workstream_id"
       || reason === "exact_resource_id"
       || reason === "exact_title"
-      || reason === "owned_resource"
-      || reason === "direct_continuation")
+      || reason === "owned_resource")
     ? "definite"
     : input.uniqueTextMatch
       && (reasons.includes("text_match")
@@ -390,8 +381,7 @@ function strongReasonRank(candidate: WorkstreamCandidate): number {
   if (reasons.includes("exact_resource_id")) return 1;
   if (reasons.includes("owned_resource")) return 2;
   if (reasons.includes("exact_title")) return 3;
-  if (reasons.includes("direct_continuation")) return 4;
-  return 5;
+  return 4;
 }
 
 function hasStrongReason(candidate: WorkstreamCandidate): boolean {
@@ -399,8 +389,7 @@ function hasStrongReason(candidate: WorkstreamCandidate): boolean {
     reason === "exact_workstream_id"
       || reason === "exact_resource_id"
       || reason === "exact_title"
-      || reason === "owned_resource"
-      || reason === "direct_continuation");
+      || reason === "owned_resource");
 }
 
 function ftsExpression(value: string): string {

@@ -172,7 +172,7 @@ function readWorkstreamTool(service: ContextEngineService): ToolDefinition {
 function setWorkstreamStarTool(service: ContextEngineService): ToolDefinition {
   return {
     name: "git_context_set_workstream_star",
-    description: "Star or unstar a workstream only on the user's explicit instruction.",
+    description: "Set the exact starred preference for a workstream in the current run. Use only when the user asks to change that preference.",
     inputSchema: {
       type: "object",
       properties: {
@@ -204,12 +204,6 @@ function setWorkstreamStarTool(service: ContextEngineService): ToolDefinition {
         const active = await service.getAgentContext({ streamId: identity.streamId });
         const run = active.run?.run;
         if (!run || run.runId !== identity.runId) return discoveryError("Star changes require the current run.");
-        const userText = active.stream?.recentMessages
-          .filter((message) => message.role === "user")
-          .at(-1)?.content ?? "";
-        if (!hasExplicitStarInstruction(userText, record["starred"])) {
-          return discoveryError("Stars require an explicit star or unstar instruction in this turn.");
-        }
         const result = await service.setWorkstreamStar({
           requestId: identity.requestId + ":set-star",
           runId: identity.runId,
@@ -380,14 +374,6 @@ function bindResourcesTool(service: ContextEngineService): ToolDefinition {
       }
     },
   };
-}
-
-function hasExplicitStarInstruction(text: string, starred: boolean): boolean {
-  const normalized = text.toLowerCase();
-  return starred
-    ? /\b(?:star|favorite|favourite)\b/.test(normalized)
-      && !/\b(?:unstar|unfavorite|unfavourite|remove (?:the )?star)\b/.test(normalized)
-    : /\b(?:unstar|unfavorite|unfavourite|remove (?:the )?star)\b/.test(normalized);
 }
 
 function resourceLocator(record: Record<string, unknown>):

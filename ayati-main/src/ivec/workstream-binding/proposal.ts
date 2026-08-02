@@ -162,13 +162,13 @@ export function workstreamActivateProposalSchema(): Record<string, unknown> {
     resourceIds: {
       type: "array",
       minItems: 1,
-      maxItems: 8,
+      maxItems: 32,
       items: {
         type: "string",
         pattern: RESOURCE_ID_PATTERN,
       },
       description:
-        "Exact existing resource IDs returned by current-run routing. The runtime derives paths, ownership, mutation scope, repository HEAD, and evidence.",
+        "Exact existing resource IDs returned by current-run routing. These select current-run mutation authority; the runtime derives paths, ownership, repository HEAD, and evidence from authoritative activated context.",
     },
   }, ["workstreamId", "requestDecision", "resourceIds"]);
 }

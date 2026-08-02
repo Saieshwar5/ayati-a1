@@ -192,13 +192,14 @@ owners. Evidence priority is:
 
 1. explicit workstream id;
 2. exact resource id or owned path;
-3. explicit continuation of the previously bound workstream;
-4. exact unique title or alias;
-5. matching request contract;
-6. matching purpose, snapshot, focus, findings, progress, or resource text;
-7. recency, stars, frequency, and unfinished status.
+3. exact unique title or alias;
+4. matching request contract;
+5. matching purpose, snapshot, focus, findings, progress, or resource text;
+6. recency, stars, frequency, unfinished status, and the previous run's owner.
 
-The final group only ranks candidates. It never grants ownership by itself.
+The final group only ranks candidates. Referential wording such as “continue
+that work” does not turn the previous workstream into exact ownership evidence.
+It never grants ownership by itself.
 When multiple strong candidates remain plausible, Ayati asks one focused
 question rather than guessing.
 

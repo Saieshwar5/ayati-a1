@@ -77,6 +77,7 @@ import {
 } from "./run-result.js";
 import { completeWorkStateHandoff } from "./work-state/terminal-handoff.js";
 import { buildVerifiedResourceEffects } from "./verified-resource-effects.js";
+import { buildRunLimitHandoff } from "./run-limit-handoff.js";
 import { workStateFindings } from "./work-state/selectors.js";
 import {
   buildFinalFeedbackWarnings,
@@ -126,7 +127,11 @@ import {
 } from "./virtual-mode.js";
 import { validationModePassed } from "./validation-mode.js";
 import { buildValidatedWorkstreamCriteria } from "./task-validation-criteria.js";
-import { dispatchTerminalStop } from "./terminal-stop.js";
+import {
+  dispatchDeterministicBindingClarification,
+  dispatchTerminalStop,
+  type TerminalStopResult,
+} from "./terminal-stop.js";
 import {
   completeContextRetrieval,
   isContextRetrievalAction,
@@ -302,6 +307,49 @@ export async function runAgentLoop(
       content: input.content,
       completion: input.completion,
       responseKind: input.responseKind,
+    });
+  };
+  const finalizeAcceptedTerminalStop = async (
+    stop: Extract<TerminalStopResult, { accepted: true }>,
+  ): Promise<AgentLoopResult> => {
+    recordFailureResolutionFeedback(
+      deps,
+      inputHandle,
+      runHandle.runId,
+      resolveActiveFailures(state, {
+        scopes: ["navigation", "binding", "action", "validation"],
+        iteration: state.iteration,
+        kind: "validation_accepted",
+      }),
+    );
+    state.workState = compactWorkState(stop.nextWorkState);
+    state.finalOutput = stop.response;
+    state.consecutiveFailures = 0;
+    recordStateSnapshotMetric("after_terminal_stop_accepted");
+    const responseKind = stop.outcome === "needs_user_input"
+      ? "feedback"
+      : state.preferredResponseKind ?? "reply";
+    const loopStatus = stop.outcome === "failed"
+      ? "failed"
+      : stop.outcome === "blocked"
+        ? "stuck"
+        : "completed";
+    state.status = loopStatus;
+    return await finalize({
+      status: loopStatus,
+      content: stop.response,
+      responseKind,
+      ...(stop.outcome === "needs_user_input"
+        ? {
+            completion: {
+              done: true as const,
+              summary: stop.response,
+              status: "completed" as const,
+              response_kind: responseKind,
+              feedback_kind: "clarification" as const,
+            },
+          }
+        : {}),
     });
   };
 
@@ -786,45 +834,7 @@ export async function runAgentLoop(
         continue;
       }
 
-      recordFailureResolutionFeedback(
-        deps,
-        inputHandle,
-        runHandle.runId,
-        resolveActiveFailures(state, {
-          scopes: ["navigation", "binding", "action", "validation"],
-          iteration: state.iteration,
-          kind: "validation_accepted",
-        }),
-      );
-      state.workState = compactWorkState(stop.nextWorkState);
-      state.finalOutput = stop.response;
-      state.consecutiveFailures = 0;
-      recordStateSnapshotMetric("after_terminal_stop_accepted");
-      const responseKind = stop.outcome === "needs_user_input"
-        ? "feedback"
-        : state.preferredResponseKind ?? "reply";
-      const loopStatus = stop.outcome === "failed"
-        ? "failed"
-        : stop.outcome === "blocked"
-          ? "stuck"
-          : "completed";
-      state.status = loopStatus;
-      return finalize({
-        status: loopStatus,
-        content: stop.response,
-        responseKind,
-        ...(stop.outcome === "needs_user_input"
-          ? {
-              completion: {
-                done: true as const,
-                summary: stop.response,
-                status: "completed" as const,
-                response_kind: responseKind,
-                feedback_kind: "clarification" as const,
-              },
-            }
-          : {}),
-      });
+      return await finalizeAcceptedTerminalStop(stop);
     }
 
     if (decision.kind === "transition_mode") {
@@ -863,12 +873,16 @@ export async function runAgentLoop(
         || transition.kind === "binding_needs_user_input"
         || transition.kind === "binding_failed"
       ) {
+        bindingStatus = transition.kind === "resolved"
+          ? "resolved"
+          : transition.kind === "binding_needs_user_input"
+            ? "needs_user_input"
+            : "failed";
         if (transition.binding.attempted) {
           bindingAttemptPolicy = recordBindingAttempt(
             bindingAttemptPolicy,
             transition.binding.attemptConsumed,
           );
-          bindingStatus = transition.binding.outcome.status;
         }
       }
 
@@ -939,15 +953,32 @@ export async function runAgentLoop(
       }
 
       if (transition.kind === "binding_needs_user_input") {
-        recordVirtualModeRepair(state, {
-          code: "MODE_RESOLUTION_AMBIGUOUS",
-          message: transition.question,
-          blockedTargets: transition.binding.outcome.candidateIds,
-          allowedNextActions: [
-            "Validate needs_user_input with this exact ambiguity question.",
-          ],
-        }, "validation_error");
-        continue;
+        terminalStopAttemptCount++;
+        const stop = dispatchDeterministicBindingClarification(state, transition.question);
+        if (stop.accepted) terminalStopAcceptedCount++;
+        else terminalStopRejectedCount++;
+        recordFeedback(
+          deps,
+          inputHandle,
+          runHandle.runId,
+          "virtual_mode",
+          stop.accepted ? "terminal_stop_accepted" : "terminal_stop_rejected",
+          {
+            iteration: state.iteration,
+            source: "deterministic_binding_clarification",
+            mode: state.virtualMode,
+            ...(stop.accepted
+              ? { outcome: stop.outcome, nextWorkState: stop.nextWorkState }
+              : { repair: stop.repair }),
+          },
+        );
+        if (!stop.accepted) {
+          recordVirtualModeRepair(state, stop.repair, "verify_failed");
+          state.status = "failed";
+          state.finalOutput = buildFailureReply(state);
+          return finalize({ status: "failed", content: state.finalOutput });
+        }
+        return await finalizeAcceptedTerminalStop(stop);
       }
 
       if (transition.kind === "binding_failed") {
@@ -1238,18 +1269,40 @@ export async function runAgentLoop(
 
   }
 
+  if (validationModePassed(state.virtualMode) && canMarkTerminalReplyDone(state)) {
+    state.status = "completed";
+    state.workState = completeWorkStateHandoff({
+      runId: state.runId,
+      workState: state.workState,
+      validationChecks: state.virtualMode.validation?.checks ?? [],
+    });
+    state.finalOutput = "The requested work passed validation before the decision limit, and the run is complete.";
+    return finalize({
+      status: "completed",
+      content: state.finalOutput,
+      completion: {
+        done: true,
+        summary: state.finalOutput,
+        status: "completed",
+        response_kind: state.preferredResponseKind ?? "reply",
+      },
+    });
+  }
+
+  const handoff = buildRunLimitHandoff(state, config.maxIterations);
   state.runLimitReached = true;
   state.status = "stuck";
-  state.workState = compactWorkState({
-    ...state.workState,
-    status: state.workState.status === "done" ? "done" : "in_progress",
-    summary: state.workState.summary === "Run started."
-      ? "The run reached its step limit before the responsibility was complete."
-      : state.workState.summary,
-    nextAction: state.workState.nextAction
-      || "Continue the requested workstream from the latest verified state.",
+  state.workState = handoff.workState;
+  state.finalOutput = handoff.response;
+  recordFeedback(deps, inputHandle, runHandle.runId, "guard", "run_limit_handoff_validated", {
+    iteration: state.iteration,
+    maxIterations: config.maxIterations,
+    verifiedEffectCount: handoff.verifiedEffectCount,
+    verifiedStepCount: handoff.verifiedStepCount,
+    workstreamBound: handoff.bound,
+    ...(handoff.requestId ? { requestId: handoff.requestId } : {}),
+    nextAction: handoff.workState.nextAction,
   });
-  state.finalOutput = `I reached the ${config.maxIterations}-step limit before finishing the workstream.`;
   return finalize({ status: "stuck", content: state.finalOutput });
 }
 

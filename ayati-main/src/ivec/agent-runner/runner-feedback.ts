@@ -129,7 +129,6 @@ export function recordCapabilitySurfaceFeedback(input: {
       selectedRoutingTools: capabilities.selectedRoutingTools,
       visibleReadTools: capabilities.visibleReadTools,
       pendingTurnStatus: capabilities.pendingTurnStatus,
-      routingSuppressed: capabilities.routingSuppressed,
       routingAvailable: capabilities.routingAvailable,
     });
   }

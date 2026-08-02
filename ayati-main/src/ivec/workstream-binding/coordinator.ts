@@ -1,6 +1,5 @@
 import type {
   ContextEngineService,
-  StreamMessage,
   WorkstreamCandidate,
   WorkstreamRequestRoute,
 } from "ayati-context-engine";
@@ -60,11 +59,7 @@ async function bindWorkstream(
 
     return request.proposal.kind === "activate"
       ? await activateExistingWorkstream(options, request)
-      : await createWorkstream(
-          options,
-          request,
-          choosesIndependentWorkstream(options.currentInput, current.stream?.recentMessages ?? []),
-        );
+      : await createWorkstream(options, request);
   } catch (error) {
     return bindingFailure(error);
   }
@@ -207,7 +202,6 @@ async function validateActivationResources(
 async function createWorkstream(
   options: WorkstreamBindingCoordinatorOptions,
   request: DeterministicWorkstreamBindingRequest,
-  createNewSelected: boolean,
 ): Promise<DeterministicWorkstreamBindingOutcome> {
   if (request.proposal.kind !== "create") {
     return failed("WORKSTREAM_BINDING_PROPOSAL_INVALID", "Expected a creation proposal.", false);
@@ -219,21 +213,19 @@ async function createWorkstream(
       false,
     );
   }
-  const strong = createNewSelected
-    ? []
-    : (await options.service.findWorkstreams({
-        query: options.currentInput,
-        paths: request.workspaceTargets.map((target) => target.absolutePath),
-        streamId: options.streamId,
-        currentText: options.currentInput,
-        includeArchived: false,
-        limit: 12,
-      })).workstreams.filter(isStrongCandidate).slice(0, 3);
-  if (strong.length > 0) {
+  const ownershipConflicts = (await options.service.findWorkstreams({
+    query: "",
+    paths: request.workspaceTargets.map((target) => target.absolutePath),
+    streamId: options.streamId,
+    currentText: "",
+    includeArchived: false,
+    limit: 50,
+  })).workstreams.filter(hasOwnedResourceReason).slice(0, 3);
+  if (ownershipConflicts.length > 0) {
     return {
       status: "needs_user_input",
-      question: bindingAmbiguityQuestion(strong),
-      candidateIds: strong.map((candidate) => candidate.workstreamId),
+      question: targetOwnershipQuestion(ownershipConflicts),
+      candidateIds: ownershipConflicts.map((candidate) => candidate.workstreamId),
     };
   }
 
@@ -294,32 +286,15 @@ function requestRoute(
   return structuredClone(decision);
 }
 
-function isStrongCandidate(candidate: WorkstreamCandidate): boolean {
-  return candidate.discovery.tier === "probable" || candidate.discovery.tier === "definite";
+function hasOwnedResourceReason(candidate: WorkstreamCandidate): boolean {
+  return candidate.discovery.reasons.includes("owned_resource");
 }
 
-function explicitlyRequestsIndependentWorkstream(input: string): boolean {
-  return /\b(?:create|start|open|make|use)\s+(?:a\s+|the\s+)?(?:(?:brand[- ]new|new|independent|separate)(?:\s+|,\s*)){1,3}workstream\b/i.test(input)
-    || /\b(?:new|independent|separate)\s+workstream\b[\s\S]{0,80}\b(?:instead|not\s+(?:the\s+)?existing|do\s+not\s+reuse|don't\s+reuse)\b/i.test(input)
-    || /\b(?:do\s+not|don't)\s+reuse\b[\s\S]{0,80}\b(?:create|start|use)\s+(?:a\s+|the\s+)?new\b/i.test(input);
-}
-
-function choosesIndependentWorkstream(
-  input: string,
-  messages: StreamMessage[],
-): boolean {
-  if (explicitlyRequestsIndependentWorkstream(input)) return true;
-  const selectsNewOption = /^(?:please\s+)?(?:(?:create|start|use|choose|select)\s+)?(?:the\s+|a\s+)?new\s+(?:one|option)[.!]?$/i
-    .test(input.trim());
-  if (!selectsNewOption) return false;
-  const priorAssistant = [...messages].reverse().find((message) => message.role === "assistant");
-  return priorAssistant?.responseKind === "feedback"
-    && priorAssistant.content.includes("create a new independent workstream");
-}
-
-function bindingAmbiguityQuestion(candidates: WorkstreamCandidate[]): string {
-  const choices = candidates.map((candidate) => `“${candidate.title}”`).join(", ");
-  return `Should I create a new independent workstream, or use one of these existing matches: ${choices}?`;
+function targetOwnershipQuestion(candidates: WorkstreamCandidate[]): string {
+  const choices = candidates
+    .map((candidate) => `“${candidate.title}” (${candidate.workstreamId})`)
+    .join(", ");
+  return `The selected workspace target is already owned by ${choices}. Should I use that workstream, or should I use a different target for the new workstream?`;
 }
 
 function bindingFailure(error: unknown): DeterministicWorkstreamBindingOutcome {

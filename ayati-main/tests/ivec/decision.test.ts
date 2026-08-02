@@ -1475,7 +1475,7 @@ describe("callAgentDecision", () => {
       resourceIds: {
         type: "array",
         minItems: 1,
-        maxItems: 8,
+        maxItems: 32,
       },
     });
     expect(activateBindingProperties).not.toHaveProperty("kind");

@@ -83,11 +83,13 @@ exact-reference `agent_history_read`; it is not copied into every prompt.
 ## Workstreams and Resources
 
 Workstream candidates come from deterministic catalog discovery. Exact
-resource ownership and explicit continuation outrank text, unfinished, star,
-recency, and frequency signals. Real operations run against resource locators,
-never the context repository. Once a workstream is selected, a separate typed
-decision distinguishes same-contract continuation, contract amendment, a new
-request in the same project, and a new workstream.
+identity and resource ownership outrank text, unfinished, star, recency, and
+frequency signals. The previous run's owner is a recency hint, not activation
+authority; a referential user message does not promote it to a definite match.
+Real operations run against resource locators, never the context repository.
+Once a workstream is selected, a separate typed decision distinguishes
+same-contract continuation, contract amendment, a new request in the same
+project, and a new workstream.
 
 ## Finalization
 

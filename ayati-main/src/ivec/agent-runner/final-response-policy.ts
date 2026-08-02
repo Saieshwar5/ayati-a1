@@ -34,7 +34,7 @@ export function shouldRejectTerminalReplyForUnresolvedMutation(
   state: LoopState,
   decision: Extract<AgentDecision, { kind: "reply" }>,
 ): { reason: string; failedStep?: StepSummary } | null {
-  if (decision.status !== "completed" || !isWorkstreamBound(state) || !isFileMutationRequest(state.userMessage)) {
+  if (decision.status !== "completed" || !isWorkstreamBound(state)) {
     return null;
   }
   const failedStep = latestFileMutationStep(state.completedSteps, "failed");
@@ -49,7 +49,7 @@ export function shouldRejectTerminalReplyForUnresolvedMutation(
     return null;
   }
   return {
-    reason: "The user asked for file changes, but the latest file mutation failed and no later file mutation succeeded. Continue with patch_files, write_files, or another mutation tool instead of sending a final reply.",
+    reason: "The latest file mutation in this bound run failed and no later file mutation succeeded. Continue with patch_files, write_files, or another mutation tool instead of sending a final reply.",
     failedStep,
   };
 }
@@ -83,11 +83,6 @@ function failedStepIsAccountedForByReportedDenial(
 
 function isWorkstreamBound(state: LoopState): boolean {
   return state.harnessContext.contextEngine?.current.routing?.status === "bound";
-}
-
-export function isFileMutationRequest(message: string): boolean {
-  return /\b(?:create|write|save|edit|update|change|modify|patch|replace|delete|remove|move|rename|fix|build|generate)\b/i.test(message)
-    && /\b(?:file|files|folder|directory|path|html|css|js|ts|tsx|jsx|json|md|txt|site|website|app|page|component|code)\b/i.test(message);
 }
 
 export function isUsableFinalResponseMessage(message: string): boolean {

@@ -255,11 +255,13 @@ describe("workstream binding coordinator", () => {
     });
   });
 
-  it("returns ambiguity instead of creating when authoritative ownership is strong", async () => {
+  it("returns one clarification when an exact selected target is already owned", async () => {
     const createWorkstreamForRun = vi.fn();
     const service = {
       getAgentContext: vi.fn(async () => agentContext(false)),
-      findWorkstreams: vi.fn(async () => ({ workstreams: [candidate("probable")] })),
+      findWorkstreams: vi.fn(async () => ({
+        workstreams: [candidate("definite", ["owned_resource"])],
+      })),
       createWorkstreamForRun,
     } as unknown as ContextEngineService;
     const coordinator = createWorkstreamBindingCoordinator({
@@ -290,13 +292,15 @@ describe("workstream binding coordinator", () => {
     expect(result).toMatchObject({
       status: "needs_user_input",
       candidateIds: [WORKSTREAM_ID],
-      question: expect.stringContaining("new independent workstream"),
+      question: expect.stringContaining(`already owned by “Website” (${WORKSTREAM_ID})`),
     });
     expect(createWorkstreamForRun).not.toHaveBeenCalled();
   });
 
-  it("honors an explicit create-new choice without pre-registering missing resources", async () => {
-    const findWorkstreams = vi.fn(async () => ({ workstreams: [candidate("definite")] }));
+  it("uses the typed create proposal without parsing the user's wording", async () => {
+    const findWorkstreams = vi.fn(async () => ({
+      workstreams: [candidate("probable", ["text_match"])],
+    }));
     const inspectResourceForRun = vi.fn(async () => ({
       mutationEligible: true,
       resource: {
@@ -327,7 +331,7 @@ describe("workstream binding coordinator", () => {
       service,
       runId: "RUN-1",
       streamId: "S-1",
-      currentInput: "Create a new independent workstream for this website.",
+      currentInput: "Go and create a fresh workstream.",
       now: () => new Date(NOW),
     });
 
@@ -353,7 +357,14 @@ describe("workstream binding coordinator", () => {
       status: "resolved",
       kind: "created_workstream",
     });
-    expect(findWorkstreams).not.toHaveBeenCalled();
+    expect(findWorkstreams).toHaveBeenCalledWith({
+      query: "",
+      paths: ["/tmp/site"],
+      streamId: "S-1",
+      currentText: "",
+      includeArchived: false,
+      limit: 50,
+    });
     expect(inspectResourceForRun).not.toHaveBeenCalled();
     expect(createWorkstreamForRun).toHaveBeenCalledOnce();
     expect(createWorkstreamForRun.mock.calls[0]?.[0]).not.toHaveProperty("resources");
@@ -375,6 +386,7 @@ describe("workstream binding coordinator", () => {
       getAgentContext: vi.fn()
         .mockResolvedValueOnce(agentContext(false))
         .mockResolvedValueOnce(agentContext(true)),
+      findWorkstreams: vi.fn(async () => ({ workstreams: [] })),
       inspectResourceForRun: vi.fn(),
       createWorkstreamForRun,
     } as unknown as ContextEngineService;
@@ -410,7 +422,7 @@ describe("workstream binding coordinator", () => {
     expect(service.inspectResourceForRun).not.toHaveBeenCalled();
   });
 
-  it("carries a create-new answer across runs from the durable exact conversation", async () => {
+  it("does not re-interpret conversation wording after the model selects typed create", async () => {
     const unbound = agentContext(false);
     unbound.stream.recentMessages = [
       ...unbound.stream.recentMessages,
@@ -435,7 +447,9 @@ describe("workstream binding coordinator", () => {
         at: NOW,
       },
     ];
-    const findWorkstreams = vi.fn(async () => ({ workstreams: [candidate("definite")] }));
+    const findWorkstreams = vi.fn(async () => ({
+      workstreams: [candidate("probable", ["text_match"])],
+    }));
     const createWorkstreamForRun = vi.fn(async () => ({
       run: {
         runId: "RUN-1",
@@ -488,7 +502,7 @@ describe("workstream binding coordinator", () => {
     });
 
     expect(result).toMatchObject({ status: "resolved", kind: "created_workstream" });
-    expect(findWorkstreams).not.toHaveBeenCalled();
+    expect(findWorkstreams).toHaveBeenCalledOnce();
   });
 
   it("fails before lifecycle mutation when the authoritative revision changed", async () => {
@@ -539,7 +553,12 @@ function workspaceTarget(
   return { kind, relativePath, absolutePath };
 }
 
-function candidate(tier: "probable" | "definite") {
+function candidate(
+  tier: "probable" | "definite",
+  reasons: Array<"exact_workstream_id" | "owned_resource" | "text_match"> = [
+    "exact_workstream_id",
+  ],
+) {
   return {
     workstreamId: WORKSTREAM_ID,
     title: "Website",
@@ -551,7 +570,7 @@ function candidate(tier: "probable" | "definite") {
     head: HEAD,
     primaryResources: [],
     updatedAt: NOW,
-    discovery: { tier, reasons: ["exact_workstream_id" as const] },
+    discovery: { tier, reasons },
     starred: false,
     boundRunsLast30Days: 1,
   };

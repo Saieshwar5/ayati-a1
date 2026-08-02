@@ -2000,7 +2000,7 @@ describe("agentLoop one-run lifecycle", () => {
     }
   });
 
-  it("never resolves or executes mutation that contradicts an explicit read-only request", async () => {
+  it("does not bypass routing evidence or binding when the model proposes mutation", async () => {
     const dataDir = makeTmpDir();
     const outputPath = join(dataDir, "must-stay-absent.txt");
     const runId = "R-read-only-mutation";
@@ -2042,7 +2042,6 @@ describe("agentLoop one-run lifecycle", () => {
         totalToolCalls: 0,
         content: "I couldn't complete this request. The request could not be completed safely.",
       });
-      expect(result.content).not.toContain("MODE_MUTATION_INTENT_REQUIRED");
       expect(provider.generateTurn).toHaveBeenCalledTimes(3);
       expect(workstreamBinding.bind).not.toHaveBeenCalled();
       expect(existsSync(outputPath)).toBe(false);
@@ -2785,7 +2784,7 @@ describe("agentLoop one-run lifecycle", () => {
     }
   });
 
-  it("uses a fresh main decision to present deterministic binding ambiguity", async () => {
+  it("presents deterministic binding ambiguity without another model decision", async () => {
     const dataDir = makeTmpDir();
     try {
       const runId = "R-routing-ambiguous";
@@ -2837,14 +2836,6 @@ describe("agentLoop one-run lifecycle", () => {
             binding: createBindingProposal(runId, routingCallId),
           },
         },
-        {
-          kind: "stop",
-          request: {
-            outcome: "needs_user_input",
-            summary: "Multiple website workstreams remain plausible.",
-            response: "Which website workstream should I continue? Please provide me with its name or path.",
-          },
-        },
       ]);
       const workstreamBinding = {
         bind: vi.fn(async () => ({
@@ -2873,10 +2864,10 @@ describe("agentLoop one-run lifecycle", () => {
         outcome: "needs_user_input",
         stopReason: "needs_user_input",
         status: "completed",
-        content: "Which website workstream should I continue? Please provide me with its name or path.",
+        content: "Which website workstream should I continue?",
       });
       expect(workstreamBinding.bind).toHaveBeenCalledTimes(1);
-      expect(provider.generateTurn).toHaveBeenCalledTimes(5);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(4);
       expect(result.totalToolCalls).toBe(1);
     } finally {
       cleanup(dataDir);
@@ -3438,6 +3429,198 @@ describe("agentLoop one-run lifecycle", () => {
         },
       });
       expect(provider.generateTurn).not.toHaveBeenCalled();
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("closes an exhausted unbound run with a truthful deterministic handoff", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const provider = createProvider([{
+        kind: "transition_mode",
+        request: {
+          to: "observe.locate",
+          purpose: "Locate any existing website files before implementation.",
+          capabilities: ["file:search"],
+          subjects: ["teaching website"],
+        },
+      }]);
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [findFilesTool],
+        runRecorder: noopRunRecorder,
+        runHandle: runHandle("R-unbound-run-limit"),
+        clientId: "c1",
+        initialUserMessage: "Create the teaching website.",
+        dataDir,
+        systemContext: "test system context",
+        harnessContext: unboundContext(
+          "R-unbound-run-limit",
+          "Create the teaching website.",
+        ),
+        config: { maxIterations: 1 },
+      });
+
+      expect(result).toMatchObject({
+        outcome: "incomplete",
+        stopReason: "run_limit",
+        status: "stuck",
+        totalIterations: 1,
+        workState: {
+          status: "in_progress",
+          summary: "Run paused at the decision limit before any task action was durably verified.",
+        },
+      });
+      expect(result.content).toContain("1-decision limit");
+      expect(result.content).toContain("No workstream or request was created or activated");
+      expect(provider.generateTurn).toHaveBeenCalledOnce();
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("preserves a verified bound mutation and keeps the request active at the decision limit", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "one-run.txt");
+    const runId = "R-bound-run-limit";
+    try {
+      const provider = createProvider([
+        {
+          kind: "transition_mode",
+          request: {
+            to: "execute",
+            purpose: "Create the requested file under the active binding.",
+            capabilities: ["file:write"],
+            targets: [outputPath],
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "write-before-limit",
+              tool: "write_files",
+              input: { files: [{ path: outputPath, content: "verified partial work" }] },
+              dependsOn: [],
+              purpose: "Create the requested file before the run limit",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [],
+          },
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor: createToolExecutor([writeFilesTool, inspectPathsTool]),
+        toolDefinitions: [writeFilesTool, inspectPathsTool],
+        workstreamBinding: { bind: vi.fn() },
+        runRecorder: noopRunRecorder,
+        runHandle: runHandle(runId),
+        clientId: "c1",
+        initialUserMessage: "Create one-run.txt",
+        dataDir,
+        systemContext: "test system context",
+        harnessContext: boundContext(runId, "Create one-run.txt", dataDir),
+        config: { maxIterations: 2 },
+      });
+
+      expect(result).toMatchObject({
+        outcome: "incomplete",
+        stopReason: "run_limit",
+        status: "stuck",
+        totalIterations: 2,
+        workState: {
+          status: "in_progress",
+        },
+        verifiedResourceEffects: [{
+          operation: "created",
+          path: outputPath,
+        }],
+      });
+      expect(result.content).toContain(`Created ${outputPath}`);
+      expect(result.content).toContain("Request R-0001 remains active");
+      expect(readFileSync(outputPath, "utf8")).toBe("verified partial work");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("completes normally when validation passes on the final allowed decision", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "one-run.txt");
+    const runId = "R-validation-at-limit";
+    const outcomeRef = `run:${runId}:step:1:call:write-at-limit:outcome:0`;
+    try {
+      const provider = createProvider([
+        {
+          kind: "transition_mode",
+          request: {
+            to: "execute",
+            purpose: "Create the requested file under the active binding.",
+            capabilities: ["file:write"],
+            targets: [outputPath],
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "write-at-limit",
+              tool: "write_files",
+              input: { files: [{ path: outputPath, content: "validated at limit" }] },
+              dependsOn: [],
+              purpose: "Create the requested file",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "transition_mode",
+          request: {
+            to: "validation",
+            purpose: "Validate the completed file before responding.",
+            capabilities: ["task:validation"],
+            outcomeRefs: [outcomeRef],
+            criterionProofs: [{ criterionIndex: 0, outcomeRefs: [outcomeRef] }],
+          },
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor: createToolExecutor([writeFilesTool, inspectPathsTool]),
+        toolDefinitions: [writeFilesTool, inspectPathsTool],
+        workstreamBinding: { bind: vi.fn() },
+        runRecorder: noopRunRecorder,
+        runHandle: runHandle(runId),
+        clientId: "c1",
+        initialUserMessage: "Create one-run.txt",
+        dataDir,
+        systemContext: "test system context",
+        harnessContext: boundContext(runId, "Create one-run.txt", dataDir),
+        config: { maxIterations: 3 },
+      });
+
+      expect(result).toMatchObject({
+        outcome: "done",
+        stopReason: "completed",
+        status: "completed",
+        totalIterations: 3,
+        workState: { status: "done" },
+        validatedCriteria: [{
+          criterion: "one-run.txt exists and is verified.",
+          passed: true,
+        }],
+      });
+      expect(result.content).toContain("passed validation before the decision limit");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
     } finally {
       cleanup(dataDir);
     }

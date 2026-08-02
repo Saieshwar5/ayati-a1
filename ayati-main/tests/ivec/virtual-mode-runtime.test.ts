@@ -14,7 +14,6 @@ import { findUnverifiedVirtualModeTargets } from "../../src/ivec/agent-runner/vi
 import { buildRecentFilesHotContextEntry } from "../../src/ivec/hot-context/index.js";
 import { CapabilitySurfaceManager } from "../../src/ivec/agent-runner/capabilities/surface-manager.js";
 import { ToolRegistry } from "../../src/ivec/agent-runner/capabilities/registry.js";
-import { deriveTurnMutationConstraints } from "../../src/ivec/agent-runner/turn-intent-policy.js";
 import { buildFinalFeedbackWarnings } from "../../src/ivec/agent-runner/runner-feedback.js";
 import type { LoopState } from "../../src/ivec/types.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
@@ -640,22 +639,7 @@ describe("virtual mode runtime", () => {
     });
   });
 
-  it("requires mutation intent and a binding-required capability at resolve", async () => {
-    const readOnly = await transition(
-      workstreamRoutingState("Inspect /tmp/output.txt; do not modify anything."),
-      {
-      to: "resolve",
-      purpose: "Try to write despite the read-only request.",
-      capabilities: ["file:write"],
-      targets: ["/tmp/output.txt"],
-      },
-      WRITE_TOOLS,
-    );
-    expect(readOnly).toMatchObject({
-      kind: "rejected",
-      repair: { code: "MODE_MUTATION_INTENT_REQUIRED" },
-    });
-
+  it("requires a binding-required capability at resolve", async () => {
     const observationalCapability = await transition(workstreamRoutingState("Create /tmp/output.txt."), {
       to: "resolve",
       purpose: "Resolve with a read-only capability.",
@@ -766,7 +750,11 @@ describe("virtual mode runtime", () => {
         kind: "activated_workstream" as const,
         workstreamId: "W-20260722-0001",
         requestId: "R-0002",
-        context: boundContext(current.harnessContext.contextEngine!),
+        context: boundContextWithResource(
+          current.harnessContext.contextEngine!,
+          resourceId,
+          "/tmp/balcony-herbs.md",
+        ),
       })),
     };
 
@@ -862,32 +850,6 @@ describe("virtual mode runtime", () => {
     });
   });
 
-  it("retains explicit no-change language and scoped boundaries as authoritative constraints", () => {
-    expect(deriveTurnMutationConstraints("Inspect this file but do not modify anything.")).toEqual({
-      mutationForbidden: true,
-      observationalOnly: true,
-      observationRequested: true,
-      scopePolicy: {
-        allowedScopes: [],
-        denyOutsideAllowedScopes: false,
-      },
-    });
-    expect(deriveTurnMutationConstraints(
-      "Please continue and finish the same request.",
-    )).toMatchObject({
-      mutationForbidden: false,
-      observationalOnly: false,
-    });
-    expect(deriveTurnMutationConstraints(
-      "Build the website in /tmp/site. Do not modify anything outside /tmp/site.",
-    )).toMatchObject({
-      mutationForbidden: false,
-      scopePolicy: {
-        allowedScopes: ["/tmp/site"],
-        denyOutsideAllowedScopes: true,
-      },
-    });
-  });
 });
 
 async function transition(
@@ -1031,6 +993,78 @@ function boundContext(context: ContextEngineMachineContext): ContextEngineMachin
         workstreamId: "W-20260722-0001",
         requestId: "R-1",
       },
+    },
+  };
+}
+
+function boundContextWithResource(
+  context: ContextEngineMachineContext,
+  resourceId: string,
+  path: string,
+): ContextEngineMachineContext {
+  return {
+    ...boundContext(context),
+    current: {
+      ...context.current,
+      routing: {
+        status: "bound",
+        workstreamId: "W-20260722-0001",
+        requestId: "R-0002",
+      },
+    },
+    workstream: {
+      ref: "workstream:W-20260722-0001",
+      workstreamId: "W-20260722-0001",
+      title: "Balcony herbs",
+      objective: "Maintain the balcony herb notes.",
+      summary: "The herb notes exist.",
+      workstreamStatus: "in_progress",
+      lifecycleStatus: "active",
+      repositoryHealth: "ready",
+      blockers: [],
+      currentRequest: {
+        id: "R-0002",
+        title: "Add rosemary guidance",
+        status: "active",
+        request: "Add rosemary guidance to the existing note.",
+        acceptance: ["The note contains rosemary guidance."],
+        constraints: [],
+      },
+      selectedRequest: {
+        id: "R-0002",
+        title: "Add rosemary guidance",
+        status: "active",
+        request: "Add rosemary guidance to the existing note.",
+        acceptance: ["The note contains rosemary guidance."],
+        constraints: [],
+      },
+      recentProgress: [],
+      resources: [{
+        resource: {
+          resourceId,
+          kind: "file",
+          origin: "agent_created",
+          displayName: "balcony-herbs.md",
+          description: "The selected herb note.",
+          aliases: [],
+          locator: { kind: "filesystem", path },
+          version: {
+            key: `file:${resourceId}`,
+            observedAt: "2026-07-31T10:00:00.000Z",
+            exists: true,
+            kind: "file",
+          },
+          availability: "available",
+          metadataStatus: "enriched",
+          createdAt: "2026-07-31T10:00:00.000Z",
+          updatedAt: "2026-07-31T10:00:00.000Z",
+        },
+        role: "primary",
+        access: "mutate",
+        primary: true,
+        requestIds: ["R-0002"],
+        boundAt: "2026-07-31T10:00:00.000Z",
+      }],
     },
   };
 }

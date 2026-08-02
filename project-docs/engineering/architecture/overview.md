@@ -54,11 +54,10 @@ context SQLite and context-only Git writes. The daemon depends on its typed
    `ENTRY -> workstream.route` and `ENTRY -> resolve` are unavailable. A
    transition to `resolve` requires a binding-required capability, that
    current-run routing observation, and one typed binding proposal. The model
-   owns semantic intent; the gate rejects explicit no-mutation constraints but
-   does not keyword-classify positive intent. Existing activation names exact
-   routed resource IDs; the runtime uses them to ground activation, then
-   derives ownership, repository HEAD,
-   evidence, and eligible mutable roots from the authoritative activated
+   owns semantic intent; the gate does not classify user-message wording.
+   Existing activation names exact routed resource IDs; the runtime uses them
+   to ground activation, then derives ownership, repository HEAD, evidence,
+   and only those selected mutable roots from the authoritative activated
    bindings. Creation carries typed workspace-relative targets whose absolute
    paths, evidence, and resource identities are also runtime-derived. The
    deterministic gate makes no model call, enters `execute` mechanically

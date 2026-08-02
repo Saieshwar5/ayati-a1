@@ -6,7 +6,7 @@ import { contextEngineFixture } from "../fixtures/agent-context.js";
 const WORKSTREAM_ID = "W-20260731-0001";
 
 describe("deriveActivatedWorkstreamMutationRoots", () => {
-  it("derives only usable absolute filesystem roots with mutate access", () => {
+  it("derives only selected usable absolute filesystem roots with mutate access", () => {
     const context = activatedContext([
       resourceBinding(1, "/workspace/project", "mutate", "available"),
       resourceBinding(2, "/workspace/project", "mutate", "changed"),
@@ -21,11 +21,13 @@ describe("deriveActivatedWorkstreamMutationRoots", () => {
         "mutate",
         "available",
       ),
+      resourceBinding(9, "/workspace/unselected", "mutate", "available"),
     ]);
 
     expect(deriveActivatedWorkstreamMutationRoots({
       context,
       workstreamId: WORKSTREAM_ID,
+      resourceIds: [1, 2, 3, 4, 5, 6, 7, 8].map(resourceId),
     })).toEqual([
       "/workspace/project",
       "/workspace/unchecked",
@@ -38,12 +40,31 @@ describe("deriveActivatedWorkstreamMutationRoots", () => {
     expect(deriveActivatedWorkstreamMutationRoots({
       context,
       workstreamId: WORKSTREAM_ID,
+      resourceIds: [resourceId(1)],
     })).toEqual([]);
 
     context.workstream = activatedContext([]).workstream;
     expect(deriveActivatedWorkstreamMutationRoots({
       context,
       workstreamId: "W-OTHER",
+      resourceIds: [resourceId(1)],
+    })).toEqual([]);
+  });
+
+  it("fails closed without an exact selected resource", () => {
+    const context = activatedContext([
+      resourceBinding(1, "/workspace/project", "mutate", "available"),
+    ]);
+
+    expect(deriveActivatedWorkstreamMutationRoots({
+      context,
+      workstreamId: WORKSTREAM_ID,
+      resourceIds: [],
+    })).toEqual([]);
+    expect(deriveActivatedWorkstreamMutationRoots({
+      context,
+      workstreamId: WORKSTREAM_ID,
+      resourceIds: [resourceId(2)],
     })).toEqual([]);
   });
 });
@@ -123,4 +144,8 @@ function resourceBinding(
     requestIds: ["R-0001"],
     boundAt: "2026-07-31T10:00:00.000Z",
   };
+}
+
+function resourceId(index: number): string {
+  return `RES-${String(index).padStart(24, "0")}`;
 }

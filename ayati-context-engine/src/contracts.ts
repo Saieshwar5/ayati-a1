@@ -566,7 +566,6 @@ export type WorkstreamDiscoveryReason =
   | "exact_resource_id"
   | "exact_title"
   | "owned_resource"
-  | "direct_continuation"
   | "matching_request"
   | "resource_match"
   | "text_match"

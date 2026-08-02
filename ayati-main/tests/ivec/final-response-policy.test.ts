@@ -81,9 +81,30 @@ describe("final response policy", () => {
     });
 
     expect(rejection).toMatchObject({
-      reason: expect.stringContaining("latest file mutation failed"),
+      reason: expect.stringContaining("latest file mutation"),
       failedStep: { step: 1 },
     });
+  });
+
+  it("uses verified mutation history instead of guessing intent from user wording", () => {
+    const rejection = shouldRejectTerminalReplyForUnresolvedMutation(state({
+      userMessage: "Produce the requested result.",
+      completedSteps: [step("write_files", "failed", 1)],
+    }), {
+      kind: "reply",
+      status: "completed",
+      message: "Done.",
+    });
+
+    expect(rejection).toMatchObject({ failedStep: { step: 1 } });
+    expect(shouldRejectTerminalReplyForUnresolvedMutation(state({
+      userMessage: "Explain how website updates work.",
+      completedSteps: [],
+    }), {
+      kind: "reply",
+      status: "completed",
+      message: "Here is how they work.",
+    })).toBeNull();
   });
 
   it("allows a completed reply after a later successful file mutation", () => {

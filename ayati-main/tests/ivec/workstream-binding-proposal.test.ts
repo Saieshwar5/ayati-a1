@@ -71,7 +71,7 @@ describe("workstream binding proposal", () => {
     expect(properties["resourceIds"]).toMatchObject({
       type: "array",
       minItems: 1,
-      maxItems: 8,
+      maxItems: 32,
     });
     expect(properties["requestDecision"]?.["description"]).toEqual(
       expect.stringContaining("separate outcome"),

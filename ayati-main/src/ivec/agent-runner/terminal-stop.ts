@@ -35,24 +35,7 @@ export function dispatchTerminalStop(
 
   switch (request.outcome) {
     case "needs_user_input":
-      if (!hasMaterialUncertainty(state)) {
-        return rejected("No current ambiguity or missing user decision supports a needs-user-input outcome.");
-      }
-      return {
-        accepted: true,
-        outcome: request.outcome,
-        response,
-        nextWorkState: {
-          ...state.workState,
-          status: "needs_user_input",
-          importantContext: appendImportantContext(
-            state.workState,
-            "decision",
-            "Awaiting user response: " + response,
-          ),
-          nextAction: "Resume the same responsibility after the user answers.",
-        },
-      };
+      return acceptedNeedsUserInput(state, response);
     case "blocked": {
       const blockers = currentBlockers(state);
       if (blockers.length === 0) {
@@ -94,6 +77,41 @@ export function dispatchTerminalStop(
   }
 }
 
+export function dispatchDeterministicBindingClarification(
+  state: LoopState,
+  question: string,
+): TerminalStopResult {
+  const response = question.trim();
+  if (!isVirtualGraphActive(state.virtualMode)) {
+    return rejected("A binding clarification is available only after the virtual graph is active.");
+  }
+  if (!response || !isUsableFinalResponseMessage(response)) {
+    return rejected("The deterministic binding gate did not provide a usable clarification.");
+  }
+  return acceptedNeedsUserInput(state, response);
+}
+
+function acceptedNeedsUserInput(
+  state: LoopState,
+  response: string,
+): Extract<TerminalStopResult, { accepted: true }> {
+  return {
+    accepted: true,
+    outcome: "needs_user_input",
+    response,
+    nextWorkState: {
+      ...state.workState,
+      status: "needs_user_input",
+      importantContext: appendImportantContext(
+        state.workState,
+        "decision",
+        "Awaiting user response: " + response,
+      ),
+      nextAction: "Resume the same responsibility after the user answers.",
+    },
+  };
+}
+
 function rejected(message: string): TerminalStopResult {
   return {
     accepted: false,
@@ -104,46 +122,6 @@ function rejected(message: string): TerminalStopResult {
       ["Continue working in the current graph, or retry decision_stop with a truthful supported outcome."],
     ),
   };
-}
-
-function hasMaterialUncertainty(state: LoopState): boolean {
-  if (
-    state.workState.status === "needs_user_input"
-  ) {
-    return true;
-  }
-  if (getActiveFailures(state.failureHistory).some((failure) => {
-    const failureText = [
-      failure.reason,
-      failure.repair?.message,
-      ...(failure.repair?.allowedNextActions ?? []),
-    ].filter(Boolean).join(" ");
-    return failure.failureType === "missing_path"
-      || /\bMODE_(?:RESOLUTION_AMBIGUOUS|TARGET_REQUIRED)\b/.test(failureText);
-  })) {
-    return true;
-  }
-  if (
-    /\b(?:it|this|that|these|those|them|the file|the folder|the directory)\b/i.test(state.userMessage)
-    && !/(?:^|\s)\/[^\s]+/.test(state.userMessage)
-    && (
-      state.virtualMode.active === "observe.locate"
-      || state.virtualMode.active === "workstream.route"
-    )
-  ) {
-    return true;
-  }
-  return (state.toolContext?.toolCalls ?? []).some((call) => {
-    if (call.status !== "success") return false;
-    if (/\b(?:no matches?|multiple matches|more than one|not found|none found)\b/i.test(call.output)) {
-      return true;
-    }
-    const metadata = asRecord(call.projectionMetadata);
-    return ["matches", "candidates", "workstreams", "resources"].some((key) => {
-      const values = metadata?.[key];
-      return Array.isArray(values) && values.length !== 1;
-    });
-  });
 }
 
 function currentBlockers(state: LoopState): string[] {
@@ -171,10 +149,4 @@ function appendImportantContext(
 function hasCurrentFailure(state: LoopState): boolean {
   return getActiveFailures(state.failureHistory).length > 0
     || state.completedSteps.some((step) => step.outcome === "failed");
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
 }

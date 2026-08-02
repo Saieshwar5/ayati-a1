@@ -20,27 +20,38 @@ describe("deterministic resolve gate", () => {
       .toEqual(["patch_files", "write_files"]);
   });
 
-  it("rejects mutation when the user explicitly requested observation only", async () => {
-    const coordinator = { bind: vi.fn() };
+  it("does not reinterpret mixed read and write wording after typed creation is selected", async () => {
+    const coordinator = {
+      bind: vi.fn(async () => ({
+        status: "failed" as const,
+        code: "FIXTURE_STOP",
+        message: "The typed creation reached the coordinator.",
+        retryable: false,
+      })),
+    };
     const result = await dispatchDeterministicResolveGate({
-      state: state("Inspect notes.md; do not modify anything."),
-      request: resolveRequest(),
+      state: state(
+        "Without changing requirements.md, create the website under site/.",
+        true,
+      ),
+      request: resolveRequest("site/index.html"),
       workspaceRoot: WORKSPACE_ROOT,
-      toolNames: ["patch_files"],
+      toolNames: ["write_files"],
       coordinator,
       alreadyAttempted: false,
     });
 
-    expect(result).toMatchObject({
-      kind: "rejected",
-      repair: { code: "MODE_MUTATION_INTENT_REQUIRED" },
-    });
-    expect(coordinator.bind).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ kind: "failed", attempted: true });
+    expect(coordinator.bind).toHaveBeenCalledOnce();
   });
 
-  it("accepts a verified typed continuation without keyword-classifying positive intent", async () => {
+  it.each([
+    "Please continue and finish the same Solstice Cafe update.",
+    "Pick up where you left off and complete the remaining verification.",
+    "Carry on with that unfinished work.",
+  ])("accepts a verified typed continuation regardless of wording: %s", async (message) => {
     const current = activationState(
-      "Please continue and finish the same Solstice Cafe update. Complete the remaining verification and finish the request.",
+      message,
     );
     const coordinator = {
       bind: vi.fn(async () => ({
@@ -73,6 +84,89 @@ describe("deterministic resolve gate", () => {
     }));
   });
 
+  it("does not treat a request ID in the user message as activation authority", async () => {
+    const current = activationState(
+      "Continue R-0002 in W-20260722-0001 and finish it.",
+    );
+    const coordinator = { bind: vi.fn() };
+    const request = activationRequest();
+    request.binding.requestDecision.requestId = "R-0002";
+
+    const result = await dispatchDeterministicResolveGate({
+      state: current,
+      request,
+      workspaceRoot: WORKSPACE_ROOT,
+      toolNames: ["write_files"],
+      coordinator,
+      alreadyAttempted: false,
+    });
+
+    expect(result).toMatchObject({
+      kind: "rejected",
+      repair: {
+        code: "MODE_BINDING_PROPOSAL_UNVERIFIED",
+        blockedTargets: ["R-0002"],
+        message: expect.stringContaining(
+          "not returned by current-run workstream evidence",
+        ),
+        allowedNextActions: [
+          expect.stringContaining("git_context_read_workstream"),
+        ],
+      },
+    });
+    expect(coordinator.bind).not.toHaveBeenCalled();
+  });
+
+  it("accepts a request after an exact workstream read returns it", async () => {
+    const current = activationState(
+      "Carry on with the unfinished website work.",
+    );
+    current.toolContext!.toolCalls![0] = {
+      step: 1,
+      callId: "read-workstream",
+      tool: "git_context_read_workstream",
+      purpose: "Read the exact workstream and selected request.",
+      input: {
+        workstreamId: "W-20260722-0001",
+        requestId: "R-0002",
+      },
+      status: "success",
+      output: JSON.stringify({
+        workstream: {
+          workstreamId: "W-20260722-0001",
+          head: "a".repeat(40),
+        },
+        context: {
+          currentRequest: { id: "R-0002", status: "active" },
+        },
+      }),
+      evidenceRef: ROUTING_REF,
+      stepRef: { runId: "RUN-1", step: 1, callId: "read-workstream" },
+    };
+    const coordinator = {
+      bind: vi.fn(async () => ({
+        status: "failed" as const,
+        code: "FIXTURE_STOP",
+        message: "The observed request reached the coordinator.",
+        retryable: false,
+      })),
+    };
+    const request = activationRequest();
+    request.binding.requestDecision.requestId = "R-0002";
+
+    const result = await dispatchDeterministicResolveGate({
+      state: current,
+      request,
+      workspaceRoot: WORKSPACE_ROOT,
+      toolNames: ["write_files"],
+      coordinator,
+      alreadyAttempted: false,
+    });
+
+    expect(result).toMatchObject({ kind: "failed", attempted: true });
+    expect(coordinator.bind).toHaveBeenCalledOnce();
+  });
+
   it("accepts a verified typed creation without keyword-classifying positive intent", async () => {
     const coordinator = {
       bind: vi.fn(async () => ({
@@ -94,46 +188,6 @@ describe("deterministic resolve gate", () => {
 
     expect(result).toMatchObject({ kind: "failed", attempted: true });
     expect(coordinator.bind).toHaveBeenCalledOnce();
-  });
-
-  it("enforces a scoped mutation boundary without treating it as a global mutation ban", async () => {
-    const message = "Build the site in /tmp/site. Do not modify anything outside /tmp/site.";
-    const coordinator = {
-      bind: vi.fn(async () => ({
-        status: "failed" as const,
-        code: "FIXTURE_STOP",
-        message: "Reached the coordinator.",
-        retryable: false,
-      })),
-    };
-    const inside = await dispatchDeterministicResolveGate({
-      state: state(message, true),
-      request: resolveRequest("index.html"),
-      workspaceRoot: "/tmp/site",
-      toolNames: ["write_files"],
-      coordinator,
-      alreadyAttempted: false,
-    });
-    expect(inside).toMatchObject({ kind: "failed", attempted: true });
-    expect(coordinator.bind).toHaveBeenCalledOnce();
-
-    coordinator.bind.mockClear();
-    const outside = await dispatchDeterministicResolveGate({
-      state: state(message, true),
-      request: resolveRequest("index.html"),
-      workspaceRoot: "/tmp/other",
-      toolNames: ["write_files"],
-      coordinator,
-      alreadyAttempted: false,
-    });
-    expect(outside).toMatchObject({
-      kind: "rejected",
-      repair: {
-        code: "MODE_MUTATION_INTENT_REQUIRED",
-        blockedTargets: ["/tmp/other/index.html"],
-      },
-    });
-    expect(coordinator.bind).not.toHaveBeenCalled();
   });
 
   it("requires current-run routing evidence and injects exact evidence for creation", async () => {
@@ -398,7 +452,10 @@ describe("deterministic resolve gate", () => {
 
     coordinator.bind.mockClear();
     const unobserved = await dispatchDeterministicResolveGate({
-      state: current,
+      state: {
+        ...current,
+        userMessage: "Continue R-0002 in this workstream.",
+      },
       request: {
         to: "resolve",
         purpose: "Attempt to switch an unobserved request.",
@@ -428,9 +485,9 @@ describe("deterministic resolve gate", () => {
       repair: {
         code: "MODE_BINDING_PROPOSAL_UNVERIFIED",
         blockedTargets: ["R-0002"],
-        message: expect.stringContaining("exact active request"),
+        message: expect.stringContaining("current-run workstream evidence"),
         allowedNextActions: [
-          expect.stringContaining("Inspect the exact request"),
+          expect.stringContaining("git_context_read_workstream"),
         ],
       },
     });
@@ -469,41 +526,9 @@ describe("deterministic resolve gate", () => {
     });
     expect(coordinator.bind).not.toHaveBeenCalled();
 
-    current.userMessage =
-      "Update /tmp/allowed/balcony-herbs.md. Do not modify anything outside /tmp/allowed.";
-    const outsideUserBoundary = await dispatchDeterministicResolveGate({
-      state: current,
-      request: {
-        to: "resolve",
-        purpose: "Attempt to route a resource outside the user's exact boundary.",
-        capabilities: ["file:write"],
-        binding: {
-          kind: "activate",
-          workstreamId: "W-20260722-0001",
-          requestDecision: {
-            kind: "continue_current",
-            requestId: "R-0001",
-            reason: "Continue the observed request.",
-          },
-          resourceIds: [RESOURCE_ID],
-        },
-      },
-      workspaceRoot: WORKSPACE_ROOT,
-      toolNames: ["write_files"],
-      coordinator,
-      alreadyAttempted: false,
-    });
-    expect(outsideUserBoundary).toMatchObject({
-      kind: "rejected",
-      repair: {
-        code: "MODE_MUTATION_INTENT_REQUIRED",
-        blockedTargets: [RESOURCE_PATH],
-      },
-    });
-    expect(coordinator.bind).not.toHaveBeenCalled();
   });
 
-  it("mounts all authoritative mutable resources after activation without upgrading read access", async () => {
+  it("mounts only the exact selected mutable resources after activation", async () => {
     const current = activationState(
       "Update the existing files in W-20260722-0001.",
     );
@@ -531,15 +556,12 @@ describe("deterministic resolve gate", () => {
 
     expect(result.kind).toBe("resolved");
     if (result.kind !== "resolved") throw new Error("Expected activation to resolve.");
-    expect(result.mutationRoots).toEqual([
-      RESOURCE_PATH,
-      "/tmp/ayati-workspace/supporting",
-    ]);
+    expect(result.mutationRoots).toEqual([RESOURCE_PATH]);
   });
 
-  it("keeps an explicit per-turn filesystem boundary narrower than activated authority", async () => {
+  it("does not let no-change wording expand or replace typed activation authority", async () => {
     const current = activationState(
-      `Update ${RESOURCE_PATH}. Do not modify anything outside ${RESOURCE_PATH}.`,
+      `Without changing supporting files, update ${RESOURCE_PATH}.`,
     );
     const context = resolvedActivationContext(
       current.harnessContext.contextEngine!,

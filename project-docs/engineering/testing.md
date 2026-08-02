@@ -81,9 +81,12 @@ Changes should prove the relevant invariants:
     continuation, amendment, activation, resumption, creation, defer-and-switch,
     or new-workstream proposal, rechecks authoritative candidate/resource
     state, and binds at most one workstream/request on the existing run. The
-    model owns positive semantic intent; the gate rejects explicit no-mutation
-    constraints without keyword-classifying every valid mutation or
-    continuation phrase. One corrected proposal is allowed only after a
+    model owns semantic intent; the gate does not classify user-message wording.
+    Referential continuation wording keeps recent workstreams as advisory
+    candidates and cannot create definite activation authority. Star changes
+    use the typed boolean while still requiring a current run and exact
+    workstream.
+    One corrected proposal is allowed only after a
     retryable rejection explicitly recorded before any route plan or binding;
     all uncertain failures close binding immediately.
 18. Whole-task validation is a stored proof-only mode with no executable
@@ -170,12 +173,13 @@ Changes should prove the relevant invariants:
     read-only. Workspace-relative paths resolve once beneath the configured
     workspace; external absolute destinations require an exact routed bound
     resource. Process/Python and other broad effects retain resource-scoped
-    preparation. Existing-workstream activation mounts every distinct absolute
-    filesystem binding already marked `mutate`, excluding read-only, missing,
-    deleted, non-filesystem, and relative locators. A narrower filesystem
-    boundary in the current user message filters those roots.
-28. Explicit create-new ownership survives a focused clarification; ambiguity
-    without a binding consumes no binding authority. A lifecycle-state
+    preparation. Existing-workstream activation mounts only exact resource IDs
+    selected in the typed proposal and revalidated against the authoritative
+    activated projection. Read-only, missing, deleted, non-filesystem,
+    relative, and unselected bindings grant no current-run mutation root.
+28. A typed create proposal is not overridden by keyword parsing or semantic
+    workstream matches. Exact selected-target ownership returns one terminal
+    clarification without binding or another model decision. A lifecycle-state
     rejection proven to have made no change permits one corrected resolve
     proposal, while a second rejection closes binding for the run.
 29. File-content validation rejects a silently substituted source.
@@ -235,7 +239,12 @@ Changes should prove the relevant invariants:
     Incomplete and failed runs do not rewrite the request file. Contract
     amendment preserves request identity, path, and creation time, and trusted
     policy cannot silently remove acceptance criteria. Completion evidence
-    must represent every acceptance criterion in the bound request.
+    must represent every acceptance criterion in the bound request. Decision-
+    limit closeout makes no provider call: it reports only exact verified
+    current-run steps/effects, pauses active WorkState plan items, keeps an
+    unfinished bound request active, and always returns an incomplete handoff.
+    Full validation accepted on the last allowed decision still completes the
+    request normally.
 39. Shared Git has exactly one `.git/` beneath `workstreams/`. A commit to one
     `W-*` path changes global HEAD without changing another workstream's
     path-specific last commit or making it stale.

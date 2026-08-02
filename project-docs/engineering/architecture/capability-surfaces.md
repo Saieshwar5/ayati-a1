@@ -91,12 +91,12 @@ mode if it needs more evidence.
 Successful existing-workstream activation mounts an execute surface and a
 runtime-derived set of usable filesystem roots. The set comes from the
 authoritative activated workstream projection, not from model-authored paths:
-all distinct absolute bindings with `access: mutate` are eligible unless the
-resource is missing or deleted. Read bindings remain read-only. A narrower
-filesystem boundary stated by the user for the current turn filters this set,
-and each focused filesystem call must still fit inside one selected root.
-Resource metadata in `boundWorkstream` helps the model choose a target; actual
-access remains deterministic runtime policy.
+only exact resource IDs selected in the typed activation proposal are eligible,
+and each must resolve to an absolute binding with `access: mutate` whose
+resource is not missing or deleted. Read bindings remain read-only. All
+workstream resource metadata remains visible in `boundWorkstream`, but
+unselected resources do not become current-run mutation authority. Each
+focused filesystem call must still fit inside one selected root.
 
 ## Catalog Rules
 

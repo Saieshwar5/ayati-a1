@@ -183,7 +183,7 @@ describe("autonomous workstream discovery", () => {
     });
   });
 
-  it("uses referential continuation only as discovery evidence and never binds the run", async () => {
+  it("keeps recent workstreams advisory when the user uses referential continuation wording", async () => {
     const state = await createDiscoveryFixture();
 
     const found = await state.fixture.service.findWorkstreams({
@@ -192,13 +192,17 @@ describe("autonomous workstream discovery", () => {
       limit: 20,
     });
 
-    expect(found.workstreams[0]).toMatchObject({
+    expect(found.workstreams.find((workstream) => (
+      workstream.workstreamId === state.researchWorkstreamId
+    ))).toMatchObject({
       workstreamId: state.researchWorkstreamId,
       discovery: {
-        tier: "definite",
-        reasons: expect.arrayContaining(["direct_continuation"]),
+        tier: "candidate",
+        reasons: expect.arrayContaining(["recent"]),
       },
     });
+    expect(found.workstreams.flatMap((workstream) => workstream.discovery.reasons))
+      .not.toContain("direct_continuation");
     expect(state.fixture.database.prepare(
       "SELECT workstream_id FROM runs WHERE run_id = ?",
     ).get(state.fixture.prepared.run.runId)).toEqual({ workstream_id: null });

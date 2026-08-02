@@ -338,9 +338,12 @@ describe("model-facing workstream and resource routing", () => {
     }));
   });
 
-  it("changes a star only when the current user explicitly requests it", async () => {
-    const setWorkstreamStar = vi.fn(async () => ({ workstreamId: WORKSTREAM_ID, starred: true }));
-    const explicit = activeContext(false, "Star this workstream.");
+  it("uses the typed star value without re-parsing the user's wording", async () => {
+    const setWorkstreamStar = vi.fn(async (input: { workstreamId: string; starred: boolean }) => ({
+      workstreamId: input.workstreamId,
+      starred: input.starred,
+    }));
+    const explicit = activeContext(false, "Please remember my preference for this workstream.");
     const service = {
       getAgentContext: vi.fn(async () => explicit),
       setWorkstreamStar,
@@ -362,20 +365,19 @@ describe("model-facing workstream and resource routing", () => {
       runId: "RUN-1",
     }));
 
-    const autonomousService = {
-      getAgentContext: vi.fn(async () => activeContext(false, "Continue the website.")),
-      setWorkstreamStar: vi.fn(),
-    } as unknown as ContextEngineService;
-    const autonomousTool = createGitContextSkill({ service: autonomousService }).tools
-      .find((candidate) => candidate.name === "git_context_set_workstream_star")!;
-    const refused = await autonomousTool.execute({
+    const unstarred = await tool.execute({
       workstreamId: WORKSTREAM_ID,
-      starred: true,
-      reason: "This workstream looks important.",
-    }, executionContext("star-autonomously"));
+      starred: false,
+      reason: "Apply the user's requested preference.",
+    }, executionContext("unstar"));
 
-    expect(refused.ok).toBe(false);
-    expect(autonomousService.setWorkstreamStar).not.toHaveBeenCalled();
+    expect(unstarred.ok).toBe(true);
+    expect(setWorkstreamStar).toHaveBeenLastCalledWith(expect.objectContaining({
+      requestId: "RUN-1:unstar:set-star",
+      workstreamId: WORKSTREAM_ID,
+      starred: false,
+      runId: "RUN-1",
+    }));
   });
 });
 

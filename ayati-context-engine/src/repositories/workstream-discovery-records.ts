@@ -310,23 +310,6 @@ export function setWorkstreamStar(input: {
   };
 }
 
-export function readPreviousBoundWorkstreamId(
-  database: ContextDatabase,
-  streamId: string,
-  excludingRunId?: string,
-): string | undefined {
-  const row = database.prepare([
-    "SELECT r.workstream_id FROM runs r",
-    "WHERE r.stream_id = ? AND r.workstream_id IS NOT NULL",
-    ...(excludingRunId ? ["AND r.run_id != ?"] : []),
-    "ORDER BY r.run_sequence DESC, r.run_id DESC LIMIT 1",
-  ].join(" ")).get(
-    streamId,
-    ...(excludingRunId ? [excludingRunId] : []),
-  ) as { workstream_id: string } | undefined;
-  return row?.workstream_id;
-}
-
 function repositoryHealth(
   value: string,
 ): WorkstreamDiscoveryRow["repositoryHealth"] {

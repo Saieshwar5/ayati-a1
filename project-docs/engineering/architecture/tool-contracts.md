@@ -159,10 +159,11 @@ separate typed fields. A reference path cannot become mutation authority
 merely because it is absolute. The model-facing activation control accepts
 only the observed workstream, request lifecycle choice, and exact resource
 IDs. The runtime uses those IDs to ground activation, then derives ownership,
-repository HEAD, evidence, and every usable mutation root from the
-authoritative activated workstream bindings. It includes only absolute
-filesystem bindings already marked `mutate` and excludes missing or deleted
-resources; a narrower user-stated turn boundary still applies. The
+repository HEAD, evidence, and only the selected usable mutation roots from
+the authoritative activated workstream bindings. Each selected ID must resolve
+to an absolute filesystem binding already marked `mutate`; missing, deleted,
+read-only, non-filesystem, and unselected resources grant no mutation
+authority. The
 model-facing create control accepts only:
 
 ```text
@@ -320,6 +321,10 @@ Explicit preference control:
 
 - `git_context_set_workstream_star`
 
+The star tool receives the exact typed boolean selected by the model and
+validates the current run and workstream in Context Engine. The runtime does
+not parse the user's sentence again to reinterpret that boolean.
+
 Bound resource control:
 
 - `git_context_bind_resources`
@@ -344,10 +349,12 @@ Replay identity derives from the existing run id and deterministic gate id.
 An ambiguity that performs no binding consumes no mutation-safe binding
 authority. A request-lifecycle rejection recorded before any route plan or
 run binding permits one corrected proposal; a second no-change rejection or
-any uncertain failure closes binding for the run. An explicit create-new
-instruction or an exact follow-up choice to the prior durable question
-bypasses semantic reuse suggestions; authoritative resource checks still
-apply.
+any uncertain failure closes binding for the run. The model's typed create
+proposal owns semantic interpretation. The runtime never parses conversation
+wording to override that choice; it rechecks only exact selected-target
+ownership. A concrete ownership conflict returns one terminal clarification,
+while text similarity and other semantic reuse suggestions cannot block
+creation.
 
 ## Calculator
 

@@ -1,8 +1,3 @@
-import { isAbsolute } from "node:path";
-import {
-  canonicalizeAbsoluteFilesystemPath,
-  filesystemPathIsWithin,
-} from "../../shared/filesystem-paths.js";
 import { requiresWorkstreamBinding } from "../../skills/tool-taxonomy.js";
 import type { LoopState } from "../types.js";
 import type {
@@ -12,7 +7,6 @@ import type {
   WorkstreamBindingProposal,
 } from "../workstream-binding/contracts.js";
 import { resolveWorkstreamWorkspaceTargets } from "../workstream-binding/workspace-targets.js";
-import { deriveTurnMutationConstraints } from "./turn-intent-policy.js";
 import {
   createVirtualModeRepair,
   modeTransitionReferenceValues,
@@ -78,21 +72,6 @@ export async function dispatchDeterministicResolveGate(input: {
     );
   }
   if (isWorkstreamBound(input.state)) return { kind: "not_required", attempted: false };
-
-  const intent = deriveTurnMutationConstraints(input.state.userMessage);
-  // The model owns semantic intent. This gate enforces explicit user
-  // prohibitions and deterministic binding/scope authority; it does not try
-  // to recognize every natural-language way a user can request mutation or
-  // continuation.
-  if (intent.mutationForbidden) {
-    return rejected(
-      toolNames,
-      "MODE_MUTATION_INTENT_REQUIRED",
-      "The current request explicitly forbids mutation, so it cannot enter the resolve gate.",
-      targets,
-      ["Stay in an observation mode, or validate a read-only outcome."],
-    );
-  }
   if (input.alreadyAttempted) {
     return rejected(
       toolNames,
@@ -149,7 +128,6 @@ export async function dispatchDeterministicResolveGate(input: {
   let activationAuthority: WorkstreamActivationAuthority | undefined;
   if (input.request.binding.kind === "activate") {
     const resolved = resolveWorkstreamActivationAuthority({
-      state: input.state,
       proposal: input.request.binding,
       routing,
     });
@@ -162,23 +140,6 @@ export async function dispatchDeterministicResolveGate(input: {
       };
     }
     activationAuthority = resolved.authority;
-  }
-
-  const boundaryTargets = input.request.binding.kind === "create"
-    ? workspaceTargetResolution.targets.map((target) => target.absolutePath)
-    : activationAuthority?.boundaryTargets ?? [];
-  const outOfScope = await mutationTargetsOutsideUserBoundary(
-    boundaryTargets,
-    intent.scopePolicy,
-  );
-  if (outOfScope.length > 0) {
-    return rejected(
-      toolNames,
-      "MODE_MUTATION_INTENT_REQUIRED",
-      `Mutation targets exceed the user's explicit boundary: ${outOfScope.join(", ")}.`,
-      outOfScope,
-      ["Use only exact routed resources or workspace targets inside the path explicitly authorized by the user."],
-    );
   }
 
   const mutationScopes = activationAuthority?.resourceIds ?? [];
@@ -210,27 +171,19 @@ export async function dispatchDeterministicResolveGate(input: {
     outcome: summarizeBindingOutcome(outcome),
   });
   if (outcome.status === "resolved") {
-    const activatedMutationRoots = input.request.binding.kind === "activate"
-      ? deriveActivatedWorkstreamMutationRoots({
+    const mutationRoots = input.request.binding.kind === "create"
+      ? workspaceTargetResolution.targets.map((target) => target.absolutePath)
+      : deriveActivatedWorkstreamMutationRoots({
           context: outcome.context,
           workstreamId: outcome.workstreamId,
-        })
-      : [];
-    const candidateMutationRoots = input.request.binding.kind === "create"
-      ? workspaceTargetResolution.targets.map((target) => target.absolutePath)
-      : activatedMutationRoots.length > 0
-        ? activatedMutationRoots
-        : activationAuthority?.filesystemPaths ?? [];
-    const allowedMutationRoots = await mutationTargetsInsideUserBoundary(
-      candidateMutationRoots,
-      intent.scopePolicy,
-    );
+          resourceIds: activationAuthority?.resourceIds ?? [],
+        });
     return {
       kind: "resolved",
       attempted: true,
       attemptConsumed: true,
       toolNames,
-      mutationRoots: allowedMutationRoots,
+      mutationRoots,
       outcome,
     };
   }
@@ -319,43 +272,4 @@ function summarizeBindingOutcome(
 
 function isWorkstreamBound(state: LoopState): boolean {
   return state.harnessContext.contextEngine?.current.routing?.status === "bound";
-}
-
-async function mutationTargetsOutsideUserBoundary(
-  targets: string[],
-  policy: ReturnType<typeof deriveTurnMutationConstraints>["scopePolicy"],
-): Promise<string[]> {
-  if (!policy.denyOutsideAllowedScopes || policy.allowedScopes.length === 0) return [];
-  const allowedScopes = (await Promise.all(policy.allowedScopes
-    .filter(isAbsolute)
-    .map(async (allowed) => {
-      try {
-        return await canonicalizeAbsoluteFilesystemPath(allowed);
-      } catch {
-        return undefined;
-      }
-    }))).filter((allowed): allowed is Awaited<
-      ReturnType<typeof canonicalizeAbsoluteFilesystemPath>
-    > => allowed !== undefined);
-  const decisions = await Promise.all(targets.map(async (scope) => {
-    if (!isAbsolute(scope)) return { scope, outside: true };
-    try {
-      const canonical = await canonicalizeAbsoluteFilesystemPath(scope);
-      return {
-        scope,
-        outside: !allowedScopes.some((allowed) => filesystemPathIsWithin(allowed, canonical)),
-      };
-    } catch {
-      return { scope, outside: true };
-    }
-  }));
-  return decisions.filter((decision) => decision.outside).map((decision) => decision.scope);
-}
-
-async function mutationTargetsInsideUserBoundary(
-  targets: string[],
-  policy: ReturnType<typeof deriveTurnMutationConstraints>["scopePolicy"],
-): Promise<string[]> {
-  const outside = new Set(await mutationTargetsOutsideUserBoundary(targets, policy));
-  return targets.filter((target) => !outside.has(target));
 }

@@ -142,7 +142,7 @@ describe("capability catalog", () => {
       resourceIds: {
         type: "array",
         minItems: 1,
-        maxItems: 8,
+        maxItems: 32,
       },
     });
     const createBindingProperties = (

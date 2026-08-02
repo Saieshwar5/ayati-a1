@@ -222,17 +222,24 @@ observation unlocks the control-only route stage. That stage clears
 observation tools, exposes the resolve controls, and can return to observation
 if more evidence is needed. The model enters `resolve` only when it
 semantically understands the user to want mutation or continuation. The
-deterministic gate rejects an explicit no-mutation constraint but does not
-keyword-classify positive intent. It still requires a binding-required
-capability and one typed request-routing or workstream-creation proposal.
+runtime does not classify greetings, information questions, or durable work
+from word or sentence patterns before that decision. Workstream routing remains
+available for every unbound, non-clarifying run; availability grants no binding
+or mutation authority, and ordinary conversation still returns directly from
+`ENTRY`. The deterministic gate does not classify user-message wording. It
+requires a binding-required capability and one typed request-routing or
+workstream-creation proposal.
 Existing activation supplies the observed workstream, lifecycle choice, and
-exact routed resource IDs. The runtime uses them to ground activation, then derives ownership,
-repository HEAD, evidence, and every eligible mutable filesystem root from the
-authoritative activated bindings. Creation instead supplies typed
-`workspaceTargets`; the runtime derives their absolute selected roots and
-routing evidence without pre-registering missing resources. The deterministic
-gate permits at most one authoritative lifecycle binding and makes no model
-request. A lifecycle-route rejection explicitly produced before any route
+exact routed resource IDs. The runtime uses them to ground activation, then
+derives ownership, repository HEAD, evidence, and only those selected mutable
+filesystem roots from the authoritative activated bindings. Creation instead
+supplies typed `workspaceTargets`; the runtime derives their absolute selected
+roots and routing evidence without pre-registering missing resources. The typed
+`create` proposal is the model's semantic selection; the runtime does not
+re-interpret user or assistant wording to decide whether "new", "fresh", or
+"independent" was intended. The deterministic gate permits at most one
+authoritative lifecycle binding and makes no model request. A lifecycle-route
+rejection explicitly produced before any route
 plan or run binding may receive one corrected proposal; every other failure
 closes binding immediately, and a second no-change rejection also closes it.
 After authoritative bound context is mounted, execution requires a fresh
@@ -296,34 +303,37 @@ filesystem read or mutation. Mutation flows use the routing evidence, then
 pass through `workstream.route`; observation modes cannot proceed directly to
 resolve.
 
-The gate rejects explicit no-mutation constraints and checks binding-required
-taxonomy, the one-attempt limit, and a successful current-run routing
-observation. It does not duplicate the model's semantic judgment with a
-positive keyword classifier. For creation, it
+The gate checks binding-required taxonomy, the one-attempt limit, and a
+successful current-run routing observation. It does not parse the user message
+to duplicate the model's semantic judgment. For creation, it
 validates every target kind and portable relative path, resolves and
 canonicalizes it beneath the configured workspace, rejects traversal or
-symbolic-link escape, and searches
-again for a probable or definite owner. A strong owner returns
-`needs_user_input` unless the user explicitly selected a new independent
-workstream. Ambiguity performs no binding and does not consume the attempt.
+symbolic-link escape, and rechecks only whether an authoritative resource
+already owns an exact selected target. Text similarity, recent activity,
+title matches, and probable semantic candidates do not veto a typed create
+proposal. A concrete ownership conflict performs no binding and immediately
+returns one `needs_user_input` clarification to the user without another model
+decision or retry loop.
 For activation, the gate validates each model-selected resource ID against
 current-run routing, derives the relevant evidence and observed workstream
 HEAD, then rechecks candidate identity, request identity, mutable resource
 ownership, availability, and HEAD freshness against Context Engine state.
+Recent activity and referential wording remain discovery hints. Unless the
+candidate was identified by exact identity or ownership, it must be inspected
+before activation.
 
 Read-only bindings are never upgraded into mutation authority.
 For creation, the exact resolved file or directory targets become selected
 mutation roots for the current run; missing targets are not pre-registered as
 resources, and the whole workspace is never bound.
 For activation, exact current-run routed resource IDs establish the right to
-activate the existing owner. After the authoritative activation projection is
-returned, the runtime mounts every distinct absolute filesystem binding in
-that workstream whose access is `mutate` and whose resource is not missing or
-deleted. A selected resource therefore grounds activation; it is not a
-model-authored permission list. An explicit narrower path boundary in the
-current user message still filters the mounted roots. Each filesystem call
-selects one root; directory resources authorize canonical descendants, not
-siblings or symbolic-link escapes.
+activate the existing owner and select current-run mutation authority. After
+the authoritative activation projection is returned, the runtime mounts only
+the selected resources that resolve to absolute filesystem bindings with
+`mutate` access and are not missing or deleted. All other workstream resource
+metadata remains projected for understanding, but it does not become mutation
+authority. Each filesystem call selects one root; directory resources
+authorize canonical descendants, not siblings or symbolic-link escapes.
 
 Only after those checks does the coordinator call Context Engine's atomic
 create or activate operation. The binding is immutable. The gate records a
@@ -693,8 +703,14 @@ version, availability, and lifecycle remain deterministic. Missing semantic
 metadata stays an explicit fallback.
 
 `decision_stop` handles only non-successful terminal outcomes. It requires a
-usable user-facing clarification backed by current ambiguity for
+usable user-facing clarification when the model selects current ambiguity for
 `needs_user_input`, or a current blocker/failure for `blocked` and `failed`.
+The typed `needs_user_input` outcome is the model's semantic decision; the
+runtime validates the control and response shape but does not second-guess it
+with pronoun matching or phrases parsed from tool output. A current-run failed
+filesystem mutation also blocks a completed reply until a later verified
+mutation succeeds or exact denial validation accounts for it; this check does
+not classify the user's wording.
 Clarification acceptance does not depend on punctuation. Successful work never
 uses `decision_stop`. A failed stop also keeps its user-facing response in
 message history instead of copying it into WorkState.
@@ -712,6 +728,32 @@ Response ordering is strict:
 2. finalize and await durable acknowledgement;
 3. send the terminal envelope with truthful context-commit state;
 4. accept client render acknowledgement.
+
+### Decision-limit closeout
+
+Exhausting the primary decision budget does not make another model request and
+does not discard partial progress. The runner performs one deterministic
+closeout from the exact current-run journal before finalization:
+
+```text
+decision budget exhausted
+-> preserve executor-verified resource effects and successful steps
+-> pause active WorkState plan items and select one bounded next action
+-> produce a truthful incomplete handoff response
+-> finalize WorkState, resource effects, progress, and request state
+-> dispatch the terminal response
+```
+
+This closeout validates only the facts it reports about partial work. It is not
+task-completion validation and cannot mark an unfinished request done. A bound
+request therefore remains active, verified effects still update the resource
+catalog and `progress.md`, and an unbound run explicitly reports that it did
+not create or activate a workstream/request. If full task validation passed on
+the final allowed decision, the runner uses that accepted proof and completes
+normally instead of misclassifying the run as limited.
+
+The deterministic closeout is also the provider-independent fallback: it
+always produces a bounded response even when no model budget remains.
 
 ## Outcome Mapping
 

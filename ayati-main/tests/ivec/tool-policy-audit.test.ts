@@ -74,7 +74,6 @@ function policy(
 ): WorkstreamBindingCapabilityPolicy {
   return {
     workstreamBound: false,
-    routingSuppressed: false,
     routingAvailable: false,
     ...overrides,
   };

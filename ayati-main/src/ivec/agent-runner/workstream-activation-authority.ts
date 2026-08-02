@@ -1,4 +1,3 @@
-import type { LoopState } from "../types.js";
 import type { WorkstreamBindingProposal } from "../workstream-binding/contracts.js";
 import {
   createVirtualModeRepair,
@@ -11,8 +10,6 @@ type ActivationProposal = Extract<WorkstreamBindingProposal, { kind: "activate" 
 export interface WorkstreamActivationAuthority {
   expectedWorkstreamHead: string;
   resourceIds: string[];
-  filesystemPaths: string[];
-  boundaryTargets: string[];
   routingEvidence: string[];
 }
 
@@ -27,7 +24,6 @@ export type WorkstreamActivationAuthorityResult =
     };
 
 export function resolveWorkstreamActivationAuthority(input: {
-  state: LoopState;
   proposal: ActivationProposal;
   routing: WorkstreamRoutingEvidence;
 }): WorkstreamActivationAuthorityResult {
@@ -60,7 +56,6 @@ export function resolveWorkstreamActivationAuthority(input: {
     "exact_workstream_id",
     "exact_resource_id",
     "owned_resource",
-    "direct_continuation",
   ]);
   if (
     !observed.inspected
@@ -84,13 +79,12 @@ export function resolveWorkstreamActivationAuthority(input: {
     );
   }
   for (const requestId of requestIds) {
-    const explicitlyNamed = input.state.userMessage.includes(requestId);
-    if (!explicitlyNamed && !observed.requestIds.includes(requestId)) {
+    if (!observed.requestIds.includes(requestId)) {
       return rejected(
-        `The exact active request was not explicitly named or returned by workstream inspection: ${requestId}.`,
+        `The selected request was not returned by current-run workstream evidence: ${requestId}.`,
         [requestId],
         [
-          "Inspect the exact request and choose only a lifecycle operation permitted by its observed status.",
+          `Use git_context_read_workstream to read ${input.proposal.workstreamId} and request ${requestId} in this run, then choose only a lifecycle operation permitted by its observed status.`,
         ],
       );
     }
@@ -130,14 +124,6 @@ export function resolveWorkstreamActivationAuthority(input: {
     authority: {
       expectedWorkstreamHead: observed.head,
       resourceIds: [...input.proposal.resourceIds],
-      filesystemPaths: uniqueStrings(selectedResources.flatMap(
-        (selection) => selection.observed!.filesystemPaths,
-      )),
-      boundaryTargets: uniqueStrings(selectedResources.flatMap(
-        (selection) => selection.observed!.filesystemPaths.length > 0
-          ? selection.observed!.filesystemPaths
-          : [selection.resourceId],
-      )),
       routingEvidence: uniqueStrings([
         ...observed.references,
         ...selectedResources.flatMap(

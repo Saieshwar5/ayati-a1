@@ -31,16 +31,26 @@ describe("workstream binding capability policy", () => {
     ]);
   });
 
-  it("suppresses routing controls for clearly conversational input", () => {
-    const current = state(undefined, "Thanks, that answers my question.");
-    const policy = deriveWorkstreamBindingCapabilityPolicy(current);
+  it.each([
+    "Thanks, that answers my question.",
+    "How about you create the website now?",
+    "Thanks, now finish the website.",
+    "Could we go ahead with the same update?",
+    "Explain how to create a website.",
+  ])("keeps routing available for unbound input without classifying its meaning: %s", (message) => {
+    const policy = deriveWorkstreamBindingCapabilityPolicy(state(undefined, message));
 
-    expect(policy.routingSuppressed).toBe(true);
-    expect(policy.routingAvailable).toBe(false);
-    expect(filterToolsByWorkstreamBinding(policy, [
-      tool("read_files"),
-      tool("git_context_create_workstream"),
-    ]).map((entry) => entry.name)).toEqual(["read_files"]);
+    expect(policy.routingAvailable).toBe(true);
+    expect(toolPhaseForWorkstreamBinding(policy)).toBe("routing");
+  });
+
+  it("uses authoritative routing state instead of message wording", () => {
+    expect(deriveWorkstreamBindingCapabilityPolicy(
+      state("clarifying", "Create the website now."),
+    ).routingAvailable).toBe(false);
+    expect(deriveWorkstreamBindingCapabilityPolicy(
+      state("bound", "Hi there."),
+    ).routingAvailable).toBe(false);
   });
 
   it("allows normal workstream capabilities and hides routing after binding", () => {

@@ -14,19 +14,16 @@ import {
 } from "../../skills/builtins/git-context/tool-policy.js";
 import type { LoopState } from "../types.js";
 import type { AgentDecision } from "./decision.js";
-import { isClearlyConversationOnlyRequest } from "./turn-intent-policy.js";
 
 export interface WorkstreamBindingCapabilityPolicy {
   workstreamBound: boolean;
   pendingTurnStatus?: string;
-  routingSuppressed: boolean;
   routingAvailable: boolean;
 }
 
 export interface CapabilityToolSummary {
   workstreamBound: boolean;
   pendingTurnStatus?: string;
-  routingSuppressed: boolean;
   routingAvailable: boolean;
   visibleRoutingTools: string[];
   selectedRoutingTools: string[];
@@ -47,15 +44,11 @@ export function deriveWorkstreamBindingCapabilityPolicy(
 ): WorkstreamBindingCapabilityPolicy {
   const pendingTurnStatus = state.harnessContext.contextEngine?.current.routing?.status;
   const workstreamBound = pendingTurnStatus === "bound";
-  const routingSuppressed = state.inputKind === "user_message"
-    && isClearlyConversationOnlyRequest(state.userMessage);
   const routingAvailable = !workstreamBound
-    && pendingTurnStatus !== "clarifying"
-    && !routingSuppressed;
+    && pendingTurnStatus !== "clarifying";
   return {
     workstreamBound,
     ...(pendingTurnStatus ? { pendingTurnStatus } : {}),
-    routingSuppressed,
     routingAvailable,
   };
 }
@@ -140,7 +133,6 @@ export function summarizeCapabilityTools(input: {
     ...(input.policy.pendingTurnStatus
       ? { pendingTurnStatus: input.policy.pendingTurnStatus }
       : {}),
-    routingSuppressed: input.policy.routingSuppressed,
     routingAvailable: input.policy.routingAvailable,
     visibleRoutingTools: visible.filter(isGitContextRoutingToolName),
     selectedRoutingTools: selected.filter(isGitContextRoutingToolName),

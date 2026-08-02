@@ -296,7 +296,6 @@ function resolve(
     maxVisibleTools: input.maxVisibleTools,
     policy: {
       workstreamBound: input.mode === "execute",
-      routingSuppressed: false,
       routingAvailable: true,
     },
   });
