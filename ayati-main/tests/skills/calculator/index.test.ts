@@ -22,6 +22,13 @@ describe("calculator tool execute", () => {
     expect(result.meta).toBeDefined();
     expect(result.meta!["expression"]).toBe("2 + 3");
     expect(typeof result.meta!["durationMs"]).toBe("number");
+    expect(result.v2?.structuredContent).toEqual({
+      expression: "2 + 3",
+      result: "5",
+      finite: true,
+      precisionDigits: 50,
+      roundingMode: "half_up",
+    });
   });
 
   it("returns exact decimal result", async () => {
@@ -59,6 +66,22 @@ describe("calculator tool execute", () => {
     const result = await calculatorTool.execute({ expression: "bogus(1)" });
     expect(result.ok).toBe(false);
     expect(result.error).toContain("UNKNOWN_FUNCTION");
+  });
+
+  it("returns a typed error instead of a successful non-finite result", async () => {
+    const result = await calculatorTool.execute({ expression: "(-1)^0.5" });
+    expect(result.ok).toBe(false);
+    expect(result.v2?.operationStatus).toBe("failed");
+    expect(result.v2?.error?.code).toBe("DOMAIN_ERROR");
+  });
+
+  it("returns an actionable error for an over-limit expression", async () => {
+    const result = await calculatorTool.execute({ expression: "1".repeat(2_049) });
+    expect(result.ok).toBe(false);
+    expect(result.v2?.error?.code).toBe("EXPRESSION_TOO_LONG");
+    expect(result.v2?.error?.suggestedNextActions).toContain(
+      "Correct the calculator expression and retry.",
+    );
   });
 
   it("handles complex expressions", async () => {

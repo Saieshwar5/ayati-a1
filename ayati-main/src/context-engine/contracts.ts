@@ -7,6 +7,7 @@ import type {
   RunContextProjection,
   StreamMessage,
   WorkstreamCandidate,
+  WorkstreamRepositoryProjection,
   WorkstreamResourceBinding,
 } from "ayati-context-engine";
 
@@ -95,12 +96,14 @@ export interface ContextWorkstreamProjection {
 /**
  * Bounded daemon projection of authoritative current-schema Context Engine state.
  * The projection deliberately separates slow agent-stream continuity from
- * fast current-run state and never exposes storage paths to the model layer.
+ * fast current-run state. The only model-facing storage path is the exact,
+ * read-only managed workstream repository used for durable history navigation.
  */
 export interface ContextEngineMachineContext {
   contextRevision: string;
   streamRevision: string;
   runRevision?: string;
+  workstreamRepository?: WorkstreamRepositoryProjection;
   agentStream: ContextAgentStreamProjection;
   current: ContextCurrentProjection;
   focus: ContextFocus;

@@ -189,6 +189,13 @@ Reported parent creation and deferred delete-cleanup paths are checked
 separately. The generic verifier does not scan siblings, walk the whole
 project, or query repository-wide Git state.
 
+Repository-wide Git reads are available only through the Context Engine's
+managed workstream-history tools. They accept the exact projected shared
+workstream repository path and bounded commit/count inputs. The engine checks
+the real repository root, `main` branch, and SQLite-tracked HEAD. Log, show,
+and diff are read-only, cannot address the user project repository, and
+produce navigation facts rather than mutation authority.
+
 That division is deliberate. It avoids a 20,000-entry or 512-MB project
 snapshot for a one-file edit while keeping the important proof local:
 before-state preconditions, atomic replacement where possible, truthful
@@ -290,8 +297,13 @@ observation modes for both workstream questions and mutation routing:
 - `git_context_find_resources`
 
 Their capability ids are `workstream:search`, `workstream:read`, and
-`resource:ownership`. They identify routing and cannot satisfy task
-completion by themselves.
+`resource:ownership`. All three calls remain routing observations. Workstream
+search and resource-owner lookup are routing-only. A successful exact
+`git_context_read_workstream` call additionally emits one typed
+`workstream.snapshot_read` completion outcome so a read-only enquiry can
+validate the committed snapshot it used. That outcome proves only the exact
+snapshot read; it does not prove filesystem contents, a mutation, or request
+completion.
 
 Workstream search reports matching request identities and states from the
 request FTS index, including terminal requests. `git_context_read_workstream`
@@ -336,6 +348,24 @@ any uncertain failure closes binding for the run. An explicit create-new
 instruction or an exact follow-up choice to the prior durable question
 bypasses semantic reuse suggestions; authoritative resource checks still
 apply.
+
+## Calculator
+
+`calculator` is a targetless read-only tool in `observe.investigate`. It
+evaluates bounded real-valued expressions with 50-significant-digit decimal
+arithmetic and returns the result as a string so JavaScript number conversion
+does not discard precision. Trigonometric arguments use radians. The model
+should prefer explicit `*`; implicit multiplication remains supported with
+ordinary exponent precedence.
+
+The calculator accepts only its own numeric grammar and known functions. It
+does not evaluate JavaScript or invoke a process. Deterministic limits bound
+expression length, token count, nesting, numeric-literal size, power
+exponents, and expensive transcendental arguments. Non-real, non-finite, and
+over-limit calculations are typed failures and never produce completion
+proof. Successful contracts require a finite result and emit both the exact
+expression outcome and a supporting result fact. Final validation reuses the
+verified current-run outcome without invoking the calculator again.
 
 ## System Observations
 
@@ -439,9 +469,13 @@ may expose `tool.call_succeeded` by exact `callId` only when no stronger typed
 outcome exists. A deterministically rejected permission call may expose
 `tool.call_denied` by exact `callId` and stable `denialCode` only when the call
 did not perform the requested operation. That proves the denial, never a read
-or mutation success. Routing and historical calls cannot satisfy task validation.
-Unknown, cross-run, supporting, routing-only, and invalidated references are
-rejected. The decision model sees descriptive proof fields in the compact
+or mutation success. Historical calls cannot satisfy task validation.
+Routing-only outcomes from workstream search and resource-owner lookup also
+remain ineligible. An exact current-run workstream read is dual-purpose: its
+routing receipt stays routing-scoped, while only its separately typed
+`workstream.snapshot_read` outcome is selectable for read-only validation.
+Unknown, cross-run, supporting, other routing-only, and invalidated references
+are rejected. The decision model sees descriptive proof fields in the compact
 projection, but selects only its exact opaque `outcomeRef` values.
 
 When a passed checklist is followed by an accepted final response, the runtime

@@ -1,6 +1,7 @@
 import type { ContextEngineService, WorkstreamResourceBinding } from "ayati-context-engine";
 import { describe, expect, it, vi } from "vitest";
 import { createGitContextSkill } from "../../src/skills/builtins/git-context/index.js";
+import { createToolExecutor } from "../../src/skills/tool-executor.js";
 
 const NOW = "2026-07-17T20:00:00+05:30";
 const WORKSTREAM_ID = "W-20260717-0001";
@@ -157,19 +158,29 @@ describe("model-facing workstream and resource routing", () => {
     }));
     const readWorkstream = vi.fn(async () => ({
       workstream: workstream(),
-      context: workstreamContext(),
+      context: {
+        ...workstreamContext(),
+        selectedRequest: {
+          id: "R-0002",
+          title: "Add menu",
+          status: "active" as const,
+          request: "Add the menu page.",
+          acceptance: ["The menu page is verified."],
+          constraints: [],
+        },
+      },
       opened: true as const,
     }));
     const service = { findWorkstreams, readWorkstream } as unknown as ContextEngineService;
     const tools = createGitContextSkill({ service }).tools;
+    const executor = createToolExecutor(tools);
 
     const found = await tools.find((tool) => tool.name === "git_context_find_workstreams")!
       .execute({ query: "website" }, executionContext("find"));
-    const opened = await tools.find((tool) => tool.name === "git_context_read_workstream")!
-      .execute({
-        workstreamId: WORKSTREAM_ID,
-        requestId: "R-0002",
-      }, executionContext("open"));
+    const opened = await executor.execute("git_context_read_workstream", {
+      workstreamId: WORKSTREAM_ID,
+      requestId: "R-0002",
+    }, executionContext("open"));
 
     expect(found.ok).toBe(true);
     expect(found.v2?.structuredContent).toMatchObject({
@@ -180,6 +191,20 @@ describe("model-facing workstream and resource routing", () => {
       workstreams: [candidate],
     });
     expect(opened.ok).toBe(true);
+    expect(opened.v2?.verification).toMatchObject({
+      status: "passed",
+      assertions: [
+        expect.objectContaining({ id: "operation_succeeded", status: "passed" }),
+        expect.objectContaining({ id: "workstream_snapshot_opened", status: "passed" }),
+        expect.objectContaining({ id: "workstream_snapshot_identity_present", status: "passed" }),
+      ],
+      facts: expect.arrayContaining([{
+        kind: "workstream_snapshot_read",
+        message: "Opened the exact committed workstream snapshot.",
+        path: WORKSTREAM_ID,
+        tool: "git_context_read_workstream",
+      }]),
+    });
     expect(findWorkstreams).toHaveBeenCalledWith(expect.objectContaining({
       query: "website",
       streamId: "S-1",
@@ -190,6 +215,29 @@ describe("model-facing workstream and resource routing", () => {
       workstreamRequestId: "R-0002",
       runId: "RUN-1",
     }));
+  });
+
+  it("rejects a workstream snapshot whose returned identity does not match the request", async () => {
+    const readWorkstream = vi.fn(async () => ({
+      workstream: {
+        ...workstream(),
+        workstreamId: "W-20260717-9999",
+      },
+      context: workstreamContext(),
+      opened: true as const,
+    }));
+    const service = { readWorkstream } as unknown as ContextEngineService;
+    const executor = createToolExecutor(createGitContextSkill({ service }).tools);
+
+    const result = await executor.execute("git_context_read_workstream", {
+      workstreamId: WORKSTREAM_ID,
+    }, executionContext("open-mismatch"));
+
+    expect(result.ok).toBe(false);
+    expect(result.v2).toMatchObject({
+      operationStatus: "failed",
+      message: expect.stringContaining(`instead of requested ${WORKSTREAM_ID}`),
+    });
   });
 
   it("makes an empty workstream catalog an explicit create-new routing result", async () => {

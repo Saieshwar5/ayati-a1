@@ -117,6 +117,19 @@ describe("parallel context preparation policy", () => {
       content: "/opt/ayati/runtime/workspace",
       sourceRefs: [],
     });
+    expect(first.parts.find((part) => part.id === "work.run.workstream_repository")).toMatchObject({
+      lane: "work",
+      retention: "exact",
+      content: {
+        path: "/opt/ayati/runtime/workstreams",
+        branch: "main",
+        head: "0123456789abcdef0123456789abcdef01234567",
+        health: "ready",
+        kind: "context_only_git",
+        access: "read_only",
+      },
+      sourceRefs: [],
+    });
     expect(first.parts.find((part) => part.id === "work.run.bound_workstream")).toMatchObject({
       lane: "work",
       retention: "exact",
@@ -162,6 +175,14 @@ function promptState(): AgentPromptStateView {
       hot: emptyHotContextProjection(),
       run: {
         workspaceRoot: "/opt/ayati/runtime/workspace",
+        workstreamRepository: {
+          path: "/opt/ayati/runtime/workstreams",
+          branch: "main",
+          head: "0123456789abcdef0123456789abcdef01234567",
+          health: "ready",
+          kind: "context_only_git",
+          access: "read_only",
+        },
         boundWorkstream: {
           id: "W-20260729-0001",
           title: "Lumen Finch Website",

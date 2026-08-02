@@ -41,9 +41,20 @@ describe("workstream progress projection", () => {
         missing: ["Browser validation."],
         failures: ["Browser credentials are unavailable."],
         criteria: [{
-          criterion: "Browser interaction works.",
-          passed: false,
-          evidence: "Browser validation was not available.",
+          criterion: "The created page exists.",
+          passed: true,
+          proofs: [{
+            outcomeRef: `run:${runId(1)}:step:3:call:read-page:outcome:0`,
+            kind: "file.read_complete",
+            subject: "/workspace/index.html",
+            summary: "Verified a complete final read of /workspace/index.html.",
+            source: {
+              step: 3,
+              callId: "read-page",
+              tool: "read_files",
+              ref: "verification:read-page",
+            },
+          }],
         }],
       }),
       resourceEvents: [
@@ -81,8 +92,8 @@ describe("workstream progress projection", () => {
       validation: [
         "Overall validation was not applicable.",
         "Completion evidence was not accepted.",
-        "Criterion not passed: Browser interaction works. "
-          + "Evidence: Browser validation was not available.",
+        "Criterion passed: The created page exists. Proof refs: "
+          + `run:${runId(1)}:step:3:call:read-page:outcome:0`,
       ],
       findingsAndDecisions: [
         "Decision: Keep the website dependency-free.",
@@ -184,6 +195,37 @@ describe("workstream progress projection", () => {
     expectProgressError(() => buildWorkstreamProgressEntry(input({
       resourceEvents: [event("created", { requestId: "R-0002" })],
     })), "resource event does not belong to the bound request");
+    expectProgressError(() => buildWorkstreamProgressEntry(input({
+      completion: completion({
+        criteria: [{
+          criterion: "The page exists.",
+          passed: true,
+          proofs: [{
+            outcomeRef: `run:${runId(2)}:step:1:call:read-page:outcome:0`,
+            kind: "file.read_complete",
+            subject: "/workspace/index.html",
+            summary: "Verified the page.",
+            source: { step: 1, callId: "read-page", tool: "read_files" },
+          }],
+        }],
+      }),
+    })), "completion proof does not belong");
+  });
+
+  it("keeps legacy prose evidence readable without treating it as structured proof", () => {
+    const projected = buildWorkstreamProgressEntry(input({
+      completion: completion({
+        criteria: [{
+          criterion: "Historical criterion.",
+          passed: true,
+          evidence: "Historical assistant evidence.",
+        }],
+      }),
+    }));
+
+    expect(projected.validation).toContain(
+      "Criterion passed: Historical criterion. Evidence: Historical assistant evidence.",
+    );
   });
 
   it("produces valid no-change entries for every finalized run outcome", () => {

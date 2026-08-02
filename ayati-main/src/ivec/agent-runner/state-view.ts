@@ -141,6 +141,7 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
     }),
     run: buildRunContext({
       workspaceRoot: options.workspaceRoot,
+      workstreamRepository: state.harnessContext.contextEngine?.workstreamRepository,
       mode: buildVirtualModeCard(state.virtualMode, {
         workstreamBound: state.harnessContext.contextEngine?.current.routing?.status === "bound",
         routingObserved: collectWorkstreamRoutingEvidence(state).observed,
@@ -187,6 +188,7 @@ function buildToolsContext(input: {
 
 function buildRunContext(input: {
   workspaceRoot?: string;
+  workstreamRepository?: PromptRunContext["workstreamRepository"];
   mode: NonNullable<PromptRunContext["mode"]>;
   boundWorkstream?: PromptRunContext["boundWorkstream"];
   workState?: PromptProgressState;
@@ -196,6 +198,9 @@ function buildRunContext(input: {
 }): PromptRunContext {
   return {
     ...(input.workspaceRoot ? { workspaceRoot: input.workspaceRoot } : {}),
+    ...(input.workstreamRepository
+      ? { workstreamRepository: input.workstreamRepository }
+      : {}),
     mode: input.mode,
     ...(input.boundWorkstream
       ? { boundWorkstream: input.boundWorkstream }

@@ -11,7 +11,16 @@ const AT = "2026-07-19T10:00:00.000Z";
 describe("buildAgentStateView", () => {
   it("projects the exact configured workspace root once as run navigation context", () => {
     const workspaceRoot = "/opt/ayati/runtime/workspace";
-    const view = buildAgentStateView(createLoopState({ context: createContext() }), {
+    const context = createContext();
+    context.workstreamRepository = {
+      path: "/opt/ayati/runtime/workstreams",
+      branch: "main",
+      head: "0123456789abcdef0123456789abcdef01234567",
+      health: "ready",
+      kind: "context_only_git",
+      access: "read_only",
+    };
+    const view = buildAgentStateView(createLoopState({ context }), {
       workspaceRoot,
     });
     const prompt = projectAgentStateViewForPrompt(view);
@@ -19,6 +28,8 @@ describe("buildAgentStateView", () => {
     expect(view.context.run?.workspaceRoot).toBe(workspaceRoot);
     expect(prompt.context.run?.workspaceRoot).toBe(workspaceRoot);
     expect(JSON.stringify(prompt).match(/\/opt\/ayati\/runtime\/workspace/g)).toHaveLength(1);
+    expect(prompt.context.run?.workstreamRepository).toEqual(context.workstreamRepository);
+    expect(JSON.stringify(prompt).match(/\/opt\/ayati\/runtime\/workstreams/g)).toHaveLength(1);
     expect(prompt.context.core.current).not.toHaveProperty("workspaceRoot");
     expect(prompt.context.run?.workState).toBeUndefined();
     expect(prompt.context.run?.boundWorkstream).toBeUndefined();

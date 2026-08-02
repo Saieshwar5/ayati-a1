@@ -61,7 +61,7 @@ Mode behavior:
 | Destination | Capability class | Executable surface |
 | --- | --- | --- |
 | `observe.locate` | discovery, listing, search, routing lookup | read-only locate tools |
-| `observe.investigate` | exact reads, inspection, queries, and targetless system observations | read-only evidence tools |
+| `observe.investigate` | exact reads, inspection, queries, and targetless read-only observations | read-only evidence tools |
 | `workstream.route` | move verified durable-owner evidence toward binding | no executable tools; control-only |
 | `resolve` | binding-required mutation responsibility | no lifecycle tools; the deterministic gate binds, then mounts the matching execute surface |
 | `execute` | bound mutation, verification, or bound control | tools permitted by the bound workstream and selected destination or existing-resource policy |
@@ -116,8 +116,8 @@ targetRequirement?
 
 `targetRequirement: "none"` is reserved for bounded observations that do not
 inspect a user resource. The current targetless capabilities are
-`system:time` and `system:health`. Target-backed investigations still require
-an exact reference. A filesystem-only `file:read` investigation may use a
+`utility:calculator`, `system:time`, and `system:health`. Target-backed
+investigations still require an exact reference. A filesystem-only `file:read` investigation may use a
 known absolute path without earlier grounding evidence because the read tool
 boundary validates the path, read policy, file type, returned content, and
 read evidence. Other target-backed investigations still require a verified
@@ -163,6 +163,12 @@ Core coverage is atomic:
 
 The model must choose fewer capabilities after `surface_too_large`. The
 runtime never guesses which required operation is expendable.
+
+`workstream:history` is a read-only observation capability containing
+`git_context_log`, `git_context_show`, and `git_context_diff`. It is intended
+only for ambiguous continuation. The shared repository path comes from exact
+run context, and commit evidence must be followed by a canonical exact
+workstream/request read before routing.
 
 Focused filesystem mutation is separated by intent:
 

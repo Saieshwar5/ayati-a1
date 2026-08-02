@@ -316,6 +316,51 @@ describe("Context Engine contracts", () => {
     expect(isFinalizeRunRequest({ ...base, streamSummary: "" })).toBe(false);
   });
 
+  it("accepts bounded structured criterion proof and rejects malformed proof", () => {
+    const proof = {
+      outcomeRef: `run:${RUN_ID}:step:2:call:search-cards:outcome:0`,
+      kind: "search.count_complete",
+      subject: "/workspace/site/index.html",
+      summary: "Verified exactly two matching cards.",
+      source: {
+        step: 2,
+        callId: "search-cards",
+        tool: "search_files",
+        ref: "verification:search-cards",
+      },
+    };
+    const base = finalization();
+    const workstream = {
+      completion: {
+        accepted: true,
+        resources: [],
+        missing: [],
+        failures: [],
+        criteria: [{
+          criterion: "The page contains exactly two cards.",
+          passed: true,
+          proofs: [proof],
+        }],
+      },
+      requestEffect: { kind: "complete" as const, verification: "verified" as const },
+    };
+
+    expect(isFinalizeRunRequest({ ...base, workstream })).toBe(true);
+    expect(isFinalizeRunRequest({
+      ...base,
+      workstream: {
+        ...workstream,
+        completion: {
+          ...workstream.completion,
+          criteria: [{
+            ...workstream.completion.criteria[0],
+            proofs: [{ ...proof, source: { ...proof.source, step: 0 } }],
+          }],
+        },
+      },
+    })).toBe(false);
+  });
+
   it("exposes typed service errors directly", () => {
     const error = new ContextEngineServiceError({
       code: "RUN_NOT_ACTIVE",

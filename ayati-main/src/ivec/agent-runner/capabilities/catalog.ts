@@ -34,7 +34,12 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     CONTEXT_RETRIEVE,
     ["context_load"],
   ),
-  capability("utility:calculator", "Calculate exact numeric results.", "Use for arithmetic or formula evaluation.", OBSERVE_INVESTIGATE, ["calculator"]),
+  targetlessCapability(
+    "utility:calculator",
+    "Calculate bounded real-valued numeric results with up to 50 significant digits.",
+    "Use for arithmetic or formula evaluation; no resource reference is required. Prefer explicit multiplication and treat trigonometric arguments as radians.",
+    ["calculator"],
+  ),
   targetlessCapability(
     "system:time",
     "Observe the current date, time, weekday, and UTC offset.",
@@ -183,6 +188,13 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     "Use in observe.investigate to answer a read-only workstream question or inspect an exact routing candidate.",
     OBSERVE_INVESTIGATE,
     ["git_context_read_workstream"],
+  ),
+  unboundCapability(
+    "workstream:history",
+    "Inspect recent durable workstream repository commits.",
+    "Use when a continuation is ambiguous. Commit history is navigation evidence only; read the exact workstream before routing.",
+    OBSERVE_BOTH,
+    ["git_context_log", "git_context_show", "git_context_diff"],
   ),
   unboundCapability(
     "resource:ownership",

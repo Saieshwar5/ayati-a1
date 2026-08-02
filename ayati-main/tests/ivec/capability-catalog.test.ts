@@ -36,6 +36,11 @@ describe("capability catalog", () => {
       coreTools: [],
       allowedModes: ["validation"],
     });
+    expect(catalog.get("utility:calculator")).toMatchObject({
+      coreTools: ["calculator"],
+      allowedModes: ["observe.investigate"],
+      targetRequirement: "none",
+    });
     expect(catalog.get("system:time")).toMatchObject({
       coreTools: ["system_time"],
       allowedModes: ["observe.investigate"],
@@ -54,11 +59,18 @@ describe("capability catalog", () => {
       coreTools: ["git_context_read_workstream"],
       allowedModes: ["observe.investigate"],
     });
+    expect(catalog.get("workstream:history")).toMatchObject({
+      coreTools: ["git_context_log", "git_context_show", "git_context_diff"],
+      allowedModes: ["observe.locate", "observe.investigate"],
+    });
     expect(catalog.get("resource:ownership")).toMatchObject({
       coreTools: ["git_context_find_resources"],
       allowedModes: ["observe.locate", "observe.investigate"],
     });
+    expect(catalog.requiresReferenceTarget(["utility:calculator"])).toBe(false);
     expect(catalog.requiresReferenceTarget(["system:time"])).toBe(false);
+    expect(catalog.requiresReferenceTarget(["utility:calculator", "file:read"]))
+      .toBe(true);
     expect(catalog.requiresReferenceTarget(["system:time", "file:read"]))
       .toBe(true);
     expect(catalog.get("file:create")).toBeUndefined();
@@ -108,6 +120,7 @@ describe("capability catalog", () => {
     expect(capabilityEnum(locate)).toContain("file:search");
     expect(capabilityEnum(locate)).not.toContain("file:write");
     expect(capabilityEnum(investigate)).toContain("file:read");
+    expect(capabilityEnum(investigate)).toContain("utility:calculator");
     expect(capabilityEnum(investigate)).toContain("system:time");
     expect(capabilityEnum(investigate)).toContain("system:health");
     expect(capabilityEnum(investigate)).not.toContain("file:write");

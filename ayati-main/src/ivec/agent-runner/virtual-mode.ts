@@ -1,6 +1,7 @@
 import type {
   ModeTransitionValidationCheck,
   ResourceMetadataProposal,
+  ValidationCriterionProofSelection,
   ValidationCheckResult,
   ValidationCheckStatus,
 } from "./task-validation-contracts.js";
@@ -30,6 +31,7 @@ export type {
   ModeTransitionValidationCheck,
   ResourceMetadataProposal,
   TaskValidationOutcomeKind,
+  ValidationCriterionProofSelection,
   ValidationCheckResult,
   ValidationCheckStatus,
   ValidationExpectedPathKind,
@@ -95,6 +97,7 @@ export interface ValidationModeProgress {
   >;
   status: ValidationCheckStatus;
   checks: ValidationCheckResult[];
+  criterionProofs: ValidationCriterionProofSelection[];
   resourceMetadata?: ResourceMetadataProposal[];
 }
 
@@ -121,6 +124,7 @@ export interface ModeTransitionRequest {
   mutationScopes?: ModeTransitionMutationScope[];
   workspaceTargets?: import("../workstream-binding/contracts.js").WorkstreamWorkspaceTarget[];
   outcomeRefs?: string[];
+  criterionProofs?: ValidationCriterionProofSelection[];
   /** Runtime-resolved checks; never accepted from a model-facing control. */
   validationChecks?: ModeTransitionValidationCheck[];
   resourceMetadata?: ResourceMetadataProposal[];
@@ -367,6 +371,10 @@ export function buildVirtualModeCard(
       validation: {
         ...current.validation,
         checks: current.validation.checks.map((check) => ({ ...check })),
+        criterionProofs: current.validation.criterionProofs.map((selection) => ({
+          criterionIndex: selection.criterionIndex,
+          outcomeRefs: [...selection.outcomeRefs],
+        })),
         resourceMetadata: (current.validation.resourceMetadata ?? []).map((metadata) => ({
           ...metadata,
           aliases: [...metadata.aliases],
@@ -521,6 +529,10 @@ function createValidationModeProgress(
     checks: (request.validationChecks ?? []).map((check) => ({
       ...check,
       status: "pending",
+    })),
+    criterionProofs: (request.criterionProofs ?? []).map((selection) => ({
+      criterionIndex: selection.criterionIndex,
+      outcomeRefs: [...selection.outcomeRefs],
     })),
     resourceMetadata: (request.resourceMetadata ?? []).map((metadata) => ({
       ...metadata,

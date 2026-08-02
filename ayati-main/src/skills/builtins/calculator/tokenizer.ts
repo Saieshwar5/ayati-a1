@@ -1,4 +1,5 @@
 import { CalcError, type Token, type TokenType } from "./types.js";
+import { CALCULATOR_LIMITS } from "./limits.js";
 
 const SINGLE_CHAR_TOKENS: Record<string, TokenType> = {
   "+": "PLUS",
@@ -65,7 +66,7 @@ function readNumber(input: string, start: number): Token {
     }
   }
 
-  return { type: "NUMBER", value: input.slice(start, i), pos: start };
+  return numberToken(input, start, i);
 }
 
 function readPrefixedInt(
@@ -80,7 +81,19 @@ function readPrefixedInt(
     throw new CalcError(`Invalid ${label} literal`, start, "UNEXPECTED_CHAR");
   }
   while (i < input.length && isValidDigit(input[i]!)) i++;
-  return { type: "NUMBER", value: input.slice(start, i), pos: start };
+  return numberToken(input, start, i);
+}
+
+function numberToken(input: string, start: number, end: number): Token {
+  const value = input.slice(start, end);
+  if (value.length > CALCULATOR_LIMITS.numericLiteralCharacters) {
+    throw new CalcError(
+      `Numeric literal exceeds ${CALCULATOR_LIMITS.numericLiteralCharacters} characters`,
+      start,
+      "EXPRESSION_TOO_COMPLEX",
+    );
+  }
+  return { type: "NUMBER", value, pos: start };
 }
 
 function isHexDigit(ch: string): boolean {
@@ -101,9 +114,29 @@ function readIdent(input: string, start: number): Token {
   return { type: "IDENT", value: input.slice(start, i), pos: start };
 }
 
+function appendToken(tokens: Token[], token: Token): void {
+  if (tokens.length >= CALCULATOR_LIMITS.tokens) {
+    throw new CalcError(
+      `Expression exceeds ${CALCULATOR_LIMITS.tokens} tokens`,
+      token.pos,
+      "EXPRESSION_TOO_COMPLEX",
+    );
+  }
+  tokens.push(token);
+}
+
 export function tokenize(input: string): Token[] {
+  if (input.length > CALCULATOR_LIMITS.expressionCharacters) {
+    throw new CalcError(
+      `Expression exceeds ${CALCULATOR_LIMITS.expressionCharacters} characters`,
+      CALCULATOR_LIMITS.expressionCharacters,
+      "EXPRESSION_TOO_LONG",
+    );
+  }
+
   const tokens: Token[] = [];
   let i = 0;
+  let nestingDepth = 0;
 
   while (i < input.length) {
     const ch = input[i]!;
@@ -115,21 +148,33 @@ export function tokenize(input: string): Token[] {
 
     if (isDigit(ch) || (ch === "." && i + 1 < input.length && isDigit(input[i + 1]!))) {
       const tok = readNumber(input, i);
-      tokens.push(tok);
+      appendToken(tokens, tok);
       i = tok.pos + tok.value.length;
       continue;
     }
 
     if (isAlpha(ch)) {
       const tok = readIdent(input, i);
-      tokens.push(tok);
+      appendToken(tokens, tok);
       i = tok.pos + tok.value.length;
       continue;
     }
 
     const tokenType = SINGLE_CHAR_TOKENS[ch];
     if (tokenType) {
-      tokens.push({ type: tokenType, value: ch, pos: i });
+      if (tokenType === "LPAREN") {
+        nestingDepth++;
+        if (nestingDepth > CALCULATOR_LIMITS.nestingDepth) {
+          throw new CalcError(
+            `Expression nesting exceeds ${CALCULATOR_LIMITS.nestingDepth} levels`,
+            i,
+            "EXPRESSION_TOO_COMPLEX",
+          );
+        }
+      } else if (tokenType === "RPAREN" && nestingDepth > 0) {
+        nestingDepth--;
+      }
+      appendToken(tokens, { type: tokenType, value: ch, pos: i });
       i++;
       continue;
     }

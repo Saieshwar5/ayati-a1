@@ -143,14 +143,16 @@ referent remains plausible. Ayati does not manufacture a durable `replyTo`
 relationship from adjacency alone.
 
 The current input is stored once under `core.current.input` and is not charged
-to the historical continuity budget. The initial continuity budget is 4,000
+to the historical continuity budget. The initial continuity budget is 8,000
 estimated tokens, including checkpoint, exact tail, and continuity metadata.
 Selection is newest-first by complete turn; an individual message is never
 partially cut. The newest completed user/system-event turn and its assistant
 response are the minimum exact tail and remain exact even when that one turn
 exceeds the continuity target. Additional older turns become unloaded ranges
-and eligible checkpoint source. Whole-request admission remains the hard
-provider safety boundary.
+and eligible checkpoint source. Maintenance summarizes older exact turns too,
+protecting only that newest completed turn so a successful checkpoint creates
+real breathing room. Whole-request admission remains the hard provider safety
+boundary.
 
 `core.current.activeDocuments` is derived from the newest verified successful
 complete historical file reads belonging to stable terminal runs in the same
@@ -409,7 +411,8 @@ For each maintenance attempt:
 1. Ask Context Engine for a plan over a complete prefix of terminal runs
    before the protected exact tail. The current input and newest completed
    user/system-event turn with its assistant response are never summarized.
-2. Refuse a plan whose checkpoint would not provide the requested savings.
+2. Refuse a plan unless replacing the previous checkpoint and selected older
+   turns is expected to save at least 2,000 tokens.
 3. Make at most one bounded semantic generation call over the previous
    checkpoint plus newly selected older messages. Accept a valid result,
    deterministically fit a structurally valid oversized result, or construct a

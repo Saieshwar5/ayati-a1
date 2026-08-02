@@ -7,7 +7,7 @@ import {
 } from "../recent-document-registry.js";
 import type { AgentTemporalEvent, AgentTemporalExactEvent } from "./agent-context-events.js";
 
-export const CORE_CAPSULE_CONTINUITY_MAX_TOKENS = 4_000;
+export const CORE_CAPSULE_CONTINUITY_MAX_TOKENS = 8_000;
 
 export type CoreCapsuleCheckpoint = Pick<
   ContextCheckpointRecord,

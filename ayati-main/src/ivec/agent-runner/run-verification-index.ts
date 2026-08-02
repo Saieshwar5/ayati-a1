@@ -13,6 +13,7 @@ import {
   normalizeFileSearchValidationScope,
   registeredArtifactOutcome,
   registeredTaskOutcomeFromFact,
+  routingFactCanSatisfyTaskValidation,
 } from "./task-validation-outcome-registry.js";
 import { verifiedReadScopeFromEvidence } from "./run-verification-read-scope.js";
 import type {
@@ -128,7 +129,13 @@ export function buildCurrentRunVerificationIndex(input: {
     }
     for (const [factIndex, fact] of (call.verification?.facts ?? []).entries()) {
       const registered = registeredTaskOutcomeFromFact(fact);
-      if (registered && scope === "task") {
+      if (
+        registered
+        && (
+          scope === "task"
+          || routingFactCanSatisfyTaskValidation(call.tool, fact)
+        )
+      ) {
         outcomes.push(taskOutcome({
           source,
           role: "completion",

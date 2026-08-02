@@ -8,6 +8,7 @@ import type { ModeCapabilityOptions } from "./capabilities/contracts.js";
 import { normalizeModeTransitionRequest } from "./mode-transition-request.js";
 import {
   resourceMetadataArraySchema,
+  validationCriterionProofArraySchema,
   validationOutcomeRefArraySchema,
 } from "./task-validation-control-schema.js";
 import type {
@@ -83,7 +84,7 @@ export function buildModeTransitionControlTools(
   if (allowed.has("observe.investigate")) {
     tools.push(controlTool(
       "decision_enter_observe_investigate",
-      "Enter read-only observe.investigate to inspect exact known targets or use a targetless system observation capability. References are required for target-backed capabilities and omitted for system:time or system:health.",
+      "Enter read-only observe.investigate to inspect exact known targets or use a targetless read-only capability. References are required for target-backed capabilities and omitted for utility:calculator, system:time, or system:health.",
       {
         ...commonProperties(capabilities["observe.investigate"]),
         references: referenceArraySchema(),
@@ -147,6 +148,7 @@ export function buildModeTransitionControlTools(
       {
         ...commonProperties(capabilities.validation),
         outcomeRefs: validationOutcomeRefArraySchema(),
+        criterionProofs: validationCriterionProofArraySchema(),
         resourceMetadata: resourceMetadataArraySchema(),
       },
       ["purpose", "capabilities", "outcomeRefs"],

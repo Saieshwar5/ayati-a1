@@ -86,6 +86,10 @@ function cloneReturnState(
       validation: {
         ...state.validation,
         checks: state.validation.checks.map((check) => ({ ...check })),
+        criterionProofs: state.validation.criterionProofs.map((selection) => ({
+          criterionIndex: selection.criterionIndex,
+          outcomeRefs: [...selection.outcomeRefs],
+        })),
         resourceMetadata: (state.validation.resourceMetadata ?? []).map((metadata) => ({
           ...metadata,
           aliases: [...metadata.aliases],

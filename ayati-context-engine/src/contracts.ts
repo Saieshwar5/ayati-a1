@@ -738,6 +738,7 @@ export interface AgentContextProjection {
   contextRevision: string;
   streamRevision: string;
   runRevision?: string;
+  workstreamRepository?: WorkstreamRepositoryProjection;
   stream: AgentStreamContextProjection | null;
   activeWorkstream?: WorkstreamContextProjection;
   workstreamCandidates?: WorkstreamCandidate[];
@@ -831,6 +832,108 @@ export interface ReadWorkstreamRequest extends ContextEngineRequestEnvelope {
 
 export interface ReadWorkstreamResponse extends GetWorkstreamResponse {
   opened: true;
+}
+
+export interface WorkstreamRepositoryProjection {
+  path: string;
+  branch: "main";
+  head: string;
+  health: "ready" | "dirty_external" | "recovery_required" | "unavailable";
+  kind: "context_only_git";
+  access: "read_only";
+}
+
+export interface WorkstreamRepositoryMutationReceipt {
+  type:
+    | "created"
+    | "modified"
+    | "moved"
+    | "deleted"
+    | "restored"
+    | "downloaded"
+    | "external_state_changed";
+  resourceId: string;
+  summary: string;
+}
+
+export interface WorkstreamRepositoryCommitReceipt {
+  commit: string;
+  parents: string[];
+  subject: string;
+  committedAt: string;
+  event?: "workstream_created" | "workstream_bound_run_finalized";
+  workstreamId?: WorkstreamId;
+  workstreamTitle?: string;
+  requestId?: string;
+  requestTitle?: string;
+  requestStatusAfter?: "queued" | "active" | "blocked" | "done" | "dropped";
+  runId?: RunId;
+  streamId?: AgentStreamId;
+  outcome?: string;
+  stopReason?: string;
+  validation?: string;
+  criteria?: { passed: number; total: number };
+  resourceEffects?: Record<string, number>;
+  mutationCount: number;
+  mutations: WorkstreamRepositoryMutationReceipt[];
+  problemCodes: string[];
+  summary?: string;
+  next?: string;
+  schema?: "workstream/v3" | "workstream-commit/v1";
+}
+
+export interface ReadWorkstreamRepositoryLogRequest extends ContextEngineRequestEnvelope {
+  runId: RunId;
+  repositoryPath: string;
+  limit?: number;
+  at: string;
+}
+
+export interface ReadWorkstreamRepositoryLogResponse {
+  repository: WorkstreamRepositoryProjection;
+  commits: WorkstreamRepositoryCommitReceipt[];
+  count: number;
+  hasMore: boolean;
+}
+
+export interface ReadWorkstreamRepositoryCommitRequest extends ContextEngineRequestEnvelope {
+  runId: RunId;
+  repositoryPath: string;
+  commit: string;
+  at: string;
+}
+
+export interface ReadWorkstreamRepositoryCommitResponse {
+  repository: WorkstreamRepositoryProjection;
+  commit: WorkstreamRepositoryCommitReceipt;
+  changedPaths: Array<{
+    status: string;
+    path: string;
+    previousPath?: string;
+  }>;
+}
+
+export interface ReadWorkstreamRepositoryDiffRequest extends ContextEngineRequestEnvelope {
+  runId: RunId;
+  repositoryPath: string;
+  from: string;
+  to: string;
+  maxChars?: number;
+  at: string;
+}
+
+export interface ReadWorkstreamRepositoryDiffResponse {
+  repository: WorkstreamRepositoryProjection;
+  from: string;
+  to: string;
+  changedPaths: Array<{
+    status: string;
+    path: string;
+    previousPath?: string;
+  }>;
+  patch: string;
+  totalPatchChars: number;
+  truncated: boolean;
 }
 
 export interface SetWorkstreamStarRequest extends ContextEngineRequestEnvelope {
@@ -1185,6 +1288,28 @@ export type VerifiedFilesystemResourceEffect =
       destinationPath: string;
     };
 
+export interface WorkstreamCompletionProof {
+  outcomeRef: string;
+  kind: string;
+  subject: string;
+  summary: string;
+  source: {
+    step: number;
+    callId?: string;
+    tool: string;
+    ref?: string;
+  };
+}
+
+export interface WorkstreamCompletionCriterion {
+  criterion: string;
+  passed: boolean;
+  /** Structured current-run proof used by new finalizations. */
+  proofs?: WorkstreamCompletionProof[];
+  /** Compatibility field for finalizations written before structured proof. */
+  evidence?: string;
+}
+
 export interface WorkstreamCompletionRecord {
   accepted: boolean;
   /**
@@ -1208,11 +1333,7 @@ export interface WorkstreamCompletionRecord {
   }>;
   missing: string[];
   failures: string[];
-  criteria: Array<{
-    criterion: string;
-    passed: boolean;
-    evidence?: string;
-  }>;
+  criteria: WorkstreamCompletionCriterion[];
 }
 
 export type WorkstreamRequestLifecycleEffect =
@@ -2299,10 +2420,32 @@ function isWorkstreamCompletionRecord(value: unknown): value is WorkstreamComple
     || value["criteria"].length > RUN_FINALIZATION_LIMITS.completion.maximumItems) {
     return false;
   }
-  return value["criteria"].every((item) => isRecord(item)
-    && isBoundedString(item["criterion"], RUN_FINALIZATION_LIMITS.completion.criterionChars)
-    && typeof item["passed"] === "boolean"
-    && optionalBoundedString(item["evidence"], RUN_FINALIZATION_LIMITS.completion.evidenceChars));
+  return value["criteria"].every(isWorkstreamCompletionCriterion);
+}
+
+function isWorkstreamCompletionCriterion(value: unknown): boolean {
+  return isRecord(value)
+    && isBoundedString(value["criterion"], RUN_FINALIZATION_LIMITS.completion.criterionChars)
+    && typeof value["passed"] === "boolean"
+    && optionalBoundedString(value["evidence"], RUN_FINALIZATION_LIMITS.completion.evidenceChars)
+    && (value["proofs"] === undefined
+      || (Array.isArray(value["proofs"])
+        && value["proofs"].length <= RUN_FINALIZATION_LIMITS.completion.maximumProofsPerCriterion
+        && value["proofs"].every(isWorkstreamCompletionProof)));
+}
+
+function isWorkstreamCompletionProof(value: unknown): boolean {
+  if (!isRecord(value) || !isRecord(value["source"])) return false;
+  const source = value["source"];
+  return isBoundedString(value["outcomeRef"], RUN_FINALIZATION_LIMITS.completion.outcomeRefChars)
+    && isBoundedString(value["kind"], RUN_FINALIZATION_LIMITS.completion.proofKindChars)
+    && isBoundedString(value["subject"], RUN_FINALIZATION_LIMITS.completion.proofSubjectChars)
+    && isBoundedString(value["summary"], RUN_FINALIZATION_LIMITS.completion.proofSummaryChars)
+    && Number.isSafeInteger(source["step"])
+    && Number(source["step"]) >= 1
+    && optionalBoundedString(source["callId"], RUN_FINALIZATION_LIMITS.completion.proofToolChars)
+    && isBoundedString(source["tool"], RUN_FINALIZATION_LIMITS.completion.proofToolChars)
+    && optionalBoundedString(source["ref"], RUN_FINALIZATION_LIMITS.completion.proofSourceRefChars);
 }
 
 function isWorkstreamRequestLifecycleEffect(

@@ -52,10 +52,12 @@ context SQLite and context-only Git writes. The daemon depends on its typed
    `workstream.route` stage. It mounts no executable tools and may lead to
    `resolve` or return to observation for more evidence. Direct
    `ENTRY -> workstream.route` and `ENTRY -> resolve` are unavailable. A
-   transition to `resolve` requires mutation intent, a binding-required
-   capability, that current-run routing observation, and one typed binding
-   proposal. Existing activation names exact routed resource IDs; the runtime
-   uses them to ground activation, then derives ownership, repository HEAD,
+   transition to `resolve` requires a binding-required capability, that
+   current-run routing observation, and one typed binding proposal. The model
+   owns semantic intent; the gate rejects explicit no-mutation constraints but
+   does not keyword-classify positive intent. Existing activation names exact
+   routed resource IDs; the runtime uses them to ground activation, then
+   derives ownership, repository HEAD,
    evidence, and eligible mutable roots from the authoritative activated
    bindings. Creation carries typed workspace-relative targets whose absolute
    paths, evidence, and resource identities are also runtime-derived. The
@@ -147,6 +149,11 @@ Workstream Git never contains deliverables. The resource catalog points to
 real files, directories, URLs, databases, repositories, and external objects.
 A new workstream may initially have no resources; successful validation and
 finalization add the files actually produced.
+
+The agent receives the exact shared `workstreams/` path as read-only navigation
+context. Bounded Context Engine log/show/diff tools can inspect its committed
+history for ambiguous continuation, but they cannot write Git or grant
+workstream/resource authority.
 
 Important entry points:
 

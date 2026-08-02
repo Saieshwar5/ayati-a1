@@ -2242,6 +2242,7 @@ describe("callAgentDecision", () => {
           purpose: "Freshly verify the important website file.",
           capabilities: ["task:validation"],
           outcomeRefs: [outcomeRef],
+          criterionProofs: [{ criterionIndex: 0, outcomeRefs: [outcomeRef] }],
         },
       }],
     }]);
@@ -2260,6 +2261,7 @@ describe("callAgentDecision", () => {
       additionalProperties: false,
     });
     expect(JSON.stringify(transitionTool?.inputSchema)).toContain("context.run.verifiedOutcomes");
+    expect(JSON.stringify(transitionTool?.inputSchema)).toContain("criterionProofs");
     expect(JSON.stringify(transitionTool?.inputSchema)).not.toContain("validationChecks");
     expect(JSON.stringify(transitionTool?.inputSchema)).not.toContain("searchScope");
     expect(JSON.stringify(transitionTool?.inputSchema)).not.toContain("readScope");
@@ -2270,6 +2272,7 @@ describe("callAgentDecision", () => {
         purpose: "Freshly verify the important website file.",
         capabilities: ["task:validation"],
         outcomeRefs: [outcomeRef],
+        criterionProofs: [{ criterionIndex: 0, outcomeRefs: [outcomeRef] }],
       },
       workingNotes: undefined,
     });

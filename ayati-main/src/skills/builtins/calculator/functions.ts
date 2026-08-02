@@ -1,9 +1,16 @@
 import { Decimal } from "decimal.js";
+import {
+  CALCULATOR_LIMITS,
+  CALCULATOR_PRECISION_DIGITS,
+} from "./limits.js";
 import { CalcError } from "./types.js";
 
 type Dec = InstanceType<typeof Decimal>;
 
-export const CalcDecimal = Decimal.clone({ precision: 50, rounding: Decimal.ROUND_HALF_UP });
+export const CalcDecimal = Decimal.clone({
+  precision: CALCULATOR_PRECISION_DIGITS,
+  rounding: Decimal.ROUND_HALF_UP,
+});
 
 // --- Constants ---
 
@@ -36,6 +43,43 @@ function assertDomain(cond: boolean, name: string, msg: string, pos: number): vo
   if (!cond) {
     throw new CalcError(`${name}: ${msg}`, pos, "DOMAIN_ERROR");
   }
+}
+
+function assertAbsoluteLimit(
+  value: Dec,
+  limit: number,
+  name: string,
+  description: string,
+  pos: number,
+): void {
+  if (value.abs().greaterThan(limit)) {
+    throw new CalcError(
+      `${name}: ${description} must be within +/-${limit}`,
+      pos,
+      "OVERFLOW",
+    );
+  }
+}
+
+export function power(base: Dec, exponent: Dec, pos: number): Dec {
+  assertAbsoluteLimit(
+    exponent,
+    CALCULATOR_LIMITS.powerExponentAbsolute,
+    "pow",
+    "exponent",
+    pos,
+  );
+  if (base.isZero() && exponent.isNegative()) {
+    throw new CalcError("Zero cannot be raised to a negative exponent", pos, "DIVISION_BY_ZERO");
+  }
+  if (base.isNegative() && !exponent.isInteger()) {
+    throw new CalcError(
+      "pow: a negative base requires an integer exponent for a real-valued result",
+      pos,
+      "DOMAIN_ERROR",
+    );
+  }
+  return base.pow(exponent);
 }
 
 export function factorial(n: Dec, pos: number): Dec {
@@ -78,9 +122,18 @@ interface FuncDef {
 
 export const FUNCTIONS: Record<string, FuncDef> = {
   // Trig
-  sin:   { min: 1, max: 1, fn: ([x]) => CalcDecimal.sin(x!) },
-  cos:   { min: 1, max: 1, fn: ([x]) => CalcDecimal.cos(x!) },
-  tan:   { min: 1, max: 1, fn: ([x]) => CalcDecimal.tan(x!) },
+  sin:   { min: 1, max: 1, fn: ([x], pos) => {
+    assertAbsoluteLimit(x!, CALCULATOR_LIMITS.trigonometricArgumentAbsolute, "sin", "argument", pos);
+    return CalcDecimal.sin(x!);
+  }},
+  cos:   { min: 1, max: 1, fn: ([x], pos) => {
+    assertAbsoluteLimit(x!, CALCULATOR_LIMITS.trigonometricArgumentAbsolute, "cos", "argument", pos);
+    return CalcDecimal.cos(x!);
+  }},
+  tan:   { min: 1, max: 1, fn: ([x], pos) => {
+    assertAbsoluteLimit(x!, CALCULATOR_LIMITS.trigonometricArgumentAbsolute, "tan", "argument", pos);
+    return CalcDecimal.tan(x!);
+  }},
   asin:  { min: 1, max: 1, fn: ([x], pos) => {
     assertDomain(x!.abs().lte(1), "asin", "argument must be in [-1, 1]", pos);
     return CalcDecimal.asin(x!);
@@ -93,9 +146,18 @@ export const FUNCTIONS: Record<string, FuncDef> = {
   atan2: { min: 2, max: 2, fn: ([y, x]) => CalcDecimal.atan2(y!, x!) },
 
   // Hyperbolic
-  sinh:  { min: 1, max: 1, fn: ([x]) => CalcDecimal.sinh(x!) },
-  cosh:  { min: 1, max: 1, fn: ([x]) => CalcDecimal.cosh(x!) },
-  tanh:  { min: 1, max: 1, fn: ([x]) => CalcDecimal.tanh(x!) },
+  sinh:  { min: 1, max: 1, fn: ([x], pos) => {
+    assertAbsoluteLimit(x!, CALCULATOR_LIMITS.exponentialArgumentAbsolute, "sinh", "argument", pos);
+    return CalcDecimal.sinh(x!);
+  }},
+  cosh:  { min: 1, max: 1, fn: ([x], pos) => {
+    assertAbsoluteLimit(x!, CALCULATOR_LIMITS.exponentialArgumentAbsolute, "cosh", "argument", pos);
+    return CalcDecimal.cosh(x!);
+  }},
+  tanh:  { min: 1, max: 1, fn: ([x], pos) => {
+    assertAbsoluteLimit(x!, CALCULATOR_LIMITS.exponentialArgumentAbsolute, "tanh", "argument", pos);
+    return CalcDecimal.tanh(x!);
+  }},
   asinh: { min: 1, max: 1, fn: ([x]) => CalcDecimal.asinh(x!) },
   acosh: { min: 1, max: 1, fn: ([x], pos) => {
     assertDomain(x!.gte(1), "acosh", "argument must be >= 1", pos);
@@ -112,8 +174,11 @@ export const FUNCTIONS: Record<string, FuncDef> = {
     return x!.sqrt();
   }},
   cbrt:  { min: 1, max: 1, fn: ([x]) => x!.cbrt() },
-  pow:   { min: 2, max: 2, fn: ([b, e]) => b!.pow(e!) },
-  exp:   { min: 1, max: 1, fn: ([x]) => x!.exp() },
+  pow:   { min: 2, max: 2, fn: ([b, e], pos) => power(b!, e!, pos) },
+  exp:   { min: 1, max: 1, fn: ([x], pos) => {
+    assertAbsoluteLimit(x!, CALCULATOR_LIMITS.exponentialArgumentAbsolute, "exp", "argument", pos);
+    return x!.exp();
+  }},
   hypot: { min: 1, max: 255, fn: (args) => {
     let sum: Dec = new CalcDecimal(0);
     for (const a of args) sum = sum.plus(a.times(a));

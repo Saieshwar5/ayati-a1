@@ -5,6 +5,9 @@ export const GIT_CONTEXT_READ_ONLY_TOOL_NAMES = [
   "git_context_find_workstreams",
   "git_context_read_workstream",
   "git_context_find_resources",
+  "git_context_log",
+  "git_context_show",
+  "git_context_diff",
 ] as const;
 
 export const GIT_CONTEXT_PREFERENCE_TOOL_NAMES = [

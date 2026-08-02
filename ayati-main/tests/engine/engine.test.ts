@@ -180,6 +180,7 @@ function createSingleLoopMutationProvider(outputPath: string): LlmProvider {
             purpose: "Check current-run proof for the important output file.",
             capabilities: ["task:validation"],
             outcomeRefs: [outcomeRef],
+            criterionProofs: [{ criterionIndex: 0, outcomeRefs: [outcomeRef] }],
           },
         });
       }

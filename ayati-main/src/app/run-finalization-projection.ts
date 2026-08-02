@@ -1,6 +1,8 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import {
   RUN_FINALIZATION_LIMITS,
+  type WorkstreamCompletionCriterion,
+  type WorkstreamCompletionProof,
   type WorkstreamCompletionRecord,
   type WorkstreamRequestLifecycleEffect,
 } from "ayati-context-engine";
@@ -99,11 +101,10 @@ function buildWorkstreamCompletion(
   acceptance: readonly string[],
 ): WorkstreamCompletionRecord {
   const limits = RUN_FINALIZATION_LIMITS.completion;
-  const accepted = result.outcome === "done" && workState?.status === "done";
-  const evidence = compactOptionalText(
-    result.workstreamSummary?.summary || workState?.summary || result.content,
-    limits.evidenceChars,
-  );
+  const criteria = completionCriteria(result.validatedCriteria ?? [], acceptance);
+  const accepted = result.outcome === "done"
+    && workState?.status === "done"
+    && criteria.every((criterion) => criterion.passed);
   const resources: WorkstreamCompletionRecord["resources"] = durableCompletionResources(result)
     .flatMap((resource) => {
       if (resource.locator.kind !== "filesystem"
@@ -134,24 +135,89 @@ function buildWorkstreamCompletion(
       }];
     })
     .slice(0, limits.maximumResources);
+  const missingCriteria = criteria
+    .filter((criterion) => !criterion.passed)
+    .map((criterion) => requiredText(
+      "Deterministic proof for criterion: " + criterion.criterion,
+      "Accepted deterministic workstream-completion evidence",
+      limits.missingChars,
+    ))
+    .slice(0, limits.maximumItems);
   return {
     accepted,
     effects: (result.verifiedResourceEffects ?? [])
       .slice(0, limits.maximumResourceEffects),
     resources,
     missing: result.outcome === "done" && !accepted
-      ? ["Accepted deterministic workstream-completion evidence"]
+      ? missingCriteria.length > 0
+        ? missingCriteria
+        : ["Accepted deterministic workstream-completion evidence"]
       : [],
     failures: uniqueText([
       ...(workState ? workStateBlockers(workState) : []),
       result.workstreamSummary?.failureSummary?.error,
     ], limits.failureChars, limits.maximumItems),
-    criteria: acceptance.map((criterion) => ({
-      criterion,
-      passed: accepted,
-      ...(evidence ? { evidence } : {}),
-    })),
+    criteria,
   };
+}
+
+function completionCriteria(
+  validated: readonly WorkstreamCompletionCriterion[],
+  acceptance: readonly string[],
+): WorkstreamCompletionCriterion[] {
+  const limits = RUN_FINALIZATION_LIMITS.completion;
+  return acceptance.slice(0, limits.maximumItems).map((criterion, index) => {
+    const compactCriterion = requiredText(
+      criterion,
+      "Acceptance criterion " + String(index + 1),
+      limits.criterionChars,
+    );
+    const selected = validated[index];
+    if (!selected || selected.criterion !== criterion) {
+      return { criterion: compactCriterion, passed: false };
+    }
+    const selectedProofs = selected.proofs ?? [];
+    const proofs = selectedProofs
+      .slice(0, limits.maximumProofsPerCriterion)
+      .flatMap(compactCompletionProof);
+    return {
+      criterion: compactCriterion,
+      passed: selected.passed
+        && selectedProofs.length > 0
+        && selectedProofs.length <= limits.maximumProofsPerCriterion
+        && proofs.length === selectedProofs.length,
+      ...(proofs.length > 0 ? { proofs } : {}),
+    };
+  });
+}
+
+function compactCompletionProof(
+  proof: WorkstreamCompletionProof,
+): WorkstreamCompletionProof[] {
+  const limits = RUN_FINALIZATION_LIMITS.completion;
+  const outcomeRef = exactBoundedText(proof.outcomeRef, limits.outcomeRefChars);
+  const kind = exactBoundedText(proof.kind, limits.proofKindChars);
+  const subject = compactText(proof.subject, limits.proofSubjectChars);
+  const summary = compactText(proof.summary, limits.proofSummaryChars);
+  const tool = exactBoundedText(proof.source.tool, limits.proofToolChars);
+  if (!outcomeRef || !kind || !subject || !summary || !tool
+    || !Number.isSafeInteger(proof.source.step) || proof.source.step < 1) {
+    return [];
+  }
+  const callId = exactBoundedText(proof.source.callId, limits.proofToolChars);
+  const ref = exactBoundedText(proof.source.ref, limits.proofSourceRefChars);
+  return [{
+    outcomeRef,
+    kind,
+    subject,
+    summary,
+    source: {
+      step: proof.source.step,
+      ...(callId ? { callId } : {}),
+      tool,
+      ...(ref ? { ref } : {}),
+    },
+  }];
 }
 
 function durableCompletionResources(result: AgentLoopResult): AgentResourceRecord[] {
@@ -185,6 +251,14 @@ function isDescendantPath(parent: string, candidate: string): boolean {
 
 function requiredText(value: unknown, fallback: string, maximum: number): string {
   return compactText(value, maximum) || compactText(fallback, maximum);
+}
+
+function exactBoundedText(value: unknown, maximum: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized.length > 0 && normalized.length <= maximum
+    ? normalized
+    : undefined;
 }
 
 function uniqueText(

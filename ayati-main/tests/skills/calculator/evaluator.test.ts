@@ -148,6 +148,10 @@ describe("evaluator (end-to-end)", () => {
     it("0o77 = 63", () => {
       expect(calculate("0o77")).toBe("63");
     });
+
+    it("preserves prefixed integers beyond Number safe precision", () => {
+      expect(calculate("0x20000000000001")).toBe("9007199254740993");
+    });
   });
 
   describe("implicit multiplication", () => {
@@ -161,6 +165,11 @@ describe("evaluator (end-to-end)", () => {
 
     it("(2)(3) = 6", () => {
       expect(calculate("(2)(3)")).toBe("6");
+    });
+
+    it("keeps exponentiation tighter than implicit multiplication", () => {
+      expect(calculate("2(3)^2")).toBe("18");
+      expect(calculate("2pi^2")).toBe(calculate("2 * (pi^2)"));
     });
   });
 
@@ -218,6 +227,31 @@ describe("evaluator (end-to-end)", () => {
       try { calculate("sin(1, 2)"); } catch (e) {
         expect((e as CalcError).code).toBe("WRONG_ARITY");
       }
+    });
+
+    it("rejects non-real power results", () => {
+      expect(() => calculate("(-1)^0.5")).toThrowError(
+        expect.objectContaining({ code: "DOMAIN_ERROR" }),
+      );
+    });
+
+    it("rejects zero raised to a negative exponent", () => {
+      expect(() => calculate("0^-1")).toThrowError(
+        expect.objectContaining({ code: "DIVISION_BY_ZERO" }),
+      );
+    });
+
+    it("rejects excessive power and exponential arguments", () => {
+      expect(() => calculate("2^10001")).toThrowError(
+        expect.objectContaining({ code: "OVERFLOW" }),
+      );
+      expect(() => calculate("exp(1001)")).toThrowError(
+        expect.objectContaining({ code: "OVERFLOW" }),
+      );
+    });
+
+    it("uses bounded scientific notation for enormous integer magnitudes", () => {
+      expect(calculate("1e999999999")).toBe("1e+999999999");
     });
   });
 });

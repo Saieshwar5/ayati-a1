@@ -22,7 +22,6 @@ export interface TurnMutationScopePolicy {
 export interface TurnMutationConstraints {
   mutationForbidden: boolean;
   observationalOnly: boolean;
-  mutationRequested: boolean;
   observationRequested: boolean;
   scopePolicy: TurnMutationScopePolicy;
 }
@@ -32,15 +31,9 @@ export function deriveTurnMutationConstraints(message: string): TurnMutationCons
   const scopedMutationDenial = SCOPED_MUTATION_DENIAL.test(normalized);
   const observationalOnly = !scopedMutationDenial
     && OBSERVATION_ONLY.some((pattern) => pattern.test(normalized));
-  const mutationRequested = !observationalOnly
-    && (
-      DURABLE_INTENT.test(normalized)
-      || (!isInformationSeekingRequest(normalized) && hasConcreteMutationRequest(normalized))
-    );
   return {
     mutationForbidden: observationalOnly,
     observationalOnly,
-    mutationRequested,
     observationRequested: hasConcreteObservationRequest(normalized),
     scopePolicy: {
       allowedScopes: scopedMutationDenial ? extractScopedMutationPaths(message) : [],
@@ -87,14 +80,6 @@ export function isClearlyConversationOnlyRequest(message: string): boolean {
   return SOCIAL_PREFIX.test(normalized) && !DURABLE_ACTION.test(normalized);
 }
 
-function hasConcreteMutationRequest(text: string): boolean {
-  if (!DURABLE_ACTION.test(text)) return false;
-  return /\b(?:file|files|folder|directory|path|repo|repository|workspace|code|app|application|site|website|page|component|database|table|dataset|document|memory|window|layout|command|script|test|build|server|resource|record|row|column)\b/.test(text)
-    || /(?:^|[\s"'`])(?:\.?\.?\/|\/)[^\s"'`]+/.test(text)
-    || /\b[\w.-]+\.[a-z0-9]{1,12}\b/.test(text)
-    || /https?:\/\//.test(text);
-}
-
 function hasConcreteObservationRequest(text: string): boolean {
   const resourceCue = /\b(?:file|files|folder|directory|path|repo|repository|workspace|source|code|config|script|function|method|module|implementation|logic|handler|handling|document|attachment|dataset|database|table|url|website|web page|resource|history|messages?|logs?|window)\b/.test(text);
   const exactTarget = /(?:^|[\s"'`])(?:\.?\.?\/|\/)[^\s"'`]+/.test(text)
@@ -109,10 +94,4 @@ function hasConcreteObservationRequest(text: string): boolean {
   return (operationalVerb && (resourceCue || exactTarget || pronounTarget))
     || descriptiveReference
     || inventoryQuestion;
-}
-
-function isInformationSeekingRequest(text: string): boolean {
-  return /^(?:what|why|how|when|which|who|explain|describe|compare|define|clarify)\b/.test(text)
-    || /^tell me (?:about|how|why|what|when|which|who)\b/.test(text)
-    || /^(?:can|could|would) you (?:explain|describe|show me how|tell me how|teach me)\b/.test(text);
 }

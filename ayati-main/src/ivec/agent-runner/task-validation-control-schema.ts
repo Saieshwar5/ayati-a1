@@ -14,6 +14,24 @@ export function validationOutcomeRefArraySchema(): Record<string, unknown> {
   };
 }
 
+export function validationCriterionProofArraySchema(): Record<string, unknown> {
+  return {
+    type: "array",
+    maxItems: 20,
+    uniqueItems: true,
+    description: "For a bound request, map every zero-based acceptance criterion index to one or more exact refs already listed in outcomeRefs. This is part of the same validation decision and does not run another tool.",
+    items: objectSchema({
+      criterionIndex: {
+        type: "integer",
+        minimum: 0,
+        maximum: 19,
+        description: "Zero-based index in the active request acceptance list.",
+      },
+      outcomeRefs: validationOutcomeRefArraySchema(),
+    }, ["criterionIndex", "outcomeRefs"]),
+  };
+}
+
 export function resourceMetadataArraySchema(): Record<string, unknown> {
   return {
     type: "array",

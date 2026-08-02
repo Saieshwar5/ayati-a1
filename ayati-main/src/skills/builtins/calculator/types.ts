@@ -36,7 +36,9 @@ export type CalcErrorCode =
   | "DIVISION_BY_ZERO"
   | "DOMAIN_ERROR"
   | "OVERFLOW"
-  | "UNKNOWN_CONSTANT";
+  | "UNKNOWN_CONSTANT"
+  | "EXPRESSION_TOO_LONG"
+  | "EXPRESSION_TOO_COMPLEX";
 
 export class CalcError extends Error {
   constructor(

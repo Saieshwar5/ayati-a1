@@ -60,7 +60,7 @@ export function buildValidationCompletionReceipts(input: {
     }
     const receipt: ImportantContextItem = {
       kind: ARTIFACT_OUTCOMES.has(check.kind) ? "artifact" : "finding",
-      value: completionReceiptValue(check),
+      value: validationCompletionReceiptValue(check),
       ref,
     };
     if (receipts.some((candidate) => sameContext(candidate, receipt))) {
@@ -74,7 +74,7 @@ export function buildValidationCompletionReceipts(input: {
   return receipts;
 }
 
-function completionReceiptValue(check: ValidationCheckResult): string {
+export function validationCompletionReceiptValue(check: ValidationCheckResult): string {
   const subject = normalized(check.subject);
   switch (check.kind) {
     case "path.exists":
@@ -112,7 +112,7 @@ function completionReceiptValue(check: ValidationCheckResult): string {
     case "path.deleted":
       return bounded(`Verified deletion of ${subject}.`);
     case "calculation.evaluated":
-      return bounded(`Verified the calculated result ${subject}.`);
+      return bounded(`Verified calculation of ${subject}.`);
     case "database.read_succeeded":
       return bounded(`Verified the database read ${subject}.`);
     case "database.mutation_succeeded":
@@ -127,6 +127,8 @@ function completionReceiptValue(check: ValidationCheckResult): string {
       return bounded(`Verified the memory read ${subject}.`);
     case "memory.change_succeeded":
       return bounded(`Verified the memory change ${subject}.`);
+    case "workstream.snapshot_read":
+      return bounded(`Verified a committed snapshot read for workstream ${subject}.`);
     case "system.time_observed":
       return bounded(`Verified a fresh time observation for ${subject}.`);
     case "system.health_observed":

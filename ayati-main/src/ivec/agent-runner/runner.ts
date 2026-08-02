@@ -125,6 +125,7 @@ import {
   modeTransitionTargetValues,
 } from "./virtual-mode.js";
 import { validationModePassed } from "./validation-mode.js";
+import { buildValidatedWorkstreamCriteria } from "./task-validation-criteria.js";
 import { dispatchTerminalStop } from "./terminal-stop.js";
 import {
   completeContextRetrieval,
@@ -1457,6 +1458,7 @@ function buildLoopResult(
     result.resources = buildRunResources(state);
     result.verifiedCompletionResources = buildVerifiedCompletionResources(state);
     result.verifiedResourceEffects = buildVerifiedResourceEffects(state);
+    result.validatedCriteria = buildValidatedWorkstreamCriteria(state);
   }
 
   return result;

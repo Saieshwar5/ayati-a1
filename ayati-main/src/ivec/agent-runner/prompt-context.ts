@@ -5,12 +5,15 @@ import type { PromptVerifiedOutcomes } from "./run-verified-outcome-context.js";
 import type { AgentStateView } from "./state-view.js";
 import type { RunFocusSummary } from "../context-preparation/types.js";
 import type { VirtualModeCard } from "./virtual-mode.js";
+import type { WorkstreamRepositoryProjection } from "ayati-context-engine";
 
 export type { PromptBoundWorkstreamContext } from "./bound-workstream-prompt-context.js";
 
 export interface PromptRunContext {
   /** Exact configured workspace location. This is navigation context, not mutation authority. */
   workspaceRoot?: string;
+  /** Exact managed context-only Git repository. It grants read-only history navigation only. */
+  workstreamRepository?: WorkstreamRepositoryProjection;
   mode?: VirtualModeCard;
   boundWorkstream?: PromptBoundWorkstreamContext;
   workState?: PromptRunWorkStateContext;
@@ -110,6 +113,9 @@ function compactRunContext(
   if (!run) return undefined;
   const compacted: PromptRunContext = {
     ...(run.workspaceRoot ? { workspaceRoot: run.workspaceRoot } : {}),
+    ...(run.workstreamRepository
+      ? { workstreamRepository: run.workstreamRepository }
+      : {}),
     ...(run.mode ? { mode: run.mode } : {}),
     ...(run.boundWorkstream ? { boundWorkstream: run.boundWorkstream } : {}),
     ...(run.workState ? { workState: run.workState } : {}),

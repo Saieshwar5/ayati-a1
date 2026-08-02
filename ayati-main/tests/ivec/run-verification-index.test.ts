@@ -838,6 +838,59 @@ describe("current-run verification index", () => {
     expect(findLatestVerifiedPathOutcome(index, "/tmp/site/index.html")).toBeUndefined();
   });
 
+  it("keeps a workstream read routing-scoped while exposing only its snapshot fact for validation", () => {
+    const read = verifiedCall(2, "git_context_read_workstream", [
+      pathEvidence("/workspace/site", true, "directory", 2),
+    ], "read-workstream");
+    read.verification = {
+      version: 1,
+      status: "passed",
+      method: "tool_contract",
+      contract: "tool_result_v2",
+      summary: "The committed workstream snapshot was opened.",
+      checks: [],
+      facts: [{
+        kind: "workstream_snapshot_read",
+        message: "Opened the exact committed workstream snapshot.",
+        subject: "W-20260802-0001",
+      }],
+    };
+
+    const index = buildCurrentRunVerificationIndex({
+      runId: RUN_ID,
+      calls: [read],
+    });
+
+    expect(index.calls[0]).toMatchObject({
+      scope: "routing",
+      status: "passed",
+    });
+    expect(index.outcomes).toEqual([
+      expect.objectContaining({
+        family: "filesystem_path",
+        role: "routing",
+        kind: "path.exists",
+      }),
+      expect.objectContaining({
+        family: "task",
+        role: "completion",
+        kind: "workstream.snapshot_read",
+        subject: "W-20260802-0001",
+        source: expect.objectContaining({ tool: "git_context_read_workstream" }),
+      }),
+      expect.objectContaining({
+        family: "verified_fact",
+        role: "routing",
+        factKind: "workstream_snapshot_read",
+      }),
+    ]);
+    expect(index.summary).toMatchObject({
+      completionOutcomes: 1,
+      routingOutcomes: 2,
+    });
+    expect(findLatestVerifiedPathOutcome(index, "/workspace/site")).toBeUndefined();
+  });
+
   it("normalizes registered semantic facts into completion outcomes", () => {
     const call = verifiedCall(3, "process_run", []);
     call.verification = {

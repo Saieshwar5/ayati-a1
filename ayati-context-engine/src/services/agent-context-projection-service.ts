@@ -29,6 +29,7 @@ import { readRecentWorkStateHandoffs } from "../repositories/recent-work-state-r
 import { readRecentWorkstreams } from "../repositories/recent-workstream-records.js";
 import { readRunWorkState } from "../repositories/run-work-state-records.js";
 import { readWorkstreamResolutionProjection } from "../repositories/workstream-resolution-records.js";
+import { readSharedWorkstreamRepositoryState } from "../repositories/workstream-repository-state-records.js";
 
 const MAX_EXACT_STREAM_MESSAGES = 10_000;
 
@@ -88,6 +89,15 @@ export class AgentContextProjectionService {
       ...(run ? { runId: run.run.runId } : {}),
     });
     const ingressResources = run ? readRunResources(this.database, run.run.runId) : undefined;
+    const repositoryState = readSharedWorkstreamRepositoryState(this.database);
+    const workstreamRepository = repositoryState ? {
+      path: repositoryState.repositoryPath,
+      branch: repositoryState.branch,
+      head: repositoryState.head,
+      health: repositoryState.health,
+      kind: "context_only_git" as const,
+      access: "read_only" as const,
+    } : undefined;
     const streamProjection = {
       stream,
       ...(checkpoint ? { checkpoint } : {}),
@@ -128,11 +138,13 @@ export class AgentContextProjectionService {
       workstreamHead: activeWorkstream?.workstream.head,
       candidateHeads: workstreamCandidates?.map((candidate) => [candidate.workstreamId, candidate.head]),
       resolution: workstreamResolution,
+      workstreamRepository,
     });
     return {
       contextRevision,
       streamRevision,
       ...(runRevision ? { runRevision } : {}),
+      ...(workstreamRepository ? { workstreamRepository } : {}),
       stream: streamProjection,
       ...(activeWorkstream ? { activeWorkstream } : {}),
       ...(workstreamCandidates && workstreamCandidates.length > 0 ? { workstreamCandidates } : {}),

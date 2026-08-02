@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildCoreCapsule } from "../../src/ivec/agent-runner/core-capsule.js";
 import {
+  CONVERSATION_CHECKPOINT_MIN_SAVINGS_TOKENS,
   planContextMaintenance,
   protectedConversationTailStart,
 } from "../../src/ivec/context-preparation/context-maintenance.js";
@@ -57,13 +58,69 @@ describe("conversation context maintenance", () => {
 
     expect(plan).toHaveBeenCalledWith({
       protectFromSeq: 3,
-      requiredSavingsTokens: 1,
+      requiredSavingsTokens: CONVERSATION_CHECKPOINT_MIN_SAVINGS_TOKENS,
       estimatedCheckpointTokens: 1_200,
     });
     expect(maintenance).toMatchObject({
       reason: "continuity_budget",
       protectFromSeq: 3,
       unloadedRanges: [{ fromSeq: 1, toSeq: 2 }],
+    });
+  });
+
+  it("compacts older exact turns while protecting the newest completed turn", async () => {
+    const core = buildCoreCapsule({
+      revision: "core:multiple-exact-turns",
+      runId: "RUN-4",
+      continuityMaxTokens: 1_000,
+      timeline: [
+        { kind: "user", seq: 1, timestamp: AT, content: "old " + "x".repeat(4_000) },
+        { kind: "assistant", seq: 2, timestamp: AT, content: "old answer " + "y".repeat(4_000) },
+        { kind: "user", seq: 3, timestamp: AT, content: "middle question" },
+        { kind: "assistant", seq: 4, timestamp: AT, content: "middle answer" },
+        { kind: "user", seq: 5, timestamp: AT, content: "newest question" },
+        { kind: "assistant", seq: 6, timestamp: AT, content: "newest answer" },
+        { kind: "user", seq: 7, timestamp: AT, content: "current question", current: true },
+      ],
+      routing: { status: "unbound" },
+    });
+
+    expect(core.continuity.recentExact.map((event) => event.seq)).toEqual([3, 4, 5, 6]);
+    expect(protectedConversationTailStart(core)).toBe(5);
+
+    const plan = vi.fn().mockResolvedValue({
+      planId: "PLAN-2",
+      streamId: "S-1",
+      selectedMessages: [],
+      exactTail: [],
+      coveredFromSeq: 1,
+      coveredToSeq: 4,
+      sourceHash: "sha256:source",
+      estimatedCheckpointTokens: 1_200,
+      triggered: true,
+    });
+    await planContextMaintenance({
+      stateView: {
+        context: {
+          core,
+          hot: {
+            available: [],
+            loaded: [],
+            budget: { maxMountedTokens: 8_000, mountedTokens: 0 },
+          },
+        },
+      },
+      contextCheckpoint: {
+        plan,
+        commit: vi.fn(),
+        currentContext: vi.fn(),
+      },
+    });
+
+    expect(plan).toHaveBeenCalledWith({
+      protectFromSeq: 5,
+      requiredSavingsTokens: CONVERSATION_CHECKPOINT_MIN_SAVINGS_TOKENS,
+      estimatedCheckpointTokens: 1_200,
     });
   });
 });

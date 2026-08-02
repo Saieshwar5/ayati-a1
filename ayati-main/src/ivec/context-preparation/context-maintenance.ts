@@ -16,6 +16,7 @@ import type { ContextPreparationLaneId } from "./types.js";
 import { CONTEXT_PREPARATION_POLICY_VERSION } from "./types.js";
 
 export const CONVERSATION_CHECKPOINT_TARGET_TOKENS = 1_200;
+export const CONVERSATION_CHECKPOINT_MIN_SAVINGS_TOKENS = 2_000;
 
 export interface ContextMaintenanceStart {
   reason: "continuity_budget";
@@ -52,7 +53,7 @@ export async function planContextMaintenance(input: {
   const protectFromSeq = protectedConversationTailStart(core);
   const plan = await input.contextCheckpoint.plan({
     protectFromSeq,
-    requiredSavingsTokens: 1,
+    requiredSavingsTokens: CONVERSATION_CHECKPOINT_MIN_SAVINGS_TOKENS,
     estimatedCheckpointTokens: CONVERSATION_CHECKPOINT_TARGET_TOKENS,
   });
   if (!plan.triggered) return undefined;
@@ -151,5 +152,11 @@ export function createContextMaintenanceJob(input: {
 export function protectedConversationTailStart(
   core: AgentStateView["context"]["core"],
 ): number {
+  // Compaction may consume older exact turns. Only the newest completed turn
+  // must remain exact alongside the current input.
+  for (let index = core.continuity.recentExact.length - 1; index >= 0; index--) {
+    const event = core.continuity.recentExact[index]!;
+    if (event.kind !== "assistant") return event.seq;
+  }
   return core.continuity.recentExact[0]?.seq ?? core.current.input.seq;
 }

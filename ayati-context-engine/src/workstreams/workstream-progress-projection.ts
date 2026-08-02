@@ -2,6 +2,7 @@ import type {
   ResourceEvent,
   ResourceEventType,
   RunOutcome,
+  WorkstreamCompletionProof,
   WorkstreamCompletionRecord,
 } from "../contracts.js";
 import { ContextEngineServiceError } from "../errors.js";
@@ -80,6 +81,19 @@ function requireMatchingSources(input: BuildWorkstreamProgressEntryInput): void 
       });
     }
   }
+  for (const criterion of input.completion.criteria) {
+    for (const proof of criterion.proofs ?? []) {
+      const expectedPrefix = `run:${input.runId}:step:${proof.source.step}:`;
+      if (!proof.outcomeRef.startsWith(expectedPrefix)) {
+        throw invalid("Progress completion proof does not belong to the finalized run and step.", {
+          runId: input.runId,
+          criterion: criterion.criterion,
+          outcomeRef: proof.outcomeRef,
+          sourceStep: proof.source.step,
+        });
+      }
+    }
+  }
 }
 
 function progressSummary(input: BuildWorkstreamProgressEntryInput): string {
@@ -132,20 +146,48 @@ function validationItems(
   for (const criterion of completion.criteria) {
     const criterionText = compactText(
       criterion.criterion,
-      WORKSTREAM_PROGRESS_LIMITS.itemChars,
+      Math.floor(WORKSTREAM_PROGRESS_LIMITS.itemChars / 2),
     );
     if (!criterionText) continue;
-    const evidence = compactText(
+    const prefix = (criterion.passed ? "Criterion passed: " : "Criterion not passed: ")
+      + criterionText;
+    if ((criterion.proofs?.length ?? 0) > 0) {
+      result.push(prefix + renderProofRefs(
+        criterion.proofs ?? [],
+        WORKSTREAM_PROGRESS_LIMITS.itemChars - prefix.length,
+      ));
+      continue;
+    }
+    const legacyEvidence = compactText(
       criterion.evidence ?? "",
-      WORKSTREAM_PROGRESS_LIMITS.itemChars,
+      Math.max(0, WORKSTREAM_PROGRESS_LIMITS.itemChars - prefix.length - 11),
     );
     result.push(progressItem(
-      (criterion.passed ? "Criterion passed: " : "Criterion not passed: ")
-        + criterionText
-        + (evidence ? " Evidence: " + evidence : ""),
+      prefix + (legacyEvidence ? " Evidence: " + legacyEvidence : ""),
     ));
   }
   return uniqueItems(result);
+}
+
+function renderProofRefs(
+  proofs: readonly WorkstreamCompletionProof[],
+  maximumChars: number,
+): string {
+  const label = " Proof refs: ";
+  if (maximumChars <= label.length) return "";
+  const selected: string[] = [];
+  for (let index = 0; index < proofs.length; index += 1) {
+    const candidate = [...selected, proofs[index]!.outcomeRef].join("; ");
+    const remaining = proofs.length - index - 1;
+    const marker = remaining > 0 ? `; +${remaining} more` : "";
+    if ((label + candidate + marker).length > maximumChars) break;
+    selected.push(proofs[index]!.outcomeRef);
+  }
+  if (selected.length === 0) {
+    return compactText(" Structured proof recorded.", maximumChars);
+  }
+  const remaining = proofs.length - selected.length;
+  return label + selected.join("; ") + (remaining > 0 ? `; +${remaining} more` : "");
 }
 
 function durableContext(workState: RunWorkState): string[] {

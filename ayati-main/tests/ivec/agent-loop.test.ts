@@ -296,7 +296,9 @@ function validationDecisions(input: {
   step: number;
   outcomeOrdinal: number;
   response: string;
+  criterionIndex?: number;
 }): unknown[] {
+  const outcomeRef = `run:${input.runId}:step:${input.step}:call:${input.callId}:outcome:${input.outcomeOrdinal}`;
   return [
     {
       kind: "transition_mode",
@@ -304,9 +306,13 @@ function validationDecisions(input: {
         to: "validation",
         purpose: "Check current-run completion proof before responding.",
         capabilities: ["task:validation"],
-        outcomeRefs: [
-          `run:${input.runId}:step:${input.step}:call:${input.callId}:outcome:${input.outcomeOrdinal}`,
-        ],
+        outcomeRefs: [outcomeRef],
+        ...(input.criterionIndex !== undefined ? {
+          criterionProofs: [{
+            criterionIndex: input.criterionIndex,
+            outcomeRefs: [outcomeRef],
+          }],
+        } : {}),
       },
     },
     {
@@ -2289,6 +2295,7 @@ describe("agentLoop one-run lifecycle", () => {
           step: 2,
           outcomeOrdinal: 0,
           response: "Created one-run.txt.",
+          criterionIndex: 0,
         }),
       ]);
       const workstreamBinding = {
@@ -2488,6 +2495,7 @@ describe("agentLoop one-run lifecycle", () => {
           step: 1,
           outcomeOrdinal: 0,
           response: "Created one-run.txt.",
+          criterionIndex: 0,
         }),
       ]);
       const workstreamBinding = { bind: vi.fn() };
@@ -2512,6 +2520,20 @@ describe("agentLoop one-run lifecycle", () => {
         stopReason: "completed",
         totalIterations: 4,
         totalToolCalls: 1,
+        validatedCriteria: [{
+          criterion: "one-run.txt exists and is verified.",
+          passed: true,
+          proofs: [{
+            outcomeRef: `run:${runId}:step:1:call:write-existing-binding:outcome:0`,
+            kind: "file.written",
+            subject: outputPath,
+            source: {
+              step: 1,
+              callId: "write-existing-binding",
+              tool: "write_files",
+            },
+          }],
+        }],
       });
       expect(workstreamBinding.bind).not.toHaveBeenCalled();
       expect(provider.generateTurn).toHaveBeenCalledTimes(4);
@@ -2588,6 +2610,12 @@ describe("agentLoop one-run lifecycle", () => {
           outcomeRefs: [
             `run:${runId}:step:1:call:write-denied-outside-workspace:denial:0`,
           ],
+          criterionProofs: [{
+            criterionIndex: 0,
+            outcomeRefs: [
+              `run:${runId}:step:1:call:write-denied-outside-workspace:denial:0`,
+            ],
+          }],
         },
       },
       {

@@ -27,10 +27,25 @@ const VERIFIED_FACT_OUTCOMES: Readonly<Record<string, TaskValidationOutcomeKind>
   python_execution_succeeded: "python.execution_succeeded",
   memory_read_completed: "memory.read_succeeded",
   memory_change_completed: "memory.change_succeeded",
+  workstream_snapshot_read: "workstream.snapshot_read",
   system_time_observed: "system.time_observed",
   system_health_observed: "system.health_observed",
   artifact_registered: "artifact.available",
 };
+
+/**
+ * Workstream reads serve two independent purposes: they provide ownership
+ * evidence for routing and a committed snapshot for read-only answers. Keep
+ * the call routing-scoped, but allow only its exact snapshot fact to prove
+ * that the snapshot was read.
+ */
+export function routingFactCanSatisfyTaskValidation(
+  toolName: string,
+  fact: ToolCallVerifiedFact,
+): boolean {
+  return toolName === "git_context_read_workstream"
+    && fact.kind === "workstream_snapshot_read";
+}
 
 export function registeredTaskOutcomeFromFact(
   fact: ToolCallVerifiedFact,

@@ -4,19 +4,54 @@ import { requireRequestId, requireWorkstreamId } from "./workstream-repository-l
 import { requireSingleLine } from "./workstream-markdown.js";
 
 export type WorkstreamCommitOutcome = "completed" | "incomplete" | "blocked" | "failed";
-export type WorkstreamCommitValidation = "passed" | "failed" | "not_applicable";
+export type WorkstreamCommitValidation =
+  | "passed"
+  | "failed"
+  | "pending"
+  | "not_required"
+  | "not_applicable";
+export type WorkstreamCommitRequestStatus = "queued" | "active" | "blocked" | "done" | "dropped";
+export type WorkstreamCommitMutationType =
+  | "created"
+  | "modified"
+  | "moved"
+  | "deleted"
+  | "restored"
+  | "downloaded"
+  | "external_state_changed";
+
+export interface WorkstreamCommitMutation {
+  type: WorkstreamCommitMutationType;
+  resourceId: string;
+  summary: string;
+}
+
+export interface WorkstreamCommitCriteria {
+  passed: number;
+  total: number;
+}
+
+export type WorkstreamCommitResourceEffects = Record<WorkstreamCommitMutationType, number>;
 
 export interface WorkstreamIdentityCommitInput {
   subject: string;
   workstreamId: string;
   requestId: string;
+  workstreamTitle?: string;
+  requestTitle?: string;
+  requestStatusAfter?: WorkstreamCommitRequestStatus;
 }
 
 export interface WorkstreamCommitInput extends WorkstreamIdentityCommitInput {
   runId: string;
   streamId: string;
   outcome: WorkstreamCommitOutcome;
+  stopReason?: string;
   validation: WorkstreamCommitValidation;
+  criteria?: WorkstreamCommitCriteria;
+  resourceEffects?: WorkstreamCommitResourceEffects;
+  mutationDetails?: WorkstreamCommitMutation[];
+  problemCodes?: string[];
   summary: string;
   next?: string;
   messageHash: string;
@@ -30,7 +65,10 @@ export type WorkstreamCommitMetadata =
       workstreamId: string;
       requestId: string;
       outcome: "created";
-      schema: "workstream/v3";
+      workstreamTitle?: string;
+      requestTitle?: string;
+      requestStatusAfter?: WorkstreamCommitRequestStatus;
+      schema: "workstream/v3" | "workstream-commit/v1";
     }
   | {
       event: "workstream_bound_run_finalized";
@@ -41,21 +79,44 @@ export type WorkstreamCommitMetadata =
       streamId: string;
       outcome: WorkstreamCommitOutcome;
       validation: WorkstreamCommitValidation;
+      workstreamTitle?: string;
+      requestTitle?: string;
+      requestStatusAfter?: WorkstreamCommitRequestStatus;
+      stopReason?: string;
+      criteria?: WorkstreamCommitCriteria;
+      resourceEffects?: WorkstreamCommitResourceEffects;
+      mutationDetails: WorkstreamCommitMutation[];
+      problemCodes: string[];
       summary: string;
       next?: string;
       messageHash: string;
       mutations: number;
-      schema: "workstream/v3";
+      schema: "workstream/v3" | "workstream-commit/v1";
     };
+
+const LEGACY_SCHEMA = "workstream/v3";
+const COMMIT_SCHEMA = "workstream-commit/v1";
+const MUTATION_TYPES: WorkstreamCommitMutationType[] = [
+  "created",
+  "modified",
+  "moved",
+  "deleted",
+  "restored",
+  "downloaded",
+  "external_state_changed",
+];
 
 export function renderWorkstreamIdentityCommit(input: WorkstreamIdentityCommitInput): string {
   return [
     subject(input.subject),
     "",
     "Workstream: " + requireWorkstreamId(input.workstreamId),
+    ...(input.workstreamTitle ? ["Workstream-Title: " + boundedLine(input.workstreamTitle, "Workstream-Title", 120)] : []),
     "Request: " + requireRequestId(input.requestId),
+    ...(input.requestTitle ? ["Request-Title: " + boundedLine(input.requestTitle, "Request-Title", 120)] : []),
+    ...(input.requestStatusAfter ? ["Request-Status-After: " + requestStatus(input.requestStatusAfter)] : []),
     "Outcome: created",
-    "Ayati-Schema: workstream/v3",
+    "Ayati-Schema: " + COMMIT_SCHEMA,
     "Ayati-Event: workstream_created",
   ].join("\n");
 }
@@ -65,11 +126,19 @@ export function renderWorkstreamCommit(input: WorkstreamCommitInput): string {
     subject(input.subject),
     "",
     "Workstream: " + requireWorkstreamId(input.workstreamId),
+    ...(input.workstreamTitle ? ["Workstream-Title: " + boundedLine(input.workstreamTitle, "Workstream-Title", 120)] : []),
     "Request: " + requireRequestId(input.requestId),
+    ...(input.requestTitle ? ["Request-Title: " + boundedLine(input.requestTitle, "Request-Title", 120)] : []),
+    ...(input.requestStatusAfter ? ["Request-Status-After: " + requestStatus(input.requestStatusAfter)] : []),
     "Run: " + identity(input.runId, "Run"),
     "Agent-Stream: " + identity(input.streamId, "Agent-Stream"),
     "Outcome: " + outcome(input.outcome),
+    ...(input.stopReason ? ["Stop-Reason: " + stopReason(input.stopReason)] : []),
     "Validation: " + validation(input.validation),
+    ...(input.criteria ? ["Criteria: " + criteria(input.criteria)] : []),
+    ...(input.resourceEffects ? ["Resource-Effects: " + resourceEffects(input.resourceEffects)] : []),
+    ...(input.mutationDetails ?? []).map((mutation) => "Mutation: " + renderMutation(mutation)),
+    ...(input.problemCodes ?? []).map((code) => "Problem-Code: " + problemCode(code)),
     "Summary: " + boundedLine(
       input.summary,
       "Summary",
@@ -81,7 +150,7 @@ export function renderWorkstreamCommit(input: WorkstreamCommitInput): string {
       RUN_FINALIZATION_LIMITS.nextChars,
     )] : []),
     "Message-Hash: " + hash(input.messageHash),
-    "Ayati-Schema: workstream/v3",
+    "Ayati-Schema: " + COMMIT_SCHEMA,
     "Ayati-Event: workstream_bound_run_finalized",
     "",
     "Ayati-Workstream: " + requireWorkstreamId(input.workstreamId),
@@ -97,12 +166,13 @@ export function parseWorkstreamCommit(message: string): WorkstreamCommitMetadata
   const lines = message.replaceAll("\r\n", "\n").trim().split("\n");
   const commitSubject = lines[0]?.trim();
   if (!commitSubject) return undefined;
-  const fields = parseFields(lines.slice(1));
+  const { fields, repeated } = parseFields(lines.slice(1));
   const event = fields["Ayati-Event"];
   if (!event) return undefined;
-  if (fields["Ayati-Schema"] !== "workstream/v3") {
+  const schema = fields["Ayati-Schema"];
+  if (schema !== LEGACY_SCHEMA && schema !== COMMIT_SCHEMA) {
     invalid("Workstream commit contains an unsupported Ayati schema.", {
-      schema: fields["Ayati-Schema"] ?? null,
+      schema: schema ?? null,
     });
   }
   const workstreamId = requireWorkstreamId(required(fields, "Workstream"));
@@ -118,7 +188,10 @@ export function parseWorkstreamCommit(message: string): WorkstreamCommitMetadata
       workstreamId,
       requestId,
       outcome: "created",
-      schema: "workstream/v3",
+      ...(fields["Workstream-Title"] ? { workstreamTitle: boundedLine(fields["Workstream-Title"], "Workstream-Title", 120) } : {}),
+      ...(fields["Request-Title"] ? { requestTitle: boundedLine(fields["Request-Title"], "Request-Title", 120) } : {}),
+      ...(fields["Request-Status-After"] ? { requestStatusAfter: requestStatus(fields["Request-Status-After"]) } : {}),
+      schema,
     };
   }
   if (event !== "workstream_bound_run_finalized") {
@@ -134,6 +207,14 @@ export function parseWorkstreamCommit(message: string): WorkstreamCommitMetadata
     streamId: identity(required(fields, "Agent-Stream"), "Agent-Stream"),
     outcome: outcome(required(fields, "Outcome")),
     validation: validation(required(fields, "Validation")),
+    ...(fields["Workstream-Title"] ? { workstreamTitle: boundedLine(fields["Workstream-Title"], "Workstream-Title", 120) } : {}),
+    ...(fields["Request-Title"] ? { requestTitle: boundedLine(fields["Request-Title"], "Request-Title", 120) } : {}),
+    ...(fields["Request-Status-After"] ? { requestStatusAfter: requestStatus(fields["Request-Status-After"]) } : {}),
+    ...(fields["Stop-Reason"] ? { stopReason: stopReason(fields["Stop-Reason"]) } : {}),
+    ...(fields["Criteria"] ? { criteria: parseCriteria(fields["Criteria"]) } : {}),
+    ...(fields["Resource-Effects"] ? { resourceEffects: parseResourceEffects(fields["Resource-Effects"]) } : {}),
+    mutationDetails: (repeated["Mutation"] ?? []).map(parseMutation),
+    problemCodes: (repeated["Problem-Code"] ?? []).map(problemCode),
     summary: boundedLine(
       required(fields, "Summary"),
       "Summary",
@@ -144,8 +225,11 @@ export function parseWorkstreamCommit(message: string): WorkstreamCommitMetadata
     } : {}),
     messageHash: hash(required(fields, "Message-Hash")),
     mutations: parseMutationCount(required(fields, "Ayati-Mutations")),
-    schema: "workstream/v3",
+    schema,
   };
+  if (parsed.mutationDetails.length > 0 && parsed.mutations !== parsed.mutationDetails.length) {
+    invalid("Workstream commit mutation details do not match the mutation count.");
+  }
   if (fields["Ayati-Workstream"] !== workstreamId
     || fields["Ayati-Request"] !== requestId
     || fields["Ayati-Run"] !== parsed.runId
@@ -155,25 +239,38 @@ export function parseWorkstreamCommit(message: string): WorkstreamCommitMetadata
   return parsed;
 }
 
-function parseFields(lines: string[]): Record<string, string> {
-  const result: Record<string, string> = {};
+function parseFields(lines: string[]): {
+  fields: Record<string, string>;
+  repeated: Record<string, string[]>;
+} {
+  const fields: Record<string, string> = {};
+  const repeated: Record<string, string[]> = {};
   for (const line of lines) {
     if (!line.trim()) continue;
     const match = line.match(/^([A-Za-z][A-Za-z-]*):\s*(.+)$/);
     if (!match?.[1] || !match[2]) {
       invalid("Workstream commit contains an invalid metadata line.");
     }
-    if (result[match[1]] !== undefined) {
+    const key = match[1];
+    const value = match[2].trim();
+    if (key === "Mutation" || key === "Problem-Code") {
+      repeated[key] = [...(repeated[key] ?? []), value];
+      continue;
+    }
+    if (fields[key] !== undefined) {
       invalid("Workstream commit contains duplicate metadata.", { field: match[1] });
     }
-    result[match[1]] = match[2].trim();
+    fields[key] = value;
   }
-  return result;
+  return { fields, repeated };
 }
 
 const IDENTITY_FIELDS = new Set([
   "Workstream",
+  "Workstream-Title",
   "Request",
+  "Request-Title",
+  "Request-Status-After",
   "Outcome",
   "Ayati-Schema",
   "Ayati-Event",
@@ -183,7 +280,12 @@ const FINALIZATION_FIELDS = new Set([
   ...IDENTITY_FIELDS,
   "Run",
   "Agent-Stream",
+  "Stop-Reason",
   "Validation",
+  "Criteria",
+  "Resource-Effects",
+  "Mutation",
+  "Problem-Code",
   "Summary",
   "Next",
   "Message-Hash",
@@ -237,10 +339,102 @@ function outcome(value: string): WorkstreamCommitOutcome {
 }
 
 function validation(value: string): WorkstreamCommitValidation {
-  if (value === "passed" || value === "failed" || value === "not_applicable") {
+  if (value === "passed" || value === "failed" || value === "pending"
+    || value === "not_required" || value === "not_applicable") {
     return value;
   }
   invalid("Workstream-bound run commit validation is invalid.", { value });
+}
+
+function requestStatus(value: string): WorkstreamCommitRequestStatus {
+  if (value === "queued" || value === "active" || value === "blocked"
+    || value === "done" || value === "dropped") {
+    return value;
+  }
+  invalid("Workstream commit request status is invalid.", { value });
+}
+
+function stopReason(value: string): string {
+  const normalized = requireSingleLine(value, "Stop-Reason");
+  if (!/^[a-z][a-z0-9_]{1,63}$/.test(normalized)) {
+    invalid("Workstream commit stop reason is invalid.", { value });
+  }
+  return normalized;
+}
+
+function criteria(value: WorkstreamCommitCriteria): string {
+  if (!Number.isSafeInteger(value.passed) || value.passed < 0
+    || !Number.isSafeInteger(value.total) || value.total < 0
+    || value.passed > value.total) {
+    invalid("Workstream commit criteria counts are invalid.");
+  }
+  return `passed=${value.passed} total=${value.total}`;
+}
+
+function parseCriteria(value: string): WorkstreamCommitCriteria {
+  const match = /^passed=(\d+) total=(\d+)$/.exec(value);
+  if (!match) invalid("Workstream commit criteria metadata is invalid.");
+  const result = { passed: Number(match[1]), total: Number(match[2]) };
+  criteria(result);
+  return result;
+}
+
+function resourceEffects(value: WorkstreamCommitResourceEffects): string {
+  return MUTATION_TYPES.map((type) => {
+    const count = value[type];
+    if (!Number.isSafeInteger(count) || count < 0) {
+      invalid("Workstream commit resource effect count is invalid.", { type, count });
+    }
+    return `${type}=${count}`;
+  }).join(" ");
+}
+
+function parseResourceEffects(value: string): WorkstreamCommitResourceEffects {
+  const parts = Object.fromEntries(value.split(" ").map((part) => {
+    const match = /^([a-z_]+)=(\d+)$/.exec(part);
+    if (!match) invalid("Workstream commit resource effects are invalid.");
+    return [match[1], Number(match[2])];
+  }));
+  const unexpected = Object.keys(parts).filter(
+    (type) => !MUTATION_TYPES.includes(type as WorkstreamCommitMutationType),
+  );
+  if (unexpected.length > 0 || MUTATION_TYPES.some((type) => parts[type] === undefined)) {
+    invalid("Workstream commit resource effects are incomplete or unsupported.", { unexpected });
+  }
+  const result = Object.fromEntries(
+    MUTATION_TYPES.map((type) => [type, parts[type]]),
+  ) as WorkstreamCommitResourceEffects;
+  resourceEffects(result);
+  return result;
+}
+
+function renderMutation(value: WorkstreamCommitMutation): string {
+  if (!MUTATION_TYPES.includes(value.type)) {
+    invalid("Workstream commit mutation type is invalid.", { type: value.type });
+  }
+  const resourceId = identity(value.resourceId, "Mutation resource");
+  const summary = boundedLine(value.summary, "Mutation summary", 500);
+  return `${value.type} ${resourceId} — ${summary}`;
+}
+
+function parseMutation(value: string): WorkstreamCommitMutation {
+  const match = /^([a-z_]+) (RES-[A-Za-z0-9]+) — (.+)$/.exec(value);
+  if (!match) invalid("Workstream commit mutation metadata is invalid.");
+  const mutation = {
+    type: match[1] as WorkstreamCommitMutationType,
+    resourceId: match[2] ?? "",
+    summary: match[3] ?? "",
+  };
+  renderMutation(mutation);
+  return mutation;
+}
+
+function problemCode(value: string): string {
+  const normalized = requireSingleLine(value, "Problem-Code");
+  if (!/^[A-Z][A-Z0-9_]{1,127}$/.test(normalized)) {
+    invalid("Workstream commit problem code is invalid.", { value });
+  }
+  return normalized;
 }
 
 function hash(value: string): string {

@@ -44,6 +44,8 @@ import {
 import {
   renderWorkstreamCommit,
   type WorkstreamCommitOutcome,
+  type WorkstreamCommitResourceEffects,
+  type WorkstreamCommitValidation,
 } from "../workstreams/workstream-commit-metadata.js";
 import type { ResourceCatalogService } from "./resource-catalog-service.js";
 import {
@@ -133,13 +135,34 @@ export class WorkstreamFinalizationService {
         const plan: WorkstreamContextCommitPlan = {
           ...prepared.plan,
           commitMessage: renderWorkstreamCommit({
-            subject: "finalize " + input.boundRequestId.toLowerCase() + " run",
+            subject: commitSubject(
+              prepared.commitContext.requestTitle,
+              input.boundRequestId,
+              commitOutcome(input.outcome),
+            ),
             workstreamId: input.workstreamId,
+            workstreamTitle: prepared.commitContext.workstreamTitle,
             requestId: input.boundRequestId,
+            requestTitle: prepared.commitContext.requestTitle,
+            requestStatusAfter: prepared.commitContext.requestStatusAfter,
             runId: input.runId,
             streamId: prepared.run.streamId,
             outcome: commitOutcome(input.outcome),
-            validation: input.validation,
+            stopReason: input.stopReason,
+            validation: commitValidation(input.outcome, input.validation),
+            criteria: {
+              passed: prepared.commitContext.criteriaPassed,
+              total: prepared.commitContext.criteriaTotal,
+            },
+            resourceEffects: resourceEffectCounts(prepared.resourceEvents),
+            mutationDetails: prepared.resourceEvents
+              .filter((event) => MUTATION_EVENT_TYPES.has(event.type))
+              .map((event) => ({
+                type: event.type as keyof WorkstreamCommitResourceEffects,
+                resourceId: event.resourceId,
+                summary: normalizeText(event.summary).slice(0, 500).trimEnd(),
+              })),
+            problemCodes: problemCodes(input.completion.failures),
             summary: prepared.finalSummary,
             ...(input.next ? { next: normalizeText(input.next) } : {}),
             messageHash,
@@ -483,17 +506,66 @@ function commitOutcome(outcome: RunOutcome): WorkstreamCommitOutcome {
   return outcome;
 }
 
+const MUTATION_EVENT_TYPES = new Set([
+  "created",
+  "modified",
+  "moved",
+  "deleted",
+  "restored",
+  "downloaded",
+  "external_state_changed",
+]);
+
 function mutationCount(events: Array<{ type: string }>): number {
-  const mutations = new Set([
-    "created",
-    "modified",
-    "moved",
-    "deleted",
-    "restored",
-    "downloaded",
-    "external_state_changed",
-  ]);
-  return events.filter((event) => mutations.has(event.type)).length;
+  return events.filter((event) => MUTATION_EVENT_TYPES.has(event.type)).length;
+}
+
+function resourceEffectCounts(
+  events: Array<{ type: string }>,
+): WorkstreamCommitResourceEffects {
+  const result: WorkstreamCommitResourceEffects = {
+    created: 0,
+    modified: 0,
+    moved: 0,
+    deleted: 0,
+    restored: 0,
+    downloaded: 0,
+    external_state_changed: 0,
+  };
+  for (const event of events) {
+    if (!MUTATION_EVENT_TYPES.has(event.type)) continue;
+    const type = event.type as keyof WorkstreamCommitResourceEffects;
+    result[type] += 1;
+  }
+  return result;
+}
+
+function commitValidation(
+  outcome: RunOutcome,
+  validation: "passed" | "failed" | "not_applicable",
+): WorkstreamCommitValidation {
+  if (validation === "passed" || validation === "failed") return validation;
+  return outcome === "done" ? "not_required" : "pending";
+}
+
+function commitSubject(
+  requestTitle: string,
+  requestId: string,
+  outcome: WorkstreamCommitOutcome,
+): string {
+  const suffix = ` (${requestId.toLowerCase()}): ${outcome}`;
+  const available = Math.max(1, 72 - suffix.length);
+  const title = normalizeText(requestTitle).slice(0, available).trimEnd();
+  return title + suffix;
+}
+
+function problemCodes(failures: string[]): string[] {
+  const result = new Set<string>();
+  for (const failure of failures) {
+    const match = /^\[?([A-Z][A-Z0-9_]{1,127})\]?:/.exec(failure.trim());
+    if (match?.[1]) result.add(match[1]);
+  }
+  return [...result];
 }
 
 function normalizeText(value: string): string {

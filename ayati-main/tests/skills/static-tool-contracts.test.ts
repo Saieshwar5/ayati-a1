@@ -253,7 +253,16 @@ describe("static built-in tool contracts", () => {
     const calculated = await calculatorExecutor.execute("calculator", { expression: "sqrt(3^2 + 4^2)" });
     expect(calculated.ok).toBe(true);
     expect(calculated.v2?.verification?.status).toBe("passed");
-    expect(calculated.v2?.structuredContent).toMatchObject({ result: "5" });
+    expect(calculated.v2?.structuredContent).toMatchObject({
+      result: "5",
+      finite: true,
+      precisionDigits: 50,
+      roundingMode: "half_up",
+    });
+    expect(calculated.v2?.verification?.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "calculation_evaluated", path: "sqrt(3^2 + 4^2)" }),
+      expect.objectContaining({ kind: "calculation_result", path: "5" }),
+    ]));
 
     const dbExecutor = createToolExecutor(databaseSkill.tools);
     const dbPath = join(tmp, "agent.sqlite");

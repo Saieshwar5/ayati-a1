@@ -1,5 +1,13 @@
 import { type Decimal } from "decimal.js";
-import { CalcDecimal, callFunction, factorial, getConstant, CONSTANTS, FUNCTIONS } from "./functions.js";
+import {
+  CalcDecimal,
+  callFunction,
+  factorial,
+  getConstant,
+  power,
+  CONSTANTS,
+  FUNCTIONS,
+} from "./functions.js";
 import { CalcError, type ASTNode } from "./types.js";
 import { tokenize } from "./tokenizer.js";
 import { parse } from "./parser.js";
@@ -10,12 +18,12 @@ function parseNumberLiteral(value: string): Dec {
   if (value.startsWith("0x") || value.startsWith("0X") ||
       value.startsWith("0b") || value.startsWith("0B") ||
       value.startsWith("0o") || value.startsWith("0O")) {
-    return new CalcDecimal(Number(value));
+    return new CalcDecimal(BigInt(value).toString());
   }
   return new CalcDecimal(value);
 }
 
-export function evaluate(node: ASTNode): Dec {
+function evaluateNode(node: ASTNode): Dec {
   switch (node.kind) {
     case "number":
       return parseNumberLiteral(node.value);
@@ -50,7 +58,7 @@ export function evaluate(node: ASTNode): Dec {
           }
           return left.dividedBy(right);
         }
-        case "^": return left.pow(right);
+        case "^": return power(left, right, node.pos);
       }
       break;
     }
@@ -69,8 +77,18 @@ export function evaluate(node: ASTNode): Dec {
   throw new CalcError("Evaluation error", 0, "UNEXPECTED_TOKEN");
 }
 
+export function evaluate(node: ASTNode): Dec {
+  const result = evaluateNode(node);
+  if (result.isNaN()) {
+    throw new CalcError("Expression has no real-valued result", node.pos, "DOMAIN_ERROR");
+  }
+  if (!result.isFinite()) {
+    throw new CalcError("Expression result is outside the supported numeric range", node.pos, "OVERFLOW");
+  }
+  return result;
+}
+
 export function formatResult(d: Dec): string {
-  if (d.isInteger()) return d.toFixed(0);
   return d.toString();
 }
 

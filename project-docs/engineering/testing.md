@@ -68,19 +68,24 @@ Changes should prove the relevant invariants:
     updated authoritative projection without a harness-side reread or cache.
 16. An unbound mutation first observes ownership through workstream search or
     resource-owner lookup in `observe.locate`, or exact workstream read in
-    `observe.investigate`. Those calls produce exact routing references but
-    cannot satisfy task-completion evidence. A successful current-run
-    observation unlocks control-only `workstream.route`, whose surface is
-    empty. Direct `ENTRY -> workstream.route`, `ENTRY -> resolve`, and
-    observation-to-resolve transitions are unavailable. Route may return to
-    observation or proceed to resolve.
+    `observe.investigate`. Those calls produce exact routing references. Search
+    and owner lookup remain routing-only; an exact workstream read additionally
+    produces only a typed `workstream.snapshot_read` completion outcome for a
+    read-only enquiry. It must not authorize mutation or stand in for
+    filesystem proof. A successful current-run observation unlocks
+    control-only `workstream.route`, whose surface is empty. Direct
+    `ENTRY -> workstream.route`, `ENTRY -> resolve`, and observation-to-resolve
+    transitions are unavailable. Route may return to observation or proceed
+    to resolve.
 17. The deterministic resolve gate makes zero model calls, accepts one typed
     continuation, amendment, activation, resumption, creation, defer-and-switch,
     or new-workstream proposal, rechecks authoritative candidate/resource
-    state, and binds at most one workstream/request on the existing run. One
-    corrected proposal is allowed only after a retryable rejection explicitly
-    recorded before any route plan or binding; all uncertain failures close
-    binding immediately.
+    state, and binds at most one workstream/request on the existing run. The
+    model owns positive semantic intent; the gate rejects explicit no-mutation
+    constraints without keyword-classifying every valid mutation or
+    continuation phrase. One corrected proposal is allowed only after a
+    retryable rejection explicitly recorded before any route plan or binding;
+    all uncertain failures close binding immediately.
 18. Whole-task validation is a stored proof-only mode with no executable
     tools. It checks a small absolute-path checklist against compact completion
     evidence emitted by deterministically verified current-run calls; it does
@@ -96,11 +101,17 @@ Changes should prove the relevant invariants:
     `context.run.verifiedOutcomes` projection contains only current
     validation-ready completion proofs, gives each one a stable exact
     `outcomeRef`, and is rebuildable from the durable call journal. The model
-    selects only these references; tests must reject fabricated, cross-run,
-    routing-only, supporting, duplicate, and stale references. Accepted
+    selects only these references. For a bound request, the same validation
+    decision maps every acceptance-criterion index to selected refs; this adds
+    no model or tool round trip. Tests must reject missing criterion indexes,
+    duplicate mappings, refs omitted from the top-level selection, fabricated,
+    cross-run, routing-only, supporting, duplicate, and stale references.
+    Accepted
     terminal completion promotes at most four selected
     passed checks into bounded WorkState receipts with exact proof references;
-    failed checks and raw verifier payloads are excluded.
+    failed checks and raw verifier payloads are excluded. Durable progress must
+    cite the exact resolved proof refs and must not reuse assistant prose as
+    criterion evidence.
 19. Context candidates are disposable, lane-scoped, source-hashed, and valid
     across append-only tail growth only. Restart loses no authoritative data.
 20. Background run-focus work has one provider-scoped slot, never blocks
@@ -189,12 +200,12 @@ Changes should prove the relevant invariants:
     `files.recent`, and preserves both views through restart/checkpoint
     projection. These are navigation pointers, not read admission, mutation
     authority, or current-content proof.
-33. `system:time` and `system:health` enter investigation without a resource
-    reference, while target-backed or mixed investigation capabilities still
-    require one. An exact filesystem-only `file:read` reference may enter
-    without earlier grounding evidence; its tool boundary still validates the
-    path, policy, file type, content, and read result. Other target-backed
-    references retain provenance checks. System outputs are bounded,
+33. `utility:calculator`, `system:time`, and `system:health` enter investigation
+    without a resource reference, while target-backed or mixed investigation
+    capabilities still require one. An exact filesystem-only `file:read`
+    reference may enter without earlier grounding evidence; its tool boundary
+    still validates the path, policy, file type, content, and read result. Other
+    target-backed references retain provenance checks. System outputs are bounded,
     privacy-safe, contract-verified, and become typed current-run validation
     outcomes without a second sample.
 34. A verified multi-match `find_files` call projects a bounded factual
@@ -288,6 +299,14 @@ Changes should prove the relevant invariants:
 49. Chat and system-event entry share one FIFO agent-run queue. A later input
     cannot prepare or execute while an earlier run still owns target-local
     verification, and shutdown drains the queue.
+50. Once initialized, the exact shared workstream repository path, branch,
+    HEAD, health, and read-only/context-only labels appear once in run context.
+    Managed log/show/diff reject another path, invalid commit refs, mismatched
+    branch or HEAD, and over-limit output. Mixed legacy `workstream/v3` and new
+    `workstream-commit/v1` history remains readable. New finalization commits
+    carry request status, stop reason, validation, criteria, verified resource
+    effects, mutation receipts, problems, summary, and next action without
+    granting workstream binding or mutation authority.
 
 ## Prompt and Harness Coverage
 
@@ -315,7 +334,8 @@ Prompt snapshots must expose only core/hot/tools/harness/run lanes. Core
 snapshots must preserve exact sequence identity, assistant response semantics,
 and per-message attachment references. They must exclude work/resource/
 observation prompt lanes, the replaced temporal/current/stream prompt objects,
-internal storage paths, observation authority fields, idempotency state, and
+internal storage paths other than the exact read-only shared workstream
+repository pointer, observation authority fields, idempotency state, and
 reusable action context.
 
 Pressure tests must measure the whole candidate and prove recovery order:

@@ -1,6 +1,11 @@
 import type { SkillDefinition, ToolDefinition, ToolResult } from "../../types.js";
 import { commonAnnotations, errorResult, okResult, succeededContract, successV2 } from "../contract-helpers.js";
 import { calculate } from "./evaluator.js";
+import {
+  CALCULATOR_LIMITS,
+  CALCULATOR_PRECISION_DIGITS,
+  CALCULATOR_ROUNDING_MODE,
+} from "./limits.js";
 import { CalcError } from "./types.js";
 
 interface CalcInput {
@@ -22,20 +27,27 @@ function validateInput(input: unknown): CalcInput | ToolResult {
 
 export const calculatorTool: ToolDefinition = {
   name: "calculator",
-  description: "Evaluate a mathematical expression with arbitrary-precision decimal arithmetic.",
+  description: "Evaluate a bounded real-valued expression with 50-significant-digit decimal arithmetic.",
   inputSchema: {
     type: "object",
     required: ["expression"],
     properties: {
-      expression: { type: "string", description: "Mathematical expression to evaluate." },
+      expression: {
+        type: "string",
+        maxLength: CALCULATOR_LIMITS.expressionCharacters,
+        description: "Real-valued expression. Prefer explicit *; trigonometric arguments use radians.",
+      },
     },
   },
   outputSchema: {
     type: "object",
-    required: ["expression", "result"],
+    required: ["expression", "result", "finite", "precisionDigits", "roundingMode"],
     properties: {
       expression: { type: "string" },
       result: { type: "string" },
+      finite: { type: "boolean" },
+      precisionDigits: { type: "integer" },
+      roundingMode: { type: "string" },
     },
   },
   annotations: commonAnnotations({
@@ -49,12 +61,24 @@ export const calculatorTool: ToolDefinition = {
       id: "calculation_result_present",
       kind: "json_path_exists",
       path: "$.result.structuredContent.result",
+    }, {
+      id: "calculation_result_finite",
+      kind: "json_path_equals",
+      path: "$.result.structuredContent.finite",
+      value: true,
     }],
-    progressFacts: [{
-      kind: "calculation_evaluated",
-      path: "$.result.structuredContent.expression",
-      message: "Calculator expression evaluated.",
-    }],
+    progressFacts: [
+      {
+        kind: "calculation_evaluated",
+        path: "$.result.structuredContent.expression",
+        message: "Calculator expression evaluated to a finite real value.",
+      },
+      {
+        kind: "calculation_result",
+        path: "$.result.structuredContent.result",
+        message: "Finite calculator result produced.",
+      },
+    ],
   }),
   async execute(input): Promise<ToolResult> {
     const parsed = validateInput(input);
@@ -70,10 +94,15 @@ export const calculatorTool: ToolDefinition = {
       const structuredContent = {
         expression: parsed.expression,
         result,
+        finite: true,
+        precisionDigits: CALCULATOR_PRECISION_DIGITS,
+        roundingMode: CALCULATOR_ROUNDING_MODE,
       };
       const meta = {
         expression: parsed.expression,
         durationMs,
+        precisionDigits: CALCULATOR_PRECISION_DIGITS,
+        roundingMode: CALCULATOR_ROUNDING_MODE,
       };
       return okResult({
         output: result,
@@ -128,7 +157,7 @@ export const calculatorTool: ToolDefinition = {
 const calculatorSkill: SkillDefinition = {
   id: "calculator",
   version: "1.0.0",
-  description: "Arbitrary-precision calculator with full math function support.",
+  description: "Bounded real-valued calculator with 50-significant-digit decimal arithmetic.",
   tools: [calculatorTool],
 };
 

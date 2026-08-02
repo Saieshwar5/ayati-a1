@@ -27,6 +27,10 @@ describe("mode transition request normalization", () => {
       purpose: "Validate the requested source lines.",
       capabilities: ["task:validation"],
       outcomeRefs: ["  run:RUN-1:step:1:call:read-1:outcome:1  "],
+      criterionProofs: [{
+        criterionIndex: 0,
+        outcomeRefs: ["  run:RUN-1:step:1:call:read-1:outcome:1  "],
+      }],
       resourceMetadata: [{
         path: "/tmp/source.ts",
         displayName: "  Source file  ",
@@ -36,6 +40,10 @@ describe("mode transition request normalization", () => {
     })).toMatchObject({
       to: "validation",
       outcomeRefs: ["run:RUN-1:step:1:call:read-1:outcome:1"],
+      criterionProofs: [{
+        criterionIndex: 0,
+        outcomeRefs: ["run:RUN-1:step:1:call:read-1:outcome:1"],
+      }],
       resourceMetadata: [{
         path: "/tmp/source.ts",
         displayName: "Source file",

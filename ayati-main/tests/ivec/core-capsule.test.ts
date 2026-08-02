@@ -3,12 +3,32 @@ import type { ContextCheckpointRecord } from "ayati-context-engine";
 import type { AgentTemporalEvent } from "../../src/ivec/agent-runner/agent-context-events.js";
 import {
   buildCoreCapsule,
+  CORE_CAPSULE_CONTINUITY_MAX_TOKENS,
   replaceCoreCapsuleRecentExact,
 } from "../../src/ivec/agent-runner/core-capsule.js";
 
 const AT = "2026-07-24T10:00:00.000Z";
 
 describe("Core Capsule", () => {
+  it("uses an 8K default continuity budget before checkpoint maintenance", () => {
+    const capsule = buildCoreCapsule({
+      revision: "context:default-budget",
+      runId: "RUN-DEFAULT-BUDGET",
+      timeline: [
+        user(1, "A".repeat(9_000)),
+        assistant(2, "B".repeat(9_000)),
+        user(3, "Recent request"),
+        assistant(4, "Recent response"),
+        user(5, "Current request", true),
+      ],
+    });
+
+    expect(CORE_CAPSULE_CONTINUITY_MAX_TOKENS).toBe(8_000);
+    expect(capsule.budget.continuityMaxTokens).toBe(8_000);
+    expect(capsule.continuity.recentExact.map((event) => event.seq)).toEqual([1, 2, 3, 4]);
+    expect(capsule.continuity.maintenanceRequired).toBe(false);
+  });
+
   it("projects the exact current input once and keeps routing exact", () => {
     const capsule = buildCoreCapsule({
       revision: "context:1",

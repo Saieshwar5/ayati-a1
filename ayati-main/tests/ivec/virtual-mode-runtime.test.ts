@@ -28,6 +28,7 @@ const SEARCH_TOOL = tool("search_in_files");
 const PATCH_TOOL = tool("patch_files");
 const WRITE_TOOL = tool("write_files");
 const CREATE_TOOL = tool("create_directory");
+const CALCULATOR_TOOL = tool("calculator");
 const SYSTEM_TIME_TOOL = tool("system_time");
 const SYSTEM_HEALTH_TOOL = tool("system_health");
 const DB_QUERY_TOOL = tool("db_query");
@@ -166,7 +167,18 @@ describe("virtual mode runtime", () => {
     });
   });
 
-  it("allows targetless system observations while retaining targets for file reads", async () => {
+  it("allows targetless read-only observations while retaining targets for file reads", async () => {
+    const calculator = await transition(state("Calculate 2 * 3 ^ 2."), {
+      to: "observe.investigate",
+      purpose: "Evaluate the requested arithmetic expression.",
+      capabilities: ["utility:calculator"],
+    }, [CALCULATOR_TOOL]);
+    expect(calculator).toMatchObject({
+      kind: "applied",
+      active: "observe.investigate",
+      toolNames: ["calculator"],
+    });
+
     const time = await transition(state("What time is it?"), {
       to: "observe.investigate",
       purpose: "Observe the current configured time.",
@@ -213,6 +225,20 @@ describe("virtual mode runtime", () => {
       [...READ_TOOLS, SYSTEM_TIME_TOOL],
     );
     expect(mixedWithoutReference).toMatchObject({
+      kind: "rejected",
+      repair: { code: "MODE_TARGET_REQUIRED" },
+    });
+
+    const calculatorAndFileWithoutReference = await transition(
+      state("Calculate the value and read the relevant file."),
+      {
+        to: "observe.investigate",
+        purpose: "Calculate a value and read an exact file.",
+        capabilities: ["utility:calculator", "file:read"],
+      },
+      [CALCULATOR_TOOL, ...READ_TOOLS],
+    );
+    expect(calculatorAndFileWithoutReference).toMatchObject({
       kind: "rejected",
       repair: { code: "MODE_TARGET_REQUIRED" },
     });
@@ -836,27 +862,26 @@ describe("virtual mode runtime", () => {
     });
   });
 
-  it("retains explicit no-change language as an authoritative constraint", () => {
+  it("retains explicit no-change language and scoped boundaries as authoritative constraints", () => {
     expect(deriveTurnMutationConstraints("Inspect this file but do not modify anything.")).toEqual({
       mutationForbidden: true,
       observationalOnly: true,
-      mutationRequested: false,
       observationRequested: true,
       scopePolicy: {
         allowedScopes: [],
         denyOutsideAllowedScopes: false,
       },
     });
-    expect(deriveTurnMutationConstraints("Read the file, then edit the heading.")).toMatchObject({
+    expect(deriveTurnMutationConstraints(
+      "Please continue and finish the same request.",
+    )).toMatchObject({
       mutationForbidden: false,
-      mutationRequested: true,
-      observationRequested: true,
+      observationalOnly: false,
     });
     expect(deriveTurnMutationConstraints(
       "Build the website in /tmp/site. Do not modify anything outside /tmp/site.",
     )).toMatchObject({
       mutationForbidden: false,
-      mutationRequested: true,
       scopePolicy: {
         allowedScopes: ["/tmp/site"],
         denyOutsideAllowedScopes: true,

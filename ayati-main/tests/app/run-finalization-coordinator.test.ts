@@ -64,7 +64,18 @@ describe("run finalization coordinator", () => {
         criteria: [{
           criterion: "The responsive homepage is verified.",
           passed: true,
-          evidence: "Created the page.",
+          proofs: [{
+            outcomeRef: "run:R-workstream:step:1:call:write-page:outcome:0",
+            kind: "file.written",
+            subject: "/ayati/workspace/site/index.html",
+            summary: "Verified file.written for /ayati/workspace/site/index.html.",
+            source: {
+              step: 1,
+              callId: "write-page",
+              tool: "write_files",
+              ref: "verification:R-workstream:write-page",
+            },
+          }],
         }],
         resources: [{
           locator: { kind: "filesystem", path: "/ayati/workspace/site/index.html" },
@@ -123,7 +134,9 @@ describe("run finalization coordinator", () => {
     expect(request?.summary.length).toBeLessThanOrEqual(2_000);
     expect(request?.next.length).toBeLessThanOrEqual(1_000);
     expect(request?.workState.nextAction.length).toBeLessThanOrEqual(320);
-    expect(request?.workstreamCompletion.criteria[0]?.evidence?.length).toBeLessThanOrEqual(2_000);
+    expect(request?.workstreamCompletion.criteria[0]).not.toHaveProperty("evidence");
+    expect(request?.workstreamCompletion.criteria[0]?.proofs?.[0]?.outcomeRef)
+      .toBe("run:R-clarification:step:1:call:write-page:outcome:0");
   });
 
   it("omits a redundant primary directory when exact child deliverables are present", () => {
@@ -149,6 +162,53 @@ describe("run finalization coordinator", () => {
       kind: "file",
       role: "deliverable",
     })]);
+  });
+
+  it("does not substitute assistant prose when criterion proof is absent", () => {
+    const result = workstreamResult("R-no-proof");
+    delete result.validatedCriteria;
+
+    const projection = buildAgentRunFinalizationProjection({
+      result,
+      workstreamBound: true,
+    });
+
+    expect(projection.workstreamCompletion).toMatchObject({
+      accepted: false,
+      criteria: [{
+        criterion: "The responsive homepage is verified.",
+        passed: false,
+      }],
+      missing: [expect.stringContaining("Deterministic proof for criterion")],
+    });
+    expect(projection.workstreamCompletion?.criteria[0]).not.toHaveProperty("evidence");
+    expect(JSON.stringify(projection.workstreamCompletion)).not.toContain("Created the page.");
+  });
+
+  it("preserves useful structured proof when a criterion remains unaccepted", () => {
+    const result = workstreamResult("R-partial-proof");
+    result.outcome = "incomplete";
+    result.stopReason = "run_limit";
+    result.workState = {
+      ...result.workState!,
+      status: "in_progress",
+    };
+    result.validatedCriteria![0]!.passed = false;
+
+    const projection = buildAgentRunFinalizationProjection({
+      result,
+      workstreamBound: true,
+    });
+
+    expect(projection.workstreamCompletion).toMatchObject({
+      accepted: false,
+      criteria: [{
+        passed: false,
+        proofs: [{
+          outcomeRef: "run:R-partial-proof:step:1:call:write-page:outcome:0",
+        }],
+      }],
+    });
   });
 
   it("does not acknowledge a run when durable finalization fails", async () => {
@@ -294,6 +354,22 @@ function workstreamResult(runId: string): AgentLoopResult {
       description: "Generated homepage",
       aliases: ["homepage"],
       locator: { kind: "filesystem", path: "/ayati/workspace/site/index.html" },
+    }],
+    validatedCriteria: [{
+      criterion: "The responsive homepage is verified.",
+      passed: true,
+      proofs: [{
+        outcomeRef: `run:${runId}:step:1:call:write-page:outcome:0`,
+        kind: "file.written",
+        subject: "/ayati/workspace/site/index.html",
+        summary: "Verified file.written for /ayati/workspace/site/index.html.",
+        source: {
+          step: 1,
+          callId: "write-page",
+          tool: "write_files",
+          ref: `verification:${runId}:write-page`,
+        },
+      }],
     }],
     harnessContext: {
       contextEngine: preparedTurn(runId, true).context,

@@ -66,6 +66,10 @@ describe("tool taxonomy", () => {
     expect(isToolAllowedInPhase("git_context_create_workstream", "workstream_bound")).toBe(false);
     expect(getToolPurpose("git_context_find_workstreams")).toBe("search");
     expect(getToolPurpose("git_context_read_workstream")).toBe("read");
+    expect(getToolPurpose("git_context_log")).toBe("search");
+    expect(getToolPurpose("git_context_show")).toBe("read");
+    expect(getToolPurpose("git_context_diff")).toBe("read");
+    expect(hasMutationEffect("git_context_diff")).toBe(false);
     expect(getToolPurpose("git_context_set_workstream_star")).toBe("control");
     expect(canRunBeforeWorkstream("git_context_set_workstream_star")).toBe(true);
 

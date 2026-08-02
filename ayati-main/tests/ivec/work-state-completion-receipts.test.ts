@@ -189,6 +189,28 @@ describe("WorkState validation completion receipts", () => {
     }]);
   });
 
+  it("describes calculator proof as evaluation of the expression", () => {
+    expect(buildValidationCompletionReceipts({
+      runId: RUN_ID,
+      checks: [passedCheck("calculation.evaluated", "14 * 3", 7)],
+    })).toEqual([{
+      kind: "finding",
+      value: "Verified calculation of 14 * 3.",
+      ref: `run:${RUN_ID}:step:7:call:call-7`,
+    }]);
+  });
+
+  it("keeps a compact receipt for a validated workstream snapshot read", () => {
+    expect(buildValidationCompletionReceipts({
+      runId: RUN_ID,
+      checks: [passedCheck("workstream.snapshot_read", "W-20260802-0001", 8)],
+    })).toEqual([{
+      kind: "finding",
+      value: "Verified a committed snapshot read for workstream W-20260802-0001.",
+      ref: `run:${RUN_ID}:step:8:call:call-8`,
+    }]);
+  });
+
   it("keeps a compact denial receipt without calling it a successful mutation", () => {
     const check = passedCheck("tool.call_denied", "call-denied", 8);
     check.denialCode = "PATH_OUTSIDE_MUTATION_WORKSPACE";

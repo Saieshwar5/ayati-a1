@@ -21,6 +21,9 @@ export function buildContextEngineProjection(
     contextRevision: context.contextRevision,
     streamRevision: context.streamRevision,
     ...(context.runRevision ? { runRevision: context.runRevision } : {}),
+    ...(context.workstreamRepository
+      ? { workstreamRepository: context.workstreamRepository }
+      : {}),
     agentStream: stream
       ? {
           meta: {

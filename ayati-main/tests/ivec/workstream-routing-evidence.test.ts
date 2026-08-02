@@ -7,6 +7,38 @@ import type { LoopState } from "../../src/ivec/types.js";
 import { contextEngineFixture } from "../fixtures/agent-context.js";
 
 describe("workstream routing evidence", () => {
+  it("keeps repository history as navigation rather than direct binding evidence", () => {
+    const current = state();
+    current.toolContext = {
+      recent: [],
+      toolCalls: [{
+        step: 1,
+        callId: "history-log",
+        tool: "git_context_log",
+        purpose: "Find recent durable work that may explain the continuation.",
+        input: { repositoryPath: "/tmp/workstreams", limit: 5 },
+        status: "success",
+        output: JSON.stringify({
+          commits: [{
+            commit: "a".repeat(40),
+            workstreamId: "W-20260729-0001",
+            requestId: "R-0002",
+            outcome: "incomplete",
+          }],
+        }),
+        evidenceRef: "run:RUN-1:step:1:call:history-log",
+        stepRef: { runId: "RUN-1", step: 1, callId: "history-log" },
+      }],
+    };
+
+    expect(collectWorkstreamRoutingEvidence(current)).toEqual({
+      observed: false,
+      references: [],
+      workstreams: [],
+      resources: [],
+    });
+  });
+
   it("derives resource ownership and filesystem paths from an exact workstream read", () => {
     const current = state();
     current.toolContext = {

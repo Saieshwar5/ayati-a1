@@ -39,6 +39,12 @@ import type {
   ReadAgentHistoryResponse,
   ReadWorkstreamRequest,
   ReadWorkstreamResponse,
+  ReadWorkstreamRepositoryCommitRequest,
+  ReadWorkstreamRepositoryCommitResponse,
+  ReadWorkstreamRepositoryDiffRequest,
+  ReadWorkstreamRepositoryDiffResponse,
+  ReadWorkstreamRepositoryLogRequest,
+  ReadWorkstreamRepositoryLogResponse,
   RecordRunStepRequest,
   RecordRunStepResponse,
   RecordWorkstreamResolutionStepRequest,
@@ -94,6 +100,15 @@ export interface ContextEngineService {
   findWorkstreams(input: FindWorkstreamsRequest): Promise<FindWorkstreamsResponse>;
   getWorkstream(input: GetWorkstreamRequest): Promise<GetWorkstreamResponse>;
   readWorkstream(input: ReadWorkstreamRequest): Promise<ReadWorkstreamResponse>;
+  readWorkstreamRepositoryLog(
+    input: ReadWorkstreamRepositoryLogRequest,
+  ): Promise<ReadWorkstreamRepositoryLogResponse>;
+  readWorkstreamRepositoryCommit(
+    input: ReadWorkstreamRepositoryCommitRequest,
+  ): Promise<ReadWorkstreamRepositoryCommitResponse>;
+  readWorkstreamRepositoryDiff(
+    input: ReadWorkstreamRepositoryDiffRequest,
+  ): Promise<ReadWorkstreamRepositoryDiffResponse>;
   setWorkstreamStar(input: SetWorkstreamStarRequest): Promise<SetWorkstreamStarResponse>;
   findResources(input: FindResourcesRequest): Promise<FindResourcesResponse>;
   inspectResourceForRun(input: InspectResourceForRunRequest): Promise<InspectResourceForRunResponse>;

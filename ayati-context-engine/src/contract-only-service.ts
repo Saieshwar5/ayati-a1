@@ -40,6 +40,12 @@ import {
   type ReadAgentHistoryResponse,
   type ReadWorkstreamRequest,
   type ReadWorkstreamResponse,
+  type ReadWorkstreamRepositoryCommitRequest,
+  type ReadWorkstreamRepositoryCommitResponse,
+  type ReadWorkstreamRepositoryDiffRequest,
+  type ReadWorkstreamRepositoryDiffResponse,
+  type ReadWorkstreamRepositoryLogRequest,
+  type ReadWorkstreamRepositoryLogResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
   type RecordWorkstreamResolutionStepRequest,
@@ -164,6 +170,24 @@ export class ContractOnlyContextEngineService implements ContextEngineService {
   }
 
   async readWorkstream(_input: ReadWorkstreamRequest): Promise<ReadWorkstreamResponse> {
+    throw notReady();
+  }
+
+  async readWorkstreamRepositoryLog(
+    _input: ReadWorkstreamRepositoryLogRequest,
+  ): Promise<ReadWorkstreamRepositoryLogResponse> {
+    throw notReady();
+  }
+
+  async readWorkstreamRepositoryCommit(
+    _input: ReadWorkstreamRepositoryCommitRequest,
+  ): Promise<ReadWorkstreamRepositoryCommitResponse> {
+    throw notReady();
+  }
+
+  async readWorkstreamRepositoryDiff(
+    _input: ReadWorkstreamRepositoryDiffRequest,
+  ): Promise<ReadWorkstreamRepositoryDiffResponse> {
     throw notReady();
   }
 

@@ -42,6 +42,12 @@ import {
   type ReadAgentHistoryResponse,
   type ReadWorkstreamRequest,
   type ReadWorkstreamResponse,
+  type ReadWorkstreamRepositoryCommitRequest,
+  type ReadWorkstreamRepositoryCommitResponse,
+  type ReadWorkstreamRepositoryDiffRequest,
+  type ReadWorkstreamRepositoryDiffResponse,
+  type ReadWorkstreamRepositoryLogRequest,
+  type ReadWorkstreamRepositoryLogResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
   type RecordWorkstreamResolutionStepRequest,
@@ -112,6 +118,7 @@ import { WorkstreamBoundFinalizationService } from "./workstream-bound-finalizat
 import { WorkstreamDiscoveryService } from "./workstream-discovery-service.js";
 import { WorkstreamLifecycleService } from "./workstream-lifecycle-service.js";
 import { WorkstreamRequestRoutingService } from "./workstream-request-routing-service.js";
+import { WorkstreamRepositoryInspectionService } from "./workstream-repository-inspection-service.js";
 
 export interface SqliteContextEngineServiceOptions {
   database: ContextDatabase;
@@ -138,6 +145,7 @@ export class SqliteContextEngineService implements ContextEngineService {
   private readonly agentContext: AgentContextProjectionService;
   private readonly checkpoints: ContextCheckpointService;
   private readonly history: AgentHistoryService;
+  private readonly workstreamRepositoryInspection: WorkstreamRepositoryInspectionService;
   private closed = false;
   private startupRecovered = false;
 
@@ -237,6 +245,10 @@ export class SqliteContextEngineService implements ContextEngineService {
     });
     this.checkpoints = new ContextCheckpointService(this.database);
     this.history = new AgentHistoryService(this.database);
+    this.workstreamRepositoryInspection = new WorkstreamRepositoryInspectionService({
+      database: this.database,
+      workstreamRoot,
+    });
   }
 
   async getHealth(): Promise<ContextEngineHealth> {
@@ -713,6 +725,36 @@ export class SqliteContextEngineService implements ContextEngineService {
           };
         },
       });
+    });
+  }
+
+  async readWorkstreamRepositoryLog(
+    input: ReadWorkstreamRepositoryLogRequest,
+  ): Promise<ReadWorkstreamRepositoryLogResponse> {
+    return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
+      this.requireActiveRun(input.runId);
+      return await this.workstreamRepositoryInspection.readLog(input);
+    });
+  }
+
+  async readWorkstreamRepositoryCommit(
+    input: ReadWorkstreamRepositoryCommitRequest,
+  ): Promise<ReadWorkstreamRepositoryCommitResponse> {
+    return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
+      this.requireActiveRun(input.runId);
+      return await this.workstreamRepositoryInspection.readCommit(input);
+    });
+  }
+
+  async readWorkstreamRepositoryDiff(
+    input: ReadWorkstreamRepositoryDiffRequest,
+  ): Promise<ReadWorkstreamRepositoryDiffResponse> {
+    return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
+      this.requireActiveRun(input.runId);
+      return await this.workstreamRepositoryInspection.readDiff(input);
     });
   }
 

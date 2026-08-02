@@ -126,13 +126,37 @@ describe("workstream context contracts", () => {
 
   it("stores a compact per-run summary in finalization commit metadata", () => {
     const message = renderWorkstreamCommit({
-      subject: "finalize r-0001 run",
+      subject: "update example output (r-0001): incomplete",
       workstreamId: "W-20260719-0001",
+      workstreamTitle: "Example output",
       requestId: "R-0001",
+      requestTitle: "Update example output",
+      requestStatusAfter: "active",
       runId: "R-20260719-0001",
       streamId: "AST-1234567890ABCDEF12345678",
       outcome: "incomplete",
+      stopReason: "run_limit",
       validation: "passed",
+      criteria: { passed: 2, total: 3 },
+      resourceEffects: {
+        created: 1,
+        modified: 1,
+        moved: 0,
+        deleted: 0,
+        restored: 0,
+        downloaded: 0,
+        external_state_changed: 0,
+      },
+      mutationDetails: [{
+        type: "created",
+        resourceId: "RES-1234567890ABCDEF12345678",
+        summary: "Created the example file.",
+      }, {
+        type: "modified",
+        resourceId: "RES-ABCDEF1234567890ABCDEF12",
+        summary: "Updated the example index.",
+      }],
+      problemCodes: ["VALIDATION_PENDING"],
       summary: "Built the first two examples and verified both.",
       next: "Build the third borrowing example.",
       messageHash: "sha256:" + "a".repeat(64),
@@ -144,6 +168,47 @@ describe("workstream context contracts", () => {
       summary: "Built the first two examples and verified both.",
       next: "Build the third borrowing example.",
       mutations: 2,
+      requestStatusAfter: "active",
+      stopReason: "run_limit",
+      validation: "passed",
+      criteria: { passed: 2, total: 3 },
+      mutationDetails: [{
+        type: "created",
+        resourceId: "RES-1234567890ABCDEF12345678",
+      }, {
+        type: "modified",
+        resourceId: "RES-ABCDEF1234567890ABCDEF12",
+      }],
+      problemCodes: ["VALIDATION_PENDING"],
+      schema: "workstream-commit/v1",
+    });
+  });
+
+  it("continues to parse legacy workstream commit metadata", () => {
+    expect(parseWorkstreamCommit([
+      "finalize r-0001 run",
+      "",
+      "Workstream: W-20260719-0001",
+      "Request: R-0001",
+      "Run: RUN-12345678-0000000001",
+      "Agent-Stream: AST-1234567890ABCDEF12345678",
+      "Outcome: incomplete",
+      "Validation: not_applicable",
+      "Summary: Continue the existing request.",
+      `Message-Hash: sha256:${"a".repeat(64)}`,
+      "Ayati-Schema: workstream/v3",
+      "Ayati-Event: workstream_bound_run_finalized",
+      "",
+      "Ayati-Workstream: W-20260719-0001",
+      "Ayati-Request: R-0001",
+      "Ayati-Run: RUN-12345678-0000000001",
+      "Ayati-Outcome: incomplete",
+      "Ayati-Mutations: 0",
+    ].join("\n"))).toMatchObject({
+      schema: "workstream/v3",
+      outcome: "incomplete",
+      mutationDetails: [],
+      problemCodes: [],
     });
   });
 

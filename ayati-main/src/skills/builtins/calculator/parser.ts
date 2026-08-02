@@ -137,8 +137,9 @@ export function parse(tokens: Token[]): ASTNode {
       const tok = peek();
 
       if (isImplicitMul(tok)) {
-        // Implicit multiplication — don't consume the token as an operator
-        const right = nud(advance());
+        // Preserve normal precedence on the implicit right-hand side, so
+        // 2pi^2 means 2 * (pi^2), not (2 * pi)^2.
+        const right = parseExpr(BP_MUL);
         left = { kind: "binary", op: "*", left, right, pos: tok.pos };
         continue;
       }

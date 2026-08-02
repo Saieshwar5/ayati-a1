@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { tokenize } from "../../../src/skills/builtins/calculator/tokenizer.js";
 import { CalcError } from "../../../src/skills/builtins/calculator/types.js";
+import { CALCULATOR_LIMITS } from "../../../src/skills/builtins/calculator/limits.js";
 
 describe("tokenizer", () => {
   it("tokenizes integers", () => {
@@ -103,5 +104,32 @@ describe("tokenizer", () => {
     const tokens = tokenize("");
     expect(tokens).toHaveLength(1);
     expect(tokens[0]!.type).toBe("EOF");
+  });
+
+  it("rejects expressions beyond the character limit", () => {
+    expect(() => tokenize("1".repeat(CALCULATOR_LIMITS.expressionCharacters + 1))).toThrowError(
+      expect.objectContaining({ code: "EXPRESSION_TOO_LONG" }),
+    );
+  });
+
+  it("rejects excessive token counts", () => {
+    const expression = Array.from({ length: 300 }, () => "1").join("+");
+    expect(() => tokenize(expression)).toThrowError(
+      expect.objectContaining({ code: "EXPRESSION_TOO_COMPLEX" }),
+    );
+  });
+
+  it("rejects excessive nesting", () => {
+    const depth = CALCULATOR_LIMITS.nestingDepth + 1;
+    const expression = `${"(".repeat(depth)}1${")".repeat(depth)}`;
+    expect(() => tokenize(expression)).toThrowError(
+      expect.objectContaining({ code: "EXPRESSION_TOO_COMPLEX" }),
+    );
+  });
+
+  it("rejects oversized numeric literals", () => {
+    expect(() => tokenize("1".repeat(CALCULATOR_LIMITS.numericLiteralCharacters + 1))).toThrowError(
+      expect.objectContaining({ code: "EXPRESSION_TOO_COMPLEX" }),
+    );
   });
 });

@@ -4,6 +4,7 @@ import {
   type CurrentRunVerificationIndex,
 } from "./run-verification-index.js";
 import { resolveValidationOutcomeRefs } from "./task-validation-outcome-selection.js";
+import { validateCriterionProofSelections } from "./task-validation-criteria.js";
 import {
   createVirtualModeRepair,
   type ModeTransitionRequest,
@@ -25,6 +26,7 @@ export function prepareTaskValidationTransition(input: {
   runId: string;
   calls?: RunToolCallContext[];
   request: ModeTransitionRequest;
+  acceptance?: readonly string[];
 }): PreparedTaskValidationTransition {
   const index = buildCurrentRunVerificationIndex({
     runId: input.runId,
@@ -42,6 +44,23 @@ export function prepareTaskValidationTransition(input: {
         selection.message,
         [selection.outcomeRef],
         selection.allowedNextActions,
+      ),
+    };
+  }
+
+  const criterionIssue = validateCriterionProofSelections({
+    acceptance: input.acceptance ?? [],
+    outcomeRefs: input.request.outcomeRefs ?? [],
+    selections: input.request.criterionProofs ?? [],
+  });
+  if (criterionIssue) {
+    return {
+      ok: false,
+      repair: createVirtualModeRepair(
+        "MODE_INPUT_INVALID",
+        criterionIssue.message,
+        criterionIssue.subjects,
+        criterionIssue.allowedNextActions,
       ),
     };
   }

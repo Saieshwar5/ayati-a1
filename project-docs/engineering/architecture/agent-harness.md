@@ -220,11 +220,13 @@ Before any unbound mutation, it observes durable ownership through
 and `ENTRY -> resolve` are unavailable. A successful current-run ownership
 observation unlocks the control-only route stage. That stage clears
 observation tools, exposes the resolve controls, and can return to observation
-if more evidence is needed. An accepted transition to `resolve` must then have
-mutation-permitting intent, a binding-required capability, and one typed
-request-routing or workstream-creation proposal. Existing activation
-supplies the observed workstream, lifecycle choice, and exact routed resource
-IDs. The runtime uses them to ground activation, then derives ownership,
+if more evidence is needed. The model enters `resolve` only when it
+semantically understands the user to want mutation or continuation. The
+deterministic gate rejects an explicit no-mutation constraint but does not
+keyword-classify positive intent. It still requires a binding-required
+capability and one typed request-routing or workstream-creation proposal.
+Existing activation supplies the observed workstream, lifecycle choice, and
+exact routed resource IDs. The runtime uses them to ground activation, then derives ownership,
 repository HEAD, evidence, and every eligible mutable filesystem root from the
 authoritative activated bindings. Creation instead supplies typed
 `workspaceTargets`; the runtime derives their absolute selected roots and
@@ -286,13 +288,18 @@ decision_resolve_create({
 The model-facing routing observations are `workstream:search` and
 `resource:ownership` in `observe.locate`, plus `workstream:read` in
 `observe.investigate`. Their calls are persisted as ordinary observation
-steps, but their evidence is tagged as routing evidence and cannot satisfy
-whole-task completion. Read-only workstream questions stay in observation and
-never bind. Mutation flows use the same evidence, then pass through
-`workstream.route`; observation modes cannot proceed directly to resolve.
+steps, and their ownership evidence remains routing-scoped. An exact
+`workstream:read` also produces one separate typed
+`workstream.snapshot_read` completion outcome. Read-only workstream questions
+can validate that outcome and answer without binding; it cannot prove a
+filesystem read or mutation. Mutation flows use the routing evidence, then
+pass through `workstream.route`; observation modes cannot proceed directly to
+resolve.
 
-The gate checks mutation intent, binding-required taxonomy, the one-attempt
-limit, and a successful current-run routing observation. For creation, it
+The gate rejects explicit no-mutation constraints and checks binding-required
+taxonomy, the one-attempt limit, and a successful current-run routing
+observation. It does not duplicate the model's semantic judgment with a
+positive keyword classifier. For creation, it
 validates every target kind and portable relative path, resolves and
 canonicalizes it beneath the configured workspace, rejects traversal or
 symbolic-link escape, and searches
@@ -388,8 +395,11 @@ the model choose a known resource but does not prove its current contents or
 grant permission. Routing evidence stays in current-run tool calls, and
 resource enforcement continues to use exact Context Engine state.
 
-Do not expose context-repository paths, database paths, run storage paths,
-idempotency journals, observation authority fields, or deferred mutation.
+Expose only the exact shared workstream repository path as a read-only,
+context-only navigation pointer. Do not expose per-workstream storage paths,
+database paths, run storage paths, idempotency journals, observation authority
+fields, or deferred mutation. Repository log/show/diff results never grant
+binding or mutation authority; canonical workstream state must still be read.
 
 ## Mode-Scoped Capability Visibility
 
@@ -547,9 +557,26 @@ decision_enter_validation({
   outcomeRefs: [
     "run:RUN-...:step:2:call:write-site:outcome:0",
     "run:RUN-...:step:3:call:test-site:task:1"
+  ],
+  criterionProofs: [
+    {
+      criterionIndex: 0,
+      outcomeRefs: ["run:RUN-...:step:2:call:write-site:outcome:0"]
+    },
+    {
+      criterionIndex: 1,
+      outcomeRefs: ["run:RUN-...:step:3:call:test-site:task:1"]
+    }
   ]
 })
 ```
+
+For a bound request, that same validation decision maps every zero-based
+acceptance-criterion index to one or more of its selected `outcomeRefs`.
+This is not another tool, mode transition, or model call. The runtime rejects
+missing indexes, duplicate mappings, and references that were not selected by
+the same decision. After validation passes, finalization copies the resolved
+typed proof records—not assistant prose—into the durable criterion record.
 
 The model never supplies `kind`, `subject`, `expectedKind`, `searchScope`,
 `readScope`, `callId`, or `denialCode`. The runtime resolves each exact
@@ -714,15 +741,17 @@ soft threshold. One low-priority semantic preparation call may overlap a
 foreground call on the same provider. The candidate remains in memory and
 foreground work does not wait below the forced barrier.
 
-The 4K Core Capsule continuity target is independent of these whole-request
+The 8K Core Capsule continuity target is independent of these whole-request
 thresholds. The current input and newest completed user/system-event turn with
 its assistant response remain exact, even when that one turn exceeds the
 target. When additional older whole turns do not fit, the prompt names their
 unloaded exact sequence range. Before the task decision, the runtime
 deterministically enters `context.maintain`, rolls the prior checkpoint and
-eligible older complete turns into one replacement checkpoint, then restores
-the preceding task mode. This may happen even when the complete prompt is far
-below 55K.
+eligible older complete turns into one replacement checkpoint only when the
+replacement is expected to save at least 2K, then restores the preceding task
+mode. Only the newest completed turn is protected during maintenance, which
+creates headroom before another checkpoint is needed. This may happen even
+when the complete prompt is far below 55K.
 
 Recovery order is:
 

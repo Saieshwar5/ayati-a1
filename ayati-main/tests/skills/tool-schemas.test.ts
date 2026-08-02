@@ -128,6 +128,9 @@ describe("runtime tool schemas", () => {
     expect(tools.some((tool) => tool.name === "db_create_table")).toBe(true);
     expect(tools.some((tool) => tool.name === "git_context_activate_workstream")).toBe(true);
     expect(tools.some((tool) => tool.name === "git_context_create_workstream")).toBe(true);
+    expect(tools.some((tool) => tool.name === "git_context_log")).toBe(true);
+    expect(tools.some((tool) => tool.name === "git_context_show")).toBe(true);
+    expect(tools.some((tool) => tool.name === "git_context_diff")).toBe(true);
     expect(tools.some((tool) => tool.name === "git_context_switch_task")).toBe(false);
     expect(tools.some((tool) => tool.name === "python_execute")).toBe(true);
     expect(tools.some((tool) => tool.name.startsWith("learning_"))).toBe(false);

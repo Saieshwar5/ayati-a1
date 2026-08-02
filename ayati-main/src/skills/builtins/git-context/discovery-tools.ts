@@ -103,7 +103,26 @@ function readWorkstreamTool(service: ContextEngineService): ToolDefinition {
       additionalProperties: false,
     },
     annotations: readAnnotations(),
-    resultContract: succeededContract(),
+    resultContract: succeededContract({
+      assertions: [
+        {
+          id: "workstream_snapshot_opened",
+          kind: "json_path_equals",
+          path: "$.result.structuredContent.opened",
+          value: true,
+        },
+        {
+          id: "workstream_snapshot_identity_present",
+          kind: "json_path_exists",
+          path: "$.result.structuredContent.workstream.workstreamId",
+        },
+      ],
+      progressFacts: [{
+        kind: "workstream_snapshot_read",
+        path: "$.result.structuredContent.workstream.workstreamId",
+        message: "Opened the exact committed workstream snapshot.",
+      }],
+    }),
     async execute(input, context): Promise<ToolResult> {
       const record = objectInput(input);
       const workstreamId = optionalString(record, "workstreamId");
@@ -125,6 +144,19 @@ function readWorkstreamTool(service: ContextEngineService): ToolDefinition {
           ...(selectedRequestId ? { workstreamRequestId: selectedRequestId } : {}),
           at: new Date().toISOString(),
         });
+        if (result.workstream.workstreamId !== workstreamId) {
+          return discoveryError(
+            `Workstream read returned ${result.workstream.workstreamId} instead of requested ${workstreamId}.`,
+          );
+        }
+        if (
+          selectedRequestId
+          && result.context?.selectedRequest?.id !== selectedRequestId
+        ) {
+          return discoveryError(
+            `Workstream read did not return requested ${selectedRequestId}.`,
+          );
+        }
         return okJsonResult({
           code: "GIT_CONTEXT_WORKSTREAM_OPENED",
           message: `Opened ${result.workstream.title} without binding the run.`,

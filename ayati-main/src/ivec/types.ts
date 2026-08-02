@@ -81,6 +81,7 @@ import type {
   RunOutcome,
   RunStopReason,
   VerifiedFilesystemResourceEffect,
+  WorkstreamCompletionCriterion,
 } from "ayati-context-engine";
 
 export type SystemEventApprovalState = "not_needed" | "pending" | "granted" | "rejected";
@@ -433,7 +434,7 @@ export interface LoopConfig {
 }
 
 export const DEFAULT_LOOP_CONFIG: LoopConfig = {
-  maxIterations: 20,
+  maxIterations: 30,
   maxConsecutiveFailures: 5,
   maxTotalToolCallsPerStep: 4,
   maxSequentialToolCallsPerStep: 4,
@@ -463,6 +464,8 @@ export interface AgentLoopResult {
   verifiedCompletionResources?: AgentResourceRecord[];
   /** Executor-verified filesystem changes, independent of semantic task validation. */
   verifiedResourceEffects?: VerifiedFilesystemResourceEffect[];
+  /** Acceptance criteria paired with exact verified current-run proof. */
+  validatedCriteria?: WorkstreamCompletionCriterion[];
   artifacts?: AgentArtifact[];
   workState?: WorkState;
   completedSteps?: StepSummary[];

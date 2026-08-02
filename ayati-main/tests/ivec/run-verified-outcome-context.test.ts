@@ -8,6 +8,37 @@ import type {
 const RUN_ID = "RUN-PROMPT-OUTCOMES";
 
 describe("run verified-outcome prompt context", () => {
+  it("projects a typed workstream snapshot read without projecting its routing receipt", () => {
+    const read = verifiedCall(1, "git_context_read_workstream", []);
+    read.verification = {
+      version: 1,
+      status: "passed",
+      method: "tool_contract",
+      contract: "tool_result_v2",
+      summary: "The committed workstream snapshot was opened.",
+      checks: [],
+      facts: [{
+        kind: "workstream_snapshot_read",
+        message: "Opened the exact committed workstream snapshot.",
+        subject: "W-20260802-0001",
+      }],
+    };
+
+    expect(buildPromptVerifiedOutcomes({
+      runId: RUN_ID,
+      calls: [read],
+    })).toEqual([{
+      outcomeRef: `run:${RUN_ID}:step:1:call:call-1:task:0`,
+      kind: "workstream.snapshot_read",
+      subject: "W-20260802-0001",
+      source: {
+        step: 1,
+        callId: "call-1",
+        tool: "git_context_read_workstream",
+      },
+    }]);
+  });
+
   it("projects exact inspected Unix permissions for validation", () => {
     const outcomes = buildPromptVerifiedOutcomes({
       runId: RUN_ID,

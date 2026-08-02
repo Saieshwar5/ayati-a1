@@ -55,6 +55,13 @@ export async function prepareWorkstreamFinalization(input: {
   resourceEvents: ReturnType<typeof readResourceEventsForRun>;
   plan: WorkstreamContextCommitPlan;
   finalSummary: string;
+  commitContext: {
+    workstreamTitle: string;
+    requestTitle: string;
+    requestStatusAfter: "queued" | "active" | "blocked" | "done" | "dropped";
+    criteriaPassed: number;
+    criteriaTotal: number;
+  };
 }> {
   const request = input.request;
   const run = readRunEvidence(input.database, request.runId);
@@ -217,6 +224,13 @@ export async function prepareWorkstreamFinalization(input: {
     finalSummary: reduced.contextWrites.length > 0
       ? reduced.workstreamCard.currentSnapshot
       : normalizeText(request.summary),
+    commitContext: {
+      workstreamTitle: reduced.workstreamCard.title,
+      requestTitle: reduced.workstreamRequest.title,
+      requestStatusAfter: reduced.workstreamRequest.status,
+      criteriaPassed: request.completion.criteria.filter((criterion) => criterion.passed).length,
+      criteriaTotal: request.completion.criteria.length,
+    },
   };
 }
 

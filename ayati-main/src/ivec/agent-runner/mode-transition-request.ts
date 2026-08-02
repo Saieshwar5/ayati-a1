@@ -1,7 +1,10 @@
 import { normalizeWorkstreamBindingProposal } from "../workstream-binding/proposal.js";
 import { normalizeWorkstreamWorkspaceTargets } from "../workstream-binding/workspace-targets.js";
 import { requireAbsoluteFilesystemPath } from "../../shared/filesystem-paths.js";
-import type { ResourceMetadataProposal } from "./task-validation-contracts.js";
+import type {
+  ResourceMetadataProposal,
+  ValidationCriterionProofSelection,
+} from "./task-validation-contracts.js";
 import type {
   ModeTransitionMutationScope,
   ModeTransitionReference,
@@ -15,6 +18,7 @@ export function normalizeModeTransitionRequest(value: unknown): ModeTransitionRe
   const mutationScopes = normalizeMutationScopes(record["mutationScopes"]);
   const workspaceTargets = normalizeWorkstreamWorkspaceTargets(record["workspaceTargets"]);
   const outcomeRefs = normalizeOutcomeRefs(record["outcomeRefs"]);
+  const criterionProofs = normalizeCriterionProofs(record["criterionProofs"]);
   const resourceMetadata = normalizeResourceMetadata(record["resourceMetadata"]);
   return {
     to: normalizeModeTransitionTarget(record["to"]),
@@ -27,6 +31,7 @@ export function normalizeModeTransitionRequest(value: unknown): ModeTransitionRe
     ...(mutationScopes.length > 0 ? { mutationScopes } : {}),
     ...(workspaceTargets.length > 0 ? { workspaceTargets } : {}),
     ...(outcomeRefs.length > 0 ? { outcomeRefs } : {}),
+    ...(criterionProofs.length > 0 ? { criterionProofs } : {}),
     ...(resourceMetadata.length > 0 ? { resourceMetadata } : {}),
     ...(Array.isArray(record["targets"])
       ? { targets: normalizeStringArray(record["targets"]) }
@@ -55,6 +60,23 @@ function normalizeOutcomeRefs(value: unknown): string[] {
   return value
     .filter((item): item is string => typeof item === "string")
     .map((item) => item.trim());
+}
+
+function normalizeCriterionProofs(value: unknown): ValidationCriterionProofSelection[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): ValidationCriterionProofSelection[] => {
+    if (
+      !isRecord(item)
+      || !Number.isSafeInteger(item["criterionIndex"])
+      || !Array.isArray(item["outcomeRefs"])
+    ) {
+      return [];
+    }
+    return [{
+      criterionIndex: Number(item["criterionIndex"]),
+      outcomeRefs: normalizeOutcomeRefs(item["outcomeRefs"]),
+    }];
+  });
 }
 
 function normalizeResourceMetadata(value: unknown): ResourceMetadataProposal[] {

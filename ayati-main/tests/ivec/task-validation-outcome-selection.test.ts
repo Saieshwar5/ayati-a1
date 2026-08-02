@@ -10,6 +10,34 @@ import type {
 const RUN_ID = "RUN-VALIDATION-SELECTION";
 
 describe("task validation outcome selection", () => {
+  it("resolves an exact workstream snapshot read into a validation check", () => {
+    const read = verifiedCall(1, "git_context_read_workstream", []);
+    read.verification = {
+      version: 1,
+      status: "passed",
+      method: "tool_contract",
+      contract: "tool_result_v2",
+      summary: "The committed workstream snapshot was opened.",
+      checks: [],
+      facts: [{
+        kind: "workstream_snapshot_read",
+        message: "Opened the exact committed workstream snapshot.",
+        subject: "W-20260802-0001",
+      }],
+    };
+    const index = buildCurrentRunVerificationIndex({ runId: RUN_ID, calls: [read] });
+    const outcomeRef = `run:${RUN_ID}:step:1:call:call-1:task:0`;
+
+    expect(resolveValidationOutcomeRefs(index, [outcomeRef])).toEqual({
+      ok: true,
+      checks: [{
+        outcomeRef,
+        kind: "workstream.snapshot_read",
+        subject: "W-20260802-0001",
+      }],
+    });
+  });
+
   it("keeps runtime-owned Unix permission metadata on an inspected path check", () => {
     const index = buildCurrentRunVerificationIndex({
       runId: RUN_ID,
@@ -272,6 +300,27 @@ describe("task validation outcome selection", () => {
           }],
         },
       });
+    expect(prepareTaskValidationTransition({
+      runId: RUN_ID,
+      calls,
+      acceptance: ["The homepage file exists."],
+      request: {
+        ...request,
+        criterionProofs: [{ criterionIndex: 0, outcomeRefs: [outcomeRef] }],
+      },
+    })).toMatchObject({ ok: true });
+    expect(prepareTaskValidationTransition({
+      runId: RUN_ID,
+      calls,
+      acceptance: ["The homepage file exists."],
+      request,
+    })).toMatchObject({
+      ok: false,
+      repair: {
+        code: "MODE_INPUT_INVALID",
+        message: expect.stringContaining("map every acceptance criterion"),
+      },
+    });
     expect(prepareTaskValidationTransition({
       runId: RUN_ID,
       calls,

@@ -345,7 +345,23 @@ describe("workstream-bound run finalization", () => {
       streamId: fixture.prepared.stream.streamId,
       outcome: "completed",
       validation: "passed",
+      requestStatusAfter: "done",
+      stopReason: "completed",
+      resourceEffects: {
+        created: 0,
+        modified: 1,
+        moved: 0,
+        deleted: 0,
+        restored: 0,
+        downloaded: 0,
+        external_state_changed: 0,
+      },
+      mutationDetails: [{
+        type: "modified",
+        resourceId: primary.resourceId,
+      }],
       summary: "The requested work is complete.",
+      schema: "workstream-commit/v1",
     });
     expect(result.workstreamContextCommit.status === "committed"
       ? result.workstreamContextCommit.commit

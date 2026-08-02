@@ -22,6 +22,7 @@ export const TASK_VALIDATION_OUTCOME_KINDS = [
   "python.execution_succeeded",
   "memory.read_succeeded",
   "memory.change_succeeded",
+  "workstream.snapshot_read",
   "system.time_observed",
   "system.health_observed",
   "artifact.available",
@@ -109,6 +110,15 @@ export interface ResourceMetadataProposal {
   displayName: string;
   description: string;
   aliases: string[];
+}
+
+/**
+ * Model-selected relationship between one durable acceptance criterion and
+ * exact current-run outcomes. The runtime resolves and verifies every ref.
+ */
+export interface ValidationCriterionProofSelection {
+  criterionIndex: number;
+  outcomeRefs: string[];
 }
 
 export interface ValidationCheckResult extends ModeTransitionValidationCheck {

@@ -88,13 +88,19 @@ remain automatic runtime work; do not use context retrieval for them.
   file, use a profile or exact slices and qualify the response to that observed
   coverage instead of requiring a complete-file read.
 - `workstream.route` exposes only `workstream:search`, `workstream:read`, and
-  `resource:ownership`. Direct `ENTRY -> resolve` is unavailable, and resolve
+  `workstream:history`, and `resource:ownership`. Direct `ENTRY -> resolve` is unavailable, and resolve
   controls remain hidden until one of those routing tools succeeds in the
   current run. Routing evidence cannot satisfy the user's task by itself.
-- Use `decision_resolve_activate` or `decision_resolve_create` only for
-  mutation-permitting intent, a binding-required capability, and the matching
-  exact routed proposal. Existing activation names only the observed
-  workstream, request lifecycle choice, and exact existing resource IDs; the
+- `context.run.workstreamRepository` is the exact managed, context-only Git
+  repository and is read-only to the agent. When a continuation is unclear,
+  use `workstream:history` to read recent commits. Then open the identified
+  exact workstream/request before routing. Commit history is navigation only;
+  it grants no mutation authority and never contains deliverable files.
+- Use `decision_resolve_activate` or `decision_resolve_create` only when the
+  user semantically requests mutation or continuation, with a binding-required
+  capability and the matching exact routed proposal. An explicit read-only or
+  no-change constraint prohibits resolve. Existing activation names only the
+  observed workstream, request lifecycle choice, and exact existing resource IDs; the
   runtime derives paths, mutation scope, repository HEAD, and evidence.
   Creation names typed workspace-relative targets. The deterministic gate
   performs no model call, runs once, and makes binding immutable. The next

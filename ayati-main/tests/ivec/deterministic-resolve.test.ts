@@ -38,6 +38,64 @@ describe("deterministic resolve gate", () => {
     expect(coordinator.bind).not.toHaveBeenCalled();
   });
 
+  it("accepts a verified typed continuation without keyword-classifying positive intent", async () => {
+    const current = activationState(
+      "Please continue and finish the same Solstice Cafe update. Complete the remaining verification and finish the request.",
+    );
+    const coordinator = {
+      bind: vi.fn(async () => ({
+        status: "failed" as const,
+        code: "FIXTURE_STOP",
+        message: "The verified continuation reached the coordinator.",
+        retryable: false,
+      })),
+    };
+
+    const result = await dispatchDeterministicResolveGate({
+      state: current,
+      request: activationRequest(),
+      workspaceRoot: WORKSPACE_ROOT,
+      toolNames: ["write_files"],
+      coordinator,
+      alreadyAttempted: false,
+    });
+
+    expect(result).toMatchObject({ kind: "failed", attempted: true });
+    expect(coordinator.bind).toHaveBeenCalledOnce();
+    expect(coordinator.bind).toHaveBeenCalledWith(expect.objectContaining({
+      proposal: expect.objectContaining({
+        workstreamId: "W-20260722-0001",
+        requestDecision: expect.objectContaining({
+          kind: "continue_current",
+          requestId: "R-0001",
+        }),
+      }),
+    }));
+  });
+
+  it("accepts a verified typed creation without keyword-classifying positive intent", async () => {
+    const coordinator = {
+      bind: vi.fn(async () => ({
+        status: "failed" as const,
+        code: "FIXTURE_STOP",
+        message: "The verified creation reached the coordinator.",
+        retryable: false,
+      })),
+    };
+
+    const result = await dispatchDeterministicResolveGate({
+      state: state("Use the option we agreed on.", true),
+      request: resolveRequest(),
+      workspaceRoot: WORKSPACE_ROOT,
+      toolNames: ["write_files"],
+      coordinator,
+      alreadyAttempted: false,
+    });
+
+    expect(result).toMatchObject({ kind: "failed", attempted: true });
+    expect(coordinator.bind).toHaveBeenCalledOnce();
+  });
+
   it("enforces a scoped mutation boundary without treating it as a global mutation ban", async () => {
     const message = "Build the site in /tmp/site. Do not modify anything outside /tmp/site.";
     const coordinator = {

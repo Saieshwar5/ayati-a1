@@ -80,13 +80,15 @@ export async function dispatchDeterministicResolveGate(input: {
   if (isWorkstreamBound(input.state)) return { kind: "not_required", attempted: false };
 
   const intent = deriveTurnMutationConstraints(input.state.userMessage);
-  if (intent.mutationForbidden || !intent.mutationRequested) {
+  // The model owns semantic intent. This gate enforces explicit user
+  // prohibitions and deterministic binding/scope authority; it does not try
+  // to recognize every natural-language way a user can request mutation or
+  // continuation.
+  if (intent.mutationForbidden) {
     return rejected(
       toolNames,
       "MODE_MUTATION_INTENT_REQUIRED",
-      intent.mutationForbidden
-        ? "The current request explicitly forbids mutation, so it cannot enter the resolve gate."
-        : "The resolve gate requires explicit mutation-permitting user intent.",
+      "The current request explicitly forbids mutation, so it cannot enter the resolve gate.",
       targets,
       ["Stay in an observation mode, or validate a read-only outcome."],
     );

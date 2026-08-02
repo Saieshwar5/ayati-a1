@@ -45,6 +45,16 @@ export function buildPromptContextManifest(input: {
   if (context.run?.workspaceRoot) {
     addPart(parts, "work.run.workspace_root", "work", "exact", context.run.workspaceRoot, []);
   }
+  if (context.run?.workstreamRepository) {
+    addPart(
+      parts,
+      "work.run.workstream_repository",
+      "work",
+      "exact",
+      context.run.workstreamRepository,
+      [],
+    );
+  }
   if (context.run?.boundWorkstream) {
     addPart(
       parts,

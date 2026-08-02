@@ -46,6 +46,7 @@ import {
 } from "./validation-mode.js";
 import { validateTaskValidationRequest } from "./task-validation-request.js";
 import { prepareTaskValidationTransition } from "./task-validation-transition.js";
+import { selectedWorkstreamAcceptance } from "./task-validation-criteria.js";
 import { canMarkTerminalReplyDone } from "./final-response-policy.js";
 import { latestActiveFailure } from "./failure-lifecycle.js";
 import {
@@ -166,6 +167,7 @@ export async function dispatchVirtualModeTransition(input: {
       runId: input.state.runId,
       calls: input.state.toolContext?.toolCalls,
       request,
+      acceptance: selectedWorkstreamAcceptance(input.state),
     });
     if (!prepared.ok) return { kind: "rejected", repair: prepared.repair };
     effectiveRequest = prepared.request;
@@ -733,6 +735,14 @@ function validateTypedModeInputs(request: ModeTransitionRequest): VirtualModeRep
       "Outcome references are valid only in validation mode.",
       request.outcomeRefs ?? [],
       ["Remove outcomeRefs or transition to validation after the responsibility appears fulfilled."],
+    );
+  }
+  if (request.to !== "validation" && (request.criterionProofs?.length ?? 0) > 0) {
+    return repair(
+      "MODE_INPUT_INVALID",
+      "Criterion proof mappings are valid only in validation mode.",
+      request.criterionProofs?.map((selection) => String(selection.criterionIndex)) ?? [],
+      ["Remove criterionProofs or transition to validation after the responsibility appears fulfilled."],
     );
   }
   if (request.to !== "validation" && (request.resourceMetadata?.length ?? 0) > 0) {

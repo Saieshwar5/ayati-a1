@@ -311,10 +311,11 @@ Projection fails closed when the route, loaded workstream, selected request,
 or persisted run binding disagree. The selected request contract keeps every
 acceptance criterion and constraint. Descriptive workstream/progress fields
 and resource metadata are size-bounded; resource contents, version hashes,
-commit SHAs, raw logs, all request files, and complete historical progress
-remain outside the prompt. Projected metadata is navigation and selection
-context, not proof of current file contents and not an independent permission
-grant.
+all commit history, raw logs, all request files, and complete historical
+progress remain outside the prompt. The run receives only the exact shared
+repository path, branch, HEAD, health, and read-only/context-only labels.
+Projected metadata is navigation and selection context, not proof of current
+file contents and not an independent permission grant.
 
 Older progress, completed requests, commits, resources, and exact run evidence
 remain searchable on demand. Request FTS contributes matching request
@@ -323,6 +324,21 @@ discovery. A read-only open can then name the exact request id and load its
 contract, final outcome, and at most five newest progress entries without
 binding or reopening it. SQLite routing does not load every Markdown file or
 the full project history into every model request.
+
+### Read-only repository history
+
+When a continuation is ambiguous, the agent may inspect the one managed
+`workstreams/` repository through three bounded Context Engine operations:
+
+- `git_context_log` reads recent commit receipts across workstreams;
+- `git_context_show` reads one exact commit and its changed notebook paths;
+- `git_context_diff` reads a bounded committed notebook diff.
+
+The Context Engine requires the exact projected repository path and verifies
+the real Git root, `main` branch, and SQLite-tracked HEAD before every read.
+The tools cannot inspect another repository and cannot write Git. Their output
+is navigation evidence only. Before routing, the agent opens the identified
+workstream and request through the canonical workstream read tool.
 
 ## Durable Markdown contracts
 
@@ -364,6 +380,10 @@ Progress rules:
 - one run id appears exactly once;
 - failed, incomplete, blocked, read-only, and no-deliverable-change runs are
   recorded;
+- acceptance results cite exact current-run validation outcome references;
+- assistant response text may explain completion but is not criterion proof;
+- structured criterion proof remains available in finalization storage even
+  when the bounded Markdown entry can show only the first few references;
 - fields and lists are bounded;
 - raw tool/provider output remains in SQLite;
 - the parser rejects duplicate run ids and noncanonical content.
@@ -481,8 +501,10 @@ Every bound run uses one journaled finalization:
 9. persist the complete desired-write and commit plan in SQLite;
 10. recheck shared repository health and path-specific revisions;
 11. atomically write and stage only exact managed paths;
-12. create and verify one commit with workstream, request, run, outcome, and
-    mutation trailers;
+12. create and verify one commit with readable workstream/request titles and
+    status, run outcome and stop reason, validation and criterion counts,
+    verified resource effects, mutation receipts, problems, summary, and next
+    action, plus stable identity trailers;
 13. update global repository state and affected SQLite projections;
 14. mark the route plan, finalization, and run complete;
 15. release the terminal response.
@@ -494,7 +516,10 @@ conversation runs do not create workstream progress or a context commit.
 Request completion requires accepted completion evidence that represents every
 acceptance criterion in `request.md`, no missing criteria or failures, verified
 required resources, and passed deterministic validation unless the declared
-criterion requires explicit user acceptance.
+criterion requires explicit user acceptance. Each represented criterion points
+to exact passed current-run outcomes selected during the existing validation
+decision; finalization never substitutes the terminal assistant response as
+evidence.
 
 ## Recovery
 

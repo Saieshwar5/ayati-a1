@@ -14,6 +14,7 @@ import {
 } from "../contract-helpers.js";
 import { createWorkstreamDiscoveryTools } from "./discovery-tools.js";
 import { createAgentHistoryTools } from "./history-tools.js";
+import { createWorkstreamRepositoryTools } from "./repository-tools.js";
 
 export interface GitContextSkillDeps {
   service: ContextEngineService;
@@ -29,6 +30,7 @@ export function createGitContextSkill(deps: GitContextSkillDeps): SkillDefinitio
       activateWorkstreamTool(deps.service),
       ...createAgentHistoryTools(deps.service),
       ...createWorkstreamDiscoveryTools(deps.service),
+      ...createWorkstreamRepositoryTools(deps.service),
     ],
   };
 }
