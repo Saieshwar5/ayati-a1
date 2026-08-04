@@ -205,30 +205,9 @@ export function modeTransitionControlCallFromRequest(
     mutationScopes,
     workspaceTargets,
     validationChecks: _validationChecks,
-    targets: _targets,
     binding,
     ...rest
   } = request;
-  const compatibilityTargets = request.targets ?? [];
-  const effectiveReferences = references
-    ?? (
-      request.to === "observe.investigate"
-        ? compatibilityTargets.map(filesystemReference)
-        : undefined
-    );
-  const effectiveMutationScopes = mutationScopes
-    ?? (
-      request.to === "execute"
-        ? compatibilityTargets.map(filesystemMutationScope)
-        : undefined
-    );
-  const effectiveSubjects = request.subjects
-    ?? (
-      request.to === "observe.locate"
-      && compatibilityTargets.length > 0
-        ? compatibilityTargets
-        : undefined
-    );
   return {
     name: modeTransitionControlNameForRequest(request),
     input: {
@@ -240,12 +219,12 @@ export function modeTransitionControlCallFromRequest(
               : activateBindingToControlInput(binding),
           }
         : {}),
-      ...(effectiveSubjects ? { subjects: effectiveSubjects } : {}),
-      ...(effectiveReferences
-        ? { references: effectiveReferences.map(toControlReference) }
+      ...(request.subjects ? { subjects: request.subjects } : {}),
+      ...(references
+        ? { references: references.map(toControlReference) }
         : {}),
-      ...(effectiveMutationScopes
-        ? { mutationScopes: effectiveMutationScopes.map(toControlMutationScope) }
+      ...(mutationScopes
+        ? { mutationScopes: mutationScopes.map(toControlMutationScope) }
         : {}),
       ...(workspaceTargets ? { workspaceTargets } : {}),
     },
@@ -484,14 +463,6 @@ function toControlMutationScope(
   return scope.kind === "filesystem"
     ? { kind: scope.kind, value: scope.path }
     : { kind: scope.kind, value: scope.resourceId };
-}
-
-function filesystemReference(path: string): ModeTransitionReference {
-  return { kind: "filesystem", path };
-}
-
-function filesystemMutationScope(path: string): ModeTransitionMutationScope {
-  return { kind: "filesystem", path };
 }
 
 function emptyCapabilityOptions(): ModeCapabilityOptions {

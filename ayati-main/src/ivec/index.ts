@@ -62,7 +62,6 @@ export class IVecEngine {
 
   async stop(): Promise<void> {
     await this.runQueue.drain();
-    await this.chatTurnRuntime?.drain();
     if (this.provider) {
       await this.provider.stop();
       devLog(`Provider "${this.provider.name}" stopped`);

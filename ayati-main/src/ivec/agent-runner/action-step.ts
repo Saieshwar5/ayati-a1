@@ -1,4 +1,3 @@
-import type { MemoryRunHandle, RunRecorder } from "../../memory/types.js";
 import type {
   ActToolCallRecord,
   AgentLoopDeps,
@@ -30,24 +29,6 @@ import { toolCallVerificationPassed } from "./tool-call-verification.js";
 import { isAbsolute } from "node:path";
 import { compactSupersededConversationPages } from "./conversation-page-context.js";
 
-const noopRunRecorder: RunRecorder = {
-  recordToolCall(): void {
-    return;
-  },
-  recordToolResult(): void {
-    return;
-  },
-  recordAssistantFinal(): void {
-    return;
-  },
-  recordRunFailure(): void {
-    return;
-  },
-  recordAgentStep(): void {
-    return;
-  },
-};
-
 export interface ExecuteActionStepInput {
   deps: AgentLoopDeps;
   state: LoopState;
@@ -57,11 +38,10 @@ export interface ExecuteActionStepInput {
   decision: Extract<AgentDecision, { kind: "act" }>;
   stepNumber: number;
   preserveWorkState?: boolean;
-  runHandle?: MemoryRunHandle;
 }
 
 export async function executeActionStep(input: ExecuteActionStepInput): Promise<ExecuteActionStepResult> {
-  const runHandle = input.runHandle ?? memoryRunHandle(requireRunHandle(input.deps));
+  const runHandle = requireRunHandle(input.deps);
   const workstreamResources = isWorkstreamBound(input.state)
     ? input.state.harnessContext.contextEngine?.workstream?.resources
     : undefined;
@@ -73,7 +53,6 @@ export async function executeActionStep(input: ExecuteActionStepInput): Promise<
       selectedTools: input.selectedTools,
       config: input.config,
       clientId: input.deps.clientId,
-      runRecorder: input.deps.runRecorder ?? noopRunRecorder,
       runHandle,
       metrics: input.metrics,
       workstreamResources,
@@ -94,7 +73,6 @@ export async function executeActionStep(input: ExecuteActionStepInput): Promise<
           selectedTools: input.selectedTools,
           config: input.config,
           clientId: input.deps.clientId,
-          runRecorder: input.deps.runRecorder ?? noopRunRecorder,
           runHandle,
           metrics: input.metrics,
           workstreamResources,
@@ -126,16 +104,6 @@ export async function executeActionStep(input: ExecuteActionStepInput): Promise<
   return {
     execution,
     stepSummary,
-  };
-}
-
-function memoryRunHandle(
-  handle: ReturnType<typeof requireRunHandle>,
-): MemoryRunHandle {
-  return {
-    sessionId: handle.streamId,
-    runId: handle.runId,
-    triggerSeq: handle.triggerSeq,
   };
 }
 

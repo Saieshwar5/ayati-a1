@@ -17,7 +17,6 @@ import type {
   AgentResponseKind,
   AssistantResponseKind,
   FeedbackKind,
-  RunRecorder,
   SessionInputHandle,
 } from "../memory/types.js";
 import type {
@@ -513,7 +512,6 @@ export interface AgentLoopDeps {
   capabilitySurfaceManager?: CapabilitySurfaceManager;
   hotContextRuntime?: HotContextRuntime;
   toolDefinitions: ToolDefinition[];
-  runRecorder?: RunRecorder;
   inputHandle?: SessionInputHandle;
   runHandle: AgentRunHandle;
   clientId: string;

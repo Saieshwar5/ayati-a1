@@ -99,7 +99,7 @@ function createSingleLoopMutationProvider(outputPath: string): LlmProvider {
             to: "observe.locate",
             purpose: "Check durable ownership before creating the requested file.",
             capabilities: ["workstream:search"],
-            targets: [outputPath],
+            subjects: [outputPath],
           },
         });
       }

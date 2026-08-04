@@ -66,7 +66,7 @@ describe("virtual mode runtime", () => {
         to: "observe.investigate",
         purpose: "Read the exact requested file.",
         capabilities: ["file:read"],
-        targets: ["/tmp/known.md"],
+        references: [{ kind: "filesystem", path: "/tmp/known.md" }],
       },
       workspaceRoot: "/tmp",
       iteration: 1,
@@ -92,7 +92,7 @@ describe("virtual mode runtime", () => {
       to: "observe.investigate",
       purpose: "Read the exact requested file.",
       capabilities: ["file:read"],
-      targets: ["/tmp/known.md"],
+      references: [{ kind: "filesystem", path: "/tmp/known.md" }],
     }, READ_TOOLS);
     expect(accepted).toMatchObject({ kind: "applied", active: "observe.investigate" });
 
@@ -426,7 +426,7 @@ describe("virtual mode runtime", () => {
       to: "observe.investigate",
       purpose: "Read the located notes file.",
       capabilities: ["file:read"],
-      targets: ["/tmp/discovered-notes.md"],
+      references: [{ kind: "filesystem", path: "/tmp/discovered-notes.md" }],
     }, READ_TOOLS)).resolves.toMatchObject({
       kind: "applied",
       active: "observe.investigate",
@@ -644,7 +644,7 @@ describe("virtual mode runtime", () => {
       to: "resolve",
       purpose: "Resolve with a read-only capability.",
       capabilities: ["file:read"],
-      targets: ["/tmp/output.txt"],
+      mutationScopes: [{ kind: "filesystem", path: "/tmp/output.txt" }],
     }, READ_TOOLS);
     expect(observationalCapability).toMatchObject({
       kind: "rejected",
@@ -813,7 +813,7 @@ describe("virtual mode runtime", () => {
       to: "execute",
       purpose: "Use the existing authoritative binding to update the file.",
       capabilities: ["file:write"],
-      targets: ["/tmp/output.txt"],
+      mutationScopes: [{ kind: "filesystem", path: "/tmp/output.txt" }],
     }, WRITE_TOOLS);
 
     expect(result).toMatchObject({

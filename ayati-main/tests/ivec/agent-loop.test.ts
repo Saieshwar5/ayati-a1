@@ -9,7 +9,6 @@ import type { LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
 import type { ContextRunStepRecord } from "../../src/context-engine/index.js";
 import type { HarnessContextInput } from "../../src/ivec/harness-context.js";
 import type { AgentEventInput, AgentEventSink } from "../../src/ivec/agent-event-sink.js";
-import { noopRunRecorder } from "../../src/ivec/noop-run-recorder.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
 import { inspectPathsTool } from "../../src/skills/builtins/filesystem/inspect-paths.js";
 import { findFilesTool } from "../../src/skills/builtins/filesystem/find-files.js";
@@ -401,7 +400,6 @@ describe("agentLoop one-run lifecycle", () => {
         provider,
         workspaceRoot: dataDir,
         toolDefinitions: [],
-        runRecorder: noopRunRecorder,
         runHandle: runHandle("R-direct"),
         recordRunStep,
         clientId: "c1",
@@ -481,7 +479,6 @@ describe("agentLoop one-run lifecycle", () => {
       const result = await agentLoop({
         provider,
         toolDefinitions: [fixtureTool("find_files")],
-        runRecorder: noopRunRecorder,
         runHandle: runHandle("R-work-state-checkpoint"),
         recordRunStep,
         checkpointWorkState,
@@ -534,7 +531,6 @@ describe("agentLoop one-run lifecycle", () => {
       const result = await agentLoop({
         provider,
         toolDefinitions: [],
-        runRecorder: noopRunRecorder,
         runHandle: runHandle("R-direct-rewrite"),
         clientId: "c1",
         initialUserMessage: "Rewrite this politely: Send me the report now.",
@@ -574,7 +570,6 @@ describe("agentLoop one-run lifecycle", () => {
       const result = await agentLoop({
         provider,
         toolDefinitions: [],
-        runRecorder: noopRunRecorder,
         runHandle: runHandle("R-direct-clarification"),
         clientId: "c1",
         initialUserMessage: "Read exactly one of the two release-notes.txt files and tell me its coordinator.",
@@ -662,7 +657,6 @@ describe("agentLoop one-run lifecycle", () => {
         capabilitySurfaceManager,
         toolDefinitions: observationTools,
         workstreamBinding,
-        runRecorder: noopRunRecorder,
         runHandle: runHandle("R-observation-preload"),
         recordRunStep,
         clientId: "c1",
@@ -755,7 +749,6 @@ describe("agentLoop one-run lifecycle", () => {
         capabilitySurfaceManager,
         hotContextRuntime,
         toolDefinitions: [contextTool],
-        runRecorder: noopRunRecorder,
         runHandle: run,
         recordRunStep,
         clientId: "c1",
@@ -902,7 +895,6 @@ describe("agentLoop one-run lifecycle", () => {
         capabilitySurfaceManager,
         hotContextRuntime,
         toolDefinitions: [contextTool, readFilesTool, inspectPathsTool],
-        runRecorder: noopRunRecorder,
         runHandle: run,
         recordRunStep(record) {
           const expectedStep = records.length + 1;
@@ -1050,7 +1042,6 @@ describe("agentLoop one-run lifecycle", () => {
         capabilitySurfaceManager,
         hotContextRuntime,
         toolDefinitions: [contextTool],
-        runRecorder: noopRunRecorder,
         runHandle: run,
         clientId: "c1",
         initialUserMessage: "Which workstream did we use recently?",
@@ -1113,7 +1104,7 @@ describe("agentLoop one-run lifecycle", () => {
             to: "observe.investigate",
             purpose: "Read an assumed notes path.",
             capabilities: ["file:read"],
-            targets: ["/tmp/invented-notes.md"],
+            references: [{ kind: "filesystem", path: "/tmp/invented-notes.md" }],
           },
         },
         {
@@ -1161,7 +1152,6 @@ describe("agentLoop one-run lifecycle", () => {
         toolExecutor: createToolExecutor([findTool, read, inspectPathsTool]),
         toolDefinitions: [findTool, read, inspectPathsTool],
         eventSink: feedback.sink,
-        runRecorder: noopRunRecorder,
         runHandle: runHandle("R-recovered-transition-repairs"),
         clientId: "c1",
         initialUserMessage: "Find the requested notes file without modifying anything.",
@@ -1266,7 +1256,7 @@ describe("agentLoop one-run lifecycle", () => {
             to: "observe.investigate",
             purpose: "Read the exact notes file established by locate evidence.",
             capabilities: ["file:read"],
-            targets: [target],
+            references: [{ kind: "filesystem", path: target }],
           },
         },
         {
@@ -1297,7 +1287,6 @@ describe("agentLoop one-run lifecycle", () => {
         provider,
         toolExecutor: createToolExecutor([findTool, read]),
         toolDefinitions: [findTool, read],
-        runRecorder: noopRunRecorder,
         runHandle: runHandle("R-vague-read"),
         clientId: "c1",
         initialUserMessage: "Find and read the project notes, then summarize them.",
@@ -1377,7 +1366,6 @@ describe("agentLoop one-run lifecycle", () => {
         provider,
         toolExecutor: createToolExecutor([read]),
         toolDefinitions: [read],
-        runRecorder: noopRunRecorder,
         runHandle: runHandle("R-validation-mode"),
         clientId: "c1",
         initialUserMessage: `Read ${target} and report its location.`,
@@ -1453,7 +1441,6 @@ describe("agentLoop one-run lifecycle", () => {
         provider,
         toolExecutor,
         toolDefinitions: [tool],
-        runRecorder: noopRunRecorder,
         runHandle: runHandle("R-read"),
         recordRunStep(record) {
           records.push(record);
@@ -1611,7 +1598,6 @@ describe("agentLoop one-run lifecycle", () => {
         provider,
         toolExecutor: createToolExecutor([readFilesTool]),
         toolDefinitions: [readFilesTool],
-        runRecorder: noopRunRecorder,
         runHandle: runHandle("R-slice-read"),
         recordRunStep(record) {
           records.push(record);
@@ -1738,7 +1724,6 @@ describe("agentLoop one-run lifecycle", () => {
         provider,
         toolExecutor: createToolExecutor([readFilesTool]),
         toolDefinitions: [readFilesTool],
-        runRecorder: noopRunRecorder,
         runHandle: runHandle(runId),
         clientId: "c1",
         initialUserMessage: `Read ${target} enough to give me a short overview without loading the whole file.`,
@@ -1846,7 +1831,6 @@ describe("agentLoop one-run lifecycle", () => {
         toolExecutor: createToolExecutor([readFilesTool]),
         toolDefinitions: [readFilesTool],
         eventSink: feedback.sink,
-        runRecorder: noopRunRecorder,
         runHandle: runHandle(runId),
         recordRunStep(record) {
           records.push(record);
@@ -1909,7 +1893,7 @@ describe("agentLoop one-run lifecycle", () => {
             to: "observe.locate",
             purpose: "Check durable ownership before creating the file.",
             capabilities: ["workstream:search"],
-            targets: [outputPath],
+            subjects: [outputPath],
           },
         },
         {
@@ -1962,7 +1946,6 @@ describe("agentLoop one-run lifecycle", () => {
         provider,
         toolExecutor,
         toolDefinitions: [writeFilesTool, routingTool],
-        runRecorder: noopRunRecorder,
         runHandle: runHandle(runId),
         recordRunStep,
         eventSink: feedback.sink,
@@ -2026,7 +2009,6 @@ describe("agentLoop one-run lifecycle", () => {
         toolExecutor: createToolExecutor([writeFilesTool]),
         toolDefinitions: [writeFilesTool],
         workstreamBinding,
-        runRecorder: noopRunRecorder,
         runHandle: runHandle(runId),
         config: { maxConsecutiveFailures: 3 },
         clientId: "c1",
@@ -2081,7 +2063,7 @@ describe("agentLoop one-run lifecycle", () => {
             to: "observe.locate",
             purpose: "Find the workstream that owns the project.",
             capabilities: ["workstream:search"],
-            targets: [projectPath],
+            subjects: [projectPath],
           },
         },
         {
@@ -2165,7 +2147,6 @@ describe("agentLoop one-run lifecycle", () => {
         toolExecutor,
         capabilitySurfaceManager,
         toolDefinitions: [...mutationTools, ...routingTools],
-        runRecorder: noopRunRecorder,
         runHandle: runHandle(runId),
         workstreamBinding,
         eventSink: feedback.sink,
@@ -2235,7 +2216,7 @@ describe("agentLoop one-run lifecycle", () => {
             to: "observe.locate",
             purpose: "Check whether durable work already owns this output.",
             capabilities: ["workstream:search"],
-            targets: [outputPath],
+            subjects: [outputPath],
           },
         },
         {
@@ -2316,7 +2297,6 @@ describe("agentLoop one-run lifecycle", () => {
         toolDefinitions: [writeFilesTool, routingTool, inspectPathsTool],
         workstreamBinding,
         eventSink: feedback.sink,
-        runRecorder: noopRunRecorder,
         runHandle: runHandle(runId),
         recordRunStep(record, currentContext) {
           records.push(record);
@@ -2470,7 +2450,7 @@ describe("agentLoop one-run lifecycle", () => {
             to: "execute",
             purpose: "Use the existing binding to write the requested file.",
             capabilities: ["file:write"],
-            targets: [outputPath],
+            mutationScopes: [{ kind: "filesystem", path: outputPath }],
           },
         },
         {
@@ -2504,7 +2484,6 @@ describe("agentLoop one-run lifecycle", () => {
         toolExecutor: createToolExecutor([writeFilesTool, inspectPathsTool]),
         toolDefinitions: [writeFilesTool, inspectPathsTool],
         workstreamBinding,
-        runRecorder: noopRunRecorder,
         runHandle: runHandle(runId),
         clientId: "c1",
         initialUserMessage: "Create one-run.txt",
@@ -2580,7 +2559,7 @@ describe("agentLoop one-run lifecycle", () => {
           to: "execute",
           purpose: "Attempt the exact requested write under the active binding.",
           capabilities: ["file:write"],
-          targets: [externalPath],
+          mutationScopes: [{ kind: "filesystem", path: externalPath }],
         },
       },
       {
@@ -2631,7 +2610,6 @@ describe("agentLoop one-run lifecycle", () => {
         toolExecutor: createToolExecutor([deniedWriteTool]),
         toolDefinitions: [deniedWriteTool],
         workstreamBinding: { bind: vi.fn() },
-        runRecorder: noopRunRecorder,
         runHandle: runHandle(runId),
         recordRunStep(record) {
           records.push(record);
@@ -2691,7 +2669,7 @@ describe("agentLoop one-run lifecycle", () => {
             to: "observe.locate",
             purpose: "Find durable ownership before creating the file.",
             capabilities: ["workstream:search"],
-            targets: [target],
+            subjects: [target],
           },
         },
         {
@@ -2753,7 +2731,6 @@ describe("agentLoop one-run lifecycle", () => {
         toolExecutor: createToolExecutor([routingTool]),
         toolDefinitions: [writeFilesTool, routingTool],
         workstreamBinding,
-        runRecorder: noopRunRecorder,
         runHandle: runHandle(runId),
         recordRunStep(record) {
           records.push(record);
@@ -2798,7 +2775,7 @@ describe("agentLoop one-run lifecycle", () => {
             to: "observe.locate",
             purpose: "Find workstreams that may own the website target.",
             capabilities: ["workstream:search"],
-            targets: [target],
+            subjects: [target],
           },
         },
         {
@@ -2850,7 +2827,6 @@ describe("agentLoop one-run lifecycle", () => {
         toolExecutor: createToolExecutor([routingTool]),
         toolDefinitions: [writeFilesTool, routingTool],
         workstreamBinding,
-        runRecorder: noopRunRecorder,
         runHandle: runHandle(runId),
         clientId: "c1",
         initialUserMessage: `Update the website at ${target}`,
@@ -2901,7 +2877,6 @@ describe("agentLoop one-run lifecycle", () => {
         provider,
         toolExecutor: createToolExecutor([findTool]),
         toolDefinitions: [findTool],
-        runRecorder: noopRunRecorder,
         runHandle: runHandle("R-clarify"),
         clientId: "c1",
         initialUserMessage: "Inspect it",
@@ -2990,7 +2965,6 @@ describe("agentLoop one-run lifecycle", () => {
         toolExecutor: createToolExecutor([findFilesTool]),
         toolDefinitions: [findFilesTool],
         eventSink: feedback.sink,
-        runRecorder: noopRunRecorder,
         runHandle: runHandle(runId),
         clientId: "c1",
         initialUserMessage: `Find ${query} and tell me its procedure.`,
@@ -3101,7 +3075,6 @@ describe("agentLoop one-run lifecycle", () => {
         provider,
         toolExecutor: createToolExecutor([searchInFilesTool]),
         toolDefinitions: [searchInFilesTool],
-        runRecorder: noopRunRecorder,
         runHandle: runHandle(runId),
         clientId: "c1",
         initialUserMessage: "Find the file that mentions Amber Marsh. Do not show its contents.",
@@ -3204,7 +3177,6 @@ describe("agentLoop one-run lifecycle", () => {
         provider,
         toolExecutor: createToolExecutor([searchInFilesTool]),
         toolDefinitions: [searchInFilesTool],
-        runRecorder: noopRunRecorder,
         runHandle: runHandle(runId),
         clientId: "c1",
         initialUserMessage: "Search the handbook for a swimming-pool access code. If it is absent, say so clearly.",
@@ -3313,7 +3285,6 @@ describe("agentLoop one-run lifecycle", () => {
         provider,
         toolExecutor: createToolExecutor([locateTool]),
         toolDefinitions: [locateTool],
-        runRecorder: noopRunRecorder,
         runHandle: runHandle("R-bound-long-clarification"),
         clientId: "c1",
         initialUserMessage: "Build the site in the right place",
@@ -3352,7 +3323,7 @@ describe("agentLoop one-run lifecycle", () => {
           to: "observe.locate",
           purpose: "Locate the requested notes file.",
           capabilities: ["file:search"],
-          targets: ["notes.md"],
+          subjects: ["notes.md"],
         },
       };
       const provider = createProvider([sameTransition, sameTransition, sameTransition]);
@@ -3361,7 +3332,6 @@ describe("agentLoop one-run lifecycle", () => {
         provider,
         toolExecutor: createToolExecutor([findTool]),
         toolDefinitions: [findTool],
-        runRecorder: noopRunRecorder,
         runHandle: runHandle("R-identical-mode"),
         clientId: "c1",
         initialUserMessage: "Find notes.md in the workspace.",
@@ -3409,7 +3379,6 @@ describe("agentLoop one-run lifecycle", () => {
       const result = await agentLoop({
         provider,
         toolDefinitions: [],
-        runRecorder: noopRunRecorder,
         runHandle: runHandle("R-context-limit", 3),
         clientId: "c1",
         initialUserMessage: message,
@@ -3450,7 +3419,6 @@ describe("agentLoop one-run lifecycle", () => {
       const result = await agentLoop({
         provider,
         toolDefinitions: [findFilesTool],
-        runRecorder: noopRunRecorder,
         runHandle: runHandle("R-unbound-run-limit"),
         clientId: "c1",
         initialUserMessage: "Create the teaching website.",
@@ -3493,7 +3461,7 @@ describe("agentLoop one-run lifecycle", () => {
             to: "execute",
             purpose: "Create the requested file under the active binding.",
             capabilities: ["file:write"],
-            targets: [outputPath],
+            mutationScopes: [{ kind: "filesystem", path: outputPath }],
           },
         },
         {
@@ -3518,7 +3486,6 @@ describe("agentLoop one-run lifecycle", () => {
         toolExecutor: createToolExecutor([writeFilesTool, inspectPathsTool]),
         toolDefinitions: [writeFilesTool, inspectPathsTool],
         workstreamBinding: { bind: vi.fn() },
-        runRecorder: noopRunRecorder,
         runHandle: runHandle(runId),
         clientId: "c1",
         initialUserMessage: "Create one-run.txt",
@@ -3563,7 +3530,7 @@ describe("agentLoop one-run lifecycle", () => {
             to: "execute",
             purpose: "Create the requested file under the active binding.",
             capabilities: ["file:write"],
-            targets: [outputPath],
+            mutationScopes: [{ kind: "filesystem", path: outputPath }],
           },
         },
         {
@@ -3598,7 +3565,6 @@ describe("agentLoop one-run lifecycle", () => {
         toolExecutor: createToolExecutor([writeFilesTool, inspectPathsTool]),
         toolDefinitions: [writeFilesTool, inspectPathsTool],
         workstreamBinding: { bind: vi.fn() },
-        runRecorder: noopRunRecorder,
         runHandle: runHandle(runId),
         clientId: "c1",
         initialUserMessage: "Create one-run.txt",

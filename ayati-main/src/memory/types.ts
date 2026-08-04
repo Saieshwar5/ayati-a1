@@ -66,8 +66,6 @@ export type PromptSessionEvent =
       summary: string;
     };
 
-export type ToolEventStatus = "success" | "failed";
-
 export interface PromptMemoryContext {
   recentExchanges: ConversationExchange[];
   sessionEvents?: PromptSessionEvent[];
@@ -78,64 +76,8 @@ export interface PromptMemoryContext {
   activeSessionPath?: string;
 }
 
-export interface MemoryRunHandle {
-  sessionId: string;
-  runId: string;
-  triggerSeq?: number;
-}
-
 export interface SessionInputHandle {
   sessionId: string;
   seq: number;
   currentMessageId?: string;
-}
-
-export interface ToolCallRecordInput {
-  runId: string;
-  sessionId: string;
-  stepId: number;
-  toolCallId: string;
-  toolName: string;
-  args: unknown;
-}
-
-export interface ToolCallResultRecordInput {
-  runId: string;
-  sessionId: string;
-  stepId: number;
-  toolCallId: string;
-  toolName: string;
-  status: ToolEventStatus;
-  output?: string;
-  errorMessage?: string;
-  errorCode?: string;
-  durationMs?: number;
-}
-
-export interface AgentStepRecordInput {
-  runId: string;
-  sessionId: string;
-  step: number;
-  phase: string;
-  summary: string;
-  actionToolName?: string;
-  endStatus?: string;
-}
-
-export interface AssistantMessageMetadata {
-  responseKind?: AssistantResponseKind;
-}
-
-export interface RunRecorder {
-  recordToolCall(clientId: string, input: ToolCallRecordInput): void;
-  recordToolResult(clientId: string, input: ToolCallResultRecordInput): void;
-  recordAssistantFinal(
-    clientId: string,
-    runId: string,
-    sessionId: string,
-    content: string,
-    metadata?: AssistantMessageMetadata,
-  ): void;
-  recordRunFailure(clientId: string, runId: string, sessionId: string, message: string): void;
-  recordAgentStep(clientId: string, input: AgentStepRecordInput): void;
 }

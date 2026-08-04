@@ -37,7 +37,6 @@ describe("IVecEngine global run serialization", () => {
         await chatGate.promise;
         events.push("chat:end");
       }),
-      drain: vi.fn(async () => undefined),
     };
     const systemEventRuntime: SystemEventRuntime = {
       processSystemEvent: vi.fn(async () => {
@@ -73,7 +72,6 @@ describe("IVecEngine global run serialization", () => {
         events.push("chat:failed");
         throw new Error("chat failed");
       }),
-      drain: vi.fn(async () => undefined),
     };
     const systemEventRuntime: SystemEventRuntime = {
       processSystemEvent: vi.fn(async () => {
@@ -95,7 +93,6 @@ describe("IVecEngine global run serialization", () => {
       processChat: vi.fn(async () => {
         await chatGate.promise;
       }),
-      drain: vi.fn(async () => undefined),
     };
     const engine = new IVecEngine({ chatTurnRuntime });
 
@@ -113,6 +110,5 @@ describe("IVecEngine global run serialization", () => {
     await stop;
 
     expect(stopped).toBe(true);
-    expect(chatTurnRuntime.drain).toHaveBeenCalledOnce();
   });
 });

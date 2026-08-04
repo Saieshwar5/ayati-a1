@@ -709,16 +709,13 @@ function validateTypedModeInputs(request: ModeTransitionRequest): VirtualModeRep
   }
   if (
     request.to === "context.retrieve"
-    && (
-      (request.references?.length ?? 0) > 0
-      || (request.targets?.length ?? 0) > 0
-    )
+    && (request.references?.length ?? 0) > 0
   ) {
     return repair(
       "MODE_INPUT_INVALID",
       "Context retrieval accepts capability ids only; it does not accept operational targets or resource references.",
       targets,
-      ["Remove targets and references, then use context_load with keys advertised in context.hot.available."],
+      ["Remove references, then use context_load with keys advertised in context.hot.available."],
     );
   }
   if (request.to !== "validation" && (request.validationChecks?.length ?? 0) > 0) {

@@ -128,11 +128,6 @@ export interface ModeTransitionRequest {
   /** Runtime-resolved checks; never accepted from a model-facing control. */
   validationChecks?: ModeTransitionValidationCheck[];
   resourceMetadata?: ResourceMetadataProposal[];
-  /**
-   * Compatibility input for journaled/tests calls created before typed mode
-   * references. The native model schema no longer exposes this field.
-   */
-  targets?: string[];
   binding?: import("../workstream-binding/contracts.js").WorkstreamBindingProposal;
 }
 
@@ -453,11 +448,7 @@ export function modeTransitionReferenceValues(request: ModeTransitionRequest): s
 }
 
 export function modeTransitionMutationScopeValues(request: ModeTransitionRequest): string[] {
-  const scopes = normalizeStrings((request.mutationScopes ?? []).map(mutationScopeValue));
-  if (scopes.length > 0) return scopes;
-  return request.to === "resolve" || request.to === "execute"
-    ? normalizeStrings(request.targets ?? [])
-    : [];
+  return normalizeStrings((request.mutationScopes ?? []).map(mutationScopeValue));
 }
 
 export function modeTransitionWorkspaceTargetValues(
@@ -487,7 +478,7 @@ export function modeTransitionEvidenceTargetValues(request: ModeTransitionReques
     ...modeTransitionActivationResourceValues(request),
     ...validationTargets,
   ]);
-  return typed.length > 0 ? typed : normalizeStrings(request.targets ?? []);
+  return typed;
 }
 
 export function modeTransitionTargetValues(request: ModeTransitionRequest): string[] {

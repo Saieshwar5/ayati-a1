@@ -12,7 +12,7 @@ import type { PreparedAttachmentService } from "../../src/documents/prepared-att
 import type { SessionAttachmentService } from "../../src/documents/session-attachment-service.js";
 import type { RecallRetriever } from "../../src/skills/builtins/recall/index.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
-import { ContractOnlyContextEngineService } from "ayati-context-engine";
+import type { ContextEngineService } from "ayati-context-engine";
 
 function findMissingArrayItems(schema: unknown, path = "inputSchema"): string[] {
   if (!schema || typeof schema !== "object") {
@@ -77,6 +77,7 @@ function findFilesystemPathDescriptionIssues(schema: unknown, path = "inputSchem
 }
 
 async function buildRuntimeTools(): Promise<ToolDefinition[]> {
+  const contextEngineService = {} as ContextEngineService;
   const builtInTools = (await builtInSkillsProvider.getAllSkills())
     .flatMap((skill) => skill.tools);
   const preparedAttachmentService = {} as unknown as PreparedAttachmentService;
@@ -104,10 +105,10 @@ async function buildRuntimeTools(): Promise<ToolDefinition[]> {
       preparedAttachmentService,
     }).tools,
     ...createGitContextSkill({
-      service: new ContractOnlyContextEngineService(),
+      service: contextEngineService,
     }).tools,
     ...createGitReadSkill({
-      service: new ContractOnlyContextEngineService(),
+      service: contextEngineService,
       workstreamRoot: "/tmp/ayati-workstreams",
     }).tools,
   ];

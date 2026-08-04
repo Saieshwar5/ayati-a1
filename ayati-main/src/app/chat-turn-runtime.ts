@@ -13,7 +13,6 @@ import type {
   AgentResponseKind,
   ConversationTurn,
   PromptMemoryContext,
-  RunRecorder,
   SessionInputHandle,
 } from "../memory/types.js";
 import {
@@ -102,24 +101,6 @@ interface LiveReplyStream {
   seq: number;
 }
 
-const chatRunRecorder: RunRecorder = {
-  recordToolCall(): void {
-    return;
-  },
-  recordToolResult(): void {
-    return;
-  },
-  recordAssistantFinal(): void {
-    return;
-  },
-  recordRunFailure(): void {
-    return;
-  },
-  recordAgentStep(): void {
-    return;
-  },
-};
-
 export function createChatTurnRuntime(options: CreateChatTurnRuntimeOptions): ChatTurnRuntime {
   return new AppChatTurnRuntime(options);
 }
@@ -144,7 +125,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   private readonly chatContextRuntime: ContextEngineRuntime;
   private readonly contextEngineService?: ContextEngineService;
   private readonly pulseProposalReflectionService = new PulseProposalReflectionService();
-  private readonly turnSerializer = new AsyncKeySerializer();
 
   constructor(options: CreateChatTurnRuntimeOptions) {
     this.onReply = options.onReply;
@@ -169,36 +149,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   }
 
   async processChat(input: ChatTurnRuntimeInput): Promise<void> {
-    const serializationKey = this.chatTurnSerializationKey(input);
-    const queued = this.turnSerializer.isBusy(serializationKey);
-    if (queued) {
-      this.eventSink?.record({
-        clientId: input.clientId,
-        stage: "runtime",
-        event: "chat_turn_queued",
-        data: {
-          serializationKey,
-          reason: "A previous chat turn is still running for this session key.",
-        },
-      });
-    }
-    return await this.turnSerializer.enqueue(serializationKey, async () => {
-      if (queued) {
-        this.eventSink?.record({
-          clientId: input.clientId,
-          stage: "runtime",
-          event: "chat_turn_started_after_queue",
-          data: {
-            serializationKey,
-          },
-        });
-      }
-      await this.processChatUnlocked(input);
-    });
-  }
-
-  async drain(): Promise<void> {
-    return;
+    await this.processChatUnlocked(input);
   }
 
   private async processChatUnlocked(input: ChatTurnRuntimeInput): Promise<void> {
@@ -248,7 +199,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           capabilitySurfaceManager: this.capabilitySurfaceManager,
           hotContextRuntime: this.hotContextRuntime,
           toolDefinitions,
-          runRecorder: chatRunRecorder,
           inputHandle,
           runHandle,
           recordRunStep: async (record) => {
@@ -422,10 +372,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       });
       if (runHandle) this.eventSink?.scheduleCheckpoint?.(runHandle.runId);
     }
-  }
-
-  private chatTurnSerializationKey(input: ChatTurnRuntimeInput): string {
-    return chatTurnSerializationKeyForClient(input.clientId);
   }
 
   private async prepareChatContextTurn(
@@ -967,35 +913,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         this.directoryLibrary?.touchRunDirectory(runId, directory.directoryId, "attached")),
     ]);
   }
-}
-
-class AsyncKeySerializer {
-  private readonly tails = new Map<string, Promise<void>>();
-
-  isBusy(key: string): boolean {
-    return this.tails.has(key);
-  }
-
-  async enqueue<T>(key: string, work: () => Promise<T>): Promise<T> {
-    const previous = this.tails.get(key) ?? Promise.resolve();
-    const current = previous.then(work);
-    const tail = current.then(
-      () => undefined,
-      () => undefined,
-    );
-    this.tails.set(key, tail);
-    tail.finally(() => {
-      if (this.tails.get(key) === tail) {
-        this.tails.delete(key);
-      }
-    });
-    return await current;
-  }
-}
-
-function chatTurnSerializationKeyForClient(clientId: string): string {
-  const normalized = clientId.trim();
-  return normalized.length > 0 ? normalized : "local";
 }
 
 function summarizeChatAttachment(attachment: ChatAttachmentInput): Record<string, unknown> {

@@ -5,7 +5,7 @@ import type { DocumentStore } from "../documents/document-store.js";
 import type { PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
 import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
-import type { AgentResponseKind, RunRecorder, SessionInputHandle } from "../memory/types.js";
+import type { AgentResponseKind, SessionInputHandle } from "../memory/types.js";
 import type { AgentRunHandle, ContextEngineService, FinalizeRunResponse } from "ayati-context-engine";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition } from "../skills/types.js";
@@ -67,24 +67,6 @@ interface SystemEventExecutionPlan {
   approvalState: SystemEventApprovalState;
   toolDefinitions: ToolDefinition[];
 }
-
-const systemEventRunRecorder: RunRecorder = {
-  recordToolCall(): void {
-    return;
-  },
-  recordToolResult(): void {
-    return;
-  },
-  recordAssistantFinal(): void {
-    return;
-  },
-  recordRunFailure(): void {
-    return;
-  },
-  recordAgentStep(): void {
-    return;
-  },
-};
 
 export function createSystemEventRuntime(options: CreateSystemEventRuntimeOptions): SystemEventRuntime {
   return new AppSystemEventRuntime(options);
@@ -223,7 +205,6 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         capabilitySurfaceManager: this.capabilitySurfaceManager,
         hotContextRuntime: this.hotContextRuntime,
         toolDefinitions,
-        runRecorder: systemEventRunRecorder,
         inputHandle,
         runHandle,
         recordRunStep: async (record) => {

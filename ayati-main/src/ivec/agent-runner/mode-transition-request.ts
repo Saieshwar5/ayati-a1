@@ -33,9 +33,6 @@ export function normalizeModeTransitionRequest(value: unknown): ModeTransitionRe
     ...(outcomeRefs.length > 0 ? { outcomeRefs } : {}),
     ...(criterionProofs.length > 0 ? { criterionProofs } : {}),
     ...(resourceMetadata.length > 0 ? { resourceMetadata } : {}),
-    ...(Array.isArray(record["targets"])
-      ? { targets: normalizeStringArray(record["targets"]) }
-      : {}),
     ...(binding ? { binding } : {}),
   };
 }

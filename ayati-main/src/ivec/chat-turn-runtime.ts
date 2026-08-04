@@ -8,5 +8,4 @@ export interface ChatTurnRuntimeInput {
 
 export interface ChatTurnRuntime {
   processChat(input: ChatTurnRuntimeInput): Promise<void>;
-  drain(): Promise<void>;
 }

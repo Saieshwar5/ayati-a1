@@ -1,4 +1,3 @@
-export * from "./contract-only-service.js";
 export * from "./context-checkpoint-token-policy.js";
 export * from "./contracts.js";
 export * from "./errors.js";

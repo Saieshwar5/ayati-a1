@@ -1,4 +1,3 @@
-import type { MemoryRunHandle, RunRecorder } from "../../memory/types.js";
 import type {
   ActOutput,
   ActToolCallRecord,
@@ -7,7 +6,7 @@ import type {
 } from "../types.js";
 import type { ToolExecutor } from "../../skills/tool-executor.js";
 import type { ToolDefinition, ToolResult } from "../../skills/types.js";
-import type { WorkstreamResourceBinding } from "ayati-context-engine";
+import type { AgentRunHandle, WorkstreamResourceBinding } from "ayati-context-engine";
 import type { RunMetrics } from "../metrics.js";
 import { recordRunMetric } from "../metrics.js";
 import { uniqueArtifacts } from "../../verification/artifact-assertions.js";
@@ -29,8 +28,7 @@ export interface AgentActionExecutionDeps {
   selectedTools: ToolDefinition[];
   config: LoopConfig;
   clientId: string;
-  runRecorder: RunRecorder;
-  runHandle: MemoryRunHandle;
+  runHandle: AgentRunHandle;
   workstreamResources?: WorkstreamResourceBinding[];
   filesystemMutationRoots?: string[];
   metrics?: RunMetrics;
@@ -225,7 +223,7 @@ function validateActionPlan(deps: AgentActionExecutionDeps, action: AgentAction)
   const validationContext = {
     clientId: deps.clientId,
     runId: deps.runHandle.runId,
-    sessionId: deps.runHandle.sessionId,
+    sessionId: deps.runHandle.streamId,
     ...(deps.workstreamResources?.length ? { workstreamResources: deps.workstreamResources } : {}),
     ...(deps.filesystemMutationRoots?.length
       ? { filesystemMutationRoots: deps.filesystemMutationRoots }
@@ -324,7 +322,7 @@ async function executeToolCall(
     clientId: deps.clientId,
     runId: deps.runHandle.runId,
     callId: call.id,
-    sessionId: deps.runHandle.sessionId,
+    sessionId: deps.runHandle.streamId,
     ...(deps.workstreamResources?.length ? { workstreamResources: deps.workstreamResources } : {}),
     ...(deps.filesystemMutationRoots?.length
       ? { filesystemMutationRoots: deps.filesystemMutationRoots }
@@ -343,15 +341,6 @@ async function executeToolCall(
     });
   }
 
-  deps.runRecorder.recordToolCall(deps.clientId, {
-    runId: deps.runHandle.runId,
-    sessionId: deps.runHandle.sessionId,
-    stepId: stepNumber,
-    toolCallId: call.id,
-    toolName: call.tool,
-    args: call.input,
-  });
-
   const startedAt = Date.now();
   let result: ToolResult;
   try {
@@ -367,16 +356,6 @@ async function executeToolCall(
       durationMs: Date.now() - startedAt,
       kind: "tool",
       status: "failed",
-    });
-    deps.runRecorder.recordToolResult(deps.clientId, {
-      runId: deps.runHandle.runId,
-      sessionId: deps.runHandle.sessionId,
-      stepId: stepNumber,
-      toolCallId: call.id,
-      toolName: call.tool,
-      status: "failed",
-      output: "",
-      errorMessage: message,
     });
     return withToolCallVerification({
       callId: call.id,
@@ -422,17 +401,6 @@ async function executeToolCall(
     record.outputTruncated = true;
   }
   record.verification = deriveToolCallVerification(record);
-  deps.runRecorder.recordToolResult(deps.clientId, {
-    runId: deps.runHandle.runId,
-    sessionId: deps.runHandle.sessionId,
-    stepId: stepNumber,
-    toolCallId: call.id,
-    toolName: call.tool,
-    status: record.error ? "failed" : "success",
-    output: record.output,
-    errorMessage: record.error,
-  });
-
   return record;
 }
 

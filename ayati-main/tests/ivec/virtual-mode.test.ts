@@ -283,7 +283,7 @@ describe("virtual mode graph", () => {
       to: "execute" as const,
       purpose: "Write the verified file.",
       capabilities: ["file:write"],
-      targets: ["result.txt"],
+      mutationScopes: [{ kind: "filesystem" as const, path: "result.txt" }],
     };
     const executing = applyVirtualModeTransition(
       createEntryVirtualModeState(),

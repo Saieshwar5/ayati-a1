@@ -49,9 +49,7 @@ export function isDirectFilesystemReadTransition(
       (reference) => reference.kind === "filesystem",
     );
   }
-  const targets = request.targets ?? [];
-  return targets.length > 0
-    && targets.every((target) => isAbsolute(target));
+  return false;
 }
 
 export async function findUnverifiedVirtualModeTargets(
