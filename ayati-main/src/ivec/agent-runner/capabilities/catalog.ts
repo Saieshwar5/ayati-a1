@@ -211,23 +211,6 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     "agent_history_read",
   ]),
 
-  capability("workspace:inspect", "Inspect UI workspace state.", "Use before changing windows or layout.", OBSERVE_INVESTIGATE, ["workspace_get_state"]),
-  capability("workspace:arrange", "Arrange, focus, or register workspace windows.", "Use for ordinary authorized UI workspace changes.", MUTATION, [
-    "workspace_set_layout",
-    "workspace_focus_window",
-    "workspace_register_window",
-  ], [], {
-    success: ["workspace:inspect"],
-  }),
-  capability("workspace:open", "Reuse or open a workspace window.", "Use when an application window must be opened or reused.", MUTATION, ["workspace_reuse_or_open_window"], [], {
-    success: ["workspace:inspect"],
-  }),
-  capability("workspace:cleanup", "Close or remove unused workspace windows.", "Use only for explicitly authorized destructive UI cleanup.", MUTATION, [
-    "workspace_close_window",
-    "workspace_cleanup_unused",
-  ], [], {
-    success: ["workspace:inspect"],
-  }),
 ];
 
 export const HIDDEN_LIFECYCLE_TOOL_NAMES = new Set([

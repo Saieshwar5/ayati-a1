@@ -20,7 +20,6 @@ export type ToolRole =
   | "evidence_access"
   | "command_execution"
   | "long_running_process"
-  | "ui_control"
   | "memory_control"
   | "attachment_access"
   | "data_analysis"
@@ -176,13 +175,6 @@ export const TOOL_TAXONOMY: Readonly<Record<string, ToolTaxonomyEntry>> = buildT
   agent_conversation_read: readOnly(["conversation_read", "enquiry_read", "evidence_access"], "run", READ_ONLY_PHASES),
   agent_history_read: readOnly(["conversation_read", "enquiry_read", "evidence_access"], "run", READ_ONLY_PHASES),
 
-  workspace_get_state: readOnly(["enquiry_read", "ui_control"], "phase", ["enquiry", "workstream_bound"]),
-  workspace_set_layout: workspaceMutation(["ui_control"], "one_step", WORKSTREAM_BOUND_ONLY),
-  workspace_focus_window: workspaceMutation(["ui_control"], "one_step", WORKSTREAM_BOUND_ONLY),
-  workspace_register_window: control(["ui_control"], "one_step", ["workstream_bound"]),
-  workspace_reuse_or_open_window: workspaceMutation(["ui_control"], "one_step", WORKSTREAM_BOUND_ONLY),
-  workspace_close_window: destructive(["ui_control"], "one_step", WORKSTREAM_BOUND_ONLY),
-  workspace_cleanup_unused: destructive(["ui_control"], "one_step", WORKSTREAM_BOUND_ONLY),
 });
 
 export function getToolTaxonomy(toolName: string): ToolTaxonomyEntry | undefined {
@@ -261,7 +253,6 @@ export function summarizeToolTaxonomy(toolNames: string[]): ToolTaxonomySummary 
     "evidence_access",
     "command_execution",
     "long_running_process",
-    "ui_control",
     "memory_control",
     "attachment_access",
     "data_analysis",

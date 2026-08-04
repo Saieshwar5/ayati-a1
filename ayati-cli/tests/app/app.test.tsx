@@ -31,10 +31,6 @@ vi.mock("../../src/app/hooks/use-websocket.js", () => ({
   },
 }));
 
-vi.mock("../../src/app/ui-context.js", () => ({
-  detectAgentCliUiContext: vi.fn().mockResolvedValue(null),
-}));
-
 import { App } from "../../src/app/app.js";
 
 type RenderedApp = ReturnType<typeof render>;
@@ -100,14 +96,6 @@ function sentReplyRenderedMessages(): unknown[] {
   ));
 }
 
-function workspaceEvent(event: string): unknown {
-  return expect.objectContaining({
-    type: "workspace_event",
-    event,
-    workspaceSessionId: expect.any(String),
-  });
-}
-
 describe("App", () => {
   afterEach(() => {
     websocketState.onMessage = null;
@@ -168,66 +156,18 @@ describe("App", () => {
     });
   });
 
-  it("sends workspace compose events around a submitted chat message", async () => {
+  it("sends a submitted chat message without desktop workspace events", async () => {
     const app = await renderApp();
 
     await writeInput(app, "hello");
 
     await vi.waitFor(() => {
-      const messages = sentMessages();
-      expect(messages).toEqual(expect.arrayContaining([
-        workspaceEvent("workspace_session_started"),
-        workspaceEvent("cli_input_started"),
-        workspaceEvent("cli_message_submitted"),
-        { type: "chat", content: "hello" },
-      ]));
-      const submittedIndex = messages.findIndex((message) => (
-        typeof message === "object"
-        && message !== null
-        && (message as { event?: unknown }).event === "cli_message_submitted"
-      ));
-      const chatIndex = messages.findIndex((message) => (
-        typeof message === "object"
-        && message !== null
-        && (message as { type?: unknown }).type === "chat"
-      ));
-      expect(submittedIndex).toBeGreaterThanOrEqual(0);
-      expect(chatIndex).toBeGreaterThan(submittedIndex);
-    });
-
-    await act(async () => {
-      app.unmount();
-    });
-  });
-
-  it("sends compose activity for later edits while draft text remains", async () => {
-    const app = await renderApp();
-
-    await vi.waitFor(() => {
-      expect(sentMessages()).toContainEqual(workspaceEvent("workspace_session_started"));
-    });
-    websocketState.send.mockClear();
-
-    await act(async () => {
-      app.stdin.write("he");
-    });
-
-    await vi.waitFor(() => {
-      expect(sentMessages()).toEqual([
-        workspaceEvent("cli_input_started"),
-      ]);
-    });
-
-    websocketState.send.mockClear();
-
-    await act(async () => {
-      app.stdin.write("llo");
-    });
-
-    await vi.waitFor(() => {
-      expect(sentMessages()).toEqual([
-        workspaceEvent("cli_input_started"),
-      ]);
+      expect(sentChatMessages()).toEqual([{ type: "chat", content: "hello" }]);
+      expect(sentMessages().map((message) => (
+        typeof message === "object" && message !== null
+          ? (message as { type?: unknown }).type
+          : undefined
+      ))).toEqual(["client_hello", "chat"]);
     });
 
     await act(async () => {

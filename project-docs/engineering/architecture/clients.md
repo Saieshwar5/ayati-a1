@@ -21,3 +21,8 @@ Main files:
 - `ayati-cli/src/app/commands.ts`
 
 The CLI connects to `ws://localhost:8080`.
+
+The client sends chat, attachments, capability negotiation, and reply-rendered
+acknowledgements. It does not inspect desktop windows, send window-manager
+metadata, emit workspace-attention events, or control desktop layout. Desktop
+integration can be reconsidered later as a separate optional client feature.

@@ -8,7 +8,6 @@ import type { PreparedAttachmentService } from "../documents/prepared-attachment
 import type { SessionAttachmentService } from "../documents/session-attachment-service.js";
 import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
-import type { WorkspaceOrchestrator } from "../ui/workspace-orchestrator.js";
 import type { AyatiRuntimeConfig } from "../config/runtime-config.js";
 import type { ContextEngineService } from "ayati-context-engine";
 import { builtInSkillsProvider } from "../skills/provider.js";
@@ -23,7 +22,6 @@ import { createDocumentSkill } from "../skills/builtins/documents/index.js";
 import { createFilesSkill } from "../skills/builtins/files/index.js";
 import { createGitContextSkill } from "../skills/builtins/git-context/index.js";
 import { createGitReadSkill } from "../skills/builtins/git-read/index.js";
-import { createUiSkill } from "../skills/builtins/ui/index.js";
 import { createContextSkill } from "../skills/builtins/context/index.js";
 import { createSystemSkill } from "../skills/builtins/system/index.js";
 import { CapabilityCatalog } from "../ivec/agent-runner/capabilities/catalog.js";
@@ -46,7 +44,6 @@ export interface SkillRuntimeOptions {
   preparedAttachmentService: PreparedAttachmentService;
   fileLibrary: FileLibrary;
   directoryLibrary: DirectoryLibrary;
-  workspaceOrchestrator: WorkspaceOrchestrator;
   config: AyatiRuntimeConfig;
   contextEngineService: ContextEngineService;
   personalMemorySnapshot(clientId: string): string;
@@ -101,9 +98,6 @@ export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<
     createGitReadSkill({
       service: options.contextEngineService,
       workstreamRoot: resolve(options.config.contextEngine.rootDirectory, "workstreams"),
-    }),
-    createUiSkill({
-      workspaceOrchestrator: options.workspaceOrchestrator,
     }),
   ];
 

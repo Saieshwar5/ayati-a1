@@ -13,7 +13,6 @@ import type {
   ToolResultV2,
   VerifiedFact,
 } from "../skills/types.js";
-import type { AgentUiContext } from "../ui/context.js";
 import type {
   AgentResponseKind,
   AssistantResponseKind,
@@ -529,7 +528,6 @@ export interface AgentLoopDeps {
   systemEventContextVisibility?: SystemEventContextVisibility;
   preferredResponseKind?: AgentResponseKind;
   initialUserMessage?: string;
-  uiContext?: AgentUiContext;
   onProgress?: OnProgressCallback;
   onFinalResponseStream?: OnFinalResponseStreamCallback;
   recordRunStep?: (
@@ -612,5 +610,4 @@ export interface ChatInboundMessage {
   type: "chat";
   content: string;
   attachments?: ChatAttachmentInput[];
-  uiContext?: AgentUiContext;
 }

@@ -8,7 +8,6 @@ import { createGitReadSkill } from "../../src/skills/builtins/git-read/index.js"
 import { createMemorySkill } from "../../src/skills/builtins/memory/index.js";
 import { createPythonSkill } from "../../src/skills/builtins/python/index.js";
 import { createRecallSkill } from "../../src/skills/builtins/recall/index.js";
-import { createUiSkill } from "../../src/skills/builtins/ui/index.js";
 import { createContextSkill } from "../../src/skills/builtins/context/index.js";
 import { createSystemSkill } from "../../src/skills/builtins/system/index.js";
 import { builtInSkillsProvider } from "../../src/skills/provider.js";
@@ -158,6 +157,5 @@ function runtimeSkills(): SkillDefinition[] {
     createFilesSkill({ fileLibrary: stub, directoryLibrary: stub }),
     createGitContextSkill({ service: stub }),
     createGitReadSkill({ service: stub, workstreamRoot: "/tmp/ayati-workstreams" }),
-    createUiSkill({ workspaceOrchestrator: stub }),
   ];
 }

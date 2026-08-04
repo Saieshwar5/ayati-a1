@@ -1,4 +1,3 @@
-import type { AgentUiContext } from "../ui/context.js";
 import type { WorkstreamResourceBinding } from "ayati-context-engine";
 
 export type FilesystemTargetState =
@@ -50,7 +49,6 @@ export interface ToolExecutionContext {
   /** Internal target states captured by the mutation verifier; never model-facing. */
   filesystemTargetPreconditions?: FilesystemTargetPrecondition[];
   stepNumber?: number;
-  uiContext?: AgentUiContext;
   resourceScope?: ToolResourceScope;
 }
 

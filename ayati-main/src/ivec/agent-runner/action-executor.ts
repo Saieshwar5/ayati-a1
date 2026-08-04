@@ -1,4 +1,3 @@
-import type { AgentUiContext } from "../../ui/context.js";
 import type { MemoryRunHandle, RunRecorder } from "../../memory/types.js";
 import type {
   ActOutput,
@@ -30,7 +29,6 @@ export interface AgentActionExecutionDeps {
   selectedTools: ToolDefinition[];
   config: LoopConfig;
   clientId: string;
-  uiContext?: AgentUiContext;
   runRecorder: RunRecorder;
   runHandle: MemoryRunHandle;
   workstreamResources?: WorkstreamResourceBinding[];
@@ -232,7 +230,6 @@ function validateActionPlan(deps: AgentActionExecutionDeps, action: AgentAction)
     ...(deps.filesystemMutationRoots?.length
       ? { filesystemMutationRoots: deps.filesystemMutationRoots }
       : {}),
-    ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
   };
   for (const tool of action.allowedTools) {
     if (!selectedToolNames.has(tool)) {
@@ -333,7 +330,6 @@ async function executeToolCall(
       ? { filesystemMutationRoots: deps.filesystemMutationRoots }
       : {}),
     stepNumber,
-    ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
   };
   const validation = deps.toolExecutor.validate(call.tool, call.input, context);
   if (!validation.valid) {

@@ -216,7 +216,6 @@ export async function runAgentLoop(
       runId: cleanupRunId,
       sessionId: inputHandle.sessionId,
       stepNumber: state.iteration,
-      ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
     });
     devLog(`[${deps.clientId}] [metrics:agent_loop] ${formatRunMetrics(metrics)}`);
     const responseKind = input.responseKind ?? input.completion?.response_kind ?? state.preferredResponseKind ?? "reply";
@@ -394,7 +393,6 @@ export async function runAgentLoop(
       runId: runHandle.runId,
       sessionId: inputHandle.sessionId,
       stepNumber: state.iteration,
-      ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
     };
     const deterministicCapabilitySurface: CapabilitySurfaceResult | undefined = deps.capabilitySurfaceManager
       ?.prepareForDecision(state, toolContext);
@@ -1216,7 +1214,6 @@ export async function runAgentLoop(
           runId: runHandle.runId,
           sessionId: inputHandle.sessionId,
           stepNumber,
-          ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
         }),
       });
     }

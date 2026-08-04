@@ -111,7 +111,6 @@ export class IVecEngine {
         clientId,
         content: msg.content,
         attachments: msg.attachments ?? [],
-        uiContext: msg.uiContext,
       });
     }).catch((err) => {
       devError("Unhandled chat processing failure:", err);
@@ -312,10 +311,6 @@ function asOptionalPositiveNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
-function asOptionalPositiveInteger(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
-}
-
 function asOptionalStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
@@ -383,13 +378,11 @@ export function parseChatInboundMessage(data: unknown): ChatInboundMessage | nul
     return null;
   }
 
-  const uiContext = parseAgentUiContext(payload["uiContext"]);
   const attachmentsRaw = payload["attachments"];
   if (!Array.isArray(attachmentsRaw)) {
     return {
       type: "chat",
       content,
-      ...(uiContext ? { uiContext } : {}),
     };
   }
 
@@ -484,47 +477,6 @@ export function parseChatInboundMessage(data: unknown): ChatInboundMessage | nul
     type: "chat",
     content,
     ...(attachments.length > 0 ? { attachments } : {}),
-    ...(uiContext ? { uiContext } : {}),
-  };
-}
-
-function parseAgentUiContext(raw: unknown): ChatInboundMessage["uiContext"] | undefined {
-  const value = asRecord(raw);
-  if (!value || value["source"] !== "agent-cli") {
-    return undefined;
-  }
-
-  const processTreePids = Array.isArray(value["processTreePids"])
-    ? value["processTreePids"].flatMap((entry) => (
-      typeof entry === "number" && Number.isInteger(entry) && entry > 0 ? [entry] : []
-    ))
-    : undefined;
-  const terminalPid = asOptionalPositiveInteger(value["terminalPid"]);
-  const processPid = asOptionalPositiveInteger(value["processPid"]);
-  const workspaceId = asOptionalPositiveInteger(value["workspaceId"]);
-  const windowAddress = asOptionalString(value["windowAddress"]);
-  const windowClass = asOptionalString(value["windowClass"]);
-  const windowTitle = asOptionalString(value["windowTitle"]);
-  const workspaceName = asOptionalString(value["workspaceName"]);
-  const monitor = asOptionalString(value["monitor"]);
-  const detectedAt = asOptionalString(value["detectedAt"]);
-
-  if (!windowAddress && !workspaceName && !workspaceId && !terminalPid && !processPid) {
-    return undefined;
-  }
-
-  return {
-    source: "agent-cli",
-    ...(terminalPid !== undefined ? { terminalPid } : {}),
-    ...(processPid !== undefined ? { processPid } : {}),
-    ...(processTreePids && processTreePids.length > 0 ? { processTreePids: [...new Set(processTreePids)] } : {}),
-    ...(windowAddress ? { windowAddress } : {}),
-    ...(windowClass ? { windowClass } : {}),
-    ...(windowTitle ? { windowTitle } : {}),
-    ...(workspaceId !== undefined ? { workspaceId } : {}),
-    ...(workspaceName ? { workspaceName } : {}),
-    ...(monitor ? { monitor } : {}),
-    ...(detectedAt ? { detectedAt } : {}),
   };
 }
 

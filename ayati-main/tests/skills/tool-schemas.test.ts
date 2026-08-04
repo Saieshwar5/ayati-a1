@@ -7,13 +7,11 @@ import { createGitContextSkill } from "../../src/skills/builtins/git-context/ind
 import { createGitReadSkill } from "../../src/skills/builtins/git-read/index.js";
 import { createPythonSkill } from "../../src/skills/builtins/python/index.js";
 import { createRecallSkill } from "../../src/skills/builtins/recall/index.js";
-import { createUiSkill } from "../../src/skills/builtins/ui/index.js";
 import { createSystemSkill } from "../../src/skills/builtins/system/index.js";
 import type { PreparedAttachmentService } from "../../src/documents/prepared-attachment-service.js";
 import type { SessionAttachmentService } from "../../src/documents/session-attachment-service.js";
 import type { RecallRetriever } from "../../src/skills/builtins/recall/index.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
-import { WorkspaceOrchestrator } from "../../src/ui/workspace-orchestrator.js";
 import { ContractOnlyContextEngineService } from "ayati-context-engine";
 
 function findMissingArrayItems(schema: unknown, path = "inputSchema"): string[] {
@@ -112,12 +110,6 @@ async function buildRuntimeTools(): Promise<ToolDefinition[]> {
       service: new ContractOnlyContextEngineService(),
       workstreamRoot: "/tmp/ayati-workstreams",
     }).tools,
-    ...createUiSkill({
-      workspaceOrchestrator: new WorkspaceOrchestrator({
-        dataDir: "/tmp/ayati-test-data",
-        hyprlandEnabled: false,
-      }),
-    }).tools,
   ];
 }
 
@@ -139,8 +131,6 @@ describe("runtime tool schemas", () => {
     expect(tools.some((tool) => tool.name === "git_context_diff")).toBe(false);
     expect(tools.some((tool) => tool.name === "git_context_switch_task")).toBe(false);
     expect(tools.some((tool) => tool.name === "python_execute")).toBe(true);
-    expect(tools.some((tool) => tool.name.startsWith("learning_"))).toBe(false);
-    expect(tools.some((tool) => tool.name.startsWith("ui_open_learning_"))).toBe(false);
     const createWorkstream = tools.find((tool) => tool.name === "git_context_create_workstream");
     expect(createWorkstream?.inputSchema.properties).not.toHaveProperty("placement");
     expect(createWorkstream?.inputSchema.required).toEqual(["title", "objective", "reason"]);

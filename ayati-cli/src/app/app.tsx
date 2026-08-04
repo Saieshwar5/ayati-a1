@@ -1,6 +1,5 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { Box } from "ink";
-import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { Header } from "./components/header.js";
 import { MessageList, type MessageListHandle } from "./components/message-list.js";
@@ -21,13 +20,11 @@ import {
   resolvePathMentions,
   stripPathMentions,
 } from "./path-mentions.js";
-import { detectAgentCliUiContext } from "./ui-context.js";
 import type {
   ChatAttachment,
   ChatMessage,
   ChatRequestAttachment,
   ServerMessage,
-  WorkspaceEventName,
 } from "./types.js";
 
 const HEADER_HEIGHT = 3;
@@ -71,7 +68,6 @@ export function App(): React.JSX.Element {
     Math.max(process.stdout.columns ?? 80, MIN_TERMINAL_COLUMNS),
   );
   const messageListRef = useRef<MessageListHandle>(null);
-  const workspaceSessionId = useMemo(() => randomUUID(), []);
   const streamedMessageIdsRef = useRef(new Map<string, string>());
   const pendingRenderedRepliesRef = useRef(new Map<string, string>());
 
@@ -221,18 +217,6 @@ export function App(): React.JSX.Element {
     });
   }, [send]);
 
-  const emitWorkspaceEvent = useCallback((event: WorkspaceEventName) => {
-    void (async () => {
-      const uiContext = await detectAgentCliUiContext();
-      send({
-        type: "workspace_event",
-        event,
-        workspaceSessionId,
-        ...(uiContext ? { uiContext } : {}),
-      });
-    })();
-  }, [send, workspaceSessionId]);
-
   useEffect(() => {
     if (!connected) {
       return;
@@ -243,26 +227,11 @@ export function App(): React.JSX.Element {
         replyStreaming: true,
       },
     });
-    emitWorkspaceEvent("workspace_session_started");
-  }, [connected, emitWorkspaceEvent, send]);
-
-  useEffect(() => () => {
-    send({
-      type: "workspace_event",
-      event: "workspace_session_ended",
-      workspaceSessionId,
-    });
-  }, [send, workspaceSessionId]);
+  }, [connected, send]);
 
   const handleInputChange = useCallback((nextValue: string) => {
-    const userComposed = !isLoading
-      && inputValue !== nextValue
-      && nextValue.trim().length > 0;
-    if (userComposed) {
-      emitWorkspaceEvent("cli_input_started");
-    }
     setInputValue(nextValue);
-  }, [emitWorkspaceEvent, inputValue, isLoading]);
+  }, []);
 
   const pathSuggestions = useMemo(
     () => getPathSuggestions(inputValue, { limit: 6, roots: recentRoots }),
@@ -333,24 +302,14 @@ export function App(): React.JSX.Element {
 
     setProgressLines([]);
     setIsLoading(true);
-    void (async () => {
-      const uiContext = await detectAgentCliUiContext();
-      send({
-        type: "workspace_event",
-        event: "cli_message_submitted",
-        workspaceSessionId,
-        ...(uiContext ? { uiContext } : {}),
-      });
-      send({
-        type: "chat",
-        content: trimmedServerContent,
-        ...(attachments.length > 0 ? { attachments } : {}),
-        ...(uiContext ? { uiContext } : {}),
-      });
-    })();
+    send({
+      type: "chat",
+      content: trimmedServerContent,
+      ...(attachments.length > 0 ? { attachments } : {}),
+    });
 
     rememberAttachmentRoots(displayAttachments);
-  }, [rememberAttachmentRoots, send, workspaceSessionId]);
+  }, [rememberAttachmentRoots, send]);
 
   const handleSubmit = useCallback(
     (value: string) => {

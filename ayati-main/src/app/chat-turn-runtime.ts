@@ -232,7 +232,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           kind: "chat",
           content: input.content,
           attachments: input.attachments.map((attachment) => summarizeChatAttachment(attachment)),
-          uiContext: input.uiContext,
         },
       });
 
@@ -284,7 +283,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
               }
             : {}),
           clientId: input.clientId,
-          uiContext: input.uiContext,
           initialUserMessage: input.content,
           config: this.loopConfig,
           dataDir: this.dataDir ?? "data",

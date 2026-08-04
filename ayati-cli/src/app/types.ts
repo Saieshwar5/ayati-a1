@@ -37,20 +37,6 @@ export interface ChatRequestMessage {
   type: "chat";
   content: string;
   attachments?: ChatRequestAttachment[];
-  uiContext?: AgentUiContext;
-}
-
-export type WorkspaceEventName =
-  | "workspace_session_started"
-  | "workspace_session_ended"
-  | "cli_input_started"
-  | "cli_message_submitted";
-
-export interface WorkspaceEventMessage {
-  type: "workspace_event";
-  event: WorkspaceEventName;
-  workspaceSessionId: string;
-  uiContext?: AgentUiContext;
 }
 
 export interface ClientHelloMessage {
@@ -68,23 +54,8 @@ export interface ReplyRenderedMessage {
 
 export type ClientMessage =
   | ChatRequestMessage
-  | WorkspaceEventMessage
   | ClientHelloMessage
   | ReplyRenderedMessage;
-
-export interface AgentUiContext {
-  source: "agent-cli";
-  terminalPid?: number;
-  processPid?: number;
-  processTreePids?: number[];
-  windowAddress?: string;
-  windowClass?: string;
-  windowTitle?: string;
-  workspaceId?: number;
-  workspaceName?: string;
-  monitor?: string;
-  detectedAt?: string;
-}
 
 export interface ReplyMessage {
   type: "reply";

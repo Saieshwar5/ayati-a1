@@ -32,8 +32,6 @@ import { createSkillRuntime } from "./skill-runtime.js";
 import { loadAyatiRuntimeConfig } from "../config/runtime-config.js";
 import embeddingProvider from "../embeddings/runtime/index.js";
 import imageGenerationProvider from "../image-generation/runtime/index.js";
-import type { AgentUiContext } from "../ui/context.js";
-import type { WorkspaceInteractionEvent } from "../ui/workspace-orchestrator.js";
 import { createAgentFeedbackLedgerFromEnv } from "../ivec/feedback-ledger.js";
 import { startContextEngineHost } from "ayati-context-engine";
 import { createContextEngineRuntime } from "./context-engine-runtime.js";
@@ -83,7 +81,6 @@ export async function main(): Promise<void> {
   const provider = createEvaluationProvider(loadedProvider);
   let engine: IVecEngine | null = null;
   let staticContext: StaticContext | null = null;
-  const workspaceSessionsByTransport = new Map<string, string>();
   const runByReplyTurn = new Map<string, string>();
 
   const memory = await createMemoryRuntime({
@@ -132,62 +129,7 @@ export async function main(): Promise<void> {
         event: "inbound",
         data: { transportClientId, envelope: data },
       });
-      const workspaceEvent = parseWorkspaceEventMessage(data);
-      if (workspaceEvent) {
-        if (workspaceEvent.event === "workspace_session_started") {
-          workspaceSessionsByTransport.set(transportClientId, workspaceEvent.workspaceSessionId);
-          void content?.workspaceOrchestrator.startSession({
-            clientId: CLIENT_ID,
-            workspaceSessionId: workspaceEvent.workspaceSessionId,
-            transportClientId,
-            uiContext: workspaceEvent.uiContext,
-          }).catch((err: unknown) => {
-            devLog(`Workspace session start failed: ${err instanceof Error ? err.message : String(err)}`);
-          });
-          return;
-        }
-
-        if (workspaceEvent.event === "workspace_session_ended") {
-          workspaceSessionsByTransport.delete(transportClientId);
-          void content?.workspaceOrchestrator.endSession({
-            clientId: CLIENT_ID,
-            workspaceSessionId: workspaceEvent.workspaceSessionId,
-            transportClientId,
-            reason: "client_ended",
-            uiContext: workspaceEvent.uiContext,
-          }).catch((err: unknown) => {
-            devLog(`Workspace session end failed: ${err instanceof Error ? err.message : String(err)}`);
-          });
-          return;
-        }
-
-        void content?.workspaceOrchestrator.handleInteractionEvent({
-          clientId: CLIENT_ID,
-          event: workspaceEvent.event,
-          workspaceSessionId: workspaceEvent.workspaceSessionId,
-          transportClientId,
-          uiContext: workspaceEvent.uiContext,
-        }).catch((err: unknown) => {
-          devLog(`Workspace event ${workspaceEvent.event} failed: ${err instanceof Error ? err.message : String(err)}`);
-        });
-        return;
-      }
       engine?.handleMessage(CLIENT_ID, data);
-    },
-    onDisconnect: (transportClientId) => {
-      const workspaceSessionId = workspaceSessionsByTransport.get(transportClientId);
-      workspaceSessionsByTransport.delete(transportClientId);
-      if (!workspaceSessionId) {
-        return;
-      }
-      void content?.workspaceOrchestrator.endSession({
-        clientId: CLIENT_ID,
-        workspaceSessionId,
-        transportClientId,
-        reason: "transport_closed",
-      }).catch((err: unknown) => {
-        devLog(`Workspace session disconnect cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
-      });
     },
   });
 
@@ -201,12 +143,10 @@ export async function main(): Promise<void> {
 
   content = await createContentRuntime({
     projectRoot,
-    clientId: CLIENT_ID,
     provider,
     config: runtimeConfig,
     embeddingProvider,
   });
-  content.workspaceFocusWatcher.start();
 
   const contextEngineHost = await startContextEngineHost({
     databasePath: runtimeConfig.contextEngine.databasePath,
@@ -238,7 +178,6 @@ export async function main(): Promise<void> {
     preparedAttachmentService: content.preparedAttachmentService,
     fileLibrary: content.fileLibrary,
     directoryLibrary: content.directoryLibrary,
-    workspaceOrchestrator: content.workspaceOrchestrator,
     config: runtimeConfig,
     contextEngineService: contextEngineService,
     personalMemorySnapshot: (clientId) => memory.personalMemorySnapshotCache.getSnapshot(clientId),
@@ -363,7 +302,6 @@ export async function main(): Promise<void> {
   const shutdown = (status: "completed" | "interrupted" | "failed" = "completed"): Promise<void> => {
     if (shutdownPromise) return shutdownPromise;
     shutdownPromise = (async () => {
-      content?.workspaceFocusWatcher.stop();
       await registry.stopAll(pluginRuntimeContext);
       await pulseScheduler.stop();
       pulseStore.close();
@@ -429,67 +367,4 @@ function recordOutboundTransport(
 
 function elapsedMs(startedNs: bigint): number {
   return Number(process.hrtime.bigint() - startedNs) / 1_000_000;
-}
-
-function parseWorkspaceEventMessage(data: unknown): {
-  event: WorkspaceInteractionEvent | "workspace_session_started" | "workspace_session_ended";
-  workspaceSessionId: string;
-  uiContext?: AgentUiContext;
-} | null {
-  if (!data || typeof data !== "object" || Array.isArray(data)) {
-    return null;
-  }
-  const record = data as Record<string, unknown>;
-  if (record["type"] !== "workspace_event") {
-    return null;
-  }
-  const event = record["event"];
-  if (
-    event !== "workspace_session_started"
-    && event !== "workspace_session_ended"
-    && event !== "cli_input_started"
-    && event !== "cli_message_submitted"
-  ) {
-    return null;
-  }
-  const workspaceSessionId = readWorkspaceSessionId(record["workspaceSessionId"]);
-  if (!workspaceSessionId && (event === "workspace_session_started" || event === "workspace_session_ended")) {
-    return null;
-  }
-  const uiContext = normalizeAgentUiContext(record["uiContext"]);
-  return {
-    event,
-    workspaceSessionId: workspaceSessionId ?? "",
-    ...(uiContext ? { uiContext } : {}),
-  };
-}
-
-function readWorkspaceSessionId(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
-function normalizeAgentUiContext(value: unknown): AgentUiContext | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  const record = value as Record<string, unknown>;
-  if (record["source"] !== "agent-cli") {
-    return undefined;
-  }
-  const processTreePids = Array.isArray(record["processTreePids"])
-    ? record["processTreePids"].filter((pid): pid is number => typeof pid === "number")
-    : undefined;
-  return {
-    source: "agent-cli",
-    ...(typeof record["terminalPid"] === "number" ? { terminalPid: record["terminalPid"] } : {}),
-    ...(typeof record["processPid"] === "number" ? { processPid: record["processPid"] } : {}),
-    ...(processTreePids && processTreePids.length > 0 ? { processTreePids } : {}),
-    ...(typeof record["windowAddress"] === "string" ? { windowAddress: record["windowAddress"] } : {}),
-    ...(typeof record["windowClass"] === "string" ? { windowClass: record["windowClass"] } : {}),
-    ...(typeof record["windowTitle"] === "string" ? { windowTitle: record["windowTitle"] } : {}),
-    ...(typeof record["workspaceId"] === "number" ? { workspaceId: record["workspaceId"] } : {}),
-    ...(typeof record["workspaceName"] === "string" ? { workspaceName: record["workspaceName"] } : {}),
-    ...(typeof record["monitor"] === "string" ? { monitor: record["monitor"] } : {}),
-    ...(typeof record["detectedAt"] === "string" ? { detectedAt: record["detectedAt"] } : {}),
-  };
 }
