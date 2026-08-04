@@ -6,6 +6,7 @@ import {
   type ActiveDocumentPointer,
 } from "../recent-document-registry.js";
 import type { AgentTemporalEvent, AgentTemporalExactEvent } from "./agent-context-events.js";
+import type { PromptFocusedWorkstreamContext } from "./focused-workstream-prompt-context.js";
 
 export const CORE_CAPSULE_CONTINUITY_MAX_TOKENS = 8_000;
 
@@ -31,6 +32,7 @@ export interface CoreCapsule {
     routing?: Pick<ContextCurrentRouting, "status" | "workstreamId" | "requestId">;
     activeDocuments?: ActiveDocumentPointer[];
   };
+  focusedWorkstream?: PromptFocusedWorkstreamContext;
   continuity: {
     checkpoint?: CoreCapsuleCheckpoint;
     recentExact: AgentTemporalEvent[];
@@ -50,6 +52,7 @@ export interface BuildCoreCapsuleInput {
   checkpoint?: CoreCapsuleCheckpoint;
   routing?: ContextCurrentRouting;
   activeDocuments?: ActiveDocumentPointer[];
+  focusedWorkstream?: PromptFocusedWorkstreamContext;
   continuityMaxTokens?: number;
 }
 
@@ -95,6 +98,7 @@ export function buildCoreCapsule(input: BuildCoreCapsuleInput): CoreCapsule {
           }
         : {}),
     },
+    ...(input.focusedWorkstream ? { focusedWorkstream: input.focusedWorkstream } : {}),
     continuity,
     budget: {
       continuityMaxTokens,

@@ -83,6 +83,61 @@ describe("workstream binding coordinator", () => {
     });
   });
 
+  it("activates context-only work without inventing a resource target", async () => {
+    const activateWorkstreamForRun = vi.fn(async () => ({
+      run: {
+        runId: "RUN-1",
+        streamId: "S-1",
+        workstreamBinding: {
+          workstreamId: WORKSTREAM_ID,
+          requestId: "R-0001",
+          boundAt: NOW,
+        },
+      },
+    }));
+    const service = {
+      getAgentContext: vi.fn()
+        .mockResolvedValueOnce(agentContext(false))
+        .mockResolvedValueOnce(agentContext(true)),
+      findWorkstreams: vi.fn(async () => ({ workstreams: [candidate("definite")] })),
+      getWorkstream: vi.fn(async () => ({ context: { resources: [] } })),
+      activateWorkstreamForRun,
+    } as unknown as ContextEngineService;
+    const coordinator = createWorkstreamBindingCoordinator({
+      service,
+      runId: "RUN-1",
+      streamId: "S-1",
+      currentInput: "Continue the context-only request.",
+      now: () => new Date(NOW),
+    });
+
+    const result = await coordinator.bind({
+      purpose: "Continue context-only work.",
+      workspaceTargets: [],
+      routingEvidence: ["stream-focus:W-20260722-0001/R-0001"],
+      expectedWorkstreamHead: HEAD,
+      expectedContextRevision: "ctx:unbound",
+      proposal: {
+        kind: "activate",
+        workstreamId: WORKSTREAM_ID,
+        requestDecision: {
+          kind: "continue_current",
+          requestId: "R-0001",
+          reason: "Continue the exact focused request.",
+        },
+        resourceIds: [],
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "resolved",
+      kind: "activated_workstream",
+      workstreamId: WORKSTREAM_ID,
+      requestId: "R-0001",
+    });
+    expect(activateWorkstreamForRun).toHaveBeenCalledOnce();
+  });
+
   it("rejects a routed resource that is no longer mutable before activation", async () => {
     const activateWorkstreamForRun = vi.fn();
     const service = {
@@ -505,10 +560,71 @@ describe("workstream binding coordinator", () => {
     expect(findWorkstreams).toHaveBeenCalledOnce();
   });
 
-  it("fails before lifecycle mutation when the authoritative revision changed", async () => {
+  it("refreshes one stable stale context before revalidating activation", async () => {
+    const activateWorkstreamForRun = vi.fn(async () => ({
+      run: {
+        runId: "RUN-1",
+        streamId: "S-1",
+        workstreamBinding: {
+          workstreamId: WORKSTREAM_ID,
+          requestId: "R-0001",
+          boundAt: NOW,
+        },
+      },
+    }));
+    const service = {
+      getAgentContext: vi.fn()
+        .mockResolvedValueOnce(agentContextWithRevision(false, "ctx:refreshed"))
+        .mockResolvedValueOnce(agentContextWithRevision(false, "ctx:refreshed"))
+        .mockResolvedValueOnce(agentContext(true)),
+      findWorkstreams: vi.fn(async () => ({ workstreams: [candidate("definite")] })),
+      getWorkstream: vi.fn(async () => mutableResourceContext()),
+      activateWorkstreamForRun,
+    } as unknown as ContextEngineService;
+    const coordinator = createWorkstreamBindingCoordinator({
+      service,
+      runId: "RUN-1",
+      streamId: "S-1",
+      currentInput: "Add education qualification to the friends list manager.",
+      now: () => new Date(NOW),
+    });
+
+    const result = await coordinator.bind({
+      purpose: "Bind the education qualification update.",
+      workspaceTargets: [],
+      routingEvidence: ["run:RUN-1:step:1:call:find-owner"],
+      expectedWorkstreamHead: HEAD,
+      expectedContextRevision: "ctx:stale",
+      proposal: {
+        kind: "activate",
+        workstreamId: WORKSTREAM_ID,
+        requestDecision: {
+          kind: "create_and_activate",
+          title: "Add education qualification",
+          request: "Add education qualification to the friends list manager.",
+          acceptance: ["Education qualification is saved and displayed."],
+          constraints: [],
+          reason: "This is a new feature in the existing website.",
+        },
+        resourceIds: [RESOURCE_ID],
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "resolved",
+      kind: "activated_workstream",
+      workstreamId: WORKSTREAM_ID,
+      requestId: "R-0001",
+    });
+    expect(activateWorkstreamForRun).toHaveBeenCalledOnce();
+  });
+
+  it("fails before lifecycle mutation when context changes again during refresh", async () => {
     const findWorkstreams = vi.fn();
     const service = {
-      getAgentContext: vi.fn(async () => agentContext(false)),
+      getAgentContext: vi.fn()
+        .mockResolvedValueOnce(agentContextWithRevision(false, "ctx:observed"))
+        .mockResolvedValueOnce(agentContextWithRevision(false, "ctx:changed-again")),
       findWorkstreams,
     } as unknown as ContextEngineService;
     const coordinator = createWorkstreamBindingCoordinator({
@@ -540,6 +656,7 @@ describe("workstream binding coordinator", () => {
       status: "failed",
       code: "WORKSTREAM_BINDING_CONTEXT_STALE",
       retryable: true,
+      attemptDisposition: "consumed",
     });
     expect(findWorkstreams).not.toHaveBeenCalled();
   });
@@ -687,5 +804,16 @@ function agentContext(bound: boolean, requestId = "R-0001") {
     workstreamCandidates: [],
     ingressResources: [],
     warnings: [],
+  };
+}
+
+function agentContextWithRevision(
+  bound: boolean,
+  contextRevision: string,
+  requestId = "R-0001",
+) {
+  return {
+    ...agentContext(bound, requestId),
+    contextRevision,
   };
 }

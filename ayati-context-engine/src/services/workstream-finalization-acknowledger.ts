@@ -1,5 +1,6 @@
 import type { ContextDatabase } from "../database/database.js";
 import { ContextEngineServiceError } from "../errors.js";
+import { clearAgentStreamWorkstreamFocus } from "../repositories/agent-stream-records.js";
 import { insertWorkstreamProgressProjection } from "../repositories/workstream-progress-records.js";
 import {
   readSharedWorkstreamRepositoryState,
@@ -97,7 +98,7 @@ export function acknowledgeWorkstreamFinalization(input: {
   input.database.transaction(() => {
     const { record, commit, validation, at } = input;
     if (!commit.created || !record.plan.commitRequired) {
-      throw new Error("Every finalized bound run must create one context commit.");
+      throw new Error("Every finalized retained bound run must create one context commit.");
     }
     const repository = readSharedWorkstreamRepositoryState(input.database);
     if (!repository) throw new Error("Shared workstream repository state is unavailable.");
@@ -163,6 +164,17 @@ export function acknowledgeWorkstreamFinalization(input: {
         },
       } : {}),
     });
+    const finalizedRequest = validation.requests.find(
+      (request) => request.id === record.boundRequestId,
+    );
+    if (finalizedRequest?.status === "done" || finalizedRequest?.status === "dropped") {
+      clearAgentStreamWorkstreamFocus(input.database, {
+        streamId: record.streamId,
+        workstreamId: record.workstreamId,
+        requestId: record.boundRequestId,
+        at,
+      });
+    }
     const run = readRunEvidence(input.database, record.runId);
     if (run?.status === "running" || run?.status === "recovery_required") {
       finalizeRunRecord(input.database, {

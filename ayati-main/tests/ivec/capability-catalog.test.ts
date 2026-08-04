@@ -59,10 +59,11 @@ describe("capability catalog", () => {
       coreTools: ["git_context_read_workstream"],
       allowedModes: ["observe.investigate"],
     });
-    expect(catalog.get("workstream:history")).toMatchObject({
-      coreTools: ["git_context_log", "git_context_show", "git_context_diff"],
+    expect(catalog.get("git:read")).toMatchObject({
+      coreTools: ["git_read"],
       allowedModes: ["observe.locate", "observe.investigate"],
     });
+    expect(catalog.get("workstream:history")).toBeUndefined();
     expect(catalog.get("resource:ownership")).toMatchObject({
       coreTools: ["git_context_find_resources"],
       allowedModes: ["observe.locate", "observe.investigate"],
@@ -141,7 +142,7 @@ describe("capability catalog", () => {
       workstreamId: { type: "string" },
       resourceIds: {
         type: "array",
-        minItems: 1,
+        minItems: 0,
         maxItems: 32,
       },
     });

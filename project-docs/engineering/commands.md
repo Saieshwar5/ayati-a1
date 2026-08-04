@@ -52,9 +52,9 @@ pnpm context:catalog-rebuild -- --confirm
 
 All mutation commands require a stopped Context Engine writer. Workstream
 migration converts clean nested repositories into the one shared repository,
-archives the sources and prior database, and installs a rebuilt V9 catalog.
+archives the sources and prior database, and installs a rebuilt V11 catalog.
 Archive reset preserves `<AYATI_ROOT_DIR>/workspace/`. Catalog rebuild
-requires an empty V9 catalog; after an archive reset, start and stop Ayati once
+requires an empty V11 catalog; after an archive reset, start and stop Ayati once
 before confirming rebuild.
 
 Live daemon evaluation:

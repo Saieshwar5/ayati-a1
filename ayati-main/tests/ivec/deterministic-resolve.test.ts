@@ -84,6 +84,43 @@ describe("deterministic resolve gate", () => {
     }));
   });
 
+  it("activates the exact persisted focus without repeating discovery", async () => {
+    const current = state("Continue the unfinished balcony herb work.");
+    const focused = resolvedActivationContext(
+      current.harnessContext.contextEngine!,
+    ).workstream;
+    if (!focused) throw new Error("Expected focused workstream fixture.");
+    focused.ref = `workstreams/W-20260722-0001@${"a".repeat(40)}`;
+    current.harnessContext.contextEngine!.agentStream.focusedWorkstream = focused;
+    const coordinator = {
+      bind: vi.fn(async () => ({
+        status: "failed" as const,
+        code: "FIXTURE_STOP",
+        message: "The focused continuation reached the coordinator.",
+        retryable: false,
+      })),
+    };
+
+    const result = await dispatchDeterministicResolveGate({
+      state: current,
+      request: activationRequest(),
+      workspaceRoot: WORKSPACE_ROOT,
+      toolNames: ["write_files"],
+      coordinator,
+      alreadyAttempted: false,
+    });
+
+    expect(result).toMatchObject({ kind: "failed", attempted: true });
+    expect(coordinator.bind).toHaveBeenCalledWith(expect.objectContaining({
+      expectedWorkstreamHead: "a".repeat(40),
+      routingEvidence: ["stream-focus:W-20260722-0001/R-0001"],
+      proposal: expect.objectContaining({
+        workstreamId: "W-20260722-0001",
+        resourceIds: [RESOURCE_ID],
+      }),
+    }));
+  });
+
   it("does not treat a request ID in the user message as activation authority", async () => {
     const current = activationState(
       "Continue R-0002 in W-20260722-0001 and finish it.",
@@ -203,6 +240,29 @@ describe("deterministic resolve gate", () => {
     expect(missing).toMatchObject({
       kind: "rejected",
       repair: { code: "MODE_BINDING_PROPOSAL_UNVERIFIED" },
+    });
+
+    const focusedOnly = state("Create unrelated notes.md.");
+    const focused = resolvedActivationContext(
+      focusedOnly.harnessContext.contextEngine!,
+    ).workstream;
+    if (!focused) throw new Error("Expected focused workstream fixture.");
+    focused.ref = `workstreams/W-20260722-0001@${"a".repeat(40)}`;
+    focusedOnly.harnessContext.contextEngine!.agentStream.focusedWorkstream = focused;
+    const focusedCreation = await dispatchDeterministicResolveGate({
+      state: focusedOnly,
+      request: resolveRequest(),
+      workspaceRoot: WORKSPACE_ROOT,
+      toolNames: ["write_files"],
+      coordinator,
+      alreadyAttempted: false,
+    });
+    expect(focusedCreation).toMatchObject({
+      kind: "rejected",
+      repair: {
+        code: "MODE_BINDING_PROPOSAL_UNVERIFIED",
+        message: expect.stringContaining("focused context cannot prove"),
+      },
     });
 
     const observedCoordinator = {
@@ -557,6 +617,41 @@ describe("deterministic resolve gate", () => {
     expect(result.kind).toBe("resolved");
     if (result.kind !== "resolved") throw new Error("Expected activation to resolve.");
     expect(result.mutationRoots).toEqual([RESOURCE_PATH]);
+  });
+
+  it("derives no mutation root from an empty context-only activation", async () => {
+    const current = state("Continue the context-only request.");
+    const context = resolvedActivationContext(
+      current.harnessContext.contextEngine!,
+    );
+    if (!context.workstream) throw new Error("Expected workstream fixture.");
+    context.workstream.ref = `workstreams/W-20260722-0001@${"a".repeat(40)}`;
+    context.workstream.resources = [];
+    current.harnessContext.contextEngine!.agentStream.focusedWorkstream = context.workstream;
+    const request = activationRequest();
+    request.binding.resourceIds = [];
+    const coordinator = {
+      bind: vi.fn(async () => ({
+        status: "resolved" as const,
+        kind: "activated_workstream" as const,
+        workstreamId: "W-20260722-0001",
+        requestId: "R-0001",
+        context,
+      })),
+    };
+
+    const result = await dispatchDeterministicResolveGate({
+      state: current,
+      request,
+      workspaceRoot: WORKSPACE_ROOT,
+      toolNames: ["write_files"],
+      coordinator,
+      alreadyAttempted: false,
+    });
+
+    expect(result.kind).toBe("resolved");
+    if (result.kind !== "resolved") throw new Error("Expected activation to resolve.");
+    expect(result.mutationRoots).toEqual([]);
   });
 
   it("does not let no-change wording expand or replace typed activation authority", async () => {

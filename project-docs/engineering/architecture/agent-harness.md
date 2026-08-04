@@ -91,7 +91,7 @@ into an executable call.
 The run-scoped virtual graph is:
 
 ```text
-ENTRY -> context.retrieve | observe.locate | observe.investigate | direct reply
+ENTRY -> context.retrieve | observe.locate | observe.investigate | workstream.route(exact focus) | direct reply
 observe.locate <-> observe.investigate -> context.retrieve | workstream.route(after routing evidence) | validation
 workstream.route -> context.retrieve | observe.locate | observe.investigate | resolve(after routing evidence)
 resolve --accepted--> execute
@@ -214,10 +214,12 @@ exception to prior target provenance; its current read result is still
 verified.
 
 The model never sees a separate workstream-resolution agent or lifecycle tool.
-Before any unbound mutation, it observes durable ownership through
+Before unbound mutation without matching exact focus, it observes durable
+ownership through
 `workstream:search` or `resource:ownership` in `observe.locate`, or through
-`workstream:read` in `observe.investigate`. Direct `ENTRY -> workstream.route`
-and `ENTRY -> resolve` are unavailable. A successful current-run ownership
+`workstream:read` in `observe.investigate`. Direct `ENTRY -> resolve` is
+unavailable. Exact persisted focus permits `ENTRY -> workstream.route` only for
+its own workstream/request; otherwise a successful current-run ownership
 observation unlocks the control-only route stage. That stage clears
 observation tools, exposes the resolve controls, and can return to observation
 if more evidence is needed. The model enters `resolve` only when it
@@ -229,8 +231,9 @@ or mutation authority, and ordinary conversation still returns directly from
 `ENTRY`. The deterministic gate does not classify user-message wording. It
 requires a binding-required capability and one typed request-routing or
 workstream-creation proposal.
-Existing activation supplies the observed workstream, lifecycle choice, and
-exact routed resource IDs. The runtime uses them to ground activation, then
+Existing activation supplies the exact workstream, lifecycle choice, and
+routed or focused resource IDs. It may use an empty list only when no selected
+capability mutates a resource. The runtime uses them to ground activation, then
 derives ownership, repository HEAD, evidence, and only those selected mutable
 filesystem roots from the authoritative activated bindings. Creation instead
 supplies typed `workspaceTargets`; the runtime derives their absolute selected
@@ -303,7 +306,8 @@ filesystem read or mutation. Mutation flows use the routing evidence, then
 pass through `workstream.route`; observation modes cannot proceed directly to
 resolve.
 
-The gate checks binding-required taxonomy, the one-attempt limit, and a
+The gate checks binding-required taxonomy, the one-attempt limit, and verified
+routing context. Creation and selection outside exact focus require a
 successful current-run routing observation. It does not parse the user message
 to duplicate the model's semantic judgment. For creation, it
 validates every target kind and portable relative path, resolves and
@@ -315,8 +319,8 @@ proposal. A concrete ownership conflict performs no binding and immediately
 returns one `needs_user_input` clarification to the user without another model
 decision or retry loop.
 For activation, the gate validates each model-selected resource ID against
-current-run routing, derives the relevant evidence and observed workstream
-HEAD, then rechecks candidate identity, request identity, mutable resource
+current-run routing or exact focused context, derives the relevant evidence
+and observed workstream HEAD, then rechecks candidate identity, request identity, mutable resource
 ownership, availability, and HEAD freshness against Context Engine state.
 Recent activity and referential wording remain discovery hints. Unless the
 candidate was identified by exact identity or ownership, it must be inspected
@@ -326,8 +330,9 @@ Read-only bindings are never upgraded into mutation authority.
 For creation, the exact resolved file or directory targets become selected
 mutation roots for the current run; missing targets are not pre-registered as
 resources, and the whole workspace is never bound.
-For activation, exact current-run routed resource IDs establish the right to
-activate the existing owner and select current-run mutation authority. After
+For activation, exact routed or focused resource IDs establish the right to
+activate the existing owner and select current-run mutation authority. An
+empty list is valid only when no selected capability mutates a resource. After
 the authoritative activation projection is returned, the runtime mounts only
 the selected resources that resolve to absolute filesystem bindings with
 `mutate` access and are not missing or deleted. All other workstream resource
@@ -408,7 +413,7 @@ resource enforcement continues to use exact Context Engine state.
 Expose only the exact shared workstream repository path as a read-only,
 context-only navigation pointer. Do not expose per-workstream storage paths,
 database paths, run storage paths, idempotency journals, observation authority
-fields, or deferred mutation. Repository log/show/diff results never grant
+fields, or deferred mutation. `git_read` log/show/diff results never grant
 binding or mutation authority; canonical workstream state must still be read.
 
 ## Mode-Scoped Capability Visibility

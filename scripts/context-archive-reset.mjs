@@ -9,6 +9,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
+import { writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -307,7 +308,5 @@ async function writeManifest(archiveRoot, manifest) {
 }
 
 function writeStandardOutput(value) {
-  return new Promise((resolveWrite) => {
-    process.stdout.write(value, resolveWrite);
-  });
+  writeSync(process.stdout.fd, value);
 }

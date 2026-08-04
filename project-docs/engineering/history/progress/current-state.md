@@ -50,8 +50,9 @@ context pack -> decision -> action executor -> deterministic verification -> pro
 - Bounded exact history search/read over messages, runs, and evidence.
 - Checkpoint-range personal-memory extraction and independent Hot Context.
 - One truthful finalization operation with immutable assistant-message append,
-  verified resource effects, one progress entry, and one shared-repository
-  commit for every finalized bound run.
+  atomic discard of empty provisional workstreams, verified resource effects,
+  one progress entry, and one shared-repository commit for every finalized
+  retained bound run.
 - One context-only Git repository at `workstreams/.git`; each `W-*` directory
   contains `workstream.md`, `progress.md`, request files, and generated
   `resources.json`.

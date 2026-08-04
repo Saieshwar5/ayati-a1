@@ -20,7 +20,7 @@ afterEach(async () => {
 });
 
 describe("workstream context repository creation", () => {
-  it("materializes one shared context repository without pre-registering a missing output", async () => {
+  it("materializes one shared context repository after binding a real resource", async () => {
     const fixture = await createWorkstreamServiceFixture("create-layout");
     fixtures.push(fixture);
 
@@ -65,7 +65,10 @@ describe("workstream context repository creation", () => {
       }),
     ]);
     expect(selected.resourceBindings).toEqual([]);
-    await expect(access(join(fixture.root, "workspace"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(fixture.database.prepare(
+      "SELECT COUNT(*) AS count FROM workstream_resources WHERE workstream_id = ?",
+    ).get(selected.workstream.workstreamId)).toEqual({ count: 1 });
+    await expect(access(join(fixture.root, "workspace"))).resolves.toBeUndefined();
   });
 
   it("replays creation without allocating another run, workstream, or output", async () => {

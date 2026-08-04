@@ -5,7 +5,7 @@ external-system boundaries unless a test is explicitly live acceptance.
 
 ## Package Responsibilities
 
-- `ayati-context-engine/tests`: V9 contracts/schema, stream/run lifecycle,
+- `ayati-context-engine/tests`: V11 contracts/schema, stream/run lifecycle,
   checkpoints, exact history, workstreams, resources, finalization, archive
   safety, and recovery.
 - `ayati-main/tests`: agent-facing lanes, pressure compilation, checkpoint
@@ -14,7 +14,7 @@ external-system boundaries unless a test is explicitly live acceptance.
 - `ayati-cli/src/app/**/*.test.ts*`: terminal input/rendering, commands,
   attachments, and transport envelopes.
 
-## V9 Context Invariants
+## V11 Context Invariants
 
 Changes should prove the relevant invariants:
 
@@ -59,9 +59,11 @@ Changes should prove the relevant invariants:
 12. Personal-memory extraction consumes only the newly committed checkpoint's
     exact user/assistant range.
 13. Finalization appends at most one assistant message and closes the run
-    truthfully. Every finalized bound run appends exactly one progress entry
-    and creates exactly one shared-repository commit; unbound runs create
-    neither. Deliverables are never staged.
+    truthfully. Every retained bound run appends exactly one progress entry and
+    creates exactly one shared-repository commit. A newly created initializing
+    workstream with no bound or verified resource is instead discarded
+    atomically, clears stream focus, and finalizes through the unbound journal;
+    its messages, steps, and WorkState remain. Deliverables are never staged.
 14. Restart/recovery preserves verified dirty resource state and blocks unsafe
     continuation.
 15. Context Engine is the serialization owner. Step persistence returns the
@@ -73,10 +75,11 @@ Changes should prove the relevant invariants:
     produces only a typed `workstream.snapshot_read` completion outcome for a
     read-only enquiry. It must not authorize mutation or stand in for
     filesystem proof. A successful current-run observation unlocks
-    control-only `workstream.route`, whose surface is empty. Direct
-    `ENTRY -> workstream.route`, `ENTRY -> resolve`, and observation-to-resolve
-    transitions are unavailable. Route may return to observation or proceed
-    to resolve.
+    control-only `workstream.route`, whose surface is empty. Exact persisted
+    focus also unlocks `ENTRY -> workstream.route` only for its own unfinished
+    workstream/request. `ENTRY -> resolve` and observation-to-resolve remain
+    unavailable. Creation or selection outside focus still requires current-run
+    observation. Route may return to observation or proceed to resolve.
 17. The deterministic resolve gate makes zero model calls, accepts one typed
     continuation, amendment, activation, resumption, creation, defer-and-switch,
     or new-workstream proposal, rechecks authoritative candidate/resource
@@ -254,14 +257,15 @@ Changes should prove the relevant invariants:
     acknowledges an already-created commit by `Ayati-Run` trailer without
     duplicating either progress or Git history. Recovery completes partial
     journaled file writes and cleans only matching abandoned atomic temp files;
-    unrelated dirt is preserved and rejected. Restart cleanup removes only
-    unbound, uncommitted provisional workstreams and retains bound provisional
-    state for finalization recovery.
+    unrelated dirt is preserved and rejected. Restart cleanup removes unbound
+    provisional workstreams and atomically discards a bound initializing
+    workstream when its creating run has no durable resource evidence. Bound
+    provisional state with a resource remains available for finalization recovery.
 42. Nested-repository migration is preview-first, refuses dirty or
     non-context repositories, preserves originals in an archive, converts v2
     cards and requests, creates an empty progress baseline when the legacy
     ledger is absent, creates one shared baseline commit, and rebuilds an empty
-    V9 catalog.
+    V11 catalog.
 43. Request FTS participates in workstream discovery for terminal as well as
     unfinished requests. An exact historical-request read returns its final
     outcome and at most five recent progress entries without binding the run
@@ -310,7 +314,7 @@ Changes should prove the relevant invariants:
     verification, and shutdown drains the queue.
 50. Once initialized, the exact shared workstream repository path, branch,
     HEAD, health, and read-only/context-only labels appear once in run context.
-    Managed log/show/diff reject another path, invalid commit refs, mismatched
+    Managed `git_read` log/show/diff reject another path, invalid commit refs, mismatched
     branch or HEAD, and over-limit output. Mixed legacy `workstream/v3` and new
     `workstream-commit/v1` history remains readable. New finalization commits
     carry request status, stop reason, validation, criteria, verified resource
@@ -380,10 +384,10 @@ usage, or second context-preparation lane exists.
 
 ## Migration and Reset Testing
 
-V9 has no implicit older-schema compatibility reader. Migration tests verify
+V11 has no implicit pre-V9 compatibility reader. Migration tests verify
 that preview is non-mutating, a live writer is refused, every nested
 repository is validated, old repositories and database files are archived,
-the shared repository and V9 catalog are validated before installation, and a
+the shared repository and V11 catalog are validated before installation, and a
 failed switch restores the original root. Archive/reset tests separately
 verify deliberate clean-state recovery while preserving workspace output.
 

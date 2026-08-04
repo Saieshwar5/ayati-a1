@@ -20,8 +20,9 @@ context SQLite and context-only Git writes. The daemon depends on its typed
    and returns the authoritative agent-facing projection.
 3. The projection separates slow stream continuity from fast run state. Its
    model-facing Core Capsule contains the exact current input and routing, up
-   to five active-document navigation pointers, plus a bounded continuity
-   checkpoint and exact tail. The model-facing pack contains
+   to five active-document navigation pointers, an optional compact focused
+   unfinished workstream, plus a bounded continuity checkpoint and exact tail.
+   The model-facing pack contains
    only Core Capsule, optional Hot Context, current capabilities, harness
    feedback, and current-run truth. Authoritative work and resources stay
    outside the prompt.
@@ -49,11 +50,13 @@ context SQLite and context-only Git writes. The daemon depends on its typed
    observation modes. Workstream search and resource-owner lookup use
    `observe.locate`; exact workstream reads use `observe.investigate`. A
    successful current-run ownership observation unlocks the control-only
-   `workstream.route` stage. It mounts no executable tools and may lead to
-   `resolve` or return to observation for more evidence. Direct
-   `ENTRY -> workstream.route` and `ENTRY -> resolve` are unavailable. A
-   transition to `resolve` requires a binding-required capability, that
-   current-run routing observation, and one typed binding proposal. The model
+   `workstream.route` stage. Exact persisted focus also unlocks that stage for
+   its own workstream/request without repeated discovery. It mounts no
+   executable tools and may lead to `resolve` or return to observation for
+   more evidence. Direct `ENTRY -> resolve` is unavailable;
+   `ENTRY -> workstream.route` exists only with exact focused context. A
+   transition to `resolve` requires a binding-required capability, verified
+   routing context, and one typed binding proposal. The model
    owns semantic intent; the gate does not classify user-message wording.
    Existing activation names exact routed resource IDs; the runtime uses them
    to ground activation, then derives ownership, repository HEAD, evidence,
@@ -106,6 +109,7 @@ context pack -> decision -> action executor -> deterministic verification -> pro
 agent stream (slow growth, many runs)
   immutable user/system-event/assistant messages
   durable continuity checkpoint + exact tail
+  optional focused unfinished workstream/request pair
   recent-workstream metadata prepared for optional Hot Context
   recent material WorkState handoffs derived for optional Hot Context
   one 32-record recent-document registry derived from verified successful
@@ -141,18 +145,20 @@ container, and the stream is never used as an action log.
 <AYATI_ROOT_DIR>/
   workspace/       default visible output
   workstreams/     one shared context-only Git repository
-  .ayati/          V9 database and managed resources
+  .ayati/          V11 database and managed resources
 ```
 
 Workstream Git never contains deliverables. The resource catalog points to
 real files, directories, URLs, databases, repositories, and external objects.
-A new workstream may initially have no resources; successful validation and
-finalization add the files actually produced.
+A new workstream may have no resources while its creating run is active.
+Finalization retains it only after at least one bound or verified resource
+exists; otherwise the provisional workstream is discarded while the run
+history remains.
 
 The agent receives the exact shared `workstreams/` path as read-only navigation
-context. Bounded Context Engine log/show/diff tools can inspect its committed
-history for ambiguous continuation, but they cannot write Git or grant
-workstream/resource authority.
+context. The single `git_read` tool can use bounded log, show, and committed
+diff operations to inspect that history for ambiguous continuation, but it
+cannot write Git or grant workstream/resource authority.
 
 Important entry points:
 

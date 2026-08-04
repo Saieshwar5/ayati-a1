@@ -144,7 +144,7 @@ describe("callAgentDecision", () => {
     expect(systemPrompt).toContain("Before any unbound mutation, collect durable-owner evidence");
     expect(systemPrompt).toContain("workstream.route is the control-only path from verified ownership evidence to resolve");
     expect(systemPrompt).toContain(
-      "decision_resolve_activate names the observed workstream, request choice, and returned resourceIds",
+      "decision_resolve_activate names the selected workstream, request choice, and exact resourceIds",
     );
     expect(systemPrompt).toContain(
       "decision_resolve_create declares each new output as {kind, relativePath}",
@@ -1474,7 +1474,7 @@ describe("callAgentDecision", () => {
       requestDecision: { oneOf: expect.any(Array) },
       resourceIds: {
         type: "array",
-        minItems: 1,
+        minItems: 0,
         maxItems: 32,
       },
     });

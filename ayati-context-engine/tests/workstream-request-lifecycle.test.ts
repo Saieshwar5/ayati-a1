@@ -17,6 +17,7 @@ import {
 } from "../src/workstreams/workstream-request.js";
 import {
   createBoundWorkstream,
+  createBoundWorkstreamWithMutableDirectory,
   createWorkstreamServiceFixture,
   workState,
   type WorkstreamServiceFixture,
@@ -607,7 +608,7 @@ describe("workstream request lifecycle planner", () => {
   it("plans against a real committed V3 workstream without filesystem or Git side effects", async () => {
     const fixture = await createWorkstreamServiceFixture("request-plan");
     fixtures.push(fixture);
-    const selected = await createBoundWorkstream(fixture, {
+    const selected = await createBoundWorkstreamWithMutableDirectory(fixture, {
       title: "Website workstream",
       objective: "Maintain a website through durable requests.",
     });

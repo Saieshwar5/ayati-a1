@@ -18,19 +18,24 @@ afterEach(async () => {
   }));
 });
 
-describe("SQLite Context Engine V9 baseline", () => {
+describe("SQLite Context Engine V11 baseline", () => {
   it("rejects relative database paths instead of anchoring them to process.cwd()", async () => {
     await expect(ContextDatabase.open({ path: "context.sqlite" }))
       .rejects.toThrow("database path must be an absolute filesystem path");
   });
 
-  it("creates the clean V9 stream/run/checkpoint/resolution schema", async () => {
+  it("creates the clean V11 stream/run/checkpoint/resolution schema", async () => {
     const fixture = await createFixture();
 
-    expect(latestSchemaVersion()).toBe(9);
+    expect(latestSchemaVersion()).toBe(11);
     expect(fixture.database.prepare(
       "SELECT version FROM schema_metadata WHERE singleton = 1",
-    ).get()).toEqual({ version: 9 });
+    ).get()).toEqual({ version: 11 });
+    const streamColumns = new Set((fixture.database.prepare(
+      "PRAGMA table_info(agent_streams)",
+    ).all() as Array<{ name: string }>).map((column) => column.name));
+    expect(streamColumns.has("focused_workstream_id")).toBe(true);
+    expect(streamColumns.has("focused_request_id")).toBe(true);
     const tables = new Set((fixture.database.prepare([
       "SELECT name FROM sqlite_schema",
       "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
@@ -60,7 +65,7 @@ describe("SQLite Context Engine V9 baseline", () => {
       .toEqual([{ foreign_keys: 1 }]);
   });
 
-  it("opens an existing V9 database with retired observation tables without using them", async () => {
+  it("opens an existing V11 database with retired observation tables without using them", async () => {
     const fixture = await createFixture();
     await closeTracked(fixture.service);
     const legacy = new DatabaseSync(fixture.databasePath);
@@ -70,8 +75,67 @@ describe("SQLite Context Engine V9 baseline", () => {
 
     const reopened = await ContextDatabase.open({ path: fixture.databasePath });
 
-    expect(reopened.schemaVersion()).toBe(9);
+    expect(reopened.schemaVersion()).toBe(11);
     reopened.close();
+  });
+
+  it("migrates V10 by narrowing the immutable binding exception to empty initialization", async () => {
+    const fixture = await createFixture();
+    const prepared = await fixture.service.prepareAgentRun(
+      prepareRequest("REQ-v10-preserved", "Preserve this V10 stream.", AT),
+    );
+    fixture.database.exec("DROP TRIGGER runs_workstream_binding_immutable");
+    fixture.database.exec([
+      "CREATE TRIGGER runs_workstream_binding_immutable",
+      "BEFORE UPDATE OF workstream_id, bound_request_id, workstream_bound_at ON runs",
+      "WHEN OLD.workstream_id IS NOT NULL",
+      "BEGIN SELECT RAISE(ABORT, 'run workstream binding is immutable'); END;",
+    ].join(" "));
+    fixture.database.prepare(
+      "UPDATE schema_metadata SET version = 10 WHERE singleton = 1",
+    ).run();
+    const databasePath = fixture.databasePath;
+    await closeTracked(fixture.service);
+
+    const migrated = await ContextDatabase.open({ path: databasePath });
+
+    expect(migrated.schemaVersion()).toBe(11);
+    expect(migrated.prepare(
+      "SELECT stream_id FROM runs WHERE run_id = ?",
+    ).get(prepared.run.runId)).toEqual({ stream_id: prepared.stream.streamId });
+    const trigger = migrated.prepare([
+      "SELECT sql FROM sqlite_schema WHERE type = 'trigger'",
+      "AND name = 'runs_workstream_binding_immutable'",
+    ].join(" ")).get() as { sql: string };
+    expect(trigger.sql).toContain("workstream_resources");
+    expect(trigger.sql).toContain("workstream_request_route_plans");
+    migrated.close();
+  });
+
+  it("migrates a supported V9 catalog through V10 to V11 without replacing its records", async () => {
+    const fixture = await createFixture();
+    const prepared = await fixture.service.prepareAgentRun(
+      prepareRequest("REQ-v9-preserved", "Preserve this stream.", AT),
+    );
+    fixture.database.prepare(
+      "UPDATE schema_metadata SET version = 9 WHERE singleton = 1",
+    ).run();
+    const databasePath = fixture.databasePath;
+    await closeTracked(fixture.service);
+
+    const migrated = await ContextDatabase.open({ path: databasePath });
+
+    expect(migrated.schemaVersion()).toBe(11);
+    expect(migrated.prepare([
+      "SELECT agent_id, scope_key, focused_workstream_id, focused_request_id",
+      "FROM agent_streams WHERE stream_id = ?",
+    ].join(" ")).get(prepared.stream.streamId)).toEqual({
+      agent_id: "local",
+      scope_key: "default",
+      focused_workstream_id: null,
+      focused_request_id: null,
+    });
+    migrated.close();
   });
 
   it("refuses pre-V9 or unknown state without modifying it", async () => {

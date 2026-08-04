@@ -147,7 +147,7 @@ export function workstreamActivateProposalSchema(): Record<string, unknown> {
     workstreamId: { type: "string", pattern: WORKSTREAM_ID_PATTERN },
     requestDecision: {
       description:
-        "Choose one explicit lifecycle operation. Continue only the same contract; amend only the same independently acceptable outcome; create a new request for a separate outcome; defer instead of falsely blocking unfinished work.",
+        "Choose one explicit lifecycle operation. Continue only work needed for the same promised outcome; amend only the same independently acceptable outcome; create a new request for a separate outcome; defer instead of falsely blocking unfinished work.",
       oneOf: [
         existingRequestDecisionSchema("continue_current"),
         existingRequestDecisionSchema("activate_existing"),
@@ -161,14 +161,14 @@ export function workstreamActivateProposalSchema(): Record<string, unknown> {
     },
     resourceIds: {
       type: "array",
-      minItems: 1,
+      minItems: 0,
       maxItems: 32,
       items: {
         type: "string",
         pattern: RESOURCE_ID_PATTERN,
       },
       description:
-        "Exact existing resource IDs returned by current-run routing. These select current-run mutation authority; the runtime derives paths, ownership, repository HEAD, and evidence from authoritative activated context.",
+        "Exact existing resource IDs returned by routing or focused context. Use an empty array only when the selected capabilities need no resource mutation. The runtime derives paths, ownership, repository HEAD, and evidence from authoritative activated context.",
     },
   }, ["workstreamId", "requestDecision", "resourceIds"]);
 }
@@ -195,7 +195,9 @@ function existingRequestDecisionSchema(
       type: "string",
       minLength: 1,
       maxLength: 500,
-      description: "Why this exact lifecycle operation matches the user's intention.",
+      description: kind === "continue_current"
+        ? "Which existing promised outcome this message advances and why the work is not independently acceptable."
+        : "Why this exact lifecycle operation matches the user's intention.",
     },
   }, [
     "kind",
@@ -356,9 +358,9 @@ function stringArray(value: unknown): string[] {
 }
 
 function resourceIdArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
   const values = stringArray(value);
-  return values.length > 0
-    && values.length <= 8
+  return values.length <= 8
     && values.every((item) => /^RES-[0-9A-F]{24}$/.test(item))
     ? values
     : undefined;

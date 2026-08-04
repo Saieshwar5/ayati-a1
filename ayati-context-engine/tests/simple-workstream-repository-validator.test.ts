@@ -43,7 +43,11 @@ describe("workstream context repository validation", () => {
       workstreamCard: { currentRequest: "R-0001" },
       requests: [{ id: "R-0001", status: "active" }],
       resourceManifest: {
-        resources: [],
+        resources: [expect.objectContaining({
+          role: "primary",
+          access: "mutate",
+          primary: true,
+        })],
       },
       workingTreeChanges: [],
     });

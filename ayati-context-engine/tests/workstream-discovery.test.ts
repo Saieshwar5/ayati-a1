@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createBoundWorkstream,
+  createBoundWorkstreamWithMutableDirectory,
   createWorkstreamServiceFixture,
   workState,
   type WorkstreamServiceFixture,
@@ -114,7 +115,7 @@ describe("autonomous workstream discovery", () => {
   it("finds a completed request through request FTS without reopening it", async () => {
     const fixture = await createWorkstreamServiceFixture("completed-request-search");
     fixtures.push(fixture);
-    const selected = await createBoundWorkstream(fixture, {
+    const selected = await createBoundWorkstreamWithMutableDirectory(fixture, {
       title: "Historical Audit",
       objective: "Maintain verified historical audit work.",
       initialRequest: {

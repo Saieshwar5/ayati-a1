@@ -6,7 +6,7 @@ growth rates and different authority.
 
 ## Ownership
 
-- Context Engine SQLite V9: agent streams, immutable messages, runs, steps,
+- Context Engine SQLite V11: agent streams, immutable messages, runs, steps,
   WorkState, checkpoints, workstreams, every request, progress projections,
   resources, discovery indexes, idempotency, and recovery journals.
 - Shared workstream Git: compact portable `workstream.md`, request files,
@@ -19,6 +19,8 @@ growth rates and different authority.
 - Episodic memory: semantic recall over prior experience.
 - Active-run projection: the harness keeps the latest authoritative service
   response for the current turn; it does not maintain a second context cache.
+- Agent-stream workstream focus: one optional durable workstream/request pair
+  for unfinished continuation across runs. It is not binding or authority.
 - Context preparation: one runtime-owned, in-memory candidate lane per main
   run. Candidates and focus overlays are disposable;
   only an adopted Context Engine checkpoint becomes durable.
@@ -60,17 +62,32 @@ A run may remain unbound for conversation or observation, or gain one
 immutable workstream/request binding. Finalization projects only the small
 facts that need to survive into stream or workstream continuity.
 
+Every active-run context rebuild derives discovery text from that run's
+immutable ingress message in SQLite. Initial preparation, persisted steps,
+WorkState checkpoints, binding checks, and restart recovery therefore rank
+workstream candidates from the same input instead of relying on caller state.
+
 The next run receives a fresh WorkState. When it continues the exact same
 unfinished request, a compact material handoff may initialize that new
 WorkState, while the latest five progress entries for the selected request are
 loaded separately from the durable progress projection.
 
+An unfinished bound request also becomes the stream's focused workstream. Its
+compact `context.core.focusedWorkstream` projection survives restart and lets a
+clear continuation enter routing without rediscovery. The projection includes
+the selected request's exact stored outcome, but leaves its acceptance criteria
+and constraints for an exact workstream read or the post-binding context.
+Binding another owner swaps focus. A matching `done` or `dropped` finalization
+clears it. Unbound and read-only runs leave it unchanged and create no
+workstream progress.
+
 Workstream routing is part of the same primary loop. Before an unbound
 mutation, candidate and owner lookups run in `observe.locate`, while exact
 workstream context reads run in `observe.investigate`. Those calls enter the
 run step history but are tagged as routing evidence. A successful current-run
-observation unlocks the control-only `workstream.route` stage; it adds no
-action tools or duplicate context. `resolve` is available only from that
+observation unlocks the control-only `workstream.route` stage; exact focused
+context unlocks the same stage only for its own IDs. It adds no action tools
+or duplicate context. `resolve` is available only from that
 stage, while routing may return to observation if evidence is incomplete.
 `resolve` remains a transient deterministic gate with no private history,
 model call, prompt lane, WorkState, token budget, or retry loop. It validates
@@ -83,7 +100,8 @@ next primary decision.
 The model receives an explicit bounded projection:
 
 - `context.core`: the exact current input and routing state plus the small
-  continuity checkpoint, bounded exact tail, and explicit unloaded ranges;
+  continuity checkpoint, bounded exact tail, explicit unloaded ranges, and an
+  optional compact focused unfinished workstream/request projection;
 - `context.hot`: a small catalog of optional typed entries plus content
   explicitly mounted for this run;
 - `context.tools`: current capability surface;
@@ -94,7 +112,8 @@ The model receives an explicit bounded projection:
   bounded resource metadata records; material WorkState when present; the
   exact runtime-configured absolute `workspaceRoot`; current-run calls; a
   compact `verifiedOutcomes` catalog; the run-scoped mode card; pressure
-  state; and an optional `focus` overlay. Resource records include stable
+  state; and an optional run-pressure `focus` overlay. This overlay is distinct
+  from durable agent-stream workstream focus. Resource records include stable
   identity, display metadata, public locator, role, access, availability,
   primary status, and selected-request relevance, plus an omitted count. They
   do not include contents, hashes, complete version history, or permission

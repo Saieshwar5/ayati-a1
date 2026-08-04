@@ -167,6 +167,9 @@ class ResourceScopedToolExecutor implements ToolExecutor {
     }
 
     const active = await this.contextEngine.getAgentContext({ streamId: context.sessionId });
+    if (isProjectedWorkstreamRepositoryRead(toolName, executionInput, active.workstreamRepository)) {
+      return await this.base.execute(toolName, executionInput, context);
+    }
     const activeRun = active.run?.run;
     const binding = activeRun?.runId === context.runId
       ? activeRun.workstreamBinding
@@ -400,6 +403,21 @@ class ResourceScopedToolExecutor implements ToolExecutor {
     }
     return result;
   }
+}
+
+function isProjectedWorkstreamRepositoryRead(
+  toolName: string,
+  value: unknown,
+  repository: { path: string } | undefined,
+): boolean {
+  if (toolName !== "git_read" || !repository || !isRecord(value)) return false;
+  const requested = value["repositoryPath"];
+  return typeof requested === "string"
+    && resolve(requested) === resolve(repository.path);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function hasFilesystemLocator(

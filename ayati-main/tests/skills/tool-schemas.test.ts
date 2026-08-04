@@ -4,6 +4,7 @@ import { createAttachmentSkill } from "../../src/skills/builtins/attachments/ind
 import { createDatasetSkill } from "../../src/skills/builtins/datasets/index.js";
 import { createDocumentSkill } from "../../src/skills/builtins/documents/index.js";
 import { createGitContextSkill } from "../../src/skills/builtins/git-context/index.js";
+import { createGitReadSkill } from "../../src/skills/builtins/git-read/index.js";
 import { createPythonSkill } from "../../src/skills/builtins/python/index.js";
 import { createRecallSkill } from "../../src/skills/builtins/recall/index.js";
 import { createUiSkill } from "../../src/skills/builtins/ui/index.js";
@@ -107,6 +108,10 @@ async function buildRuntimeTools(): Promise<ToolDefinition[]> {
     ...createGitContextSkill({
       service: new ContractOnlyContextEngineService(),
     }).tools,
+    ...createGitReadSkill({
+      service: new ContractOnlyContextEngineService(),
+      workstreamRoot: "/tmp/ayati-workstreams",
+    }).tools,
     ...createUiSkill({
       workspaceOrchestrator: new WorkspaceOrchestrator({
         dataDir: "/tmp/ayati-test-data",
@@ -128,9 +133,10 @@ describe("runtime tool schemas", () => {
     expect(tools.some((tool) => tool.name === "db_create_table")).toBe(true);
     expect(tools.some((tool) => tool.name === "git_context_activate_workstream")).toBe(true);
     expect(tools.some((tool) => tool.name === "git_context_create_workstream")).toBe(true);
-    expect(tools.some((tool) => tool.name === "git_context_log")).toBe(true);
-    expect(tools.some((tool) => tool.name === "git_context_show")).toBe(true);
-    expect(tools.some((tool) => tool.name === "git_context_diff")).toBe(true);
+    expect(tools.some((tool) => tool.name === "git_read")).toBe(true);
+    expect(tools.some((tool) => tool.name === "git_context_log")).toBe(false);
+    expect(tools.some((tool) => tool.name === "git_context_show")).toBe(false);
+    expect(tools.some((tool) => tool.name === "git_context_diff")).toBe(false);
     expect(tools.some((tool) => tool.name === "git_context_switch_task")).toBe(false);
     expect(tools.some((tool) => tool.name === "python_execute")).toBe(true);
     expect(tools.some((tool) => tool.name.startsWith("learning_"))).toBe(false);

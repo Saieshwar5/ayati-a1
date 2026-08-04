@@ -15,7 +15,7 @@ afterEach(async () => {
 });
 
 describe("workstream resolution activity", () => {
-  it("uses the current input for the resolver revision check and candidate projection", async () => {
+  it("reuses the active run input for resolver revision checks and candidate projection", async () => {
     const fixture = await createFixture("candidate-revision");
     seedCandidateCatalog(fixture.database, fixture.root);
     const prepared = await prepare(fixture.service, "Continue the lunar archive migration.");
@@ -26,9 +26,9 @@ describe("workstream resolution activity", () => {
     expect(prepared.context.workstreamCandidates).toHaveLength(5);
     expect(prepared.context.workstreamCandidates?.map((candidate) => candidate.workstreamId))
       .toContain("W-20260721-0001");
-    expect(withoutCurrentText.workstreamCandidates?.map((candidate) => candidate.workstreamId))
-      .not.toContain("W-20260721-0001");
-    expect(withoutCurrentText.contextRevision).not.toBe(prepared.context.contextRevision);
+    expect(withoutCurrentText.workstreamCandidates)
+      .toEqual(prepared.context.workstreamCandidates);
+    expect(withoutCurrentText.contextRevision).toBe(prepared.context.contextRevision);
 
     const started = await startResolution(
       fixture.service,

@@ -175,6 +175,33 @@ describe("tool context projectors", () => {
     expect(projection.call.input).toEqual({ runId: "run-7", step: 4, callId: "call-4" });
     expect(projection.call.summary).toContain("Verified the build.");
   });
+
+  it("projects one structured Git read without retaining a full patch", () => {
+    const projection = projectToolCallForPressure(call({
+      tool: "git_read",
+      input: {
+        repositoryPath: "/workspace/project",
+        operation: "diff",
+        baseRevision: "a".repeat(40),
+        targetRevision: "b".repeat(40),
+        maxChars: 40_000,
+      },
+      output: "x".repeat(20_000),
+      projectionMetadata: {
+        repositoryPath: "/workspace/project",
+        operation: "diff",
+        truncated: false,
+      },
+    }), "summary");
+
+    expect(projection.projectorId).toBe("git_read_v1");
+    expect(projection.call.input).toMatchObject({
+      repositoryPath: "/workspace/project",
+      operation: "diff",
+    });
+    expect(projection.call.summary).toContain("git_read");
+    expect(projection.call.outputPreview?.length ?? 0).toBeLessThan(2_000);
+  });
 });
 
 function call(overrides: Partial<PromptRunToolCallContext> = {}): PromptRunToolCallContext {

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,7 +8,9 @@ import type {
   SelectedWorkstreamForRunResponse,
   WorkstreamCompletionRecord,
 } from "../src/contracts.js";
+import { ContextDatabase } from "../src/database/database.js";
 import { RUN_FINALIZATION_LIMITS } from "../src/run-finalization-limits.js";
+import { SqliteContextEngineService } from "../src/services/sqlite-context-engine-service.js";
 import { parseWorkstreamCommit } from "../src/workstreams/workstream-commit-metadata.js";
 import { validateWorkstreamRepository } from "../src/workstreams/workstream-repository-validator.js";
 import {
@@ -56,6 +58,19 @@ describe("workstream-bound run finalization", () => {
       workstream_id: selected.workstream.workstreamId,
       bound_request_id: "R-0001",
     });
+    expect(fixture.database.prepare([
+      "SELECT focused_workstream_id, focused_request_id FROM agent_streams WHERE stream_id = ?",
+    ].join(" ")).get(fixture.prepared.stream.streamId)).toEqual({
+      focused_workstream_id: selected.workstream.workstreamId,
+      focused_request_id: "R-0001",
+    });
+    const focusedContext = await fixture.service.getAgentContext({
+      streamId: fixture.prepared.stream.streamId,
+    });
+    expect(focusedContext.stream?.focusedWorkstream).toMatchObject({
+      workstream: { workstreamId: selected.workstream.workstreamId },
+      selectedRequest: { id: "R-0001", status: "active" },
+    });
     await expect(fixture.service.createWorkstreamForRun({
       ...input,
       requestId: "REQ-attempt-rebind",
@@ -66,59 +81,176 @@ describe("workstream-bound run finalization", () => {
       .toEqual({ count: 1 });
   });
 
-  it("commits only durable context for a completed context-only run", async () => {
-    const fixture = await createFixture("context-only");
+  it("discards an empty initializing workstream while preserving the finalized run", async () => {
+    const fixture = await createFixture("discard-empty");
     const selected = await createBoundWorkstream(fixture, {
-      title: "Context-only Workstream",
-      objective: "Record a verified durable outcome without project files in context Git.",
+      title: "Empty Workstream",
+      objective: "Do not retain a workstream when the run produces no resource.",
+      resources: [],
     });
-    const input = doneFinalization(fixture, []);
+    await fixture.service.recordRunStep({
+      requestId: fixture.prepared.run.runId + ":step:1",
+      runId: fixture.prepared.run.runId,
+      record: {
+        version: 1,
+        step: 1,
+        status: "completed",
+        summary: "Inspected the workspace without producing a resource.",
+        toolCalls: [{
+          callId: "call-read",
+          tool: "find_files",
+          purpose: "Inspect the workspace before deciding whether durable work exists.",
+          toolPurpose: "search",
+          toolEffect: "read_only",
+          status: "success",
+          input: { pattern: "*" },
+          output: { files: [] },
+        }],
+        verification: { passed: true, resources: [] },
+        createdAt: "2026-07-19T10:02:00+05:30",
+      },
+    });
+    const input = failedFinalization(fixture);
+    const repositoryHeadBefore = fixture.database.prepare(
+      "SELECT head_sha FROM workstream_repository_state WHERE singleton_id = 1",
+    ).get();
 
     const result = await fixture.service.finalizeRun(input);
     const replayed = await fixture.service.finalizeRun(input);
 
     expect(replayed).toEqual(result);
     expect(result).toMatchObject({
-      run: { runId: fixture.prepared.run.runId, status: "done", stopReason: "completed" },
-      workstreamContextCommit: {
-        status: "committed",
-        workstreamId: selected.workstream.workstreamId,
-        requestId: "R-0001",
-        headBefore: selected.workstream.head,
-      },
+      run: { runId: fixture.prepared.run.runId, status: "failed", stopReason: "failed" },
+      workstreamContextCommit: { status: "not_required" },
     });
-    if (result.workstreamContextCommit.status !== "committed") {
-      throw new Error("Expected a context commit.");
-    }
-    expect(result.workstreamContextCommit.headAfter).toBe(result.workstreamContextCommit.commit);
-    expect(await git(selected.workstream.contextRepositoryPath, ["rev-list", "--count", "HEAD"]))
-      .toBe("2");
-    expect((await git(selected.workstream.contextRepositoryPath, [
-      "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD",
-    ])).split("\n").sort()).toEqual([
-      workstreamPath(selected, "progress.md"),
-      workstreamPath(selected, "requests/R-0001-context-only-workstream.md"),
-      workstreamPath(selected, "resources.json"),
-      workstreamPath(selected, "workstream.md"),
+    expect(result.run.workstreamBinding).toBeUndefined();
+    expect(fixture.database.prepare(
+      "SELECT workstream_id FROM workstreams WHERE workstream_id = ?",
+    ).get(selected.workstream.workstreamId)).toBeUndefined();
+    expect(fixture.database.prepare(
+      "SELECT COUNT(*) AS count FROM workstream_requests WHERE workstream_id = ?",
+    ).get(selected.workstream.workstreamId)).toEqual({ count: 0 });
+    expect(fixture.database.prepare(
+      "SELECT COUNT(*) AS count FROM workstream_request_route_plans WHERE run_id = ?",
+    ).get(fixture.prepared.run.runId)).toEqual({ count: 0 });
+    expect(fixture.database.prepare(
+      "SELECT COUNT(*) AS count FROM run_steps WHERE run_id = ?",
+    ).get(fixture.prepared.run.runId)).toEqual({ count: 1 });
+    expect(fixture.database.prepare([
+      "SELECT role FROM messages WHERE run_id = ? ORDER BY sequence",
+    ].join(" ")).all(fixture.prepared.run.runId)).toEqual([
+      { role: "user" },
+      { role: "assistant" },
     ]);
-    const validation = await validateWorkstreamRepository({
-      workstreamRoot: join(fixture.root, "workstreams"),
-      contextRepositoryPath: selected.workstream.contextRepositoryPath,
-      expectedWorkstreamId: selected.workstream.workstreamId,
+    expect(fixture.database.prepare(
+      "SELECT phase FROM unbound_run_finalizations WHERE run_id = ?",
+    ).get(fixture.prepared.run.runId)).toEqual({ phase: "completed" });
+    expect(fixture.database.prepare(
+      "SELECT head_sha FROM workstream_repository_state WHERE singleton_id = 1",
+    ).get()).toEqual(repositoryHeadBefore);
+    await expect(access(selected.workstream.contextRepositoryPath)).rejects.toThrow();
+    expect(fixture.database.prepare([
+      "SELECT focused_workstream_id, focused_request_id FROM agent_streams WHERE stream_id = ?",
+    ].join(" ")).get(fixture.prepared.stream.streamId)).toEqual({
+      focused_workstream_id: null,
+      focused_request_id: null,
     });
-    expect(validation).toMatchObject({
-      health: "ready",
-      workstreamCard: { currentRequest: null, currentSnapshot: "The requested work is complete." },
-      requests: [{ id: "R-0001", status: "done" }],
-      progress: {
-        entries: [{
-          runId: fixture.prepared.run.runId,
-          requestId: "R-0001",
-          outcome: "done",
-        }],
-      },
-      resourceManifest: { resources: [] },
+  });
+
+  it("discards an interrupted empty workstream during startup recovery", async () => {
+    const fixture = await createFixture("discard-interrupted-empty");
+    const selected = await createBoundWorkstream(fixture, {
+      title: "Interrupted Empty Workstream",
+      objective: "Remove provisional context when an interrupted run produced no resource.",
+      resources: [],
     });
+    const runId = fixture.prepared.run.runId;
+    const streamId = fixture.prepared.stream.streamId;
+    const databasePath = fixture.database.path;
+    await fixture.service.close();
+    const database = await ContextDatabase.open({ path: databasePath });
+    const restarted = new SqliteContextEngineService({
+      database,
+      rootDirectory: fixture.root,
+      now: () => "2026-07-19T10:10:00+05:30",
+    });
+    try {
+      const context = await restarted.getAgentContext({ streamId });
+
+      expect(context.run).toBeUndefined();
+      expect(context.stream?.focusedWorkstream).toBeUndefined();
+      expect(database.prepare([
+        "SELECT status, stop_reason, workstream_id, bound_request_id FROM runs WHERE run_id = ?",
+      ].join(" ")).get(runId)).toEqual({
+        status: "incomplete",
+        stop_reason: "interrupted",
+        workstream_id: null,
+        bound_request_id: null,
+      });
+      expect(database.prepare(
+        "SELECT workstream_id FROM workstreams WHERE workstream_id = ?",
+      ).get(selected.workstream.workstreamId)).toBeUndefined();
+      await expect(access(selected.workstream.contextRepositoryPath)).rejects.toThrow();
+    } finally {
+      await restarted.close();
+    }
+  });
+
+  it("swaps stream focus after another workstream binds without closing the prior request", async () => {
+    const fixture = await createFixture("focus-swap");
+    const first = await createBoundWorkstreamWithMutableDirectory(fixture, {
+      title: "First Focus",
+      objective: "Remain unfinished when another owner becomes focused.",
+    });
+    await fixture.service.finalizeRun(incompleteFinalization(fixture));
+    fixture.prepared = await fixture.service.prepareAgentRun({
+      requestId: "REQ-focus-swap",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      role: "user",
+      content: "Start a separate durable workstream.",
+      at: "2026-07-19T10:04:00+05:30",
+    });
+    const second = await createBoundWorkstream(fixture, {
+      title: "Second Focus",
+      objective: "Become the current focused owner.",
+    });
+
+    expect(fixture.database.prepare([
+      "SELECT focused_workstream_id, focused_request_id FROM agent_streams WHERE stream_id = ?",
+    ].join(" ")).get(fixture.prepared.stream.streamId)).toEqual({
+      focused_workstream_id: second.workstream.workstreamId,
+      focused_request_id: "R-0001",
+    });
+    expect(fixture.database.prepare([
+      "SELECT status FROM workstream_requests WHERE workstream_id = ? AND request_id = 'R-0001'",
+    ].join(" ")).get(first.workstream.workstreamId)).toEqual({ status: "active" });
+  });
+
+  it("rehydrates unfinished focus after a full service restart", async () => {
+    const fixture = await createFixture("focus-restart");
+    const selected = await createBoundWorkstreamWithMutableDirectory(fixture, {
+      title: "Restart Focus",
+      objective: "Remain visible after the daemon restarts.",
+    });
+    await fixture.service.finalizeRun(incompleteFinalization(fixture));
+    const streamId = fixture.prepared.stream.streamId;
+    const databasePath = fixture.database.path;
+    await fixture.service.close();
+    const database = await ContextDatabase.open({ path: databasePath });
+    const restarted = new SqliteContextEngineService({
+      database,
+      rootDirectory: fixture.root,
+      now: () => "2026-07-19T10:10:00+05:30",
+    });
+
+    const context = await restarted.getAgentContext({ streamId });
+
+    expect(context.stream?.focusedWorkstream).toMatchObject({
+      workstream: { workstreamId: selected.workstream.workstreamId },
+      selectedRequest: { id: "R-0001", status: "active" },
+    });
+    await restarted.close();
   });
 
   it("keeps one canonical primary binding when completion reuses its directory as a deliverable", async () => {
@@ -182,7 +314,7 @@ describe("workstream-bound run finalization", () => {
 
   it("finalizes needs-user-input at the declared durable text boundary", async () => {
     const fixture = await createFixture("needs-user-input-boundary");
-    const selected = await createBoundWorkstream(fixture, {
+    const selected = await createBoundWorkstreamWithMutableDirectory(fixture, {
       title: "Clarification Boundary",
       objective: "Preserve the full reply while durably recording a bounded clarification.",
     });
@@ -230,6 +362,13 @@ describe("workstream-bound run finalization", () => {
           next: question,
         }],
       },
+    });
+    const blockedContext = await fixture.service.getAgentContext({
+      streamId: fixture.prepared.stream.streamId,
+    });
+    expect(blockedContext.stream?.focusedWorkstream).toMatchObject({
+      workstream: { workstreamId: selected.workstream.workstreamId },
+      selectedRequest: { id: "R-0001", status: "blocked" },
     });
   });
 
@@ -368,9 +507,58 @@ describe("workstream-bound run finalization", () => {
       : undefined).toBe(metadata ? await git(selected.workstream.contextRepositoryPath, ["rev-parse", "HEAD"]) : "");
   });
 
+  it("keeps focus without updating workstream context for an unbound read-only run", async () => {
+    const fixture = await createFixture("unbound-read-only-focus");
+    const created = await createBoundWorkstreamWithMutableDirectory(fixture, {
+      title: "Read-only Focus",
+      objective: "Keep unfinished durable focus through an informational turn.",
+    });
+    await fixture.service.finalizeRun(incompleteFinalization(fixture));
+    const headBefore = await git(created.workstream.contextRepositoryPath, ["rev-parse", "HEAD"]);
+    fixture.prepared = await fixture.service.prepareAgentRun({
+      requestId: "REQ-unbound-read-only",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      role: "user",
+      content: "What does the current plan mean? Do not change it.",
+      at: "2026-07-19T10:04:00+05:30",
+    });
+
+    expect(fixture.prepared.context.stream?.focusedWorkstream).toMatchObject({
+      workstream: { workstreamId: created.workstream.workstreamId },
+      selectedRequest: { id: "R-0001", status: "active" },
+    });
+    const finalized = await fixture.service.finalizeRun({
+      requestId: fixture.prepared.run.runId + ":finalize",
+      runId: fixture.prepared.run.runId,
+      outcome: "done",
+      stopReason: "completed",
+      assistantResponse: "The plan remains unchanged.",
+      streamSummary: "Answered an informational question without durable task work.",
+      summary: "Answered without changing the focused workstream.",
+      validation: "not_applicable",
+      workState: workState({
+        status: "done",
+        summary: "Answered without changing the focused workstream.",
+      }),
+      at: "2026-07-19T10:05:00+05:30",
+    });
+    const context = await fixture.service.getAgentContext({
+      streamId: fixture.prepared.stream.streamId,
+    });
+
+    expect(finalized.workstreamContextCommit).toEqual({ status: "not_required" });
+    expect(await git(created.workstream.contextRepositoryPath, ["rev-parse", "HEAD"]))
+      .toBe(headBefore);
+    expect(context.stream?.focusedWorkstream).toMatchObject({
+      workstream: { workstreamId: created.workstream.workstreamId },
+      selectedRequest: { id: "R-0001", status: "active" },
+    });
+  });
+
   it("records a later failed read-only continuation in one progress-only commit", async () => {
     const fixture = await createFixture("read-only-failure");
-    const created = await createBoundWorkstream(fixture, {
+    const created = await createBoundWorkstreamWithMutableDirectory(fixture, {
       title: "Read-only Continuation",
       objective: "Keep one request active across runs.",
     });
@@ -436,6 +624,10 @@ describe("workstream-bound run finalization", () => {
     ])).toBe(requestBefore);
     expect(await git(created.workstream.contextRepositoryPath, ["rev-list", "--count", "HEAD"]))
       .toBe("3");
+    expect(context.stream?.focusedWorkstream).toMatchObject({
+      workstream: { workstreamId: created.workstream.workstreamId },
+      selectedRequest: { id: "R-0001", status: "active" },
+    });
     const validation = await validateWorkstreamRepository({
       workstreamRoot: join(fixture.root, "workstreams"),
       contextRepositoryPath: created.workstream.contextRepositoryPath,
@@ -456,7 +648,7 @@ describe("workstream-bound run finalization", () => {
 
   it("restores a material WorkState when the next run continues the same request", async () => {
     const fixture = await createFixture("work-state-continuation");
-    const created = await createBoundWorkstream(fixture, {
+    const created = await createBoundWorkstreamWithMutableDirectory(fixture, {
       title: "Long-running implementation",
       objective: "Continue one complex implementation across run boundaries.",
     });
@@ -530,7 +722,7 @@ describe("workstream-bound run finalization", () => {
 
   it("marks unjournaled context-repository dirt recovery-required and preserves it", async () => {
     const fixture = await createFixture("dirty-recovery");
-    const selected = await createBoundWorkstream(fixture, {
+    const selected = await createBoundWorkstreamWithMutableDirectory(fixture, {
       title: "Dirty Context",
       objective: "Prove context Git safety during finalization.",
     });

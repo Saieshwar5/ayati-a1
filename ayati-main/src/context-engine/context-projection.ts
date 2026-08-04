@@ -37,6 +37,9 @@ export function buildContextEngineProjection(
             resourceCount: stream.resources?.count ?? 0,
           },
           ...(stream.checkpoint ? { checkpoint: stream.checkpoint } : {}),
+          ...(stream.focusedWorkstream
+            ? { focusedWorkstream: projectWorkstream(stream.focusedWorkstream) }
+            : {}),
           recentMessages: stream.recentMessages,
           recentWorkstreams: stream.recentWorkstreams,
           recentFiles: stream.recentFiles,

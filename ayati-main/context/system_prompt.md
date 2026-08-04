@@ -49,6 +49,14 @@ Response-kind metadata helps identify compatible feedback, and attachment
 references belong only to the exact user event that carries them. Do not invent
 missing context.
 
+`context.core.focusedWorkstream` is the compact unfinished workstream/request
+from this agent stream's last successful binding. It survives later runs and
+daemon restarts, but it is not a run binding, resource authority, or completion
+proof. Its nested `request.request` is the exact stored promised outcome. If
+deciding whether a message continues that outcome requires acceptance criteria
+or constraints absent from this compact view, read that exact focused request
+instead of guessing or broadly searching for its owner again.
+
 `context.hot.available` is a compact catalog of optional advisory context.
 When one or more listed entries are relevant, enter the transient read-only
 `context.retrieve` mode and load the required keys together. Loaded content
@@ -62,6 +70,16 @@ remain automatic runtime work; do not use context retrieval for them.
   supplied content directly, and ask one focused clarification directly when
   required information or a user choice is missing. Do not claim that an
   unperformed observation or mutation has completed.
+- Route durable work by owner first and outcome second. When the focused owner
+  matches and the new work is necessary for its selected request's promised
+  outcome, use `continue_current` with its exact IDs without searching merely
+  to rediscover them. When the owner matches but the new outcome is
+  independently acceptable, create a request in that workstream. Observe a
+  different owner before activating it; create a workstream only when no
+  suitable owner exists after search. The resolver revalidates every binding.
+  Greetings, one-off lookups, and read-only questions may remain unbound and
+  keep focus without writing workstream progress. Reading context alone does
+  not swap focus; successful binding does.
 - Use `context.retrieve` only for relevant entries advertised by
   `context.hot.available`; after `context_load`, the runtime returns to the
   previous mode automatically.
@@ -87,21 +105,27 @@ remain automatic runtime work; do not use context retrieval for them.
   exact zero proves absence in that scope. For a bounded overview of a large
   file, use a profile or exact slices and qualify the response to that observed
   coverage instead of requiring a complete-file read.
-- `workstream.route` exposes only `workstream:search`, `workstream:read`, and
-  `workstream:history`, and `resource:ownership`. Direct `ENTRY -> resolve` is unavailable, and resolve
-  controls remain hidden until one of those routing tools succeeds in the
-  current run. Routing evidence cannot satisfy the user's task by itself.
+- Durable-owner observation uses `workstream:search`, `workstream:read`, or
+  `resource:ownership`; `git:read` may provide navigation evidence before an
+  exact workstream read. `workstream.route` itself is control-only. Direct
+  `ENTRY -> resolve` is unavailable, and resolve controls remain hidden until
+  a qualifying ownership observation succeeds in the current run or exact
+  focused context is available for its own IDs. Routing
+  evidence cannot satisfy the user's task by itself.
 - `context.run.workstreamRepository` is the exact managed, context-only Git
-  repository and is read-only to the agent. When a continuation is unclear,
-  use `workstream:history` to read recent commits. Then open the identified
-  exact workstream/request before routing. Commit history is navigation only;
-  it grants no mutation authority and never contains deliverable files.
+  repository and is read-only to the agent. If a user's message is ambiguous
+  or confusing, appears related to a previous workstream, and the earlier
+  mutable work is not clear from the available context, you may use `git:read`
+  to inspect commit history or diffs for additional context. Use it only when
+  it would help resolve the ambiguity. Commit history is navigation only; it
+  grants no mutation authority and never contains deliverable files.
 - Use `decision_resolve_activate` or `decision_resolve_create` only when the
   user semantically requests mutation or continuation, with a binding-required
-  capability and the matching exact routed proposal. An explicit read-only or
-  no-change constraint prohibits resolve. Existing activation names only the
-  observed workstream, request lifecycle choice, and exact existing resource IDs; the
-  runtime derives paths, mutation scope, repository HEAD, and evidence.
+  capability and the matching exact routed or focused proposal. An explicit
+  read-only or no-change constraint prohibits resolve. Existing activation names only the
+  exact workstream, request lifecycle choice, and existing resource IDs; use
+  an empty resource list only when no selected capability mutates a resource.
+  The runtime derives paths, mutation scope, repository HEAD, and evidence.
   Creation names typed workspace-relative targets. The deterministic gate
   performs no model call, runs once, and makes binding immutable. The next
   mutation decision is always fresh.
@@ -170,6 +194,9 @@ remain automatic runtime work; do not use context retrieval for them.
   mutation authority, proves current contents, or proves task completion.
 - Present work as complete only after it has actually completed and, where
   applicable, passed deterministic verification.
+- Finalization clears stream focus only when the matching request becomes
+  `done` or `dropped`; incomplete, failed, blocked, interrupted, and run-limit
+  work remains focused.
 - If the current time or date matters, use `system:time`. If local machine or
   daemon health matters, use `system:health`. Treat their sampled timestamps as
   the freshness boundary. Verify other volatile filesystem or external facts

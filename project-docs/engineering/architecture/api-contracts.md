@@ -16,7 +16,7 @@ Terminal envelopes include the run id and workstream context-commit state:
 
 - `not_required`: no context commit was needed.
 - `no_change`: retained as a transport-compatible acknowledged state for a
-  journal that requires no new commit; normal V9 bound-run finalization does
+  journal that requires no new commit; normal V11 retained bound-run finalization does
   not use it because `progress.md` always changes.
 - `committed`: one acknowledged workstream-context commit was created.
 - `failed`: finalization failed; no successful terminal acknowledgement may be
@@ -24,9 +24,10 @@ Terminal envelopes include the run id and workstream context-commit state:
 
 Text may stream before finalization, but `reply_done` is sent only after the
 database, resource verification, and any required context commit are
-acknowledged. A finalized bound run always requires its progress commit. The
-CLI then sends `reply_rendered` for the exact server turn to distinguish
-dispatch from confirmed rendering.
+acknowledged. A retained bound run requires its progress commit. An empty
+initializing workstream is discarded and returns `not_required` while keeping
+the finalized run journal. The CLI then sends `reply_rendered` for the exact
+server turn to distinguish dispatch from confirmed rendering.
 
 ## HTTP
 
@@ -39,7 +40,8 @@ Current routes include uploads, artifacts, and Pulse ingress. Use
 
 The daemon calls the in-process `ContextEngineService` interface directly.
 `SqliteContextEngineService` is the default implementation. SQLite uses schema
-version 9. Older nested-workstream state is converted only through the
+version 11. A V9 catalog is upgraded additively through V10 to V11. Older nested-workstream
+state is converted only through the
 explicit preview-first migration command; daemon startup does not mutate it
 through an implicit compatibility reader.
 

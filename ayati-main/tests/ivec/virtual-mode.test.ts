@@ -53,7 +53,8 @@ describe("virtual mode graph", () => {
           workstreamBound: false,
           routingObserved: true,
         }))
-          .toBe(VIRTUAL_MODE_GRAPH[source].includes(target));
+          .toBe(VIRTUAL_MODE_GRAPH[source].includes(target)
+            || (source === "ENTRY" && target === "workstream.route"));
       }
     }
   });
@@ -119,6 +120,11 @@ describe("virtual mode graph", () => {
       "observe.locate",
       "observe.investigate",
     ]);
+    expect(buildVirtualModeCard(createEntryVirtualModeState(), {
+      workstreamBound: false,
+      routingObserved: true,
+      hotContextAvailable: false,
+    }).allowedNext).toContain("workstream.route");
   });
 
   it("unlocks control-only routing after observation and offers resolve only while evidence exists", () => {

@@ -118,6 +118,17 @@ export function readRunMessages(database: ContextDatabase, runId: string): Strea
   return streamMessages(database, rows);
 }
 
+export function readRunIngressMessage(
+  database: ContextDatabase,
+  runId: string,
+): StreamMessage | undefined {
+  const row = database.prepare([
+    messageSelect(),
+    "WHERE m.run_id = ? AND m.role IN ('user', 'system_event') LIMIT 1",
+  ].join(" ")).get(runId) as MessageRow | undefined;
+  return row ? streamMessages(database, [row])[0] : undefined;
+}
+
 export function readStreamMessages(database: ContextDatabase, input: {
   streamId: string;
   afterSeq?: number;

@@ -44,14 +44,6 @@ export function resolveWorkstreamActivationAuthority(input: {
       ["Read the exact workstream again; the runtime will derive its current HEAD."],
     );
   }
-  if (input.proposal.resourceIds.length === 0) {
-    return rejected(
-      "Existing-workstream activation requires at least one exact resource returned by current-run routing.",
-      [],
-      ["Find the resource owner, then provide its exact resource ID."],
-    );
-  }
-
   const exactReasons = new Set([
     "exact_workstream_id",
     "exact_resource_id",

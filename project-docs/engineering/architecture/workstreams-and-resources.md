@@ -149,6 +149,24 @@ only when the agent cannot safely continue without an external change, such as
 missing user information, approval, credentials, or an unavailable
 third-party resource with no safe alternative.
 
+## Agent-stream focus
+
+Each agent stream may store one focused `workstream_id` and `request_id` pair.
+It is a continuation pointer, not another lifecycle state, history, score,
+stack, mode, or authority system. Binding an unfinished request sets or swaps
+the pair atomically. Finalization clears the matching pair only when that
+request becomes `done` or `dropped`; incomplete, failed, blocked, interrupted,
+and run-limit outcomes retain it. The record survives daemon restarts.
+
+Unbound greetings, lookups, and read-only questions neither clear focus nor
+write workstream progress. Reading any workstream also does not swap focus.
+Only successful binding changes it. Missing, terminal, or inactive focused
+context is suppressed from projection, and activation revalidates the
+authoritative workstream/request state. The compact model-facing projection
+includes the selected request's exact stored outcome so clear continuation can
+route without rediscovery. Acceptance criteria and constraints remain available
+through an exact workstream read and in the post-binding context.
+
 ## When to create or continue a request
 
 Every new workstream receives `R-0001`.
@@ -178,14 +196,16 @@ project, subject, or resource boundary.
 
 Workstream selection and request selection are separate decisions.
 
-For both read-only questions and unbound mutation, the model observes
-workstream ownership through the ordinary modes. `observe.locate` owns
+For read-only questions and unbound mutation without matching exact focus, the
+model observes workstream ownership through the ordinary modes. `observe.locate` owns
 workstream search and resource-owner lookup; `observe.investigate` owns exact
 workstream reads. General questions may finish there without binding. For
 mutation, the first successful current-run routing call unlocks the
-control-only `workstream.route` stage. It exposes no executable tools and may
-proceed to `resolve` or return to observation. Direct `ENTRY -> workstream.route`,
-`ENTRY -> resolve`, and observation-to-resolve transitions are prohibited.
+control-only `workstream.route` stage. Exact persisted focus also unlocks that
+stage for its own workstream/request. It exposes no executable tools and may
+proceed to `resolve` or return to observation. Direct `ENTRY -> resolve` and
+observation-to-resolve transitions are prohibited. Direct
+`ENTRY -> workstream.route` is available only for exact focused continuation.
 
 Within routing, the model observes SQLite-backed candidates and exact resource
 owners. Evidence priority is:
@@ -198,8 +218,9 @@ owners. Evidence priority is:
 6. recency, stars, frequency, unfinished status, and the previous run's owner.
 
 The final group only ranks candidates. Referential wording such as “continue
-that work” does not turn the previous workstream into exact ownership evidence.
-It never grants ownership by itself.
+that work” does not turn a merely recent workstream into exact ownership
+evidence. Persisted focus differs because it stores exact IDs from a prior
+successful binding, but it activates only those IDs and is revalidated first.
 When multiple strong candidates remain plausible, Ayati asks one focused
 question rather than guessing.
 
@@ -262,9 +283,10 @@ routing evidence, inspects the exact prospective resource, and then creates
 the workstream with `R-0001`. Only those exact targets are bound; the whole
 workspace is not.
 
-Existing-workstream activation remains different: the model selects an
-observed workstream/request lifecycle operation and exact existing resource
-IDs returned by current-run routing. The runtime derives and rechecks paths,
+Existing-workstream activation remains different: the model selects an exact
+workstream/request lifecycle operation and existing resource IDs returned by
+current-run routing or focused context. An empty resource list is valid only
+when the selected capabilities do not mutate a resource. The runtime derives and rechecks paths,
 mutable ownership, repository HEAD, and evidence. Those selected IDs ground
 activation; they are not the complete permission list. After activation, the
 runtime derives usable mutation roots from every authoritative workstream
@@ -329,17 +351,17 @@ the full project history into every model request.
 ### Read-only repository history
 
 When a continuation is ambiguous, the agent may inspect the one managed
-`workstreams/` repository through three bounded Context Engine operations:
-
-- `git_context_log` reads recent commit receipts across workstreams;
-- `git_context_show` reads one exact commit and its changed notebook paths;
-- `git_context_diff` reads a bounded committed notebook diff.
+`workstreams/` repository through the single `git_read` tool. Its `log`,
+`show`, and committed `diff` operations replace the former separate tools and
+retain the bounded Context Engine responses.
 
 The Context Engine requires the exact projected repository path and verifies
 the real Git root, `main` branch, and SQLite-tracked HEAD before every read.
-The tools cannot inspect another repository and cannot write Git. Their output
-is navigation evidence only. Before routing, the agent opens the identified
-workstream and request through the canonical workstream read tool.
+For this protected path, the tool cannot write Git and its output is navigation
+evidence only. The same tool can inspect an ordinary authorized repository
+through its structured read-operation enum, but it never accepts arbitrary Git
+arguments. Before routing, the agent opens the identified workstream and
+request through the canonical workstream read tool.
 
 ## Durable Markdown contracts
 
@@ -371,7 +393,7 @@ transition, or a final outcome. An ordinary incomplete, failed, retry,
 read-only, or partial-progress run leaves the request file byte-identical.
 
 `progress.md` starts with `# Progress` and receives exactly one canonical entry
-for every finalized bound run. Each entry includes run/request identity,
+for every finalized retained bound run. Each entry includes run/request identity,
 outcome, summary, work completed, verified mutations, validation, findings and
 decisions, problems, and next action.
 
@@ -428,12 +450,15 @@ authorized root. The executor canonicalizes and rechecks every target against
 the runtime-derived authority before mutation, so prompt metadata alone cannot
 authorize a call.
 
-A new workstream may have no resources. Missing output paths are not
-pre-registered merely to manufacture permission. The executor observes only
-the declared targets, runs the tool, and verifies status-specific existence,
-kind, content, identity, mode, created-parent, and cleanup effects. Broader
-process, Python, database, and legacy resource operations retain the stronger
-resource-scoped preparation journal.
+A new workstream may be resource-free only while it is provisional in its
+creating run. Missing output paths are not pre-registered merely to manufacture
+permission. At finalization, an initializing workstream with neither an
+existing binding nor a verified effect/completion resource is discarded from
+the catalog, its stream focus is cleared, and the run is preserved as an
+ordinary finalized run. Once at least one resource exists, normal workstream
+finalization and context Git apply. The executor observes only the declared
+targets, runs the tool, and verifies status-specific existence, kind, content,
+identity, mode, created-parent, and cleanup effects.
 
 Finalization admits independently verified filesystem effects even when the
 larger run is incomplete or failed. Lifecycle is deterministic:
@@ -450,11 +475,13 @@ may propose bounded display metadata only for exact validation-backed outputs;
 the runtime owns identity, kind, locator, version, availability, and lifecycle.
 `resources.json` remains a generated projection of that catalog.
 
-## SQLite V9 responsibilities
+## SQLite V11 responsibilities
 
 SQLite is optimized for operational coordination, bounded projection, and
 search:
 
+- `agent_streams` stores at most one nullable focused workstream/request pair;
+  both IDs are set, swapped, or cleared together.
 - `workstream_repository_state` stores the one shared repository path, branch,
   global HEAD, health, and update time.
 - `workstreams` stores lifecycle, aliases, snapshot, focus, blockers, current
@@ -488,7 +515,9 @@ unrelated workstream commit never makes another workstream stale.
 
 ## Finalization
 
-Every bound run uses one journaled finalization:
+An initializing workstream with no resource is first discarded through the
+recoverable unbound-run journal. Every retained bound run uses this journaled
+finalization:
 
 1. verify immutable run/workstream/request binding and deterministic mutation
    evidence, then apply verified filesystem lifecycle effects;
@@ -510,9 +539,10 @@ Every bound run uses one journaled finalization:
 14. mark the route plan, finalization, and run complete;
 15. release the terminal response.
 
-Because `progress.md` always changes, every finalized bound run creates exactly
-one shared-repository commit even when no deliverable changed. Unbound
-conversation runs do not create workstream progress or a context commit.
+Because `progress.md` always changes, every finalized retained bound run creates
+exactly one shared-repository commit even when no deliverable changed. Unbound
+conversation runs and discarded empty initializations do not create workstream
+progress or a context commit.
 
 Request completion requires accepted completion evidence that represents every
 acceptance criterion in `request.md`, no missing criteria or failures, verified
@@ -558,12 +588,12 @@ committed path, request relationship, progress entry, and resource manifest.
 If a pre-progress repository has no `progress.md`, migration creates the
 canonical empty baseline ledger; an existing ledger is always parsed and
 preserved.
-Confirmation creates a temporary shared repository and V9 database, validates
+Confirmation creates a temporary shared repository and V11 database, validates
 both, atomically switches the workstream root, archives the old nested
 repositories and prior database/WAL/SHM, and records manifests. Invalid or
 dirty repositories are refused without discarding their contents.
 
-`context:catalog-rebuild` reconstructs an empty V9 workstream catalog from the
+`context:catalog-rebuild` reconstructs an empty V11 workstream catalog from the
 already shared repository. `context:archive-reset` remains the deliberate
 clean-reset path for unsupported database state.
 

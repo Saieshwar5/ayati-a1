@@ -27,6 +27,7 @@ const MACHINE_FILESYSTEM_READ_TOOLS = new Set([
   "list_directory",
   "find_files",
   "search_in_files",
+  "git_read",
 ]);
 
 const DIRECT_FILESYSTEM_MUTATION_TOOLS = new Set([
@@ -101,7 +102,10 @@ export function isMachineFilesystemReadTool(
 ): boolean {
   return policy.readScope === "machine"
     && MACHINE_FILESYSTEM_READ_TOOLS.has(toolName)
-    && definition?.annotations?.domain === "filesystem"
+    && (
+      definition?.annotations?.domain === "filesystem"
+      || definition?.annotations?.domain === "git"
+    )
     && definition.annotations.readOnly;
 }
 
@@ -483,6 +487,7 @@ const PATH_KEYS = [
   "scriptPath",
   "dbPath",
   "targetDbPath",
+  "repositoryPath",
 ] as const;
 
 const STRING_ARRAY_PATH_KEYS = [

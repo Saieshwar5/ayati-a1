@@ -11,6 +11,7 @@ import {
   type WorkstreamFinalizationHook,
 } from "./workstream-finalization-service.js";
 import type { ResourceCatalogService } from "./resource-catalog-service.js";
+import type { UnboundRunFinalizationService } from "./unbound-run-finalization-service.js";
 
 export class WorkstreamBoundFinalizationService {
   private readonly workstreamFinalization: WorkstreamFinalizationService;
@@ -19,12 +20,14 @@ export class WorkstreamBoundFinalizationService {
     private readonly database: ContextDatabase,
     workstreamRoot: string,
     resourceCatalog: ResourceCatalogService,
+    unboundFinalization: UnboundRunFinalizationService,
     hook?: WorkstreamFinalizationHook,
   ) {
     this.workstreamFinalization = new WorkstreamFinalizationService({
       database,
       workstreamRoot,
       resourceCatalog,
+      unboundFinalization,
       ...(hook ? { hook } : {}),
     });
   }

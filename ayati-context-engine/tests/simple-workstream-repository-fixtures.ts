@@ -147,6 +147,49 @@ export function boundRequestAcceptance(
 export async function materializeBoundWorkstream(
   fixture: WorkstreamServiceFixture,
 ): Promise<FinalizeRunResponse> {
+  const binding = fixture.database.prepare([
+    "SELECT workstream_id, bound_request_id FROM runs WHERE run_id = ?",
+  ].join(" ")).get(fixture.prepared.run.runId) as {
+    workstream_id: string;
+    bound_request_id: string;
+  } | undefined;
+  if (!binding?.workstream_id || !binding.bound_request_id) {
+    throw new Error("Expected a workstream-bound fixture run.");
+  }
+  const existing = fixture.database.prepare(
+    "SELECT 1 AS present FROM workstream_resources WHERE workstream_id = ? LIMIT 1",
+  ).get(binding.workstream_id);
+  if (!existing) {
+    const resourcePath = join(
+      fixture.root,
+      "workspace",
+      "materialized-" + binding.workstream_id.toLowerCase(),
+    );
+    await mkdir(resourcePath, { recursive: true });
+    const inspected = await fixture.service.inspectResourceForRun({
+      requestId: fixture.prepared.run.runId + ":materialize-resource:inspect",
+      runId: fixture.prepared.run.runId,
+      locator: { kind: "filesystem", path: resourcePath },
+      kind: "directory",
+      origin: "agent_discovered",
+      displayName: "materialized workstream resource",
+      description: "Durable test resource required to retain the workstream.",
+      aliases: ["test resource"],
+      at: "2026-07-19T10:01:30+05:30",
+    });
+    await fixture.service.bindResourcesForRun({
+      requestId: fixture.prepared.run.runId + ":materialize-resource:bind",
+      runId: fixture.prepared.run.runId,
+      workstreamId: binding.workstream_id,
+      bindings: [{
+        resourceId: inspected.resource.resourceId,
+        role: "primary",
+        access: "mutate",
+        primary: true,
+      }],
+      at: "2026-07-19T10:01:31+05:30",
+    });
+  }
   return await fixture.service.finalizeRun({
     requestId: fixture.prepared.run.runId + ":materialize",
     runId: fixture.prepared.run.runId,

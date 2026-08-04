@@ -9,8 +9,50 @@ interface AgentStreamRow {
   last_message_sequence: number;
   last_run_sequence: number;
   active_checkpoint_id: string | null;
+  focused_workstream_id: string | null;
+  focused_request_id: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export function setAgentStreamWorkstreamFocus(database: ContextDatabase, input: {
+  streamId: string;
+  workstreamId: string;
+  requestId: string;
+  at: string;
+}): void {
+  const target = database.prepare([
+    "SELECT w.workstream_id, q.request_id FROM workstreams w",
+    "JOIN workstream_requests q ON q.workstream_id = w.workstream_id",
+    "WHERE w.workstream_id = ? AND q.request_id = ?",
+    "AND w.lifecycle_status = 'active' AND w.status IN ('initializing', 'active')",
+    "AND q.status IN ('queued', 'active', 'blocked')",
+  ].join(" ")).get(input.workstreamId, input.requestId);
+  if (!target) {
+    throw new Error(
+      `Agent stream focus requires an unfinished request in an active workstream: ${input.workstreamId}/${input.requestId}`,
+    );
+  }
+  const result = database.prepare([
+    "UPDATE agent_streams SET focused_workstream_id = ?, focused_request_id = ?, updated_at = ?",
+    "WHERE stream_id = ?",
+  ].join(" ")).run(input.workstreamId, input.requestId, input.at, input.streamId);
+  if (Number(result.changes) !== 1) {
+    throw new Error("Agent stream does not exist: " + input.streamId);
+  }
+}
+
+export function clearAgentStreamWorkstreamFocus(database: ContextDatabase, input: {
+  streamId: string;
+  workstreamId: string;
+  requestId: string;
+  at: string;
+}): boolean {
+  const result = database.prepare([
+    "UPDATE agent_streams SET focused_workstream_id = NULL, focused_request_id = NULL, updated_at = ?",
+    "WHERE stream_id = ? AND focused_workstream_id = ? AND focused_request_id = ?",
+  ].join(" ")).run(input.at, input.streamId, input.workstreamId, input.requestId);
+  return Number(result.changes) === 1;
 }
 
 export function ensureAgentStream(database: ContextDatabase, input: {
@@ -113,6 +155,12 @@ function streamRef(row: AgentStreamRow): AgentStreamRef {
     lastMessageSequence: Number(row.last_message_sequence),
     lastRunSequence: Number(row.last_run_sequence),
     ...(row.active_checkpoint_id ? { activeCheckpointId: row.active_checkpoint_id } : {}),
+    ...(row.focused_workstream_id && row.focused_request_id
+      ? {
+          focusedWorkstreamId: row.focused_workstream_id,
+          focusedRequestId: row.focused_request_id,
+        }
+      : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -121,6 +169,7 @@ function streamRef(row: AgentStreamRow): AgentStreamRef {
 function streamSelect(): string {
   return [
     "SELECT stream_id, agent_id, scope_key, last_message_sequence, last_run_sequence,",
-    "active_checkpoint_id, created_at, updated_at FROM agent_streams",
+    "active_checkpoint_id, focused_workstream_id, focused_request_id,",
+    "created_at, updated_at FROM agent_streams",
   ].join(" ");
 }

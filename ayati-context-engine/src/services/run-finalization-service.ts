@@ -5,8 +5,12 @@ import type {
 import type { ContextDatabase } from "../database/database.js";
 import { ContextEngineServiceError } from "../errors.js";
 import { readRunEvidence } from "../repositories/run-records.js";
+import { readUnboundRunFinalization } from "../repositories/unbound-run-finalization-records.js";
 import type { WorkstreamBoundFinalizationService } from "./workstream-bound-finalization-service.js";
-import type { UnboundRunFinalizationService } from "./unbound-run-finalization-service.js";
+import {
+  type UnboundRunFinalizationService,
+  withoutWorkstreamCompletion,
+} from "./unbound-run-finalization-service.js";
 
 export class RunFinalizationService {
   constructor(private readonly options: {
@@ -37,6 +41,9 @@ export class RunFinalizationService {
       return await this.options.workstreamBound.finalize(input);
     }
     if (input.workstream) {
+      if (readUnboundRunFinalization(this.options.database, input.runId)) {
+        return await this.options.unbound.finalize(withoutWorkstreamCompletion(input));
+      }
       throw new ContextEngineServiceError({
         code: "INVALID_REQUEST",
         message: "Unbound run finalization cannot submit workstream completion evidence.",

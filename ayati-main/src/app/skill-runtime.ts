@@ -22,6 +22,7 @@ import { createDatasetSkill } from "../skills/builtins/datasets/index.js";
 import { createDocumentSkill } from "../skills/builtins/documents/index.js";
 import { createFilesSkill } from "../skills/builtins/files/index.js";
 import { createGitContextSkill } from "../skills/builtins/git-context/index.js";
+import { createGitReadSkill } from "../skills/builtins/git-read/index.js";
 import { createUiSkill } from "../skills/builtins/ui/index.js";
 import { createContextSkill } from "../skills/builtins/context/index.js";
 import { createSystemSkill } from "../skills/builtins/system/index.js";
@@ -96,6 +97,10 @@ export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<
     }),
     createGitContextSkill({
       service: options.contextEngineService,
+    }),
+    createGitReadSkill({
+      service: options.contextEngineService,
+      workstreamRoot: resolve(options.config.contextEngine.rootDirectory, "workstreams"),
     }),
     createUiSkill({
       workspaceOrchestrator: options.workspaceOrchestrator,

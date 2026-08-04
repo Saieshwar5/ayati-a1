@@ -303,7 +303,7 @@ describe("live V3 workstream request routing", () => {
       "Complete a context-only durable outcome.",
     );
     fixtures.push(fixture);
-    const selected = await createBoundWorkstream(fixture, {
+    const selected = await createBoundWorkstreamWithMutableDirectory(fixture, {
       title: "Pre-commit Recovery",
       objective: "Recover a journaled finalization before its context commit.",
     });
@@ -390,7 +390,7 @@ describe("live V3 workstream request routing", () => {
       "Complete a context-only durable outcome.",
     );
     fixtures.push(fixture);
-    const selected = await createBoundWorkstream(fixture, {
+    const selected = await createBoundWorkstreamWithMutableDirectory(fixture, {
       title: "Recoverable Context",
       objective: "Recover a journaled context commit idempotently.",
     });

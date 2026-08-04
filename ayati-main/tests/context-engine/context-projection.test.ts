@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { buildContextEngineProjection } from "../../src/context-engine/index.js";
 import type { AgentContextPack } from "../../src/ivec/agent-runner/context-pack.js";
 import { buildCoreCapsule } from "../../src/ivec/agent-runner/core-capsule.js";
+import { buildFocusedWorkstreamPromptContext } from "../../src/ivec/agent-runner/focused-workstream-prompt-context.js";
 import { emptyHotContextProjection } from "../../src/ivec/hot-context/index.js";
 import {
   projectAgentPromptContext,
@@ -104,7 +105,55 @@ describe("context engine projection", () => {
     expect(pack).not.toHaveProperty("observations");
   });
 
-  it("keeps authoritative work and resources out of the always-present prompt", () => {
+  it("projects unfinished stream focus into the core capsule without binding the run", () => {
+    const source = activeWorkstreamContext();
+    const focused = {
+      ...source.activeWorkstream!,
+      selectedRequest: source.activeWorkstream!.currentRequest!,
+    };
+    source.stream = {
+      ...source.stream!,
+      stream: {
+        ...source.stream!.stream,
+        focusedWorkstreamId: focused.workstream.workstreamId,
+        focusedRequestId: focused.selectedRequest.id,
+      },
+      focusedWorkstream: focused,
+    };
+    source.activeWorkstream = undefined;
+    source.run = {
+      ...source.run!,
+      run: {
+        ...source.run!.run,
+        workstreamBinding: undefined,
+      },
+    };
+
+    const machine = buildContextEngineProjection(source);
+    const pack = contextPack(machine);
+
+    expect(machine.current.routing).toEqual({ status: "unbound" });
+    expect(machine.focus).toEqual({ status: "none" });
+    expect(pack.core.focusedWorkstream).toMatchObject({
+      id: "W-20260714-0001",
+      title: "Aurora Coffee website",
+      request: {
+        id: "REQ-1",
+        status: "active",
+        request: "Create the Aurora Coffee homepage.",
+      },
+      resources: [{
+        id: "RES-0123456789ABCDEF01234567",
+        access: "mutate",
+        primary: true,
+      }],
+    });
+    expect(pack.core.focusedWorkstream?.request).not.toHaveProperty("acceptance");
+    expect(pack.core.focusedWorkstream?.request).not.toHaveProperty("constraints");
+    expect(pack.core.focusedWorkstream?.resources[0]).not.toHaveProperty("locator");
+  });
+
+  it("keeps full workstream state and resource authority out of the always-present prompt", () => {
     const source = activeWorkstreamContext();
     const machine = buildContextEngineProjection(source);
     const toolCalls = buildPromptToolCallsForRun([{
@@ -169,6 +218,9 @@ function contextPack(context: ReturnType<typeof buildContextEngineProjection>): 
       timeline: recent,
       ...(context.agentStream.checkpoint ? { checkpoint: context.agentStream.checkpoint } : {}),
       ...(context.current.routing ? { routing: context.current.routing } : {}),
+      focusedWorkstream: buildFocusedWorkstreamPromptContext(
+        context.agentStream.focusedWorkstream,
+      ),
     }),
     hot: emptyHotContextProjection(),
   };

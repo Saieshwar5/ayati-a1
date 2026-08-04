@@ -19,6 +19,7 @@ import {
   bindActiveRunToWorkstream,
   readRunEvidence,
 } from "../repositories/run-records.js";
+import { setAgentStreamWorkstreamFocus } from "../repositories/agent-stream-records.js";
 import { readWorkstreamInitialization } from "../repositories/workstream-records.js";
 import { readSharedWorkstreamRepositoryState } from "../repositories/workstream-repository-state-records.js";
 import {
@@ -141,6 +142,12 @@ export class WorkstreamRequestRoutingService {
         });
         const boundRun = bindActiveRunToWorkstream(this.options.database, {
           runId: input.runId,
+          workstreamId: input.workstreamId,
+          requestId: boundRequestId,
+          at: input.at,
+        });
+        setAgentStreamWorkstreamFocus(this.options.database, {
+          streamId: run.streamId,
           workstreamId: input.workstreamId,
           requestId: boundRequestId,
           at: input.at,

@@ -39,7 +39,7 @@ afterEach(async () => {
 });
 
 describe("shared workstream repository migration", () => {
-  it("converts multiple clean nested repositories, archives them, and rebuilds V9 projections", async () => {
+  it("converts multiple clean nested repositories, archives them, and rebuilds V11 projections", async () => {
     const root = await createRoot("success");
     const workstreamRoot = join(root, "workstreams");
     await mkdir(workstreamRoot);

@@ -5,6 +5,7 @@ import { filesystemReadProjector } from "./filesystem-read.js";
 import { filesystemSearchProjector } from "./filesystem-search.js";
 import { filesystemWriteProjector } from "./filesystem-write.js";
 import { gitContextProjector } from "./git-context.js";
+import { gitReadProjector } from "./git-read.js";
 import { historyProjector } from "./history.js";
 import { processProjector } from "./process.js";
 import { testBuildProjector } from "./test-build.js";
@@ -21,6 +22,7 @@ const PROJECTORS: ToolContextProjector[] = [
   filesystemSearchProjector,
   filesystemWriteProjector,
   historyProjector,
+  gitReadProjector,
   gitContextProjector,
   processProjector,
 ];

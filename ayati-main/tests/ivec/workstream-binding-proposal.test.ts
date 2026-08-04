@@ -48,6 +48,13 @@ describe("workstream binding proposal", () => {
     expect(normalizeWorkstreamBindingProposal(proposal)).toEqual(proposal);
     expect(normalizeWorkstreamBindingProposal({
       ...proposal,
+      resourceIds: [],
+    })).toEqual({
+      ...proposal,
+      resourceIds: [],
+    });
+    expect(normalizeWorkstreamBindingProposal({
+      ...proposal,
       requestDecision: { ...proposal.requestDecision, currentRequestId: "invalid" },
     })).toBeUndefined();
     expect(normalizeWorkstreamBindingProposal({
@@ -70,9 +77,12 @@ describe("workstream binding proposal", () => {
     expect(properties).not.toHaveProperty("evidence");
     expect(properties["resourceIds"]).toMatchObject({
       type: "array",
-      minItems: 1,
+      minItems: 0,
       maxItems: 32,
     });
+    expect(properties["requestDecision"]?.["description"]).toEqual(
+      expect.stringContaining("same promised outcome"),
+    );
     expect(properties["requestDecision"]?.["description"]).toEqual(
       expect.stringContaining("separate outcome"),
     );
@@ -89,6 +99,9 @@ describe("workstream binding proposal", () => {
         properties: {
           requestId: expect.objectContaining({
             description: expect.stringContaining("exact request ID"),
+          }),
+          reason: expect.objectContaining({
+            description: expect.stringContaining("existing promised outcome"),
           }),
         },
       });

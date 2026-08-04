@@ -164,11 +164,13 @@ Core coverage is atomic:
 The model must choose fewer capabilities after `surface_too_large`. The
 runtime never guesses which required operation is expendable.
 
-`workstream:history` is a read-only observation capability containing
-`git_context_log`, `git_context_show`, and `git_context_diff`. It is intended
-only for ambiguous continuation. The shared repository path comes from exact
-run context, and commit evidence must be followed by a canonical exact
-workstream/request read before routing.
+`git:read` is a read-only observation capability containing the single
+`git_read` tool. One strict `operation` enum covers repository state, history,
+references, diffs, and committed content without accepting arbitrary Git
+arguments. The exact shared workstream repository is a protected special case:
+its log, show, and committed-diff operations retain Context Engine path,
+branch, health, and HEAD validation. Its commit evidence must still be followed
+by a canonical exact workstream/request read before routing.
 
 Focused filesystem mutation is separated by intent:
 

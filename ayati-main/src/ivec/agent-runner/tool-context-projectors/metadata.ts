@@ -82,7 +82,7 @@ export function buildToolProjectionMetadata(tool: string, structuredContent: unk
       "hasMore",
     ], 1_000);
   }
-  if (tool.startsWith("git_context_")) {
+  if (tool === "git_read" || tool.startsWith("git_context_")) {
     return sanitizeRecord(structuredContent, {
       dropKeys: new Set(["content", "observation", "rawOutput"]),
       maxArrayItems: 30,

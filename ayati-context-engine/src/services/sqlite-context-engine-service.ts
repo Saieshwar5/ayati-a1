@@ -180,10 +180,12 @@ export class SqliteContextEngineService implements ContextEngineService {
       this.workstreamRequestRouting,
       this.observer,
     );
+    const unboundFinalization = new UnboundRunFinalizationService(this.database);
     const workstreamBound = new WorkstreamBoundFinalizationService(
       this.database,
       workstreamRoot,
       this.resourceCatalog,
+      unboundFinalization,
       async (phase, record) => {
         this.observer.emit({
           level: "info",
@@ -201,7 +203,7 @@ export class SqliteContextEngineService implements ContextEngineService {
     );
     this.runFinalization = new RunFinalizationService({
       database: this.database,
-      unbound: new UnboundRunFinalizationService(this.database),
+      unbound: unboundFinalization,
       workstreamBound,
     });
     this.startupRunRecovery = new StartupRunRecoveryService(this.database);
@@ -236,6 +238,33 @@ export class SqliteContextEngineService implements ContextEngineService {
           recentProgress,
           resources: this.resourceCatalog.readWorkstreamBindings(binding.workstreamId),
         };
+      },
+      loadFocusedWorkstream: async (stream) => {
+        if (!stream.focusedWorkstreamId || !stream.focusedRequestId) return undefined;
+        try {
+          const selected = await this.workstreamLifecycle.getWorkstreamRequestContext({
+            workstreamId: stream.focusedWorkstreamId,
+            requestId: stream.focusedRequestId,
+          });
+          const context = selected.context;
+          const request = context?.selectedRequest;
+          if (!context || !request
+            || context.lifecycleStatus !== "active"
+            || request.status === "done"
+            || request.status === "dropped") {
+            return undefined;
+          }
+          return {
+            ...context,
+            resources: this.resourceCatalog.readWorkstreamBindings(stream.focusedWorkstreamId),
+          };
+        } catch (error) {
+          if (error instanceof ContextEngineServiceError
+            && (error.code === "NOT_FOUND" || error.code === "WORKSTREAM_NOT_FOUND")) {
+            return undefined;
+          }
+          throw error;
+        }
       },
       loadWorkstreamCandidates: async (input) => this.workstreamDiscovery.find({
         streamId: input.streamId,

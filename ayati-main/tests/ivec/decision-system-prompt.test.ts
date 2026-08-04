@@ -57,6 +57,20 @@ describe("stable decision system prompt", () => {
     expect(prompt).toContain("context.run.workspaceRoot");
     expect(prompt).toContain("context.run.verifiedOutcomes");
     expect(prompt).toContain("context.harness");
+    expect(prompt).toContain("context.core.focusedWorkstream");
+    expect(prompt).toContain("request.request is its exact stored outcome");
+    expect(prompt).toContain("Route by owner then outcome");
+    expect(prompt).toContain("work needed for its selected request's promised outcome -> continue_current");
+    expect(prompt).toContain("same owner + independently acceptable outcome -> create a request there");
+    expect(prompt).toContain("no suitable owner after search -> create a workstream");
+    expect(prompt).toContain("do not search merely to rediscover them");
+    expect(prompt).toContain("Reading the focused or another workstream does not itself swap focus");
+    expect(prompt).toContain("resourceIds=[] only when no selected capability mutates a resource");
+    expect(prompt).toContain("Incomplete, failed, blocked, needs-user-input, interrupted, and run-limit work remains focused");
+    expect(prompt).toContain("confusing message may refer to prior mutable work");
+    expect(prompt).toContain("absent from current context");
+    expect(prompt).toContain("git:read may inspect workstreamRepository commits or diffs when helpful");
+    expect(prompt).not.toContain("For unclear continuation use git:read");
     expect(prompt).not.toContain("context.personal");
 
     expect(prompt).not.toContain("decision_load_tools");

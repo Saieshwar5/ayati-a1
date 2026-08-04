@@ -25,6 +25,7 @@ export interface ContextAgentStreamMeta {
 export interface ContextAgentStreamProjection {
   meta: ContextAgentStreamMeta;
   checkpoint?: ContextCheckpointRecord;
+  focusedWorkstream?: ContextWorkstreamProjection;
   recentMessages: StreamMessage[];
   recentWorkstreams: RecentWorkstreamMetadata[];
   recentFiles: RecentFileMetadata[];

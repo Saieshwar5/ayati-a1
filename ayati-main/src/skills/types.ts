@@ -91,6 +91,7 @@ export type ToolDomain =
   | "attachments"
   | "datasets"
   | "recall"
+  | "git"
   | "git_context"
   | "files";
 

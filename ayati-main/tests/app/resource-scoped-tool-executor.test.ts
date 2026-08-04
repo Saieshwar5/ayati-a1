@@ -29,6 +29,8 @@ import { searchInFilesTool } from "../../src/skills/builtins/filesystem/search-i
 import { setPermissionsTool } from "../../src/skills/builtins/filesystem/set-permissions.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
 import { createContextSkill } from "../../src/skills/builtins/context/index.js";
+import { commonAnnotations } from "../../src/skills/builtins/contract-helpers.js";
+import type { ToolDefinition } from "../../src/skills/types.js";
 import {
   createPersonalMemoryHotContextSource,
   HotContextRuntime,
@@ -83,6 +85,66 @@ describe("resource-scoped tool executor", () => {
 
     expect(result.ok).toBe(true);
     expect(result.v2?.structuredContent).toMatchObject({ dirPath: "/" });
+  });
+
+  it("applies machine and workspace read policy to repositoryPath", async () => {
+    const workspace = tempDirectory("ayati-git-policy-workspace-");
+    const outside = tempDirectory("ayati-git-policy-outside-");
+    const service = serviceFor(unboundActiveContext("R-unbound"));
+    const machine = createResourceScopedToolExecutor({
+      base: createToolExecutor([gitReadStub()]),
+      contextEngine: service,
+      workspaceRoot: workspace,
+    });
+    const workspaceOnly = createResourceScopedToolExecutor({
+      base: createToolExecutor([gitReadStub()]),
+      contextEngine: service,
+      workspaceRoot: workspace,
+      filesystemAccess: {
+        readScope: "workspace",
+        mutationScope: "workspace",
+      },
+    });
+
+    expect((await machine.execute("git_read", {
+      repositoryPath: outside,
+      operation: "status",
+    }, executionContext("R-unbound", "call-git-machine"))).ok).toBe(true);
+    expect((await workspaceOnly.execute("git_read", {
+      repositoryPath: outside,
+      operation: "status",
+    }, executionContext("R-unbound", "call-git-workspace"))).v2?.code)
+      .toBe("PATH_OUTSIDE_WORKSPACE_ROOT");
+  });
+
+  it("allows only the exact projected workstream repository under workspace read policy", async () => {
+    const workspace = tempDirectory("ayati-git-projected-workspace-");
+    const projected = tempDirectory("ayati-git-projected-context-");
+    const active = {
+      ...unboundActiveContext("R-unbound"),
+      workstreamRepository: { path: projected },
+    };
+    const executor = createResourceScopedToolExecutor({
+      base: createToolExecutor([gitReadStub()]),
+      contextEngine: serviceFor(active),
+      workspaceRoot: workspace,
+      filesystemAccess: {
+        readScope: "workspace",
+        mutationScope: "workspace",
+      },
+    });
+
+    const allowed = await executor.execute("git_read", {
+      repositoryPath: projected,
+      operation: "log",
+    }, executionContext("R-unbound", "call-git-projected"));
+    const denied = await executor.execute("git_read", {
+      repositoryPath: tempDirectory("ayati-git-unprojected-context-"),
+      operation: "log",
+    }, executionContext("R-unbound", "call-git-unprojected"));
+
+    expect(allowed.ok).toBe(true);
+    expect(denied.v2?.code).toBe("PATH_OUTSIDE_WORKSPACE_ROOT");
   });
 
   it("allows an unbound read from an ingress filesystem resource", async () => {
@@ -1339,6 +1401,25 @@ function tempDirectory(prefix: string): string {
   const path = mkdtempSync(join(tmpdir(), prefix));
   temporaryDirectories.push(path);
   return path;
+}
+
+function gitReadStub(): ToolDefinition {
+  return {
+    name: "git_read",
+    description: "Test read-only Git tool.",
+    inputSchema: {
+      type: "object",
+      required: ["repositoryPath", "operation"],
+      properties: {
+        repositoryPath: { type: "string" },
+        operation: { type: "string" },
+      },
+    },
+    annotations: commonAnnotations({ domain: "git", readOnly: true }),
+    async execute(input) {
+      return { ok: true, output: JSON.stringify(input) };
+    },
+  };
 }
 
 function directoryInside(parent: string, name: string): string {

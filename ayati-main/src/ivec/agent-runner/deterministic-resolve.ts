@@ -125,6 +125,15 @@ export async function dispatchDeterministicResolveGate(input: {
       ["Return to observe.locate for workstream:search or resource:ownership, or observe.investigate for workstream:read, then re-enter workstream.route."],
     );
   }
+  if (input.request.binding.kind === "create" && !routing.currentRunObserved) {
+    return rejected(
+      toolNames,
+      "MODE_BINDING_PROPOSAL_UNVERIFIED",
+      "New workstream creation requires a successful current-run ownership search; focused context cannot prove that no existing owner applies.",
+      [],
+      ["Search workstreams or resource ownership, then return to workstream.route and retry creation."],
+    );
+  }
   let activationAuthority: WorkstreamActivationAuthority | undefined;
   if (input.request.binding.kind === "activate") {
     const resolved = resolveWorkstreamActivationAuthority({
@@ -143,7 +152,7 @@ export async function dispatchDeterministicResolveGate(input: {
   }
 
   const mutationScopes = activationAuthority?.resourceIds ?? [];
-  const routingEvidence = activationAuthority?.routingEvidence ?? routing.references;
+  const routingEvidence = activationAuthority?.routingEvidence ?? routing.currentRunReferences;
   input.onEvent?.("deterministic_binding_started", {
     tools: toolNames,
     purpose: input.request.purpose,

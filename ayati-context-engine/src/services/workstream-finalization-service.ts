@@ -32,6 +32,10 @@ import {
 } from "../repositories/workstream-finalization-records.js";
 import { resolveAssistantResponseMetadata } from "./assistant-response-metadata.js";
 import {
+  discardEmptyInitializingWorkstream,
+  shouldDiscardEmptyInitializingWorkstream,
+} from "./empty-initializing-workstream-discard.js";
+import {
   readWorkstreamInitialization,
 } from "../repositories/workstream-records.js";
 import {
@@ -48,6 +52,7 @@ import {
   type WorkstreamCommitValidation,
 } from "../workstreams/workstream-commit-metadata.js";
 import type { ResourceCatalogService } from "./resource-catalog-service.js";
+import { UnboundRunFinalizationService } from "./unbound-run-finalization-service.js";
 import {
   acknowledgeWorkstreamFinalization,
   validateCommittedWorkstreamFinalization,
@@ -63,12 +68,18 @@ export type WorkstreamFinalizationHook = (
 ) => void | Promise<void>;
 
 export class WorkstreamFinalizationService {
+  private readonly unboundFinalization: UnboundRunFinalizationService;
+
   constructor(private readonly options: {
     database: ContextDatabase;
     workstreamRoot: string;
     resourceCatalog: ResourceCatalogService;
+    unboundFinalization?: UnboundRunFinalizationService;
     hook?: WorkstreamFinalizationHook;
-  }) {}
+  }) {
+    this.unboundFinalization = options.unboundFinalization
+      ?? new UnboundRunFinalizationService(options.database);
+  }
 
   async finalize(
     request: FinalizeRunRequest,
@@ -95,6 +106,25 @@ export class WorkstreamFinalizationService {
         });
       }
       return await this.execute(existing, input.at);
+    }
+
+    if (shouldDiscardEmptyInitializingWorkstream({
+      database: this.options.database,
+      runId: input.runId,
+      workstreamId: input.workstreamId,
+      requestId: input.boundRequestId,
+      completion: input.completion,
+    })) {
+      return await this.unboundFinalization.finalizeDiscardingProvisionalWorkstream(
+        request,
+        () => discardEmptyInitializingWorkstream({
+          database: this.options.database,
+          runId: input.runId,
+          workstreamId: input.workstreamId,
+          requestId: input.boundRequestId,
+          at: input.at,
+        }),
+      );
     }
 
     let prepared: Awaited<ReturnType<typeof prepareWorkstreamFinalization>>;

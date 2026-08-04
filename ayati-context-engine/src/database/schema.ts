@@ -2,6 +2,37 @@ import type { DatabaseSync } from "node:sqlite";
 import schemaVersion from "./schema-version.json" with { type: "json" };
 
 const SCHEMA_VERSION = schemaVersion.version;
+const FOCUS_SCHEMA_VERSION = 10;
+
+const RUN_WORKSTREAM_BINDING_IMMUTABLE_TRIGGER_SQL = [
+  "CREATE TRIGGER runs_workstream_binding_immutable",
+  "BEFORE UPDATE OF workstream_id, bound_request_id, workstream_bound_at ON runs",
+  "WHEN OLD.workstream_id IS NOT NULL AND (NEW.workstream_id IS NOT OLD.workstream_id",
+  "  OR NEW.bound_request_id IS NOT OLD.bound_request_id",
+  "  OR NEW.workstream_bound_at IS NOT OLD.workstream_bound_at)",
+  "AND NOT (NEW.workstream_id IS NULL AND NEW.bound_request_id IS NULL",
+  "  AND NEW.workstream_bound_at IS NULL AND EXISTS (",
+  "    SELECT 1 FROM workstreams w WHERE w.workstream_id = OLD.workstream_id",
+  "      AND w.status = 'initializing' AND w.last_commit_sha IS NULL",
+  "      AND w.created_by_run_id = OLD.run_id",
+  "      AND NOT EXISTS (SELECT 1 FROM workstream_resources wr",
+  "        WHERE wr.workstream_id = OLD.workstream_id)",
+  "      AND NOT EXISTS (SELECT 1 FROM request_resources rr",
+  "        WHERE rr.workstream_id = OLD.workstream_id)",
+  "      AND NOT EXISTS (SELECT 1 FROM resource_events e",
+  "        WHERE e.workstream_id = OLD.workstream_id)",
+  "      AND NOT EXISTS (SELECT 1 FROM resource_mutation_leases l",
+  "        WHERE l.workstream_id = OLD.workstream_id)",
+  "      AND NOT EXISTS (SELECT 1 FROM workstream_progress p",
+  "        WHERE p.workstream_id = OLD.workstream_id)",
+  "      AND NOT EXISTS (SELECT 1 FROM workstream_finalizations f",
+  "        WHERE f.workstream_id = OLD.workstream_id)",
+  "      AND EXISTS (SELECT 1 FROM workstream_request_route_plans rp",
+  "        WHERE rp.run_id = OLD.run_id AND rp.workstream_id = OLD.workstream_id",
+  "          AND rp.bound_request_id = OLD.bound_request_id AND rp.phase = 'planned')",
+  "  ))",
+  "BEGIN SELECT RAISE(ABORT, 'run workstream binding is immutable'); END;",
+].join("\n");
 
 const BASELINE_TABLES = [
   "agent_streams",
@@ -68,8 +99,12 @@ const BASELINE_SQL = [
   "  last_message_sequence INTEGER NOT NULL DEFAULT 0 CHECK (last_message_sequence >= 0),",
   "  last_run_sequence INTEGER NOT NULL DEFAULT 0 CHECK (last_run_sequence >= 0),",
   "  active_checkpoint_id TEXT,",
+  "  focused_workstream_id TEXT,",
+  "  focused_request_id TEXT,",
   "  created_at TEXT NOT NULL,",
   "  updated_at TEXT NOT NULL,",
+  "  CHECK ((focused_workstream_id IS NULL AND focused_request_id IS NULL)",
+  "    OR (focused_workstream_id IS NOT NULL AND focused_request_id IS NOT NULL)),",
   "  UNIQUE(agent_id, scope_key)",
   ");",
   "CREATE INDEX agent_streams_updated_at ON agent_streams(updated_at DESC);",
@@ -231,13 +266,6 @@ const BASELINE_SQL = [
   ");",
   "CREATE UNIQUE INDEX runs_one_active_per_stream ON runs(stream_id)",
   "WHERE status IN ('running', 'recovery_required');",
-  "CREATE TRIGGER runs_workstream_binding_immutable",
-  "BEFORE UPDATE OF workstream_id, bound_request_id, workstream_bound_at ON runs",
-  "WHEN OLD.workstream_id IS NOT NULL AND (NEW.workstream_id IS NOT OLD.workstream_id",
-  "  OR NEW.bound_request_id IS NOT OLD.bound_request_id",
-  "  OR NEW.workstream_bound_at IS NOT OLD.workstream_bound_at)",
-  "BEGIN SELECT RAISE(ABORT, 'run workstream binding is immutable'); END;",
-  "",
   "CREATE TABLE context_checkpoints (",
   "  checkpoint_id TEXT PRIMARY KEY,",
   "  stream_id TEXT NOT NULL REFERENCES agent_streams(stream_id),",
@@ -558,6 +586,7 @@ const BASELINE_SQL = [
   "    REFERENCES workstream_requests(workstream_id, request_id)",
   ");",
   "CREATE INDEX workstream_finalizations_recovery ON workstream_finalizations(phase, updated_at);",
+  RUN_WORKSTREAM_BINDING_IMMUTABLE_TRIGGER_SQL,
 ].join("\n");
 
 export function initializeSchema(database: DatabaseSync, now: () => string): void {
@@ -582,22 +611,73 @@ export function initializeSchema(database: DatabaseSync, now: () => string): voi
         version: number;
       }>
     : [];
+  const currentVersion = Number(versions[0]?.version);
+  if (matchesSupportedTables(existingTables)) {
+    if (currentVersion === 9) {
+      migrateV9ToV10(database);
+      migrateV10ToV11(database);
+      return;
+    }
+    if (currentVersion === FOCUS_SCHEMA_VERSION) {
+      migrateV10ToV11(database);
+      return;
+    }
+  }
   const versionMatches = versions.length === 1
     && Number(versions[0]?.version) === SCHEMA_VERSION;
+  const tablesMatch = matchesSupportedTables(existingTables);
+  if (!versionMatches || !tablesMatch) {
+    throw new Error([
+      "Context Engine database reset required.",
+      "The configured database uses a pre-V9 or unsupported schema and was not modified.",
+      "Run the shared-workstream migration or context:archive-reset explicitly, then restart Ayati to create the V11 baseline.",
+    ].join(" "));
+  }
+}
+
+function migrateV9ToV10(database: DatabaseSync): void {
+  const columns = readTableColumns(database, "agent_streams");
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    if (!columns.includes("focused_workstream_id")) {
+      database.exec("ALTER TABLE agent_streams ADD COLUMN focused_workstream_id TEXT");
+    }
+    if (!columns.includes("focused_request_id")) {
+      database.exec("ALTER TABLE agent_streams ADD COLUMN focused_request_id TEXT");
+    }
+    database.prepare(
+      "UPDATE schema_metadata SET version = ? WHERE singleton = 1 AND version = 9",
+    ).run(FOCUS_SCHEMA_VERSION);
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function migrateV10ToV11(database: DatabaseSync): void {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    database.exec("DROP TRIGGER IF EXISTS runs_workstream_binding_immutable");
+    database.exec(RUN_WORKSTREAM_BINDING_IMMUTABLE_TRIGGER_SQL);
+    database.prepare(
+      "UPDATE schema_metadata SET version = ? WHERE singleton = 1 AND version = ?",
+    ).run(SCHEMA_VERSION, FOCUS_SCHEMA_VERSION);
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function matchesSupportedTables(existingTables: string[]): boolean {
   const currentTables = [...BASELINE_TABLES];
   const tablesWithRetiredObservations = [
     ...BASELINE_TABLES,
     ...RETIRED_OBSERVATION_TABLES,
   ].sort();
-  const tablesMatch = JSON.stringify(existingTables) === JSON.stringify(currentTables)
+  return JSON.stringify(existingTables) === JSON.stringify(currentTables)
     || JSON.stringify(existingTables) === JSON.stringify(tablesWithRetiredObservations);
-  if (!versionMatches || !tablesMatch) {
-    throw new Error([
-      "Context Engine database reset required.",
-      "The configured database uses a pre-V9 or unsupported schema and was not modified.",
-      "Run the shared-workstream migration or context:archive-reset explicitly, then restart Ayati to create the V9 baseline.",
-    ].join(" "));
-  }
 }
 
 export function latestSchemaVersion(): number {
@@ -614,5 +694,10 @@ function readTableNames(database: DatabaseSync): string[] {
     "AND name NOT GLOB 'message_search_*'",
     "ORDER BY name",
   ].join(" ")).all() as Array<{ name: string }>;
+  return rows.map((row) => row.name);
+}
+
+function readTableColumns(database: DatabaseSync, table: string): string[] {
+  const rows = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
   return rows.map((row) => row.name);
 }

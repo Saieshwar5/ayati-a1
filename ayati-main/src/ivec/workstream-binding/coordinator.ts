@@ -32,7 +32,7 @@ async function bindWorkstream(
   request: DeterministicWorkstreamBindingRequest,
 ): Promise<DeterministicWorkstreamBindingOutcome> {
   try {
-    const current = await options.service.getAgentContext({
+    let current = await options.service.getAgentContext({
       streamId: options.streamId,
       currentText: options.currentInput,
     });
@@ -40,11 +40,21 @@ async function bindWorkstream(
       request.expectedContextRevision
       && current.contextRevision !== request.expectedContextRevision
     ) {
-      return failed(
-        "WORKSTREAM_BINDING_CONTEXT_STALE",
-        `Authoritative context changed before binding: expected ${request.expectedContextRevision}, received ${current.contextRevision}.`,
-        true,
-      );
+      // One stable refresh is safe because the run, workstream HEAD, request route,
+      // and selected resources are still revalidated below before binding mutates state.
+      const observedRevision = current.contextRevision;
+      const refreshed = await options.service.getAgentContext({
+        streamId: options.streamId,
+        currentText: options.currentInput,
+      });
+      if (refreshed.contextRevision !== observedRevision) {
+        return failed(
+          "WORKSTREAM_BINDING_CONTEXT_STALE",
+          `Authoritative context continued changing during one deterministic refresh: expected ${request.expectedContextRevision}, observed ${observedRevision}, refreshed ${refreshed.contextRevision}.`,
+          true,
+        );
+      }
+      current = refreshed;
     }
     if (current.run?.run.runId !== options.runId) {
       return failed(
@@ -148,13 +158,6 @@ async function validateActivationResources(
 ): Promise<
   Extract<DeterministicWorkstreamBindingOutcome, { status: "failed" }> | undefined
 > {
-  if (resourceIds.length === 0) {
-    return failed(
-      "WORKSTREAM_BINDING_TARGET_REQUIRED",
-      "Existing-workstream activation requires at least one exact routed resource.",
-      false,
-    );
-  }
   const invalid = resourceIds.filter(
     (resourceId) => !/^RES-[0-9A-F]{24}$/.test(resourceId),
   );

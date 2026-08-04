@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createBoundWorkstream,
+  createBoundWorkstreamWithMutableDirectory,
   createWorkstreamServiceFixture,
   workState,
   type WorkstreamServiceFixture,
@@ -63,7 +64,7 @@ describe("workstream context reading", () => {
   it("opens one completed request and its bounded recent progress without reopening it", async () => {
     const fixture = await createWorkstreamServiceFixture("read-completed-request");
     fixtures.push(fixture);
-    const selected = await createBoundWorkstream(fixture, {
+    const selected = await createBoundWorkstreamWithMutableDirectory(fixture, {
       title: "Historical Request Notebook",
       objective: "Keep completed request context available for later questions.",
       initialRequest: {

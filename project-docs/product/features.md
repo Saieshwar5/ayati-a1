@@ -30,9 +30,10 @@ Current product features:
 - User-visible default outputs under `<AYATI_ROOT_DIR>/workspace/`; user-named
   resources remain at their real locations and are never copied into context
   Git.
-- One finalization path that closes the conversation/run, persists verified
-  resource effects, appends exactly one bound-run progress entry, reduces
-  workstream context, and creates exactly one commit for a finalized bound run.
+- One finalization path that closes the conversation/run, discards a new
+  resource-free provisional workstream, or persists verified resource effects,
+  appends one progress entry, reduces retained workstream context, and creates
+  exactly one commit for a retained bound run.
 - Exact run-step evidence with bounded on-demand history search/read; read
   results are not copied into a second cross-run context lane.
 - Filesystem metadata, batch reads and writes, focused processes, Python,

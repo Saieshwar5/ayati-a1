@@ -13,6 +13,7 @@ import {
 import {
   boundRequestAcceptance,
   createBoundWorkstream,
+  createBoundWorkstreamWithMutableDirectory,
   createWorkstreamServiceFixture,
   workState,
   type WorkstreamServiceFixture,
@@ -32,7 +33,7 @@ describe("live workstream request lifecycle routes", () => {
       "Start the initial bounded project request.",
     );
     fixtures.push(fixture);
-    const selected = await createBoundWorkstream(fixture, {
+    const selected = await createBoundWorkstreamWithMutableDirectory(fixture, {
       title: "Route Lifecycle Project",
       objective: "Exercise every supported request route in one workstream.",
     });
@@ -211,7 +212,7 @@ describe("live workstream request lifecycle routes", () => {
       "Start the initial bounded project request.",
     );
     fixtures.push(fixture);
-    const selected = await createBoundWorkstream(fixture, {
+    const selected = await createBoundWorkstreamWithMutableDirectory(fixture, {
       title: "No-change Route Project",
       objective: "Preserve state when a request route is invalid.",
     });

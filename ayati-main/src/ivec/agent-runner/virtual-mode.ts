@@ -244,6 +244,9 @@ export function allowedVirtualModeTransitions(
   if (options.workstreamBound && source === "ENTRY") {
     return allowed.filter((mode) => mode !== "workstream.route").concat("execute");
   }
+  if (!options.workstreamBound && source === "ENTRY" && options.routingObserved === true) {
+    return [...allowed, "workstream.route"];
+  }
   if (
     options.workstreamBound
     && (

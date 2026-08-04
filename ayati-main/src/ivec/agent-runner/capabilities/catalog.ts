@@ -189,12 +189,12 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     OBSERVE_INVESTIGATE,
     ["git_context_read_workstream"],
   ),
-  unboundCapability(
-    "workstream:history",
-    "Inspect recent durable workstream repository commits.",
-    "Use when a continuation is ambiguous. Commit history is navigation evidence only; read the exact workstream before routing.",
+  capability(
+    "git:read",
+    "Inspect an exact Git repository through bounded read-only operations.",
+    "Use for repository state, history, references, diffs, or committed content. Workstream repository history is navigation evidence only; read the exact workstream before routing.",
     OBSERVE_BOTH,
-    ["git_context_log", "git_context_show", "git_context_diff"],
+    ["git_read"],
   ),
   unboundCapability(
     "resource:ownership",

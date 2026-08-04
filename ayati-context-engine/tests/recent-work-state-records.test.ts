@@ -11,6 +11,7 @@ import {
 import {
   boundRequestAcceptance,
   createBoundWorkstream,
+  createBoundWorkstreamWithMutableDirectory,
   createWorkstreamServiceFixture,
   workState,
   type WorkstreamServiceFixture,
@@ -65,7 +66,7 @@ describe("recent WorkState records", () => {
       "2026-07-26T08:02:00.000Z",
     );
     const boundRunId = fixture.prepared.run.runId;
-    const selected = await createBoundWorkstream(fixture, {
+    const selected = await createBoundWorkstreamWithMutableDirectory(fixture, {
       title: "Recent WorkState Hot Context",
       objective: "Make useful historical WorkState handoffs loadable on demand.",
     });

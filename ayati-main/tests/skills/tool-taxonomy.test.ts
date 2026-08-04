@@ -4,6 +4,7 @@ import { createDatasetSkill } from "../../src/skills/builtins/datasets/index.js"
 import { createDocumentSkill } from "../../src/skills/builtins/documents/index.js";
 import { createFilesSkill } from "../../src/skills/builtins/files/index.js";
 import { createGitContextSkill } from "../../src/skills/builtins/git-context/index.js";
+import { createGitReadSkill } from "../../src/skills/builtins/git-read/index.js";
 import { createMemorySkill } from "../../src/skills/builtins/memory/index.js";
 import { createPythonSkill } from "../../src/skills/builtins/python/index.js";
 import { createRecallSkill } from "../../src/skills/builtins/recall/index.js";
@@ -66,10 +67,8 @@ describe("tool taxonomy", () => {
     expect(isToolAllowedInPhase("git_context_create_workstream", "workstream_bound")).toBe(false);
     expect(getToolPurpose("git_context_find_workstreams")).toBe("search");
     expect(getToolPurpose("git_context_read_workstream")).toBe("read");
-    expect(getToolPurpose("git_context_log")).toBe("search");
-    expect(getToolPurpose("git_context_show")).toBe("read");
-    expect(getToolPurpose("git_context_diff")).toBe("read");
-    expect(hasMutationEffect("git_context_diff")).toBe(false);
+    expect(getToolPurpose("git_read")).toBe("read");
+    expect(hasMutationEffect("git_read")).toBe(false);
     expect(getToolPurpose("git_context_set_workstream_star")).toBe("control");
     expect(canRunBeforeWorkstream("git_context_set_workstream_star")).toBe(true);
 
@@ -158,6 +157,7 @@ function runtimeSkills(): SkillDefinition[] {
     createDocumentSkill({ preparedAttachmentService: stub }),
     createFilesSkill({ fileLibrary: stub, directoryLibrary: stub }),
     createGitContextSkill({ service: stub }),
+    createGitReadSkill({ service: stub, workstreamRoot: "/tmp/ayati-workstreams" }),
     createUiSkill({ workspaceOrchestrator: stub }),
   ];
 }

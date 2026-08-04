@@ -8,6 +8,7 @@ import {
   type AgentTemporalExactEvent,
 } from "./agent-context-events.js";
 import { buildCoreCapsule, type CoreCapsule } from "./core-capsule.js";
+import { buildFocusedWorkstreamPromptContext } from "./focused-workstream-prompt-context.js";
 
 export type { AgentTemporalEvent, AgentTemporalExactEvent } from "./agent-context-events.js";
 export type { CoreCapsule } from "./core-capsule.js";
@@ -29,6 +30,9 @@ export function buildAgentContextPack(state: LoopState): AgentContextPack {
       timeline: recent,
       ...(context?.agentStream.checkpoint ? { checkpoint: context.agentStream.checkpoint } : {}),
       ...(context?.current.routing ? { routing: context.current.routing } : {}),
+      focusedWorkstream: buildFocusedWorkstreamPromptContext(
+        context?.agentStream.focusedWorkstream,
+      ),
       activeDocuments: activeDocumentPointers(
         context?.agentStream.recentFiles ?? [],
       ),

@@ -26,9 +26,11 @@ export interface RoutingResourceEvidence {
 
 export interface WorkstreamRoutingEvidence {
   observed: boolean;
+  currentRunObserved: boolean;
   workstreams: RoutingWorkstreamEvidence[];
   resources: RoutingResourceEvidence[];
   references: string[];
+  currentRunReferences: string[];
 }
 
 export function isWorkstreamRoutingObservationTool(toolName: string): boolean {
@@ -39,15 +41,19 @@ export function collectWorkstreamRoutingEvidence(state: LoopState): WorkstreamRo
   const workstreams = new Map<string, MutableWorkstreamEvidence>();
   const resources = new Map<string, MutableResourceEvidence>();
   const references = new Set<string>();
-  let observed = false;
+  const currentRunReferences = new Set<string>();
+  let observed = collectFocusedWorkstreamEvidence(state, workstreams, resources, references);
+  let currentRunObserved = false;
 
   for (const call of state.toolContext?.toolCalls ?? []) {
     if (call.status !== "success" || !isWorkstreamRoutingObservationTool(call.tool)) continue;
     if (call.stepRef?.runId && call.stepRef.runId !== state.runId) continue;
     observed = true;
+    currentRunObserved = true;
     const reference = call.evidenceRef?.trim()
       || workstreamRoutingEvidenceReference(state.runId, call.step, call.callId);
     references.add(reference);
+    currentRunReferences.add(reference);
     const output = structuredCallOutput(call);
     if (call.tool === "git_context_find_workstreams") {
       collectCandidateArray(output["workstreams"], workstreams, reference, false);
@@ -60,10 +66,44 @@ export function collectWorkstreamRoutingEvidence(state: LoopState): WorkstreamRo
 
   return {
     observed,
+    currentRunObserved,
     workstreams: [...workstreams.values()].map(freezeWorkstreamEvidence),
     resources: [...resources.values()].map(freezeResourceEvidence),
     references: [...references],
+    currentRunReferences: [...currentRunReferences],
   };
+}
+
+function collectFocusedWorkstreamEvidence(
+  state: LoopState,
+  workstreams: Map<string, MutableWorkstreamEvidence>,
+  resources: Map<string, MutableResourceEvidence>,
+  references: Set<string>,
+): boolean {
+  const focused = state.harnessContext.contextEngine?.agentStream.focusedWorkstream;
+  const request = focused?.selectedRequest;
+  if (!focused || !request
+    || request.status === "done"
+    || request.status === "dropped") {
+    return false;
+  }
+  const reference = `stream-focus:${focused.workstreamId}/${request.id}`;
+  const current = mutableWorkstream(workstreams, focused.workstreamId);
+  current.head = focused.ref.includes("@")
+    ? focused.ref.slice(focused.ref.lastIndexOf("@") + 1)
+    : undefined;
+  current.inspected = true;
+  current.reasons.add("stream_focus");
+  current.requestIds.add(request.id);
+  current.references.add(reference);
+  references.add(reference);
+  collectWorkstreamResourceBindings(
+    focused.resources,
+    resources,
+    focused.workstreamId,
+    reference,
+  );
+  return true;
 }
 
 interface MutableWorkstreamEvidence {

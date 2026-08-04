@@ -67,6 +67,8 @@ export interface AgentStreamRef {
   lastMessageSequence: number;
   lastRunSequence: number;
   activeCheckpointId?: string;
+  focusedWorkstreamId?: WorkstreamId;
+  focusedRequestId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -493,6 +495,7 @@ export interface AgentStreamContextProjection {
   stream: AgentStreamRef;
   checkpoint?: ContextCheckpointRecord;
   recentMessages: StreamMessage[];
+  focusedWorkstream?: WorkstreamContextProjection;
   recentWorkstreams: RecentWorkstreamMetadata[];
   recentFiles: RecentFileMetadata[];
   recentWorkStates: RecentWorkStateHandoff[];
@@ -758,7 +761,7 @@ export interface GetAgentContextRequest {
   streamId?: AgentStreamId;
   agentId?: string;
   scopeKey?: string;
-  /** Optional current ingress text used only to rank the bounded workstream candidate projection. */
+  /** Optional discovery text when no run is active. Active runs use their immutable ingress message. */
   currentText?: string;
 }
 

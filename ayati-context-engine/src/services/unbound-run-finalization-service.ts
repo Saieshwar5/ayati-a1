@@ -32,6 +32,26 @@ export class UnboundRunFinalizationService {
   constructor(private readonly database: ContextDatabase) {}
 
   async finalize(input: FinalizeRunRequest): Promise<FinalizeRunResponse> {
+    return await this.finalizeInternal(input);
+  }
+
+  async finalizeDiscardingProvisionalWorkstream(
+    input: FinalizeRunRequest,
+    discard: () => void,
+  ): Promise<FinalizeRunResponse> {
+    return await this.finalizeInternal(withoutWorkstreamCompletion(input), {
+      allowInitiallyBoundRun: true,
+      beforePrepare: discard,
+    });
+  }
+
+  private async finalizeInternal(
+    input: FinalizeRunRequest,
+    options: {
+      allowInitiallyBoundRun?: boolean;
+      beforePrepare?: () => void;
+    } = {},
+  ): Promise<FinalizeRunResponse> {
     const existing = readUnboundRunFinalization(this.database, input.runId);
     if (existing && existing.requestId !== input.requestId) {
       throw new ContextEngineServiceError({
@@ -41,7 +61,12 @@ export class UnboundRunFinalizationService {
       });
     }
     const run = readRunEvidence(this.database, input.runId);
-    if (!run || run.workstreamBinding || (!existing && run.status !== "running")) {
+    const initiallyBoundForDiscard = Boolean(
+      !existing && options.allowInitiallyBoundRun && options.beforePrepare && run?.workstreamBinding,
+    );
+    if (!run
+      || (run.workstreamBinding && !initiallyBoundForDiscard)
+      || (!existing && run.status !== "running")) {
       throw new ContextEngineServiceError({
         code: "RUN_NOT_ACTIVE",
         message: "Unbound finalization requires the matching active unbound run.",
@@ -57,11 +82,20 @@ export class UnboundRunFinalizationService {
       now: input.at,
       execute: () => {
         if (!existing) {
+          options.beforePrepare?.();
+          const preparedRun = readRunEvidence(this.database, input.runId);
+          if (!preparedRun || preparedRun.status !== "running" || preparedRun.workstreamBinding) {
+            throw new ContextEngineServiceError({
+              code: "RECOVERY_REQUIRED",
+              message: "Unbound finalization preparation requires a detached active run.",
+              details: { runId: input.runId },
+            });
+          }
           const responseMetadata = resolveAssistantResponseMetadata(input);
           const assistantMessage = input.assistantResponse
             ? appendStreamMessage(this.database, {
-                streamId: run.streamId,
-                runId: run.runId,
+                streamId: preparedRun.streamId,
+                runId: preparedRun.runId,
                 role: "assistant",
                 content: input.assistantResponse,
                 ...responseMetadata,
@@ -69,16 +103,16 @@ export class UnboundRunFinalizationService {
               })
             : undefined;
           replaceRunWorkState(this.database, {
-            runId: run.runId,
-            afterStep: run.stepCount,
+            runId: preparedRun.runId,
+            afterStep: preparedRun.stepCount,
             state: input.workState,
             reason: input.outcome === "done" ? "run_completed" : "run_paused",
             at: input.at,
           });
           insertUnboundRunFinalization(this.database, {
-            runId: run.runId,
+            runId: preparedRun.runId,
             requestId: input.requestId,
-            streamId: run.streamId,
+            streamId: preparedRun.streamId,
             outcome: input.outcome,
             stopReason: input.stopReason,
             ...(assistantMessage ? { assistantMessageId: assistantMessage.messageId } : {}),
@@ -158,6 +192,13 @@ export class UnboundRunFinalizationService {
       });
     });
   }
+}
+
+export function withoutWorkstreamCompletion(
+  input: FinalizeRunRequest,
+): FinalizeRunRequest {
+  const { workstream: _workstream, ...unbound } = input;
+  return unbound;
 }
 
 function response(

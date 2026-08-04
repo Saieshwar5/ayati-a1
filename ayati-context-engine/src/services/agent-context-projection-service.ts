@@ -14,7 +14,10 @@ import {
   readLatestAgentStream,
 } from "../repositories/agent-stream-records.js";
 import { readActiveContextCheckpoint } from "../repositories/context-checkpoint-records.js";
-import { readRecentStreamMessages } from "../repositories/message-records.js";
+import {
+  readRecentStreamMessages,
+  readRunIngressMessage,
+} from "../repositories/message-records.js";
 import {
   readAgentStreamResourcesProjection,
   readRunResources,
@@ -42,17 +45,22 @@ export interface AgentContextProjectionServiceOptions {
     streamId: string;
     currentText?: string;
   }) => Promise<WorkstreamCandidate[]>;
+  loadFocusedWorkstream?: (
+    stream: AgentStreamRef,
+  ) => Promise<WorkstreamContextProjection | undefined>;
 }
 
 export class AgentContextProjectionService {
   private readonly database: ContextDatabase;
   private readonly loadActiveWorkstream?: AgentContextProjectionServiceOptions["loadActiveWorkstream"];
   private readonly loadWorkstreamCandidates?: AgentContextProjectionServiceOptions["loadWorkstreamCandidates"];
+  private readonly loadFocusedWorkstream?: AgentContextProjectionServiceOptions["loadFocusedWorkstream"];
 
   constructor(options: AgentContextProjectionServiceOptions) {
     this.database = options.database;
     this.loadActiveWorkstream = options.loadActiveWorkstream;
     this.loadWorkstreamCandidates = options.loadWorkstreamCandidates;
+    this.loadFocusedWorkstream = options.loadFocusedWorkstream;
   }
 
   async build(
@@ -78,10 +86,19 @@ export class AgentContextProjectionService {
     const activeWorkstream = run && this.loadActiveWorkstream
       ? await this.loadActiveWorkstream(run)
       : undefined;
+    const focusedWorkstream = stream.focusedWorkstreamId && stream.focusedRequestId
+      ? activeWorkstream?.workstream.workstreamId === stream.focusedWorkstreamId
+          && activeWorkstream.selectedRequest?.id === stream.focusedRequestId
+        ? activeWorkstream
+        : await this.loadFocusedWorkstream?.(stream)
+      : undefined;
+    const currentRunInputText = run
+      ? requireRunInputText(this.database, run.run.runId)
+      : input.currentText;
     const workstreamCandidates = !activeWorkstream && this.loadWorkstreamCandidates
       ? await this.loadWorkstreamCandidates({
           streamId: stream.streamId,
-          ...(input.currentText ? { currentText: input.currentText } : {}),
+          ...(currentRunInputText ? { currentText: currentRunInputText } : {}),
         })
       : undefined;
     const workstreamResolution = readWorkstreamResolutionProjection(this.database, {
@@ -101,6 +118,7 @@ export class AgentContextProjectionService {
     const streamProjection = {
       stream,
       ...(checkpoint ? { checkpoint } : {}),
+      ...(focusedWorkstream ? { focusedWorkstream } : {}),
       recentMessages,
       recentWorkstreams,
       recentFiles,
@@ -110,6 +128,14 @@ export class AgentContextProjectionService {
     const streamRevision = revision("stream", {
       streamId: stream.streamId,
       checkpointId: checkpoint?.checkpointId,
+      focusedWorkstream: focusedWorkstream
+        ? [
+            focusedWorkstream.workstream.workstreamId,
+            focusedWorkstream.workstream.head,
+            focusedWorkstream.selectedRequest?.id,
+            focusedWorkstream.selectedRequest?.status,
+          ]
+        : undefined,
       messages: recentMessages.map((message) => [
         message.messageId,
         message.sequence,
@@ -132,6 +158,11 @@ export class AgentContextProjectionService {
       && recentMessages[0]?.sequence !== firstExpectedSequence
       ? ["Exact stream tail exceeds the projection ceiling; checkpoint maintenance is required."]
       : [];
+    if (stream.focusedWorkstreamId && stream.focusedRequestId && !focusedWorkstream) {
+      warnings.push(
+        `Focused workstream context is unavailable: ${stream.focusedWorkstreamId}/${stream.focusedRequestId}.`,
+      );
+    }
     const contextRevision = revision("context", {
       streamRevision,
       runRevision,
@@ -178,6 +209,14 @@ function readActiveRunProjection(
     workState,
     steps: readRunStepEvidence(database, ref.runId),
   };
+}
+
+function requireRunInputText(database: ContextDatabase, runId: string): string {
+  const message = readRunIngressMessage(database, runId);
+  if (!message) {
+    throw new Error("Active run ingress message is missing: " + runId);
+  }
+  return message.content;
 }
 
 function emptyContext(): AgentContextProjection {

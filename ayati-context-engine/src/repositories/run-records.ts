@@ -260,6 +260,27 @@ export function bindActiveRunToWorkstream(
   };
 }
 
+export function detachRunFromEmptyInitializingWorkstream(
+  database: ContextDatabase,
+  input: {
+    runId: string;
+    workstreamId: string;
+    requestId: string;
+  },
+): void {
+  const result = database.prepare([
+    "UPDATE runs SET workstream_id = NULL, bound_request_id = NULL, workstream_bound_at = NULL",
+    "WHERE run_id = ? AND status = 'running' AND workstream_id = ? AND bound_request_id = ?",
+  ].join(" ")).run(input.runId, input.workstreamId, input.requestId);
+  if (Number(result.changes) !== 1) {
+    throw new ContextEngineServiceError({
+      code: "RUN_WORKSTREAM_BINDING_IMMUTABLE",
+      message: "Only the creating run may detach an empty initializing workstream.",
+      details: input,
+    });
+  }
+}
+
 export function recordRunStep(
   database: ContextDatabase,
   input: RecordRunStepRequest,
