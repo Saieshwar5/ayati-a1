@@ -6,7 +6,7 @@ growth rates and different authority.
 
 ## Ownership
 
-- Context Engine SQLite V11: agent streams, immutable messages, runs, steps,
+- Context Engine SQLite V12: agent streams, immutable messages, runs, steps,
   WorkState, checkpoints, workstreams, every request, progress projections,
   resources, discovery indexes, idempotency, and recovery journals.
 - Shared workstream Git: compact portable `workstream.md`, request files,

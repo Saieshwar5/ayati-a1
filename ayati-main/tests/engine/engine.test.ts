@@ -723,7 +723,6 @@ describe("IVecEngine one-run integration", () => {
       rootDirectory: dataDir,
       now: () => "2026-07-21T10:00:00.000Z",
     });
-    const startWorkstreamResolution = vi.spyOn(service, "startWorkstreamResolution");
     const createWorkstreamForRun = vi.spyOn(service, "createWorkstreamForRun");
     const runtime = createContextEngineRuntime({
       service,
@@ -786,7 +785,6 @@ describe("IVecEngine one-run integration", () => {
         content: "Created one-run.txt.",
         runId: prepared.run.runId,
       }));
-      expect(startWorkstreamResolution).not.toHaveBeenCalled();
       expect(createWorkstreamForRun).toHaveBeenCalledOnce();
       expect(provider.generateTurn).toHaveBeenCalledTimes(7);
       for (const [turnInput] of vi.mocked(provider.generateTurn).mock.calls) {

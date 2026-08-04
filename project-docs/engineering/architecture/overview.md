@@ -145,7 +145,7 @@ container, and the stream is never used as an action log.
 <AYATI_ROOT_DIR>/
   workspace/       default visible output
   workstreams/     one shared context-only Git repository
-  .ayati/          V11 database and managed resources
+  .ayati/          V12 database and managed resources
 ```
 
 Workstream Git never contains deliverables. The resource catalog points to

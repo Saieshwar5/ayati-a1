@@ -7,8 +7,6 @@ import {
   type CheckpointRunWorkStateResponse,
   type CommitContextCheckpointRequest,
   type CommitContextCheckpointResponse,
-  type CommitWorkstreamResolutionRequest,
-  type CommitWorkstreamResolutionResponse,
   type ContextCheckpointPlan,
   type CreateWorkstreamForRunRequest,
   type FinalizeRunRequest,
@@ -20,8 +18,6 @@ import {
   type GetAgentContextRequest,
   type GetWorkstreamRequest,
   type GetWorkstreamResponse,
-  type GetWorkstreamResolutionRequest,
-  type GetWorkstreamResolutionResponse,
   type ContextEngineHealth,
   type InspectResourceForRunRequest,
   type InspectResourceForRunResponse,
@@ -48,17 +44,11 @@ import {
   type ReadWorkstreamRepositoryLogResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
-  type RecordWorkstreamResolutionStepRequest,
-  type RecordWorkstreamResolutionStepResponse,
   type SearchAgentHistoryRequest,
   type SearchAgentHistoryResponse,
   type SelectedWorkstreamForRunResponse,
   type SetWorkstreamStarRequest,
   type SetWorkstreamStarResponse,
-  type StartWorkstreamResolutionRequest,
-  type StartWorkstreamResolutionResponse,
-  type FinishWorkstreamResolutionRequest,
-  type FinishWorkstreamResolutionResponse,
   type VerifyResourceMutationRequest,
   type VerifyResourceMutationResponse,
 } from "./contracts.js";
@@ -108,36 +98,6 @@ export class ContractOnlyContextEngineService implements ContextEngineService {
   }
 
   async readAgentHistory(_input: ReadAgentHistoryRequest): Promise<ReadAgentHistoryResponse> {
-    throw notReady();
-  }
-
-  async startWorkstreamResolution(
-    _input: StartWorkstreamResolutionRequest,
-  ): Promise<StartWorkstreamResolutionResponse> {
-    throw notReady();
-  }
-
-  async recordWorkstreamResolutionStep(
-    _input: RecordWorkstreamResolutionStepRequest,
-  ): Promise<RecordWorkstreamResolutionStepResponse> {
-    throw notReady();
-  }
-
-  async commitWorkstreamResolution(
-    _input: CommitWorkstreamResolutionRequest,
-  ): Promise<CommitWorkstreamResolutionResponse> {
-    throw notReady();
-  }
-
-  async finishWorkstreamResolution(
-    _input: FinishWorkstreamResolutionRequest,
-  ): Promise<FinishWorkstreamResolutionResponse> {
-    throw notReady();
-  }
-
-  async getWorkstreamResolution(
-    _input: GetWorkstreamResolutionRequest,
-  ): Promise<GetWorkstreamResolutionResponse> {
     throw notReady();
   }
 

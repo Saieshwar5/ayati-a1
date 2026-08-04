@@ -120,7 +120,7 @@ export async function migrateToSharedWorkstreamRepository(input: {
     throw new Error("Shared-repository migration refused because validation failed.");
   }
   if (!input.archiveRoot || !input.database) {
-    throw new Error("Confirmed migration requires an archive root and an empty V11 database.");
+    throw new Error("Confirmed migration requires an archive root and an empty V12 database.");
   }
   const archiveRoot = resolve(input.archiveRoot);
   if (dirname(archiveRoot) !== dirname(root)) {

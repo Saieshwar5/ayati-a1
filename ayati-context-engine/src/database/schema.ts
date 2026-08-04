@@ -3,6 +3,7 @@ import schemaVersion from "./schema-version.json" with { type: "json" };
 
 const SCHEMA_VERSION = schemaVersion.version;
 const FOCUS_SCHEMA_VERSION = 10;
+const BINDING_SCHEMA_VERSION = 11;
 
 const RUN_WORKSTREAM_BINDING_IMMUTABLE_TRIGGER_SQL = [
   "CREATE TRIGGER runs_workstream_binding_immutable",
@@ -63,8 +64,6 @@ const BASELINE_TABLES = [
   "workstream_request_route_plans",
   "workstream_request_search",
   "workstream_requests",
-  "workstream_resolution_activities",
-  "workstream_resolution_steps",
   "workstream_resources",
   "workstream_search",
   "workstreams",
@@ -73,6 +72,11 @@ const BASELINE_TABLES = [
 const RETIRED_OBSERVATION_TABLES = [
   "observation_resources",
   "reusable_observations",
+] as const;
+
+const RETIRED_RESOLUTION_TABLES = [
+  "workstream_resolution_activities",
+  "workstream_resolution_steps",
 ] as const;
 
 const BASELINE_SQL = [
@@ -515,47 +519,6 @@ const BASELINE_SQL = [
   "WHERE phase IN ('planned', 'recovery_required');",
   "CREATE INDEX workstream_request_route_plans_recovery ON workstream_request_route_plans(phase, updated_at);",
   "",
-  "CREATE TABLE workstream_resolution_activities (",
-  "  activity_id TEXT PRIMARY KEY CHECK (activity_id GLOB 'WR-[0-9A-F]*'),",
-  "  run_id TEXT NOT NULL UNIQUE REFERENCES runs(run_id),",
-  "  stream_id TEXT NOT NULL REFERENCES agent_streams(stream_id),",
-  "  prior_activity_id TEXT REFERENCES workstream_resolution_activities(activity_id),",
-  "  status TEXT NOT NULL CHECK (status IN ('running', 'resolved', 'needs_user_input', 'failed', 'interrupted')),",
-  "  input_json TEXT NOT NULL,",
-  "  input_context_revision TEXT NOT NULL,",
-  "  output_context_revision TEXT,",
-  "  step_count INTEGER NOT NULL DEFAULT 0 CHECK (step_count >= 0),",
-  "  tool_call_count INTEGER NOT NULL DEFAULT 0 CHECK (tool_call_count >= 0),",
-  "  usage_json TEXT NOT NULL,",
-  "  final_state_json TEXT,",
-  "  result_json TEXT,",
-  "  error_code TEXT,",
-  "  error_message TEXT,",
-  "  error_retryable INTEGER CHECK (error_retryable IS NULL OR error_retryable IN (0, 1)),",
-  "  started_at TEXT NOT NULL,",
-  "  updated_at TEXT NOT NULL,",
-  "  completed_at TEXT,",
-  "  CHECK ((status = 'running' AND completed_at IS NULL)",
-  "    OR (status != 'running' AND completed_at IS NOT NULL))",
-  ");",
-  "CREATE INDEX workstream_resolution_activities_stream ON workstream_resolution_activities(stream_id, updated_at DESC);",
-  "CREATE INDEX workstream_resolution_activities_recovery ON workstream_resolution_activities(status, updated_at);",
-  "",
-  "CREATE TABLE workstream_resolution_steps (",
-  "  activity_id TEXT NOT NULL REFERENCES workstream_resolution_activities(activity_id) ON DELETE CASCADE,",
-  "  step INTEGER NOT NULL CHECK (step >= 1),",
-  "  record_version INTEGER NOT NULL CHECK (record_version = 1),",
-  "  status TEXT NOT NULL CHECK (status IN ('completed', 'failed')),",
-  "  context_json TEXT NOT NULL,",
-  "  decision_json TEXT NOT NULL,",
-  "  tool_calls_json TEXT NOT NULL,",
-  "  verification_json TEXT NOT NULL,",
-  "  state_after_json TEXT NOT NULL,",
-  "  usage_json TEXT,",
-  "  created_at TEXT NOT NULL,",
-  "  PRIMARY KEY(activity_id, step)",
-  ");",
-  "",
   "CREATE TABLE workstream_finalizations (",
   "  run_id TEXT PRIMARY KEY REFERENCES runs(run_id),",
   "  operation_request_id TEXT NOT NULL UNIQUE REFERENCES idempotency_requests(request_id),",
@@ -612,14 +575,20 @@ export function initializeSchema(database: DatabaseSync, now: () => string): voi
       }>
     : [];
   const currentVersion = Number(versions[0]?.version);
-  if (matchesSupportedTables(existingTables)) {
+  if (matchesPreV12Tables(existingTables)) {
     if (currentVersion === 9) {
       migrateV9ToV10(database);
       migrateV10ToV11(database);
+      migrateV11ToV12(database);
       return;
     }
     if (currentVersion === FOCUS_SCHEMA_VERSION) {
       migrateV10ToV11(database);
+      migrateV11ToV12(database);
+      return;
+    }
+    if (currentVersion === BINDING_SCHEMA_VERSION) {
+      migrateV11ToV12(database);
       return;
     }
   }
@@ -630,7 +599,7 @@ export function initializeSchema(database: DatabaseSync, now: () => string): voi
     throw new Error([
       "Context Engine database reset required.",
       "The configured database uses a pre-V9 or unsupported schema and was not modified.",
-      "Run the shared-workstream migration or context:archive-reset explicitly, then restart Ayati to create the V11 baseline.",
+      "Run the shared-workstream migration or context:archive-reset explicitly, then restart Ayati to create the V12 baseline.",
     ].join(" "));
   }
 }
@@ -662,7 +631,22 @@ function migrateV10ToV11(database: DatabaseSync): void {
     database.exec(RUN_WORKSTREAM_BINDING_IMMUTABLE_TRIGGER_SQL);
     database.prepare(
       "UPDATE schema_metadata SET version = ? WHERE singleton = 1 AND version = ?",
-    ).run(SCHEMA_VERSION, FOCUS_SCHEMA_VERSION);
+    ).run(BINDING_SCHEMA_VERSION, FOCUS_SCHEMA_VERSION);
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function migrateV11ToV12(database: DatabaseSync): void {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    database.exec("DROP TABLE workstream_resolution_steps");
+    database.exec("DROP TABLE workstream_resolution_activities");
+    database.prepare(
+      "UPDATE schema_metadata SET version = ? WHERE singleton = 1 AND version = ?",
+    ).run(SCHEMA_VERSION, BINDING_SCHEMA_VERSION);
     database.exec("COMMIT");
   } catch (error) {
     database.exec("ROLLBACK");
@@ -678,6 +662,19 @@ function matchesSupportedTables(existingTables: string[]): boolean {
   ].sort();
   return JSON.stringify(existingTables) === JSON.stringify(currentTables)
     || JSON.stringify(existingTables) === JSON.stringify(tablesWithRetiredObservations);
+}
+
+function matchesPreV12Tables(existingTables: string[]): boolean {
+  const preV12Tables = [
+    ...BASELINE_TABLES,
+    ...RETIRED_RESOLUTION_TABLES,
+  ].sort();
+  const preV12TablesWithRetiredObservations = [
+    ...preV12Tables,
+    ...RETIRED_OBSERVATION_TABLES,
+  ].sort();
+  return JSON.stringify(existingTables) === JSON.stringify(preV12Tables)
+    || JSON.stringify(existingTables) === JSON.stringify(preV12TablesWithRetiredObservations);
 }
 
 export function latestSchemaVersion(): number {

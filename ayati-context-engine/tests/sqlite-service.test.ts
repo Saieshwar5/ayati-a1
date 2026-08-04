@@ -18,19 +18,19 @@ afterEach(async () => {
   }));
 });
 
-describe("SQLite Context Engine V11 baseline", () => {
+describe("SQLite Context Engine V12 baseline", () => {
   it("rejects relative database paths instead of anchoring them to process.cwd()", async () => {
     await expect(ContextDatabase.open({ path: "context.sqlite" }))
       .rejects.toThrow("database path must be an absolute filesystem path");
   });
 
-  it("creates the clean V11 stream/run/checkpoint/resolution schema", async () => {
+  it("creates the clean V12 stream/run/checkpoint schema without retired resolution storage", async () => {
     const fixture = await createFixture();
 
-    expect(latestSchemaVersion()).toBe(11);
+    expect(latestSchemaVersion()).toBe(12);
     expect(fixture.database.prepare(
       "SELECT version FROM schema_metadata WHERE singleton = 1",
-    ).get()).toEqual({ version: 11 });
+    ).get()).toEqual({ version: 12 });
     const streamColumns = new Set((fixture.database.prepare(
       "PRAGMA table_info(agent_streams)",
     ).all() as Array<{ name: string }>).map((column) => column.name));
@@ -49,8 +49,6 @@ describe("SQLite Context Engine V11 baseline", () => {
       "run_work_state",
       "context_checkpoints",
       "workstreams",
-      "workstream_resolution_activities",
-      "workstream_resolution_steps",
       "resources",
     ]) {
       expect(tables.has(table), table).toBe(true);
@@ -59,13 +57,15 @@ describe("SQLite Context Engine V11 baseline", () => {
     expect(tables.has("conversation_segments")).toBe(false);
     expect(tables.has("reusable_observations")).toBe(false);
     expect(tables.has("observation_resources")).toBe(false);
+    expect(tables.has("workstream_resolution_activities")).toBe(false);
+    expect(tables.has("workstream_resolution_steps")).toBe(false);
     expect(fixture.database.prepare("PRAGMA journal_mode").all())
       .toEqual([{ journal_mode: "wal" }]);
     expect(fixture.database.prepare("PRAGMA foreign_keys").all())
       .toEqual([{ foreign_keys: 1 }]);
   });
 
-  it("opens an existing V11 database with retired observation tables without using them", async () => {
+  it("opens an existing V12 database with retired observation tables without using them", async () => {
     const fixture = await createFixture();
     await closeTracked(fixture.service);
     const legacy = new DatabaseSync(fixture.databasePath);
@@ -75,16 +75,17 @@ describe("SQLite Context Engine V11 baseline", () => {
 
     const reopened = await ContextDatabase.open({ path: fixture.databasePath });
 
-    expect(reopened.schemaVersion()).toBe(11);
+    expect(reopened.schemaVersion()).toBe(12);
     reopened.close();
   });
 
-  it("migrates V10 by narrowing the immutable binding exception to empty initialization", async () => {
+  it("migrates V10 through V11 to V12 while narrowing the immutable binding exception", async () => {
     const fixture = await createFixture();
     const prepared = await fixture.service.prepareAgentRun(
       prepareRequest("REQ-v10-preserved", "Preserve this V10 stream.", AT),
     );
     fixture.database.exec("DROP TRIGGER runs_workstream_binding_immutable");
+    installRetiredResolutionTables(fixture.database);
     fixture.database.exec([
       "CREATE TRIGGER runs_workstream_binding_immutable",
       "BEFORE UPDATE OF workstream_id, bound_request_id, workstream_bound_at ON runs",
@@ -99,7 +100,7 @@ describe("SQLite Context Engine V11 baseline", () => {
 
     const migrated = await ContextDatabase.open({ path: databasePath });
 
-    expect(migrated.schemaVersion()).toBe(11);
+    expect(migrated.schemaVersion()).toBe(12);
     expect(migrated.prepare(
       "SELECT stream_id FROM runs WHERE run_id = ?",
     ).get(prepared.run.runId)).toEqual({ stream_id: prepared.stream.streamId });
@@ -112,11 +113,12 @@ describe("SQLite Context Engine V11 baseline", () => {
     migrated.close();
   });
 
-  it("migrates a supported V9 catalog through V10 to V11 without replacing its records", async () => {
+  it("migrates a supported V9 catalog through V10 and V11 to V12 without replacing its records", async () => {
     const fixture = await createFixture();
     const prepared = await fixture.service.prepareAgentRun(
       prepareRequest("REQ-v9-preserved", "Preserve this stream.", AT),
     );
+    installRetiredResolutionTables(fixture.database);
     fixture.database.prepare(
       "UPDATE schema_metadata SET version = 9 WHERE singleton = 1",
     ).run();
@@ -125,7 +127,7 @@ describe("SQLite Context Engine V11 baseline", () => {
 
     const migrated = await ContextDatabase.open({ path: databasePath });
 
-    expect(migrated.schemaVersion()).toBe(11);
+    expect(migrated.schemaVersion()).toBe(12);
     expect(migrated.prepare([
       "SELECT agent_id, scope_key, focused_workstream_id, focused_request_id",
       "FROM agent_streams WHERE stream_id = ?",
@@ -135,6 +137,36 @@ describe("SQLite Context Engine V11 baseline", () => {
       focused_workstream_id: null,
       focused_request_id: null,
     });
+    migrated.close();
+  });
+
+  it("migrates V11 by removing only retired resolution tables", async () => {
+    const fixture = await createFixture();
+    const prepared = await fixture.service.prepareAgentRun(
+      prepareRequest("REQ-v11-preserved", "Preserve this V11 stream.", AT),
+    );
+    installRetiredResolutionTables(fixture.database);
+    fixture.database.prepare(
+      "INSERT INTO workstream_resolution_activities(activity_id) VALUES (?)",
+    ).run("WR-OLD");
+    fixture.database.prepare(
+      "UPDATE schema_metadata SET version = 11 WHERE singleton = 1",
+    ).run();
+    const databasePath = fixture.databasePath;
+    await closeTracked(fixture.service);
+
+    const migrated = await ContextDatabase.open({ path: databasePath });
+
+    expect(migrated.schemaVersion()).toBe(12);
+    expect(migrated.prepare(
+      "SELECT stream_id FROM runs WHERE run_id = ?",
+    ).get(prepared.run.runId)).toEqual({ stream_id: prepared.stream.streamId });
+    const tables = new Set((migrated.prepare([
+      "SELECT name FROM sqlite_schema",
+      "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+    ].join(" ")).all() as Array<{ name: string }>).map((row) => row.name));
+    expect(tables.has("workstream_resolution_activities")).toBe(false);
+    expect(tables.has("workstream_resolution_steps")).toBe(false);
     migrated.close();
   });
 
@@ -345,13 +377,25 @@ function workState(summary: string) {
   };
 }
 
+function installRetiredResolutionTables(database: ContextDatabase): void {
+  database.exec([
+    "CREATE TABLE workstream_resolution_activities (",
+    "  activity_id TEXT PRIMARY KEY",
+    ");",
+    "CREATE TABLE workstream_resolution_steps (",
+    "  activity_id TEXT NOT NULL,",
+    "  step INTEGER NOT NULL DEFAULT 1",
+    ");",
+  ].join("\n"));
+}
+
 async function createFixture(): Promise<{
   root: string;
   databasePath: string;
   database: ContextDatabase;
   service: SqliteContextEngineService;
 }> {
-  const root = await mkdtemp(join(tmpdir(), "ayati-sqlite-v7-"));
+  const root = await mkdtemp(join(tmpdir(), "ayati-sqlite-v12-"));
   roots.push(root);
   const databasePath = join(root, "context.sqlite");
   const database = await ContextDatabase.open({ path: databasePath });

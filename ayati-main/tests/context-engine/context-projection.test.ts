@@ -79,26 +79,10 @@ describe("context engine projection", () => {
       starred: false,
       boundRunsLast30Days: 0,
     }];
-    source.workstreamResolution = {
-      activityId: "WR-0123456789ABCDEF01234567",
-      runId: source.run!.run.runId,
-      status: "resolved",
-      purpose: "Resolve the Aurora Coffee workstream.",
-      stepCount: 2,
-      result: {
-        status: "resolved",
-        kind: "continued_request",
-        workstreamId: "W-20260714-0001",
-        requestId: "REQ-1",
-      },
-      updatedAt: "2026-07-14T11:00:00.000Z",
-    };
-
     const machine = buildContextEngineProjection(source);
     const pack = contextPack(machine);
 
     expect(machine.workstreamCandidates).toBeUndefined();
-    expect(machine).not.toHaveProperty("workstreamResolution");
     expect(machine.workstream?.workstreamId).toBe("W-20260714-0001");
     expect(pack).not.toHaveProperty("work");
     expect(pack).not.toHaveProperty("resources");

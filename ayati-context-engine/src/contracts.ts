@@ -51,7 +51,6 @@ export type ContextEngineCapability =
   | "history"
   | "runs"
   | "workstreams"
-  | "workstream_resolution"
   | "resources"
   | "mutations"
   | "recovery";
@@ -621,115 +620,6 @@ export interface WorkstreamCandidate {
   boundRunsLast30Days: number;
 }
 
-export type WorkstreamResolutionHint =
-  | { kind: "workstream_id"; workstreamId: WorkstreamId }
-  | { kind: "resource_id"; resourceId: ResourceId }
-  | { kind: "filesystem"; path: string }
-  | { kind: "url"; url: string };
-
-export type WorkstreamResolutionStatus =
-  | "running"
-  | "resolved"
-  | "needs_user_input"
-  | "failed"
-  | "interrupted";
-
-export type WorkstreamResolutionKind =
-  | "continued_request"
-  | "created_request"
-  | "created_workstream";
-
-export interface WorkstreamResolutionLimits {
-  maxTurns: number;
-  maxToolCalls: number;
-  maxParallelCalls: number;
-}
-
-export interface WorkstreamResolutionInput {
-  purpose: string;
-  currentInput: string;
-  hints: WorkstreamResolutionHint[];
-  limits: WorkstreamResolutionLimits;
-}
-
-export interface WorkstreamResolutionUsage {
-  provider?: string;
-  model?: string;
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
-  cachedInputTokens?: number;
-  costUsd?: number;
-}
-
-export interface WorkstreamResolutionStepRecord {
-  version: 1;
-  step: number;
-  status: "completed" | "failed";
-  context: unknown;
-  decision: unknown;
-  toolCalls: unknown[];
-  verification: unknown;
-  stateAfter: unknown;
-  usage?: WorkstreamResolutionUsage;
-  createdAt: string;
-}
-
-export interface WorkstreamResolutionActivity {
-  activityId: string;
-  runId: RunId;
-  streamId: AgentStreamId;
-  priorActivityId?: string;
-  status: WorkstreamResolutionStatus;
-  input: WorkstreamResolutionInput;
-  inputContextRevision: string;
-  outputContextRevision?: string;
-  stepCount: number;
-  toolCallCount: number;
-  usage: WorkstreamResolutionUsage;
-  finalState?: unknown;
-  result?: WorkstreamResolutionResult;
-  error?: {
-    code: string;
-    message: string;
-    retryable: boolean;
-  };
-  startedAt: string;
-  updatedAt: string;
-  completedAt?: string;
-}
-
-export type WorkstreamResolutionResult =
-  | {
-      status: "resolved";
-      kind: WorkstreamResolutionKind;
-      workstreamId: WorkstreamId;
-      requestId: string;
-    }
-  | {
-      status: "needs_user_input";
-      reasonCodes: string[];
-      question: string;
-      candidates: WorkstreamCandidate[];
-    }
-  | {
-      status: "failed" | "interrupted";
-      code: string;
-      message: string;
-      retryable: boolean;
-    };
-
-/** Compact activity lane mounted into the authoritative agent context. */
-export interface WorkstreamResolutionProjection {
-  activityId: string;
-  runId: RunId;
-  status: Exclude<WorkstreamResolutionStatus, "running"> | "running";
-  purpose: string;
-  stepCount: number;
-  result?: WorkstreamResolutionResult;
-  updatedAt: string;
-}
-
 export interface RunContextProjection {
   run: RunContextRecord;
   workState: RunWorkState;
@@ -744,7 +634,6 @@ export interface AgentContextProjection {
   stream: AgentStreamContextProjection | null;
   activeWorkstream?: WorkstreamContextProjection;
   workstreamCandidates?: WorkstreamCandidate[];
-  workstreamResolution?: WorkstreamResolutionProjection;
   ingressResources?: ResourceRef[];
   run?: RunContextProjection;
   warnings: string[];
@@ -1058,90 +947,6 @@ export interface SelectedWorkstreamForRunResponse {
   mutationReady: boolean;
   headBeforeSelection: string;
   resourceBindings: WorkstreamResourceBinding[];
-}
-
-export interface StartWorkstreamResolutionRequest extends ContextEngineRequestEnvelope {
-  runId: RunId;
-  streamId: AgentStreamId;
-  input: WorkstreamResolutionInput;
-  inputContextRevision: string;
-  priorActivityId?: string;
-  at: string;
-}
-
-export interface StartWorkstreamResolutionResponse {
-  activity: WorkstreamResolutionActivity;
-  context: AgentContextProjection;
-}
-
-export interface RecordWorkstreamResolutionStepRequest extends ContextEngineRequestEnvelope {
-  activityId: string;
-  record: WorkstreamResolutionStepRecord;
-}
-
-export interface RecordWorkstreamResolutionStepResponse {
-  activity: WorkstreamResolutionActivity;
-}
-
-export type WorkstreamResolutionCommit =
-  | {
-      kind: "activate";
-      workstreamId: WorkstreamId;
-      expectedWorkstreamHead: string;
-      route: WorkstreamRequestRoute;
-      evidence: string[];
-    }
-  | {
-      kind: "create";
-      title: string;
-      objective: string;
-      initialRequest: {
-        title: string;
-        request: string;
-        acceptance: string[];
-        constraints: string[];
-      };
-      resources?: CreateWorkstreamForRunRequest["resources"];
-      evidence: string[];
-    };
-
-export interface CommitWorkstreamResolutionRequest extends ContextEngineRequestEnvelope {
-  activityId: string;
-  runId: RunId;
-  commit: WorkstreamResolutionCommit;
-  finalState: unknown;
-  at: string;
-}
-
-export interface CommitWorkstreamResolutionResponse {
-  activity: WorkstreamResolutionActivity;
-  receipt: Extract<WorkstreamResolutionResult, { status: "resolved" }>;
-  selected: SelectedWorkstreamForRunResponse;
-  context: AgentContextProjection;
-}
-
-export interface FinishWorkstreamResolutionRequest extends ContextEngineRequestEnvelope {
-  activityId: string;
-  runId: RunId;
-  result:
-    | Extract<WorkstreamResolutionResult, { status: "needs_user_input" }>
-    | Extract<WorkstreamResolutionResult, { status: "failed" | "interrupted" }>;
-  finalState: unknown;
-  at: string;
-}
-
-export interface FinishWorkstreamResolutionResponse {
-  activity: WorkstreamResolutionActivity;
-  context: AgentContextProjection;
-}
-
-export interface GetWorkstreamResolutionRequest {
-  activityId: string;
-}
-
-export interface GetWorkstreamResolutionResponse {
-  activity: WorkstreamResolutionActivity;
-  steps: WorkstreamResolutionStepRecord[];
 }
 
 export interface FindResourcesRequest {

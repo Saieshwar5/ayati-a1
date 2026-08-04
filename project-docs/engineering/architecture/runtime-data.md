@@ -66,9 +66,9 @@ pnpm context:workstream-migrate -- --confirm
 Preview is read-only. Confirmation requires a stopped daemon, validates every
 source repository, archives the old workstream root and database files,
 creates a canonical empty `progress.md` when an older repository has no
-ledger, creates one shared baseline commit, installs a V11 database, and
+ledger, creates one shared baseline commit, installs a V12 database, and
 records recovery manifests.
 
 `pnpm context:catalog-rebuild` scans the validated shared repository and
 previews the reconstructible workstream/request/progress/resource catalog.
-`--confirm` requires an empty initialized V11 database and a stopped daemon.
+`--confirm` requires an empty initialized V12 database and a stopped daemon.

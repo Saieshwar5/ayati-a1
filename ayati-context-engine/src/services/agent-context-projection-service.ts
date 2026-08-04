@@ -31,7 +31,6 @@ import { readRecentFiles } from "../repositories/recent-file-records.js";
 import { readRecentWorkStateHandoffs } from "../repositories/recent-work-state-records.js";
 import { readRecentWorkstreams } from "../repositories/recent-workstream-records.js";
 import { readRunWorkState } from "../repositories/run-work-state-records.js";
-import { readWorkstreamResolutionProjection } from "../repositories/workstream-resolution-records.js";
 import { readSharedWorkstreamRepositoryState } from "../repositories/workstream-repository-state-records.js";
 
 const MAX_EXACT_STREAM_MESSAGES = 10_000;
@@ -101,10 +100,6 @@ export class AgentContextProjectionService {
           ...(currentRunInputText ? { currentText: currentRunInputText } : {}),
         })
       : undefined;
-    const workstreamResolution = readWorkstreamResolutionProjection(this.database, {
-      streamId: stream.streamId,
-      ...(run ? { runId: run.run.runId } : {}),
-    });
     const ingressResources = run ? readRunResources(this.database, run.run.runId) : undefined;
     const repositoryState = readSharedWorkstreamRepositoryState(this.database);
     const workstreamRepository = repositoryState ? {
@@ -168,7 +163,6 @@ export class AgentContextProjectionService {
       runRevision,
       workstreamHead: activeWorkstream?.workstream.head,
       candidateHeads: workstreamCandidates?.map((candidate) => [candidate.workstreamId, candidate.head]),
-      resolution: workstreamResolution,
       workstreamRepository,
     });
     return {
@@ -179,7 +173,6 @@ export class AgentContextProjectionService {
       stream: streamProjection,
       ...(activeWorkstream ? { activeWorkstream } : {}),
       ...(workstreamCandidates && workstreamCandidates.length > 0 ? { workstreamCandidates } : {}),
-      ...(workstreamResolution ? { workstreamResolution } : {}),
       ...(ingressResources && ingressResources.length > 0 ? { ingressResources } : {}),
       ...(run ? { run } : {}),
       warnings,

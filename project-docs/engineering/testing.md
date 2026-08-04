@@ -5,7 +5,7 @@ external-system boundaries unless a test is explicitly live acceptance.
 
 ## Package Responsibilities
 
-- `ayati-context-engine/tests`: V11 contracts/schema, stream/run lifecycle,
+- `ayati-context-engine/tests`: V12 contracts/schema, stream/run lifecycle,
   checkpoints, exact history, workstreams, resources, finalization, archive
   safety, and recovery.
 - `ayati-main/tests`: agent-facing lanes, pressure compilation, checkpoint
@@ -14,7 +14,7 @@ external-system boundaries unless a test is explicitly live acceptance.
 - `ayati-cli/src/app/**/*.test.ts*`: terminal input/rendering, commands,
   attachments, and transport envelopes.
 
-## V11 Context Invariants
+## V12 Context Invariants
 
 Changes should prove the relevant invariants:
 
@@ -265,7 +265,7 @@ Changes should prove the relevant invariants:
     non-context repositories, preserves originals in an archive, converts v2
     cards and requests, creates an empty progress baseline when the legacy
     ledger is absent, creates one shared baseline commit, and rebuilds an empty
-    V11 catalog.
+    V12 catalog.
 43. Request FTS participates in workstream discovery for terminal as well as
     unfinished requests. An exact historical-request read returns its final
     outcome and at most five recent progress entries without binding the run
@@ -384,10 +384,10 @@ usage, or second context-preparation lane exists.
 
 ## Migration and Reset Testing
 
-V11 has no implicit pre-V9 compatibility reader. Migration tests verify
+V12 has no implicit pre-V9 compatibility reader. Migration tests verify
 that preview is non-mutating, a live writer is refused, every nested
 repository is validated, old repositories and database files are archived,
-the shared repository and V11 catalog are validated before installation, and a
+the shared repository and V12 catalog are validated before installation, and a
 failed switch restores the original root. Archive/reset tests separately
 verify deliberate clean-state recovery while preserving workspace output.
 

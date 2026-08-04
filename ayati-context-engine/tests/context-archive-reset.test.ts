@@ -34,7 +34,7 @@ describe("context archive reset", () => {
 
     expect(result).toMatchObject({ code: 0, stderr: "" });
     expect(result.stdout).toContain("database-schema: 7");
-    expect(result.stdout).toContain("target-schema: 11");
+    expect(result.stdout).toContain("target-schema: 12");
     await expect(access(fixture.databasePath)).resolves.toBeUndefined();
     await expect(access(join(fixture.resourceRoot, "blob"))).resolves.toBeUndefined();
     await expect(access(join(fixture.workstreamRoot, "workstream.json"))).resolves.toBeUndefined();
@@ -43,7 +43,7 @@ describe("context archive reset", () => {
       .toEqual([]);
   });
 
-  it("archives the detected V7 database with an accurate V11 reset manifest", async () => {
+  it("archives the detected V7 database with an accurate V12 reset manifest", async () => {
     const fixture = await createFixture();
     await createRuntimeState(fixture);
 
@@ -67,7 +67,7 @@ describe("context archive reset", () => {
       .toMatchObject({
         version: 3,
         archivedSchemaVersion: 7,
-        nextSchemaVersion: 11,
+        nextSchemaVersion: 12,
         operation: "context_archive_reset",
         status: "completed",
         preservedPaths: [fixture.workspaceRoot],

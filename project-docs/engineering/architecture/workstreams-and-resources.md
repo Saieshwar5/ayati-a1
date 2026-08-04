@@ -475,7 +475,7 @@ may propose bounded display metadata only for exact validation-backed outputs;
 the runtime owns identity, kind, locator, version, availability, and lifecycle.
 `resources.json` remains a generated projection of that catalog.
 
-## SQLite V11 responsibilities
+## SQLite V12 responsibilities
 
 SQLite is optimized for operational coordination, bounded projection, and
 search:
@@ -588,12 +588,12 @@ committed path, request relationship, progress entry, and resource manifest.
 If a pre-progress repository has no `progress.md`, migration creates the
 canonical empty baseline ledger; an existing ledger is always parsed and
 preserved.
-Confirmation creates a temporary shared repository and V11 database, validates
+Confirmation creates a temporary shared repository and V12 database, validates
 both, atomically switches the workstream root, archives the old nested
 repositories and prior database/WAL/SHM, and records manifests. Invalid or
 dirty repositories are refused without discarding their contents.
 
-`context:catalog-rebuild` reconstructs an empty V11 workstream catalog from the
+`context:catalog-rebuild` reconstructs an empty V12 workstream catalog from the
 already shared repository. `context:archive-reset` remains the deliberate
 clean-reset path for unsupported database state.
 

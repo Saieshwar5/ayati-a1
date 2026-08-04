@@ -8,8 +8,6 @@ import {
   type CheckpointRunWorkStateResponse,
   type CommitContextCheckpointRequest,
   type CommitContextCheckpointResponse,
-  type CommitWorkstreamResolutionRequest,
-  type CommitWorkstreamResolutionResponse,
   type ContextCheckpointPlan,
   type ContextCheckpointRecord,
   type CreateWorkstreamForRunRequest,
@@ -22,8 +20,6 @@ import {
   type GetAgentContextRequest,
   type GetWorkstreamRequest,
   type GetWorkstreamResponse,
-  type GetWorkstreamResolutionRequest,
-  type GetWorkstreamResolutionResponse,
   type ContextEngineHealth,
   type InspectResourceForRunRequest,
   type InspectResourceForRunResponse,
@@ -50,18 +46,11 @@ import {
   type ReadWorkstreamRepositoryLogResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
-  type RecordWorkstreamResolutionStepRequest,
-  type RecordWorkstreamResolutionStepResponse,
   type SearchAgentHistoryRequest,
   type SearchAgentHistoryResponse,
   type SelectedWorkstreamForRunResponse,
   type SetWorkstreamStarRequest,
   type SetWorkstreamStarResponse,
-  type StartWorkstreamResolutionRequest,
-  type StartWorkstreamResolutionResponse,
-  type FinishWorkstreamResolutionRequest,
-  type FinishWorkstreamResolutionResponse,
-  type WorkstreamResolutionResult,
   type VerifyResourceMutationRequest,
   type VerifyResourceMutationResponse,
 } from "../contracts.js";
@@ -88,15 +77,6 @@ import {
 } from "../repositories/run-records.js";
 import { readRecentRequestProgress } from "../repositories/workstream-progress-records.js";
 import { refreshWorkstreamDiscoveryProjection } from "../repositories/workstream-discovery-records.js";
-import {
-  finishWorkstreamResolutionActivity,
-  insertWorkstreamResolutionActivity,
-  insertWorkstreamResolutionStep,
-  interruptRunningWorkstreamResolutions,
-  readWorkstreamResolutionActivity,
-  readWorkstreamResolutionSteps,
-  setWorkstreamResolutionOutputRevision,
-} from "../repositories/workstream-resolution-records.js";
 import type { ContextEngineService } from "../service.js";
 import { SerializedWriteQueue } from "../write-queue.js";
 import { AgentContextProjectionService } from "./agent-context-projection-service.js";
@@ -296,7 +276,6 @@ export class SqliteContextEngineService implements ContextEngineService {
           "history",
           "runs",
           "workstreams",
-          "workstream_resolution",
           "resources",
           "mutations",
           "recovery",
@@ -455,206 +434,6 @@ export class SqliteContextEngineService implements ContextEngineService {
     return await this.queue.enqueue(async () => {
       await this.ensureStartupRecovery();
       return this.history.read(input);
-    });
-  }
-
-  async startWorkstreamResolution(
-    input: StartWorkstreamResolutionRequest,
-  ): Promise<StartWorkstreamResolutionResponse> {
-    return await this.queue.enqueue(async () => {
-      await this.ensureStartupRecovery();
-      const run = this.requireActiveRun(input.runId);
-      if (run.streamId !== input.streamId || run.workstreamBinding) {
-        throw new ContextEngineServiceError({
-          code: "INVALID_REQUEST",
-          message: "Workstream resolution requires the matching unbound active run.",
-          details: { runId: input.runId, streamId: input.streamId },
-        });
-      }
-      validateResolutionStart(input);
-      if (input.priorActivityId) {
-        const prior = readWorkstreamResolutionActivity(this.database, input.priorActivityId);
-        if (!prior
-          || prior.streamId !== input.streamId
-          || prior.runId === input.runId
-          || prior.status !== "needs_user_input") {
-          throw new ContextEngineServiceError({
-            code: "INVALID_REQUEST",
-            message: "Prior workstream resolution must be the matching stream's clarification activity.",
-            details: { priorActivityId: input.priorActivityId, streamId: input.streamId },
-          });
-        }
-      }
-      const current = await this.agentContext.build({
-        streamId: input.streamId,
-        currentText: input.input.currentInput,
-      });
-      if (current.contextRevision !== input.inputContextRevision) {
-        throw new ContextEngineServiceError({
-          code: "CONTEXT_REVISION_MISMATCH",
-          message: "Agent context changed before workstream resolution started.",
-          retryable: true,
-          details: {
-            expected: input.inputContextRevision,
-            actual: current.contextRevision,
-          },
-        });
-      }
-      const activity = insertWorkstreamResolutionActivity(this.database, input);
-      const context = await this.agentContext.build({
-        streamId: input.streamId,
-        currentText: input.input.currentInput,
-      });
-      return { activity, context };
-    });
-  }
-
-  async recordWorkstreamResolutionStep(
-    input: RecordWorkstreamResolutionStepRequest,
-  ): Promise<RecordWorkstreamResolutionStepResponse> {
-    return await this.queue.enqueue(async () => {
-      await this.ensureStartupRecovery();
-      let activity = insertWorkstreamResolutionStep(
-        this.database,
-        input.activityId,
-        input.record,
-      );
-      if (activity.status !== "running") {
-        const context = await this.agentContext.build({
-          streamId: activity.streamId,
-          currentText: activity.input.currentInput,
-        });
-        activity = setWorkstreamResolutionOutputRevision(
-          this.database,
-          activity.activityId,
-          context.contextRevision,
-          input.record.createdAt,
-        );
-      }
-      return { activity };
-    });
-  }
-
-  async commitWorkstreamResolution(
-    input: CommitWorkstreamResolutionRequest,
-  ): Promise<CommitWorkstreamResolutionResponse> {
-    return await this.queue.enqueue(async () => {
-      await this.ensureStartupRecovery();
-      const activity = requireResolutionForRun(this.database, input.activityId, input.runId);
-      this.requireActiveRun(input.runId);
-      let selected: SelectedWorkstreamForRunResponse;
-      let receipt: Extract<WorkstreamResolutionResult, { status: "resolved" }>;
-      if (input.commit.kind === "activate") {
-        selected = await this.activateWorkstreamSelection({
-          requestId: input.requestId + ":activate",
-          runId: input.runId,
-          workstreamId: input.commit.workstreamId,
-          expectedWorkstreamHead: input.commit.expectedWorkstreamHead,
-          route: input.commit.route,
-          at: input.at,
-        });
-        const requestId = selected.run.workstreamBinding?.requestId;
-        if (!requestId) throw new Error("Resolved workstream selection is missing its request binding.");
-        receipt = {
-          status: "resolved",
-          kind: input.commit.route.kind === "create_and_activate"
-            || input.commit.route.kind === "create_queued"
-            || input.commit.route.kind === "defer_current_and_create"
-            ? "created_request"
-            : "continued_request",
-          workstreamId: selected.workstream.workstreamId,
-          requestId,
-        };
-      } else {
-        selected = await this.createWorkstreamSelection({
-          requestId: input.requestId + ":create",
-          runId: input.runId,
-          title: input.commit.title,
-          objective: input.commit.objective,
-          initialRequest: input.commit.initialRequest,
-          ...(input.commit.resources ? { resources: input.commit.resources } : {}),
-          at: input.at,
-        });
-        const requestId = selected.run.workstreamBinding?.requestId;
-        if (!requestId) throw new Error("Created workstream selection is missing its request binding.");
-        receipt = {
-          status: "resolved",
-          kind: "created_workstream",
-          workstreamId: selected.workstream.workstreamId,
-          requestId,
-        };
-      }
-      finishWorkstreamResolutionActivity(this.database, {
-        activityId: activity.activityId,
-        result: receipt,
-        finalState: input.finalState,
-        at: input.at,
-      });
-      let context = await this.agentContext.build({
-        streamId: activity.streamId,
-        currentText: activity.input.currentInput,
-      });
-      const completed = setWorkstreamResolutionOutputRevision(
-        this.database,
-        activity.activityId,
-        context.contextRevision,
-        input.at,
-      );
-      context = await this.agentContext.build({
-        streamId: activity.streamId,
-        currentText: activity.input.currentInput,
-      });
-      return { activity: completed, receipt, selected, context };
-    });
-  }
-
-  async finishWorkstreamResolution(
-    input: FinishWorkstreamResolutionRequest,
-  ): Promise<FinishWorkstreamResolutionResponse> {
-    return await this.queue.enqueue(async () => {
-      await this.ensureStartupRecovery();
-      const current = requireResolutionForRun(this.database, input.activityId, input.runId);
-      finishWorkstreamResolutionActivity(this.database, {
-        activityId: current.activityId,
-        result: input.result,
-        finalState: input.finalState,
-        at: input.at,
-      });
-      let context = await this.agentContext.build({
-        streamId: current.streamId,
-        currentText: current.input.currentInput,
-      });
-      const completed = setWorkstreamResolutionOutputRevision(
-        this.database,
-        current.activityId,
-        context.contextRevision,
-        input.at,
-      );
-      context = await this.agentContext.build({
-        streamId: current.streamId,
-        currentText: current.input.currentInput,
-      });
-      return { activity: completed, context };
-    });
-  }
-
-  async getWorkstreamResolution(
-    input: GetWorkstreamResolutionRequest,
-  ): Promise<GetWorkstreamResolutionResponse> {
-    return await this.queue.enqueue(async () => {
-      await this.ensureStartupRecovery();
-      const activity = readWorkstreamResolutionActivity(this.database, input.activityId);
-      if (!activity) {
-        throw new ContextEngineServiceError({
-          code: "WORKSTREAM_RESOLUTION_NOT_FOUND",
-          message: "Workstream resolution activity does not exist.",
-          details: { activityId: input.activityId },
-        });
-      }
-      return {
-        activity,
-        steps: readWorkstreamResolutionSteps(this.database, input.activityId),
-      };
     });
   }
 
@@ -1037,10 +816,6 @@ export class SqliteContextEngineService implements ContextEngineService {
     await this.workstreamLifecycle.recoverInitializingState();
     this.resourceMutations.recoverInterrupted(this.now());
     await this.runFinalization.recover(this.now());
-    const interruptedResolutionActivityIds = interruptRunningWorkstreamResolutions(
-      this.database,
-      this.now(),
-    );
     const recovered = this.startupRunRecovery.recover(this.now());
     this.startupRecovered = true;
     this.observer.emit({
@@ -1050,7 +825,6 @@ export class SqliteContextEngineService implements ContextEngineService {
       data: {
         interruptedRunIds: recovered.interruptedRunIds,
         recoveryRequiredRunIds: recovered.recoveryRequiredRunIds,
-        interruptedResolutionActivityIds,
       },
     });
   }
@@ -1075,87 +849,6 @@ export class SqliteContextEngineService implements ContextEngineService {
         details: { runId },
       });
     }
-  }
-}
-
-function requireResolutionForRun(
-  database: ContextDatabase,
-  activityId: string,
-  runId: string,
-) {
-  const activity = readWorkstreamResolutionActivity(database, activityId);
-  if (!activity || activity.runId !== runId) {
-    throw new ContextEngineServiceError({
-      code: "WORKSTREAM_RESOLUTION_NOT_FOUND",
-      message: "Workstream resolution activity does not match the requested run.",
-      details: { activityId, runId },
-    });
-  }
-  return activity;
-}
-
-function validateResolutionStart(input: StartWorkstreamResolutionRequest): void {
-  const purpose = input.input.purpose.trim().replace(/\s+/g, " ");
-  if (purpose.length === 0 || purpose.length > 500) {
-    throw new ContextEngineServiceError({
-      code: "INVALID_REQUEST",
-      message: "Workstream resolution purpose must contain between 1 and 500 characters.",
-    });
-  }
-  if (input.input.currentInput.trim().length === 0 || input.input.currentInput.length > 20_000) {
-    throw new ContextEngineServiceError({
-      code: "INVALID_REQUEST",
-      message: "Workstream resolution requires an exact current input of at most 20,000 characters.",
-    });
-  }
-  if (input.input.hints.length > 8) {
-    throw new ContextEngineServiceError({
-      code: "INVALID_REQUEST",
-      message: "Workstream resolution accepts at most eight hints.",
-    });
-  }
-  for (const hint of input.input.hints) validateResolutionHint(hint);
-  const limits = input.input.limits;
-  if (!Number.isInteger(limits.maxTurns) || limits.maxTurns < 1 || limits.maxTurns > 6
-    || !Number.isInteger(limits.maxToolCalls) || limits.maxToolCalls < 1 || limits.maxToolCalls > 16
-    || !Number.isInteger(limits.maxParallelCalls) || limits.maxParallelCalls < 1 || limits.maxParallelCalls > 4) {
-    throw new ContextEngineServiceError({
-      code: "INVALID_REQUEST",
-      message: "Workstream resolution limits exceed the supported bounded activity limits.",
-    });
-  }
-}
-
-function validateResolutionHint(
-  hint: StartWorkstreamResolutionRequest["input"]["hints"][number],
-): void {
-  let valid = false;
-  switch (hint.kind) {
-    case "workstream_id":
-      valid = /^W-[0-9]{8}-[0-9]{4}$/.test(hint.workstreamId);
-      break;
-    case "resource_id":
-      valid = /^RES-[0-9A-F]{24}$/.test(hint.resourceId);
-      break;
-    case "filesystem":
-      valid = hint.path.trim().length > 0
-        && hint.path.length <= 4_000
-        && !/[\u0000-\u001f\u007f]/.test(hint.path);
-      break;
-    case "url":
-      try {
-        const parsed = new URL(hint.url);
-        valid = hint.url.length <= 4_000 && ["http:", "https:"].includes(parsed.protocol);
-      } catch {
-        valid = false;
-      }
-      break;
-  }
-  if (!valid) {
-    throw new ContextEngineServiceError({
-      code: "INVALID_REQUEST",
-      message: `Workstream resolution hint '${hint.kind}' is invalid.`,
-    });
   }
 }
 

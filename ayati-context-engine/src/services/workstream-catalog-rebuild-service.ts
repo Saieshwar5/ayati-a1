@@ -138,7 +138,7 @@ export async function rebuildWorkstreamCatalog(input: {
     };
   }
   if (!input.database) {
-    throw new Error("Catalog rebuild confirmation requires an initialized V11 database.");
+    throw new Error("Catalog rebuild confirmation requires an initialized V12 database.");
   }
   if (failures.length > 0) {
     throw new Error("Catalog rebuild refused because shared-repository validation failed.");

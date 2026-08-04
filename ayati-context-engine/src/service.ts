@@ -7,8 +7,6 @@ import type {
   CheckpointRunWorkStateResponse,
   CommitContextCheckpointRequest,
   CommitContextCheckpointResponse,
-  CommitWorkstreamResolutionRequest,
-  CommitWorkstreamResolutionResponse,
   CreateWorkstreamForRunRequest,
   FinalizeRunRequest,
   FinalizeRunResponse,
@@ -19,8 +17,6 @@ import type {
   GetAgentContextRequest,
   GetWorkstreamRequest,
   GetWorkstreamResponse,
-  GetWorkstreamResolutionRequest,
-  GetWorkstreamResolutionResponse,
   ContextEngineHealth,
   InspectResourceForRunRequest,
   InspectResourceForRunResponse,
@@ -47,17 +43,11 @@ import type {
   ReadWorkstreamRepositoryLogResponse,
   RecordRunStepRequest,
   RecordRunStepResponse,
-  RecordWorkstreamResolutionStepRequest,
-  RecordWorkstreamResolutionStepResponse,
   SearchAgentHistoryRequest,
   SearchAgentHistoryResponse,
   SelectedWorkstreamForRunResponse,
   SetWorkstreamStarRequest,
   SetWorkstreamStarResponse,
-  StartWorkstreamResolutionRequest,
-  StartWorkstreamResolutionResponse,
-  FinishWorkstreamResolutionRequest,
-  FinishWorkstreamResolutionResponse,
   VerifyResourceMutationRequest,
   VerifyResourceMutationResponse,
   ContextCheckpointPlan,
@@ -76,21 +66,6 @@ export interface ContextEngineService {
     input: ReadAgentConversationRequest,
   ): Promise<ReadAgentConversationResponse>;
   readAgentHistory(input: ReadAgentHistoryRequest): Promise<ReadAgentHistoryResponse>;
-  startWorkstreamResolution(
-    input: StartWorkstreamResolutionRequest,
-  ): Promise<StartWorkstreamResolutionResponse>;
-  recordWorkstreamResolutionStep(
-    input: RecordWorkstreamResolutionStepRequest,
-  ): Promise<RecordWorkstreamResolutionStepResponse>;
-  commitWorkstreamResolution(
-    input: CommitWorkstreamResolutionRequest,
-  ): Promise<CommitWorkstreamResolutionResponse>;
-  finishWorkstreamResolution(
-    input: FinishWorkstreamResolutionRequest,
-  ): Promise<FinishWorkstreamResolutionResponse>;
-  getWorkstreamResolution(
-    input: GetWorkstreamResolutionRequest,
-  ): Promise<GetWorkstreamResolutionResponse>;
   createWorkstreamForRun(input: CreateWorkstreamForRunRequest): Promise<SelectedWorkstreamForRunResponse>;
   activateWorkstreamForRun(input: ActivateWorkstreamForRunRequest): Promise<SelectedWorkstreamForRunResponse>;
   planWorkstreamRequestRoute(
