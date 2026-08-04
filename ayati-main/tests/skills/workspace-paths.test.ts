@@ -82,13 +82,11 @@ describe("workspace paths", () => {
     await expect(access(workspace)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("treats workspace aliases as the derived workspace root", () => {
+  it("treats the workspace alias as the derived workspace root", () => {
     process.env["AYATI_ROOT_DIR"] = "/tmp/ayati-custom-root";
     const workspace = "/tmp/ayati-custom-root/workspace";
 
-    expect(resolveWorkspacePath("work_space/report.md")).toBe(join(workspace, "report.md"));
     expect(resolveWorkspacePath("workspace/report.md")).toBe(join(workspace, "report.md"));
-    expect(resolveWorkspacePath("work_space/workspace/report.md")).toBe(join(workspace, "report.md"));
   });
 
   it("preserves explicit absolute paths", () => {

@@ -14,10 +14,8 @@ import { agentLoop } from "../ivec/agent-loop.js";
 import type { CapabilitySurfaceManager } from "../ivec/agent-runner/capabilities/surface-manager.js";
 import type { HotContextRuntime } from "../ivec/hot-context/index.js";
 import { summarizeHarnessContext } from "../ivec/agent-runner/feedback-summary.js";
-import {
-  buildContextEngineFeedbackSummary,
-  type AgentFeedbackLedger,
-} from "../ivec/feedback-ledger.js";
+import type { AgentEventSink } from "../ivec/agent-event-sink.js";
+import { buildContextEngineEventSummary } from "../ivec/context-engine-event-summary.js";
 import {
   classifySystemEvent,
   resolveSystemEventPolicy,
@@ -59,7 +57,7 @@ export interface CreateSystemEventRuntimeOptions {
   fileLibrary?: FileLibrary;
   directoryLibrary?: DirectoryLibrary;
   systemEventPolicy?: SystemEventPolicyConfig;
-  feedbackLedger?: AgentFeedbackLedger;
+  eventSink?: AgentEventSink;
 }
 
 interface SystemEventExecutionPlan {
@@ -110,7 +108,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
   private readonly fileLibrary?: FileLibrary;
   private readonly directoryLibrary?: DirectoryLibrary;
   private readonly systemEventPolicy?: SystemEventPolicyConfig;
-  private readonly feedbackLedger?: AgentFeedbackLedger;
+  private readonly eventSink?: AgentEventSink;
 
   constructor(options: CreateSystemEventRuntimeOptions) {
     this.onReply = options.onReply;
@@ -130,7 +128,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     this.fileLibrary = options.fileLibrary;
     this.directoryLibrary = options.directoryLibrary;
     this.systemEventPolicy = options.systemEventPolicy;
-    this.feedbackLedger = options.feedbackLedger;
+    this.eventSink = options.eventSink;
   }
 
   async processSystemEvent(input: SystemEventRuntimeInput): Promise<void> {
@@ -150,7 +148,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       preparedContextTurn = await this.prepareSystemEventContextTurn(clientId, event, systemEventPlan);
       inputHandle = this.inputHandleFromSystemContextTurn(preparedContextTurn);
       runHandle = preparedContextTurn.run;
-      this.feedbackLedger?.record({
+      this.eventSink?.record({
         clientId,
         sessionId: inputHandle.sessionId,
         seq: inputHandle.seq,
@@ -175,7 +173,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
           preparedContextTurn,
           result,
         );
-        this.feedbackLedger?.record({
+        this.eventSink?.record({
           clientId,
           sessionId: inputHandle.sessionId,
           seq: inputHandle.seq,
@@ -184,7 +182,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
           event: "dispatched",
           data: { type: "none", status: result.status, stopReason: result.stopReason, content: "" },
         });
-        this.feedbackLedger?.scheduleCheckpoint?.(runHandle.runId);
+        this.eventSink?.scheduleCheckpoint?.(runHandle.runId);
         return;
       }
 
@@ -201,7 +199,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
           event: event.eventName,
           eventId: event.eventId,
         }, finalized);
-        this.feedbackLedger?.record({
+        this.eventSink?.record({
           clientId,
           sessionId: inputHandle.sessionId,
           seq: inputHandle.seq,
@@ -210,7 +208,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
           event: "dispatched",
           data: { type: preferredResponseKind, status: result.status, stopReason: result.stopReason, content: event.summary },
         });
-        this.feedbackLedger?.scheduleCheckpoint?.(runHandle.runId);
+        this.eventSink?.scheduleCheckpoint?.(runHandle.runId);
         return;
       }
 
@@ -275,7 +273,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         harnessContext: {
           contextEngine: preparedContextTurn.context,
         },
-        feedbackLedger: this.feedbackLedger,
+        eventSink: this.eventSink,
         fileLibrary: this.fileLibrary,
         directoryLibrary: this.directoryLibrary,
         documentStore: this.documentStore,
@@ -296,7 +294,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         event: event.eventName,
         eventId: event.eventId,
       }, finalized);
-      this.feedbackLedger?.record({
+      this.eventSink?.record({
         clientId,
         sessionId: inputHandle.sessionId,
         seq: inputHandle.seq,
@@ -312,12 +310,12 @@ class AppSystemEventRuntime implements SystemEventRuntime {
           runPath: result.runPath,
         },
       });
-      this.feedbackLedger?.scheduleCheckpoint?.(runHandle.runId);
+      this.eventSink?.scheduleCheckpoint?.(runHandle.runId);
     } catch (err) {
       devError("System event processing error:", err);
       if (runHandle) {
         const message = err instanceof Error ? err.message : "Unknown runtime failure";
-        this.feedbackLedger?.record({
+        this.eventSink?.record({
           clientId,
           sessionId: runHandle.streamId,
           runId: runHandle.runId,
@@ -339,7 +337,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         ...(runHandle ? { runId: runHandle.runId } : {}),
       });
       if (runHandle) {
-        this.feedbackLedger?.record({
+        this.eventSink?.record({
           clientId,
           sessionId: runHandle.streamId,
           runId: runHandle.runId,
@@ -353,7 +351,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
             message: err instanceof Error ? err.message : String(err),
           },
         });
-        this.feedbackLedger?.scheduleCheckpoint?.(runHandle.runId);
+        this.eventSink?.scheduleCheckpoint?.(runHandle.runId);
       }
       throw err;
     }
@@ -370,7 +368,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       at: event.receivedAt,
     });
     const contextEngine = turn.context;
-    this.feedbackLedger?.record({
+    this.eventSink?.record({
       clientId,
       sessionId: turn.streamId,
       seq: turn.messageSequence,
@@ -379,7 +377,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       data: {
         status: turn.status,
         messageSequence: turn.messageSequence,
-        contextEngine: buildContextEngineFeedbackSummary({
+        contextEngine: buildContextEngineEventSummary({
           context: contextEngine,
           routeSource: "runtime",
         }),
@@ -387,7 +385,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         context: summarizeHarnessContext({ contextEngine }),
       },
     });
-    this.feedbackLedger?.record({
+    this.eventSink?.record({
       clientId,
       sessionId: turn.streamId,
       seq: turn.messageSequence,
@@ -396,7 +394,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       data: {
         status: contextEngine.current.routing?.status ?? "none",
         routing: contextEngine.current.routing,
-        contextEngine: buildContextEngineFeedbackSummary({
+        contextEngine: buildContextEngineEventSummary({
           context: contextEngine,
           routeSource: "runtime",
         }),
@@ -411,7 +409,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     result: AgentLoopResult,
   ): Promise<FinalizeRunResponse> {
     const workstreamBound = isWorkstreamBoundRun(prepared, result);
-    this.feedbackLedger?.record({
+    this.eventSink?.record({
       clientId,
       sessionId: prepared.streamId,
       seq: prepared.messageSequence,
@@ -431,7 +429,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       at: this.nowProvider().toISOString(),
       fallbackSummary: "System event recorded.",
     });
-    this.feedbackLedger?.record({
+    this.eventSink?.record({
       clientId,
       sessionId: prepared.streamId,
       seq: prepared.messageSequence,

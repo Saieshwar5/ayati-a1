@@ -32,7 +32,10 @@ import { createSkillRuntime } from "./skill-runtime.js";
 import { loadAyatiRuntimeConfig } from "../config/runtime-config.js";
 import embeddingProvider from "../embeddings/runtime/index.js";
 import imageGenerationProvider from "../image-generation/runtime/index.js";
-import { createAgentFeedbackLedgerFromEnv } from "../ivec/feedback-ledger.js";
+import {
+  NOOP_AGENT_EVENT_SINK,
+  type AgentEventSink,
+} from "../ivec/agent-event-sink.js";
 import { startContextEngineHost } from "ayati-context-engine";
 import { createContextEngineRuntime } from "./context-engine-runtime.js";
 import { createChatTurnRuntime } from "./chat-turn-runtime.js";
@@ -43,7 +46,6 @@ import {
   recordContextEngineObservabilityEvent,
 } from "./context-engine-observability.js";
 import {
-  combineFeedbackLedgers,
   createEvaluationProvider,
   createEvaluationToolExecutor,
   startLiveEvaluationCapture,
@@ -61,9 +63,6 @@ export async function main(): Promise<void> {
   await ensureWorkspaceRoot(runtimeConfig.workspace.root);
   const loadedProvider = await loadProvider(providerFactory);
   const systemEventPolicy = loadSystemEventPolicy(projectRoot);
-  const legacyFeedbackLedger = createAgentFeedbackLedgerFromEnv({
-    dataDir: resolve(projectRoot, "data"),
-  });
   let evaluationRecorder: Awaited<ReturnType<typeof startLiveEvaluationCapture>>;
   try {
     evaluationRecorder = await startLiveEvaluationCapture({
@@ -77,7 +76,7 @@ export async function main(): Promise<void> {
   } catch (error) {
     devLog(`Live evaluation capture unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const feedbackLedger = combineFeedbackLedgers(legacyFeedbackLedger, evaluationRecorder);
+  const eventSink: AgentEventSink = evaluationRecorder ?? NOOP_AGENT_EVENT_SINK;
   const provider = createEvaluationProvider(loadedProvider);
   let engine: IVecEngine | null = null;
   let staticContext: StaticContext | null = null;
@@ -108,7 +107,7 @@ export async function main(): Promise<void> {
     onReplyRendered: (transportClientId, acknowledgement) => {
       const runId = runByReplyTurn.get(acknowledgement.turnId);
       runByReplyTurn.delete(acknowledgement.turnId);
-      feedbackLedger.record({
+      eventSink.record({
         clientId: CLIENT_ID,
         ...(runId ? { runId } : {}),
         stage: "client",
@@ -119,11 +118,11 @@ export async function main(): Promise<void> {
         },
       });
       if (runId) {
-        feedbackLedger.scheduleCheckpoint?.(runId);
+        eventSink.scheduleCheckpoint?.(runId);
       }
     },
     onMessage: (transportClientId, data) => {
-      feedbackLedger.record({
+      eventSink.record({
         clientId: CLIENT_ID,
         stage: "transport",
         event: "inbound",
@@ -151,14 +150,14 @@ export async function main(): Promise<void> {
   const contextEngineHost = await startContextEngineHost({
     databasePath: runtimeConfig.contextEngine.databasePath,
     rootDirectory: runtimeConfig.contextEngine.rootDirectory,
-    observabilitySink: (event) => recordContextEngineObservabilityEvent(feedbackLedger, event),
+    observabilitySink: (event) => recordContextEngineObservabilityEvent(eventSink, event),
   });
   const contextEngineService = contextEngineHost.service;
   const contextEngineRuntime = createContextEngineRuntime({
     service: contextEngineService,
     timezone: runtimeConfig.contextEngine.timezone,
     agentId: runtimeConfig.contextEngine.agentId,
-    observer: createHarnessContextEngineObserver(feedbackLedger),
+    observer: createHarnessContextEngineObserver(eventSink),
     onContextCheckpointCommitted: ({ streamId, plan, checkpoint }) => {
       memory.enqueuePersonalMemoryCheckpoint({
         userId: CLIENT_ID,
@@ -191,7 +190,7 @@ export async function main(): Promise<void> {
     onReply: (clientId, data) => {
       const started = process.hrtime.bigint();
       wsServer.send(clientId, data);
-      recordOutboundTransport(feedbackLedger, clientId, data, runByReplyTurn, elapsedMs(started));
+      recordOutboundTransport(eventSink, clientId, data, runByReplyTurn, elapsedMs(started));
     },
     clientSupportsReplyStreaming: (clientId) => wsServer.clientSupportsReplyStreaming(clientId),
     provider,
@@ -206,7 +205,7 @@ export async function main(): Promise<void> {
     fileLibrary: content.fileLibrary,
     directoryLibrary: content.directoryLibrary,
     loopConfig: runtimeConfig.agent.loopConfig,
-    feedbackLedger,
+    eventSink,
     chatContextRuntime,
     contextEngineService,
   });
@@ -214,7 +213,7 @@ export async function main(): Promise<void> {
     onReply: (clientId, data) => {
       const started = process.hrtime.bigint();
       wsServer.send(clientId, data);
-      recordOutboundTransport(feedbackLedger, clientId, data, runByReplyTurn, elapsedMs(started));
+      recordOutboundTransport(eventSink, clientId, data, runByReplyTurn, elapsedMs(started));
     },
     provider,
     workspaceRoot: runtimeConfig.workspace.root,
@@ -231,7 +230,7 @@ export async function main(): Promise<void> {
     directoryLibrary: content.directoryLibrary,
     systemEventPolicy,
     loopConfig: runtimeConfig.agent.loopConfig,
-    feedbackLedger,
+    eventSink,
   });
 
   const uploadServer = new UploadServer({
@@ -314,7 +313,6 @@ export async function main(): Promise<void> {
       await imageGenerationProvider.stop();
       await engine.stop();
       await contextEngineHost.stop();
-      await feedbackLedger.close();
       await stopLiveEvaluationCapture(evaluationRecorder, status);
     })();
     return shutdownPromise;
@@ -337,7 +335,7 @@ export async function main(): Promise<void> {
 }
 
 function recordOutboundTransport(
-  ledger: ReturnType<typeof createAgentFeedbackLedgerFromEnv>,
+  sink: AgentEventSink,
   clientId: string,
   data: unknown,
   runByReplyTurn: Map<string, string>,
@@ -350,7 +348,7 @@ function recordOutboundTransport(
   const directRunId = typeof record?.["runId"] === "string" ? record["runId"] : undefined;
   const runId = directRunId ?? (turnId ? runByReplyTurn.get(turnId) : undefined);
   if (runId && turnId) runByReplyTurn.set(turnId, runId);
-  ledger.record({
+  sink.record({
     clientId,
     ...(runId ? { runId } : {}),
     stage: "transport",

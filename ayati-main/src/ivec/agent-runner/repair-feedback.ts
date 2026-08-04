@@ -5,7 +5,7 @@ import type {
   LoopState,
   StepSummary,
 } from "../types.js";
-import { buildContextEngineFeedbackSummary } from "../feedback-ledger.js";
+import { buildContextEngineEventSummary } from "../context-engine-event-summary.js";
 import type { AgentDecision } from "./decision.js";
 import type { ReadProgressViolation } from "./read-progress-policy.js";
 import { markReadProgressRejected } from "./read-progress-policy.js";
@@ -47,7 +47,7 @@ export function recordUnboundRunToolRepair(input: {
       consecutiveFailures: input.state.consecutiveFailures,
       maxConsecutiveFailures: input.config.maxConsecutiveFailures,
       decision: summarizeDecision(input.decision),
-      contextEngine: buildContextEngineFeedbackSummary({
+      contextEngine: buildContextEngineEventSummary({
         context: input.state.harnessContext.contextEngine,
       }),
       harnessContext: summarizeHarnessContext(input.state.harnessContext),
@@ -70,7 +70,7 @@ export function recordUnboundRunToolRepair(input: {
     maxConsecutiveFailures: input.config.maxConsecutiveFailures,
     blockedTargets,
     decision: summarizeDecision(input.decision),
-    contextEngine: buildContextEngineFeedbackSummary({
+    contextEngine: buildContextEngineEventSummary({
       context: input.state.harnessContext.contextEngine,
     }),
     harnessContext: summarizeHarnessContext(input.state.harnessContext),
@@ -645,7 +645,7 @@ function recordFeedback(
   event: string,
   data?: Record<string, unknown>,
 ): void {
-  deps.feedbackLedger?.record({
+  deps.eventSink?.record({
     clientId: deps.clientId,
     sessionId: inputHandle.sessionId,
     seq: inputHandle.seq,

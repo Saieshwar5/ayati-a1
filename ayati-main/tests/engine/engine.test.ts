@@ -379,7 +379,7 @@ function createEngine(options: TestEngineOptions = {}): IVecEngine {
     loopConfig: options.loopConfig,
     now: options.now,
     dataDir: options.dataDir,
-    feedbackLedger: options.feedbackLedger,
+    eventSink: options.eventSink,
     chatContextRuntime,
     contextEngineService: options.contextEngineService,
   });
@@ -393,7 +393,7 @@ function createEngine(options: TestEngineOptions = {}): IVecEngine {
     now: options.now,
     dataDir: options.dataDir,
     systemEventPolicy: options.systemEventPolicy,
-    feedbackLedger: options.feedbackLedger,
+    eventSink: options.eventSink,
     contextEngineService: options.contextEngineService,
   });
   return new IVecEngine({

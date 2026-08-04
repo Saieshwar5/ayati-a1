@@ -31,7 +31,6 @@ journal. Never repair by placing deliverables in the context repository or
 editing runtime-owned records by hand.
 
 Use `pnpm eval:agent -- inspect --evaluation <id> --latest` for the latest
-evidence-linked lifecycle report. `pnpm feedback:context-engine` is a
-compatibility alias for the unified latest report. Keep the daemon stopped
-before archive/reset, catalog rebuild, or direct database inspection that
-requires a consistent snapshot.
+evidence-linked lifecycle report. Keep the daemon stopped before archive/reset,
+catalog rebuild, or direct database inspection that requires a consistent
+snapshot.

@@ -2,15 +2,15 @@ import {
   ContextEngineObserver,
   type ContextEngineObservabilityEvent,
 } from "ayati-context-engine";
-import type { AgentFeedbackLedger } from "../ivec/feedback-ledger.js";
+import type { AgentEventSink } from "../ivec/agent-event-sink.js";
 
-/** Bridges Context Engine events into the live-test feedback ledger. */
+/** Bridges Context Engine events into the active observability sink. */
 export function recordContextEngineObservabilityEvent(
-  ledger: AgentFeedbackLedger,
+  sink: AgentEventSink,
   event: ContextEngineObservabilityEvent,
 ): void {
-  const seq = feedbackSequence(event);
-  ledger.record({
+  const seq = eventSequence(event);
+  sink.record({
     ...(event.streamId ? { sessionId: event.streamId } : {}),
     ...(seq !== undefined ? { seq } : {}),
     ...(event.runId ? { runId: event.runId } : {}),
@@ -35,15 +35,15 @@ export function recordContextEngineObservabilityEvent(
   });
 }
 
-function feedbackSequence(event: ContextEngineObservabilityEvent): number | undefined {
+function eventSequence(event: ContextEngineObservabilityEvent): number | undefined {
   return event.seq;
 }
 
 export function createHarnessContextEngineObserver(
-  ledger: AgentFeedbackLedger,
+  sink: AgentEventSink,
 ): ContextEngineObserver {
   return new ContextEngineObserver(
     "context-engine-harness",
-    (event) => recordContextEngineObservabilityEvent(ledger, event),
+    (event) => recordContextEngineObservabilityEvent(sink, event),
   );
 }

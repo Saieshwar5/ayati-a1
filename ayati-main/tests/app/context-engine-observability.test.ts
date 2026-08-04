@@ -2,16 +2,16 @@ import { describe, expect, it } from "vitest";
 import type { ContextEngineObservabilityEvent } from "ayati-context-engine";
 import { recordContextEngineObservabilityEvent } from "../../src/app/context-engine-observability.js";
 import type {
-  AgentFeedbackEventInput,
-  AgentFeedbackLedger,
-} from "../../src/ivec/feedback-ledger.js";
+  AgentEventInput,
+  AgentEventSink,
+} from "../../src/ivec/agent-event-sink.js";
 
 describe("Context Engine feedback observability bridge", () => {
   it("correlates agent-stream events through their exact message sequence", () => {
-    const recorded: AgentFeedbackEventInput[] = [];
-    const ledger = feedbackLedger(recorded);
+    const recorded: AgentEventInput[] = [];
+    const sink = eventSink(recorded);
 
-    recordContextEngineObservabilityEvent(ledger, contextEngineEvent({
+    recordContextEngineObservabilityEvent(sink, contextEngineEvent({
       contextRevision: "context:4",
     }));
 
@@ -28,17 +28,17 @@ describe("Context Engine feedback observability bridge", () => {
   });
 
   it("does not synthesize a sequence when the service event omits one", () => {
-    const recorded: AgentFeedbackEventInput[] = [];
+    const recorded: AgentEventInput[] = [];
 
     const event = contextEngineEvent({});
     delete event.seq;
-    recordContextEngineObservabilityEvent(feedbackLedger(recorded), event);
+    recordContextEngineObservabilityEvent(eventSink(recorded), event);
 
     expect(recorded[0]?.seq).toBeUndefined();
   });
 });
 
-function feedbackLedger(recorded: AgentFeedbackEventInput[]): AgentFeedbackLedger {
+function eventSink(recorded: AgentEventInput[]): AgentEventSink {
   return {
     enabled: true,
     record: (event) => recorded.push(event),

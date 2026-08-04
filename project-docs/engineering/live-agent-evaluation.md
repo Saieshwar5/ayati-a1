@@ -128,13 +128,6 @@ background model operations and provider requests. A deterministic resolve
 gate event carrying a model-operation or provider-request identity is an
 invariant failure.
 
-## Legacy Feedback Aliases
-
-`pnpm dev:main:feedback` and `pnpm start:main:feedback` now enter this same live
-evaluation path. `pnpm feedback:context-engine` renders the unified latest
-session report, whose Context Engine section is correlated with provider,
-tool, WorkState, resource, finalization, and transport evidence.
-
 ## Developer Diagnostics Are Not Evaluations
 
 `pnpm --filter ayati-main bench:runtime` measures local subsystem performance.

@@ -10,7 +10,7 @@ import {
   ContextRunCapacityError,
 } from "../../src/prompt/context-compilation-receipt.js";
 import { callAgentDecision } from "../../src/ivec/agent-runner/decision.js";
-import type { AgentFeedbackEventInput, AgentFeedbackLedger } from "../../src/ivec/feedback-ledger.js";
+import type { AgentEventInput, AgentEventSink } from "../../src/ivec/agent-event-sink.js";
 import type { AgentStateView } from "../../src/ivec/agent-runner/state-view.js";
 import { buildCoreCapsule } from "../../src/ivec/agent-runner/core-capsule.js";
 import type { AgentTemporalEvent } from "../../src/ivec/agent-runner/agent-context-events.js";
@@ -264,7 +264,7 @@ describe("callAgentDecision", () => {
       JSON.stringify({ kind: "reply", status: "completed", message: "Hi!" }),
     ]);
     const metrics = createRunMetrics();
-    const feedback = createFeedbackLedger();
+    const feedback = createEventRecorder();
     const onContextCompilation = vi.fn();
 
     await callAgentDecision({
@@ -277,7 +277,7 @@ describe("callAgentDecision", () => {
         },
       })],
       metrics,
-      feedbackLedger: feedback.ledger,
+      eventSink: feedback.sink,
       feedbackContext: {
         clientId: "client-1",
         sessionId: "session-1",
@@ -869,13 +869,13 @@ describe("callAgentDecision", () => {
       JSON.stringify(badAction),
       JSON.stringify(repaired),
     ]);
-    const feedback = createFeedbackLedger();
+    const feedback = createEventRecorder();
 
     const decision = await callAgentDecision({
       provider,
       stateView: createStateView(),
       toolDefinitions: [],
-      feedbackLedger: feedback.ledger,
+      eventSink: feedback.sink,
       feedbackContext: {
         clientId: "local",
         sessionId: "S-test",
@@ -907,14 +907,14 @@ describe("callAgentDecision", () => {
         allowedTools: ["process_run", "read_files"],
       },
     });
-    const feedback = createFeedbackLedger();
+    const feedback = createEventRecorder();
     const { provider, generateTurn } = createProvider([invalid, invalid]);
 
     const decision = await callAgentDecision({
       provider,
       stateView: createStateView(),
       toolDefinitions: [],
-      feedbackLedger: feedback.ledger,
+      eventSink: feedback.sink,
       feedbackContext: {
         clientId: "local",
         sessionId: "S-test",
@@ -960,7 +960,7 @@ describe("callAgentDecision", () => {
         allowedTools: ["git_context_create_workstream"],
       },
     };
-    const feedback = createFeedbackLedger();
+    const feedback = createEventRecorder();
     const { provider, generateTurn } = createProvider([
       fakeToolJson,
       JSON.stringify(repaired),
@@ -970,7 +970,7 @@ describe("callAgentDecision", () => {
       provider,
       stateView: createStateView(),
       toolDefinitions: [createTool("git_context_create_workstream")],
-      feedbackLedger: feedback.ledger,
+      eventSink: feedback.sink,
       feedbackContext: {
         clientId: "local",
         sessionId: "S-test",
@@ -1015,7 +1015,7 @@ describe("callAgentDecision", () => {
         path: "/tmp/project/report.txt",
       }],
     });
-    const feedback = createFeedbackLedger();
+    const feedback = createEventRecorder();
     const { provider, generateTurn } = createNativeToolProvider([
       {
         type: "assistant",
@@ -1042,7 +1042,7 @@ describe("callAgentDecision", () => {
       provider,
       stateView: createStateView(),
       toolDefinitions: [],
-      feedbackLedger: feedback.ledger,
+      eventSink: feedback.sink,
       feedbackContext: {
         clientId: "local",
         sessionId: "S-test",
@@ -1107,7 +1107,7 @@ describe("callAgentDecision", () => {
 
   it("repairs truncated internal action JSON returned as assistant text", async () => {
     const truncatedInternalActionJson = "{\"kind\":\"act\",\"action\":{\"mode\":\"single\",\"allowedTools\":[\"write_files\"],\"calls\":[{\"id\":\"call_1\",\"t";
-    const feedback = createFeedbackLedger();
+    const feedback = createEventRecorder();
     const { provider, generateTurn } = createNativeToolProvider([
       {
         type: "assistant",
@@ -1138,7 +1138,7 @@ describe("callAgentDecision", () => {
           createDirs: { type: "boolean" },
         },
       })],
-      feedbackLedger: feedback.ledger,
+      eventSink: feedback.sink,
       feedbackContext: {
         clientId: "local",
         sessionId: "S-test",
@@ -1245,7 +1245,7 @@ describe("callAgentDecision", () => {
         allowedTools: ["process_run"],
       },
     };
-    const feedback = createFeedbackLedger();
+    const feedback = createEventRecorder();
     const binding = {
       kind: "create",
       title: "Project command",
@@ -1275,7 +1275,7 @@ describe("callAgentDecision", () => {
       provider,
       stateView: createStateView(),
       toolDefinitions: [],
-      feedbackLedger: feedback.ledger,
+      eventSink: feedback.sink,
       feedbackContext: {
         clientId: "local",
         sessionId: "S-test",
@@ -1326,7 +1326,7 @@ describe("callAgentDecision", () => {
         }],
       },
     };
-    const feedback = createFeedbackLedger();
+    const feedback = createEventRecorder();
     const { provider, generateTurn } = createProvider([
       JSON.stringify(withoutPurpose),
       JSON.stringify(withPurpose),
@@ -1336,7 +1336,7 @@ describe("callAgentDecision", () => {
       provider,
       stateView: createStateView(),
       toolDefinitions: [createTool("process_run")],
-      feedbackLedger: feedback.ledger,
+      eventSink: feedback.sink,
       feedbackContext: {
         clientId: "local",
         sessionId: "S-test",
@@ -1820,13 +1820,13 @@ describe("callAgentDecision", () => {
         .mockRejectedValueOnce(providerError)
         .mockResolvedValueOnce({ type: "assistant", content: "Hi!" }),
     );
-    const feedback = createFeedbackLedger();
+    const feedback = createEventRecorder();
 
     const decision = await callAgentDecision({
       provider,
       stateView: createStateView(),
       toolDefinitions: [],
-      feedbackLedger: feedback.ledger,
+      eventSink: feedback.sink,
       feedbackContext: {
         clientId: "local",
         sessionId: "S-test",
@@ -1879,13 +1879,13 @@ describe("callAgentDecision", () => {
         .mockRejectedValueOnce(providerError)
         .mockResolvedValueOnce({ type: "assistant", content: "Hi!" }),
     );
-    const feedback = createFeedbackLedger();
+    const feedback = createEventRecorder();
 
     const decision = await callAgentDecision({
       provider,
       stateView: createStateView(),
       toolDefinitions: [],
-      feedbackLedger: feedback.ledger,
+      eventSink: feedback.sink,
       feedbackContext: {
         clientId: "local",
         sessionId: "S-test",
@@ -1935,13 +1935,13 @@ describe("callAgentDecision", () => {
       responseKeys: ["choices"],
     });
     const { provider, generateTurn } = createProviderFromMock(vi.fn().mockRejectedValue(providerError));
-    const feedback = createFeedbackLedger();
+    const feedback = createEventRecorder();
 
     await expect(callAgentDecision({
       provider,
       stateView: createStateView(),
       toolDefinitions: [],
-      feedbackLedger: feedback.ledger,
+      eventSink: feedback.sink,
       feedbackContext: {
         clientId: "local",
         sessionId: "S-test",
@@ -2322,7 +2322,7 @@ describe("callAgentDecision", () => {
         }],
       },
     ]);
-    const feedback = createFeedbackLedger();
+    const feedback = createEventRecorder();
     const metrics = createRunMetrics();
 
     const decision = await callAgentDecision({
@@ -2335,7 +2335,7 @@ describe("callAgentDecision", () => {
           files: { type: "array" },
         },
       })],
-      feedbackLedger: feedback.ledger,
+      eventSink: feedback.sink,
       metrics,
       feedbackContext: {
         clientId: "local",
@@ -2496,13 +2496,13 @@ function createProviderFromMock(
   };
 }
 
-function createFeedbackLedger(): { ledger: AgentFeedbackLedger; events: AgentFeedbackEventInput[] } {
-  const events: AgentFeedbackEventInput[] = [];
+function createEventRecorder(): { sink: AgentEventSink; events: AgentEventInput[] } {
+  const events: AgentEventInput[] = [];
   return {
     events,
-    ledger: {
+    sink: {
       enabled: true,
-      record(event: AgentFeedbackEventInput) {
+      record(event: AgentEventInput) {
         events.push(event);
       },
       async flush() {},

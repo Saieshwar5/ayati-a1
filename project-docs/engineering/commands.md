@@ -68,9 +68,6 @@ pnpm eval:agent -- compare --baseline <id> --candidate <id>
 pnpm eval:agent -- prune [--older-than <days>|--keep <count>] [--confirm]
 ```
 
-`dev:main:feedback`, `start:main:feedback`, and `feedback:context-engine` are
-compatibility aliases into this same recorder and report surface.
-
 Backend runtime performance benchmark:
 
 ```bash

@@ -40,7 +40,7 @@ import type {
   SystemEventContextVisibility,
   SystemEventHandlingMode,
 } from "./system-event-policy.js";
-import type { AgentFeedbackLedger } from "./feedback-ledger.js";
+import type { AgentEventSink } from "./agent-event-sink.js";
 import type { HarnessContext, HarnessContextInput } from "./harness-context.js";
 import type { ContextPressureState } from "./context-pressure-state.js";
 import type { VirtualModeState } from "./agent-runner/virtual-mode.js";
@@ -548,7 +548,7 @@ export interface AgentLoopDeps {
   /** Runtime-owned disposable context preparation for this run. */
   contextPreparation?: ContextPreparationManager;
   workstreamBinding?: WorkstreamBindingCoordinator;
-  feedbackLedger?: AgentFeedbackLedger;
+  eventSink?: AgentEventSink;
   config?: Partial<LoopConfig>;
   dataDir: string;
   systemContext?: string;

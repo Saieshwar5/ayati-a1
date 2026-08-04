@@ -172,10 +172,6 @@ pnpm eval:agent -- inspect --evaluation <id> --latest
 pnpm eval:agent -- report --evaluation <id>
 ```
 
-The older `dev:main:feedback`, `start:main:feedback`, and
-`feedback:context-engine` commands are compatibility aliases for this same
-evaluation/report path.
-
 Safe context-state operations are preview-first:
 
 ```bash

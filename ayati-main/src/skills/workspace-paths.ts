@@ -65,7 +65,7 @@ export function isWithinWorkspace(pathValue: string, root: string): boolean {
 
 function stripWorkspaceAliasPrefix(pathValue: string, root: string): string {
   const normalized = pathValue.replace(/\\/g, "/");
-  const aliases = new Set(["workspace", "work_space", basename(root)]);
+  const aliases = new Set(["workspace", basename(root)]);
   const parts = normalized.split("/").filter((part) => part.length > 0 && part !== ".");
   const projectAlias = basename(dirname(root));
 

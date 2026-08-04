@@ -12,9 +12,9 @@ import {
 } from "../../src/ivec/agent-runner/decision-tool-choice-policy.js";
 import type { AgentStateView } from "../../src/ivec/agent-runner/state-view.js";
 import type {
-  AgentFeedbackEventInput,
-  AgentFeedbackLedger,
-} from "../../src/ivec/feedback-ledger.js";
+  AgentEventInput,
+  AgentEventSink,
+} from "../../src/ivec/agent-event-sink.js";
 
 describe("decision tool-choice policy", () => {
   it("allows direct assistant text only when normal_reply is graph-legal", () => {
@@ -130,7 +130,7 @@ describe("decision tool-choice policy", () => {
         }],
       },
     ]);
-    const feedback = feedbackLedger();
+    const feedback = eventSink();
 
     const decision = await callAgentDecision({
       provider,
@@ -139,7 +139,7 @@ describe("decision tool-choice policy", () => {
         ["observe.locate", "observe.investigate", "resolve", "validation", "stop"],
       ),
       toolDefinitions: [],
-      feedbackLedger: feedback.ledger,
+      eventSink: feedback.sink,
       feedbackContext: {
         clientId: "local",
         sessionId: "S-test",
@@ -282,14 +282,14 @@ function providerWithResponses(responses: LlmTurnOutput[]): {
   };
 }
 
-function feedbackLedger(): {
-  ledger: AgentFeedbackLedger;
-  events: AgentFeedbackEventInput[];
+function eventSink(): {
+  sink: AgentEventSink;
+  events: AgentEventInput[];
 } {
-  const events: AgentFeedbackEventInput[] = [];
+  const events: AgentEventInput[] = [];
   return {
     events,
-    ledger: {
+    sink: {
       enabled: true,
       record(event) {
         events.push(event);

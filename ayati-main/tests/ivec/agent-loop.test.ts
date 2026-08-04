@@ -8,7 +8,7 @@ import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
 import type { ContextRunStepRecord } from "../../src/context-engine/index.js";
 import type { HarnessContextInput } from "../../src/ivec/harness-context.js";
-import type { AgentFeedbackEventInput, AgentFeedbackLedger } from "../../src/ivec/feedback-ledger.js";
+import type { AgentEventInput, AgentEventSink } from "../../src/ivec/agent-event-sink.js";
 import { noopRunRecorder } from "../../src/ivec/noop-run-recorder.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
 import { inspectPathsTool } from "../../src/skills/builtins/filesystem/inspect-paths.js";
@@ -203,14 +203,14 @@ function createProvider(responses: unknown[]): LlmProvider {
   };
 }
 
-function createMemoryFeedbackLedger(): {
-  ledger: AgentFeedbackLedger;
-  events: AgentFeedbackEventInput[];
+function createMemoryEventRecorder(): {
+  sink: AgentEventSink;
+  events: AgentEventInput[];
 } {
-  const events: AgentFeedbackEventInput[] = [];
+  const events: AgentEventInput[] = [];
   return {
     events,
-    ledger: {
+    sink: {
       enabled: true,
       record(event) {
         events.push(event);
@@ -1105,7 +1105,7 @@ describe("agentLoop one-run lifecycle", () => {
         },
       };
       const read = readTool();
-      const feedback = createMemoryFeedbackLedger();
+      const feedback = createMemoryEventRecorder();
       const provider = createProvider([
         {
           kind: "transition_mode",
@@ -1160,7 +1160,7 @@ describe("agentLoop one-run lifecycle", () => {
         provider,
         toolExecutor: createToolExecutor([findTool, read, inspectPathsTool]),
         toolDefinitions: [findTool, read, inspectPathsTool],
-        feedbackLedger: feedback.ledger,
+        eventSink: feedback.sink,
         runRecorder: noopRunRecorder,
         runHandle: runHandle("R-recovered-transition-repairs"),
         clientId: "c1",
@@ -1789,7 +1789,7 @@ describe("agentLoop one-run lifecycle", () => {
           mode: "full",
         }],
       };
-      const feedback = createMemoryFeedbackLedger();
+      const feedback = createMemoryEventRecorder();
       const provider = createProvider([
         {
           kind: "transition_mode",
@@ -1845,7 +1845,7 @@ describe("agentLoop one-run lifecycle", () => {
         provider,
         toolExecutor: createToolExecutor([readFilesTool]),
         toolDefinitions: [readFilesTool],
-        feedbackLedger: feedback.ledger,
+        eventSink: feedback.sink,
         runRecorder: noopRunRecorder,
         runHandle: runHandle(runId),
         recordRunStep(record) {
@@ -1901,7 +1901,7 @@ describe("agentLoop one-run lifecycle", () => {
     try {
       const routingTool = workstreamSearchTool();
       const toolExecutor = createToolExecutor([writeFilesTool, routingTool, inspectPathsTool]);
-      const feedback = createMemoryFeedbackLedger();
+      const feedback = createMemoryEventRecorder();
       const provider = createProvider([
         {
           kind: "transition_mode",
@@ -1965,7 +1965,7 @@ describe("agentLoop one-run lifecycle", () => {
         runRecorder: noopRunRecorder,
         runHandle: runHandle(runId),
         recordRunStep,
-        feedbackLedger: feedback.ledger,
+        eventSink: feedback.sink,
         clientId: "c1",
         initialUserMessage: `Create a file at ${outputPath}`,
         dataDir,
@@ -2141,7 +2141,7 @@ describe("agentLoop one-run lifecycle", () => {
           },
         },
       ]);
-      const feedback = createMemoryFeedbackLedger();
+      const feedback = createMemoryEventRecorder();
       const workstreamBinding = {
         bind: vi.fn()
           .mockResolvedValueOnce({
@@ -2168,7 +2168,7 @@ describe("agentLoop one-run lifecycle", () => {
         runRecorder: noopRunRecorder,
         runHandle: runHandle(runId),
         workstreamBinding,
-        feedbackLedger: feedback.ledger,
+        eventSink: feedback.sink,
         clientId: "c1",
         initialUserMessage: `Create a file in ${projectPath}`,
         dataDir,
@@ -2308,14 +2308,14 @@ describe("agentLoop one-run lifecycle", () => {
       };
       const records: ContextRunStepRecord[] = [];
       const persistedContexts: HarnessContextInput[] = [];
-      const feedback = createMemoryFeedbackLedger();
+      const feedback = createMemoryEventRecorder();
 
       const result = await agentLoop({
         provider,
         toolExecutor,
         toolDefinitions: [writeFilesTool, routingTool, inspectPathsTool],
         workstreamBinding,
-        feedbackLedger: feedback.ledger,
+        eventSink: feedback.sink,
         runRecorder: noopRunRecorder,
         runHandle: runHandle(runId),
         recordRunStep(record, currentContext) {
@@ -2930,7 +2930,7 @@ describe("agentLoop one-run lifecycle", () => {
     const dataDir = makeTmpDir();
     const runId = "R-verified-no-match";
     const query = "missing-orbit-manual.txt";
-    const feedback = createMemoryFeedbackLedger();
+    const feedback = createMemoryEventRecorder();
     try {
       const provider = createProvider([
         {
@@ -2989,7 +2989,7 @@ describe("agentLoop one-run lifecycle", () => {
         provider,
         toolExecutor: createToolExecutor([findFilesTool]),
         toolDefinitions: [findFilesTool],
-        feedbackLedger: feedback.ledger,
+        eventSink: feedback.sink,
         runRecorder: noopRunRecorder,
         runHandle: runHandle(runId),
         clientId: "c1",

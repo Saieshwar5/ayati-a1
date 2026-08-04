@@ -16,10 +16,9 @@ Ayati uses one managed root:
 ```
 
 The daemon also keeps non-Git runtime data in its configured data directory,
-including personal/episodic memory, compact debug feedback, provider settings,
-document indexes, Python scratch data, plugin state, and event queues. Live
-evaluation evidence is isolated beneath `data/evaluations/`. Do not commit
-generated runtime state.
+including personal/episodic memory, provider settings, document indexes,
+Python scratch data, plugin state, and event queues. Live evaluation evidence
+is isolated beneath `data/evaluations/`. Do not commit generated runtime state.
 
 SQLite is authoritative for operational lifecycle and resource metadata.
 `workstreams/` is one portable shared context history containing
@@ -44,46 +43,11 @@ atomic Markdown/JSON reports live under
 turn or `pnpm eval:agent -- report --evaluation <id>` for the unified session
 view, including Context Engine lifecycle evidence.
 
-The legacy feedback ledger remains a compact debugging source for ordinary
-development, not an agent evaluation.
-
-## Compact Debug Feedback
-
-Feedback is opt-in. With `AYATI_TEST_AGENT=1` and `AYATI_FEEDBACK_TRACE=1`,
-ordered JSONL is written beneath the daemon feedback directory. Start with:
-
-```text
-feedback/latest-summary.json
-feedback/triage-summary.json
-feedback/latest-session.json
-```
-
-The compact summary includes outcome, stop reason, tool/step counts,
-verification, virtual-mode transitions, deterministic binding attempts,
-validation attempts, request decision, context-repository identity, resource
-count, observation/checkpoint facts, resource effects, before/after context
-HEAD, and context-commit status. `navigation` distinguishes transition,
-binding-gate, and validation outcomes; `contextEngine.workstreamLifecycle`
-groups:
-
-- repository identity, selection mode, health, and HEADs;
-- request decision, identity, status, and creation result;
-- run identity and binding state;
-- finalization outcome, validation, commit creation, and commit identity.
-
-The raw trace records events including `run_started`,
-`run_workstream_bound`, `run_step_persisted`, resource mutation preparation and
-verification, finalization start/completion/failure, and workstream context
-commits.
-
-Event recording performs only bounded in-memory normalization and enqueueing
-during a run; filesystem writes and report generation remain queued. Terminal
-report checkpoints are scheduled after dispatch and do not hold the serialized
-chat or system-event turn. Explicit `checkpoint`, `flush`, and daemon shutdown
-still provide a deterministic drain boundary for tests and evaluation capture.
-
-`pnpm feedback:context-engine` now aliases the unified latest live-evaluation
-report instead of maintaining a second Context Engine report surface.
+Agent event capture is active only for a live evaluation. Ordinary daemon runs
+use a no-op event sink and do not create a second feedback trace or summary.
+Evaluation writes and report generation remain queued; terminal checkpoints do
+not hold the serialized chat or system-event turn, and explicit inspection or
+daemon shutdown provides a deterministic drain boundary.
 
 ## Archive and Rebuild
 

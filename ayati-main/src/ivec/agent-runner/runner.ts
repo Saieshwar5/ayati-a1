@@ -51,7 +51,7 @@ import {
   evaluateCapabilitySurfaceProgress,
 } from "./capability-surface-progress-policy.js";
 import { recordRunStep } from "./step-lifecycle.js";
-import { buildContextEngineFeedbackSummary } from "../feedback-ledger.js";
+import { buildContextEngineEventSummary } from "../context-engine-event-summary.js";
 import {
   createFailureRecordFromStepSummary,
   hasRepeatedRepairFailure,
@@ -290,7 +290,7 @@ export async function runAgentLoop(
         verificationPassed: lastVerificationPassed ?? false,
         basedOnVerifiedFacts: workStateFindings(state.workState).length > 0
           || lastVerificationPassed === true,
-        contextEngine: buildContextEngineFeedbackSummary({
+        contextEngine: buildContextEngineEventSummary({
           context: state.harnessContext.contextEngine,
           finalizationStatus: "not_started",
           committed: false,
@@ -472,7 +472,7 @@ export async function runAgentLoop(
       recentFailureCount: state.failureHistory.length,
       consecutiveFailures: state.consecutiveFailures,
       finalReplyFromWorkState,
-      contextEngine: buildContextEngineFeedbackSummary({
+      contextEngine: buildContextEngineEventSummary({
         context: state.harnessContext.contextEngine,
       }),
       warningCodes: buildToolExposureWarningCodes(state, selectedTools),
@@ -524,7 +524,7 @@ export async function runAgentLoop(
         }),
         systemContext: deps.systemContext,
         metrics,
-        feedbackLedger: deps.feedbackLedger,
+        eventSink: deps.eventSink,
         feedbackContext: {
           clientId: deps.clientId,
           sessionId: inputHandle.sessionId,
@@ -561,7 +561,7 @@ export async function runAgentLoop(
       iteration: state.iteration,
       decision: summarizeDecision(decision),
       pendingTurnStatus: state.harnessContext.contextEngine?.current.routing?.status,
-      contextEngine: buildContextEngineFeedbackSummary({
+      contextEngine: buildContextEngineEventSummary({
         context: state.harnessContext.contextEngine,
       }),
     });

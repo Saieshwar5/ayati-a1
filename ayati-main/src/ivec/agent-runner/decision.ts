@@ -29,7 +29,7 @@ import {
   type ToolPurpose,
 } from "../../skills/tool-taxonomy.js";
 import type { ToolContractAssertion, ToolDefinition } from "../../skills/types.js";
-import type { AgentFeedbackLedger } from "../feedback-ledger.js";
+import type { AgentEventSink } from "../agent-event-sink.js";
 import {
   operationPurposeForDecision,
   withEvaluationModelOperation,
@@ -165,7 +165,7 @@ interface CallAgentDecisionInput {
   runContextMaintenanceAvailable?: boolean;
   systemContext?: string;
   metrics?: RunMetrics;
-  feedbackLedger?: AgentFeedbackLedger;
+  eventSink?: AgentEventSink;
   feedbackContext?: AgentDecisionFeedbackContext;
   toolContextProjectionPolicy?: ToolContextProjectionPolicy;
   contextCheckpoint?: AgentContextCheckpointCoordinator;
@@ -776,10 +776,10 @@ function recordDecisionFeedback(
   event: string,
   data: Record<string, unknown>,
 ): void {
-  if (!input.feedbackLedger || !input.feedbackContext) {
+  if (!input.eventSink || !input.feedbackContext) {
     return;
   }
-  input.feedbackLedger.record({
+  input.eventSink.record({
     ...input.feedbackContext,
     stage: "decision",
     event,

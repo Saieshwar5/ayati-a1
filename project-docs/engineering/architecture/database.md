@@ -45,7 +45,7 @@ Storage responsibilities are intentionally split:
   context and append-only progress;
 - Context Engine SQLite: catalog, coordination, idempotency, and detailed run
   journal;
-- feedback traces: operator diagnostics;
+- live evaluation evidence: operator diagnostics;
 - personal/episodic stores: cross-task user memory and semantic recall.
 
 Do not place raw run transcripts in context Git merely because they exist in

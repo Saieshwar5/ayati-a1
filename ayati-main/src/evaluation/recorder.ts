@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type {
-  AgentFeedbackEventInput,
-  AgentFeedbackLedger,
-} from "../ivec/feedback-ledger.js";
+  AgentEventInput,
+  AgentEventSink,
+} from "../ivec/agent-event-sink.js";
 import { currentEvaluationContext } from "./async-context.js";
 import type {
   EvaluationArtifactReference,
@@ -22,7 +22,7 @@ interface TimedRecord {
   startedNs: bigint;
 }
 
-export class LiveEvaluationRecorder implements AgentFeedbackLedger {
+export class LiveEvaluationRecorder implements AgentEventSink {
   readonly enabled = true;
   readonly operations = new Map<string, ModelOperation>();
   readonly requests = new Map<string, ProviderRequest>();
@@ -36,7 +36,7 @@ export class LiveEvaluationRecorder implements AgentFeedbackLedger {
     readonly session: LiveEvaluationSession,
   ) {}
 
-  record(input: AgentFeedbackEventInput): void {
+  record(input: AgentEventInput): void {
     this.updateParsingOutcome(input);
     const context = currentEvaluationContext();
     const at = new Date();
@@ -384,7 +384,7 @@ export class LiveEvaluationRecorder implements AgentFeedbackLedger {
     return await Promise.all(values.map((value) => this.storage.writeArtifact(value.kind, value.value, value.mediaType)));
   }
 
-  private updateParsingOutcome(input: AgentFeedbackEventInput): void {
+  private updateParsingOutcome(input: AgentEventInput): void {
     if (input.stage !== "decision" || !input.runId) return;
     const request = [...this.requests.values()].reverse().find((item) => item.runId === input.runId);
     if (!request?.parsing) return;
@@ -453,33 +453,6 @@ export class LiveEvaluationRecorder implements AgentFeedbackLedger {
       artifacts: [request.canonicalRequest, ...(request.normalizedResponse ? [request.normalizedResponse] : [])].filter(Boolean),
     } satisfies EvaluationEvent);
   }
-}
-
-export function combineFeedbackLedgers(
-  primary: AgentFeedbackLedger,
-  evaluation?: LiveEvaluationRecorder,
-): AgentFeedbackLedger {
-  if (!evaluation) return primary;
-  return {
-    enabled: primary.enabled || evaluation.enabled,
-    record(event): void {
-      primary.record(event);
-      evaluation.record(event);
-    },
-    scheduleCheckpoint(runId?: string): void {
-      primary.scheduleCheckpoint?.(runId);
-      evaluation.scheduleCheckpoint(runId);
-    },
-    async checkpoint(runId?: string): Promise<void> {
-      await Promise.all([primary.checkpoint?.(runId), evaluation.checkpoint(runId)]);
-    },
-    async flush(): Promise<void> {
-      await Promise.all([primary.flush(), evaluation.flush()]);
-    },
-    async close(): Promise<void> {
-      await Promise.all([primary.close(), evaluation.flush()]);
-    },
-  };
 }
 
 function inferOutcome(event: string, data?: Record<string, unknown>): EvaluationEvent["outcome"] {

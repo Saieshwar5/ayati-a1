@@ -50,8 +50,7 @@ ayati-main/data/evaluations/<evaluation-id>/session-report.md
 ```
 
 Run `pnpm eval:agent -- inspect --evaluation <id> --latest` for the latest
-evidence-linked turn report. `pnpm feedback:context-engine` is a compatibility
-alias for the unified latest report. Also inspect:
+evidence-linked turn report. Also inspect:
 
 - run, step, workstream, request, resource, binding, and journal database rows;
 - `<AYATI_ROOT_DIR>/workstreams/<W-*>/workstream.md`;

@@ -37,10 +37,8 @@ import {
 } from "../ivec/harness-context.js";
 import { devError, devLog, devWarn } from "../shared/index.js";
 import { agentLoop } from "../ivec/agent-loop.js";
-import {
-  buildContextEngineFeedbackSummary,
-  type AgentFeedbackLedger,
-} from "../ivec/feedback-ledger.js";
+import type { AgentEventSink } from "../ivec/agent-event-sink.js";
+import { buildContextEngineEventSummary } from "../ivec/context-engine-event-summary.js";
 import type { ChatTurnRuntime, ChatTurnRuntimeInput } from "../ivec/chat-turn-runtime.js";
 import type { CapabilitySurfaceManager } from "../ivec/agent-runner/capabilities/surface-manager.js";
 import type { HotContextRuntime } from "../ivec/hot-context/index.js";
@@ -85,7 +83,7 @@ export interface CreateChatTurnRuntimeOptions {
   preparedAttachmentRegistry?: PreparedAttachmentRegistry;
   fileLibrary?: FileLibrary;
   directoryLibrary?: DirectoryLibrary;
-  feedbackLedger?: AgentFeedbackLedger;
+  eventSink?: AgentEventSink;
 }
 
 interface RegisteredChatAttachments {
@@ -142,7 +140,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   private readonly preparedAttachmentRegistry?: PreparedAttachmentRegistry;
   private readonly fileLibrary?: FileLibrary;
   private readonly directoryLibrary?: DirectoryLibrary;
-  private readonly feedbackLedger?: AgentFeedbackLedger;
+  private readonly eventSink?: AgentEventSink;
   private readonly chatContextRuntime: ContextEngineRuntime;
   private readonly contextEngineService?: ContextEngineService;
   private readonly pulseProposalReflectionService = new PulseProposalReflectionService();
@@ -165,7 +163,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       ?? (this.documentStore ? new PreparedAttachmentRegistry() : undefined);
     this.fileLibrary = options.fileLibrary;
     this.directoryLibrary = options.directoryLibrary;
-    this.feedbackLedger = options.feedbackLedger;
+    this.eventSink = options.eventSink;
     this.chatContextRuntime = options.chatContextRuntime;
     this.contextEngineService = options.contextEngineService;
   }
@@ -174,7 +172,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     const serializationKey = this.chatTurnSerializationKey(input);
     const queued = this.turnSerializer.isBusy(serializationKey);
     if (queued) {
-      this.feedbackLedger?.record({
+      this.eventSink?.record({
         clientId: input.clientId,
         stage: "runtime",
         event: "chat_turn_queued",
@@ -186,7 +184,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     }
     return await this.turnSerializer.enqueue(serializationKey, async () => {
       if (queued) {
-        this.feedbackLedger?.record({
+        this.eventSink?.record({
           clientId: input.clientId,
           stage: "runtime",
           event: "chat_turn_started_after_queue",
@@ -221,7 +219,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       );
       inputHandle = this.inputHandleFromChatContextTurn(chatContextTurn);
       runHandle = chatContextTurn.run;
-      this.feedbackLedger?.record({
+      this.eventSink?.record({
         clientId: input.clientId,
         sessionId: inputHandle.sessionId,
         seq: inputHandle.seq,
@@ -288,7 +286,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           dataDir: this.dataDir ?? "data",
           systemContext: buildStaticSystemContext(this.staticContext),
           harnessContext,
-          feedbackLedger: this.feedbackLedger,
+          eventSink: this.eventSink,
           attachedDocuments: registeredAttachments.documents,
           attachmentWarnings: registeredAttachments.warnings,
           managedFiles: registeredAttachments.managedFiles,
@@ -332,7 +330,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           result,
         );
         this.dispatchAgentResponse(input.clientId, runHandle, result, commitStatus, liveFinalResponseStream);
-        this.feedbackLedger?.record({
+        this.eventSink?.record({
           clientId: input.clientId,
           sessionId: inputHandle.sessionId,
           seq: inputHandle.seq,
@@ -348,7 +346,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
             runPath: result.runPath,
           },
         });
-        this.feedbackLedger?.scheduleCheckpoint?.(runHandle.runId);
+        this.eventSink?.scheduleCheckpoint?.(runHandle.runId);
       } else {
         const echoContent = `Received: "${input.content}"`;
         const result = directReplyResult(runHandle.runId, echoContent);
@@ -362,7 +360,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           type: "reply",
           content: echoContent,
         }, commitStatus);
-        this.feedbackLedger?.record({
+        this.eventSink?.record({
           clientId: input.clientId,
           sessionId: inputHandle.sessionId,
           seq: inputHandle.seq,
@@ -371,11 +369,11 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           event: "dispatched",
           data: { type: "reply", status: result.status, stopReason: result.stopReason, content: echoContent },
         });
-        this.feedbackLedger?.scheduleCheckpoint?.(runHandle.runId);
+        this.eventSink?.scheduleCheckpoint?.(runHandle.runId);
       }
     } catch (err) {
       devError("Provider error:", err);
-      this.feedbackLedger?.record({
+      this.eventSink?.record({
         clientId: input.clientId,
         ...(inputHandle ? { sessionId: inputHandle.sessionId, seq: inputHandle.seq } : {}),
         ...(runHandle ? { runId: runHandle.runId } : {}),
@@ -391,7 +389,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       });
       if (runHandle) {
         const message = err instanceof Error ? err.message : "Unknown runtime failure";
-        this.feedbackLedger?.record({
+        this.eventSink?.record({
           clientId: input.clientId,
           sessionId: runHandle.streamId,
           runId: runHandle.runId,
@@ -422,7 +420,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         content: formatChatRuntimeError(err),
         ...(runHandle ? { runId: runHandle.runId } : {}),
       });
-      if (runHandle) this.feedbackLedger?.scheduleCheckpoint?.(runHandle.runId);
+      if (runHandle) this.eventSink?.scheduleCheckpoint?.(runHandle.runId);
     }
   }
 
@@ -444,7 +442,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     });
     const contextEngine = turn.context;
 
-    this.feedbackLedger?.record({
+    this.eventSink?.record({
       clientId,
       sessionId: turn.streamId,
       seq: turn.messageSequence,
@@ -453,7 +451,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       data: {
         status: turn.status,
         messageSequence: turn.messageSequence,
-        contextEngine: buildContextEngineFeedbackSummary({
+        contextEngine: buildContextEngineEventSummary({
           context: contextEngine,
           routeSource: "runtime",
         }),
@@ -461,7 +459,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         context: summarizeHarnessContext({ contextEngine }),
       },
     });
-    this.feedbackLedger?.record({
+    this.eventSink?.record({
       clientId,
       sessionId: turn.streamId,
       seq: turn.messageSequence,
@@ -470,7 +468,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       data: {
         status: contextEngine.current.routing?.status ?? "none",
         routing: contextEngine.current.routing,
-        contextEngine: buildContextEngineFeedbackSummary({
+        contextEngine: buildContextEngineEventSummary({
           context: contextEngine,
           routeSource: "runtime",
         }),
@@ -485,7 +483,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     result: AgentLoopResult,
   ): Promise<ReplyCommitStatus> {
     const workstreamBound = isWorkstreamBoundRun(prepared, result);
-    this.feedbackLedger?.record({
+    this.eventSink?.record({
       clientId,
       sessionId: prepared.streamId,
       seq: prepared.messageSequence,
@@ -513,7 +511,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     prepared: ContextEnginePreparedTurn,
     finalized: FinalizeRunResponse,
   ): void {
-    this.feedbackLedger?.record({
+    this.eventSink?.record({
       clientId,
       sessionId: prepared.streamId,
       seq: prepared.messageSequence,

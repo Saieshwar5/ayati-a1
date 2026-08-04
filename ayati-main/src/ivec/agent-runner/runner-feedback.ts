@@ -8,7 +8,7 @@ import type {
   WorkState,
 } from "../types.js";
 import { measureJson } from "../state-compaction.js";
-import { buildContextEngineFeedbackSummary } from "../feedback-ledger.js";
+import { buildContextEngineEventSummary } from "../context-engine-event-summary.js";
 import { isObservationalTool } from "../../skills/tool-taxonomy.js";
 import type { ToolDefinition } from "../../skills/types.js";
 import type { AgentAction } from "./decision.js";
@@ -40,7 +40,7 @@ export function recordFeedback(
   event: string,
   data?: Record<string, unknown>,
 ): void {
-  deps.feedbackLedger?.record({
+  deps.eventSink?.record({
     clientId: deps.clientId,
     sessionId: inputHandle.sessionId,
     seq: inputHandle.seq,
@@ -109,7 +109,7 @@ export function recordCapabilitySurfaceFeedback(input: {
     selected: summarizeToolDefinitions(input.selectedTools),
     toolPolicyAudit,
     normalSelectedTools: normalWorkstreamToolNames(input.selectedTools),
-    contextEngine: buildContextEngineFeedbackSummary({
+    contextEngine: buildContextEngineEventSummary({
       context: input.state.harnessContext.contextEngine,
     }),
     ...(warningCodes.length > 0 ? { warningCodes } : {}),

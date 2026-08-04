@@ -17,7 +17,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
       laneId: `main:${deps.runHandle.runId}`,
       provider: deps.provider,
       onDetachedEvent: (event) => {
-        deps.feedbackLedger?.record({
+        deps.eventSink?.record({
           clientId: deps.clientId,
           sessionId: deps.runHandle.streamId,
           runId: deps.runHandle.runId,

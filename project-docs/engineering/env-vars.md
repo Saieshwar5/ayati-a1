@@ -122,22 +122,18 @@ AYATI_PYTHON_INTERPRETER=
 Other `AYATI_PYTHON_*` variables are runtime-owned child-process inputs, not
 normal operator configuration.
 
-## Harness and Feedback
+## Harness and Evaluation
 
 ```env
 AYATI_AGENT_MAX_CAPABILITY_SURFACE_TOOLS=8
-AYATI_TEST_AGENT=1
-AYATI_FEEDBACK_TRACE=1
-AYATI_FEEDBACK_FULL=
 AYATI_AGENT_TRACE=
 AYATI_AGENT_TRACE_PROMPTS=
 ```
 
-Feedback files are written only when both test-agent and feedback-trace flags
-are truthy. Full payload tracing and prompt tracing can contain sensitive data;
-enable them only for deliberate local debugging. With machine read scope,
-readable host-file content may also be sent to the configured model provider
-and retained in the run journal even when tracing is disabled.
+Agent and prompt tracing can contain sensitive data; enable it only for
+deliberate local debugging. With machine read scope, readable host-file content
+may also be sent to the configured model provider and retained in the run
+journal even when tracing is disabled.
 
 The supported real-daemon evaluation entry point is `pnpm eval:agent -- live`.
 It sets runtime-owned `AYATI_EVALUATION_ID`, `AYATI_EVALUATION_NAME`,

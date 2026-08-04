@@ -12,7 +12,6 @@ dist/
 # Runtime data and generated files
 data/
 artifacts/
-ayati-main/work_space/
 ayati-main/ayati/
 ayati-main/ayati-archive-*/
 *.log
