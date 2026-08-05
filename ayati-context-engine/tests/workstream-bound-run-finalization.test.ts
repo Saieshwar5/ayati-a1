@@ -646,6 +646,101 @@ describe("workstream-bound run finalization", () => {
     expect("observations" in context).toBe(false);
   });
 
+  it("finalizes a failed bound run from authoritative state when completion projection is missing", async () => {
+    const fixture = await createFixture("failed-bound-fallback");
+    const created = await createBoundWorkstreamWithMutableDirectory(fixture, {
+      title: "Provider Failure Recovery",
+      objective: "Keep unfinished work resumable after a decision-provider failure.",
+    });
+    await fixture.service.checkpointRunWorkState({
+      requestId: "REQ-provider-failure-checkpoint",
+      runId: fixture.prepared.run.runId,
+      expectedRevision: 0,
+      afterStep: 0,
+      reason: "plan",
+      workState: workState({
+        summary: "The project is bound and implementation remains.",
+        plan: [
+          { id: "inspect", task: "Inspect the existing project.", status: "done" },
+          { id: "implement", task: "Implement the requested change.", status: "active" },
+        ],
+        importantContext: [{
+          kind: "finding",
+          value: "The existing project owns this request.",
+        }],
+        nextAction: "Implement the requested change.",
+      }),
+      at: "2026-07-19T10:02:00+05:30",
+    });
+    const input = failedFinalization(fixture);
+    delete input.workstream;
+    input.summary = "The decision provider timed out.";
+    input.workState = workState({
+      status: "blocked",
+      summary: "The decision provider timed out.",
+      importantContext: [{ kind: "constraint", value: "Provider timeout" }],
+      nextAction: "Retry from the latest verified state.",
+    });
+
+    const result = await fixture.service.finalizeRun(input);
+    const context = await fixture.service.getAgentContext({
+      streamId: fixture.prepared.stream.streamId,
+    });
+    const persisted = fixture.database.prepare([
+      "SELECT status, summary, plan_json, important_context_json, next_action, update_reason",
+      "FROM run_work_state WHERE run_id = ?",
+    ].join(" ")).get(fixture.prepared.run.runId) as {
+      status: string;
+      summary: string;
+      plan_json: string;
+      important_context_json: string;
+      next_action: string | null;
+      update_reason: string;
+    };
+
+    expect(result).toMatchObject({
+      run: { status: "failed", stopReason: "failed" },
+      workstreamContextCommit: {
+        status: "committed",
+        workstreamId: created.workstream.workstreamId,
+        requestId: "R-0001",
+      },
+    });
+    expect(persisted).toMatchObject({
+      status: "in_progress",
+      summary: "The decision provider timed out.",
+      next_action: "Retry from the latest verified state.",
+      update_reason: "run_paused",
+    });
+    expect(JSON.parse(persisted.plan_json)).toEqual([
+      { id: "inspect", task: "Inspect the existing project.", status: "done" },
+      { id: "implement", task: "Implement the requested change.", status: "pending" },
+    ]);
+    expect(JSON.parse(persisted.important_context_json)).toEqual([
+      { kind: "finding", value: "The existing project owns this request." },
+      { kind: "constraint", value: "Provider timeout" },
+    ]);
+    expect(context.stream?.focusedWorkstream).toMatchObject({
+      workstream: { workstreamId: created.workstream.workstreamId },
+      selectedRequest: { id: "R-0001", status: "active" },
+    });
+  });
+
+  it("still rejects successful bound finalization without completion evidence", async () => {
+    const fixture = await createFixture("done-without-completion");
+    await createBoundWorkstreamWithMutableDirectory(fixture);
+    const input = doneFinalization(fixture, []);
+    delete input.workstream;
+
+    await expect(fixture.service.finalizeRun(input)).rejects.toMatchObject({
+      code: "INVALID_REQUEST",
+      message: "Workstream-bound finalization requires workstream completion evidence.",
+    });
+    expect(fixture.database.prepare(
+      "SELECT status, stop_reason FROM runs WHERE run_id = ?",
+    ).get(fixture.prepared.run.runId)).toEqual({ status: "running", stop_reason: null });
+  });
+
   it("restores a material WorkState when the next run continues the same request", async () => {
     const fixture = await createFixture("work-state-continuation");
     const created = await createBoundWorkstreamWithMutableDirectory(fixture, {

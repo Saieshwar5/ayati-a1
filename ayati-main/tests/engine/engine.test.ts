@@ -79,7 +79,10 @@ function createThrowingProvider(error: Error): LlmProvider {
   };
 }
 
-function createSingleLoopMutationProvider(outputPath: string): LlmProvider {
+function createSingleLoopMutationProvider(
+  outputPath: string,
+  options: { failFromDecision?: number; failure?: Error } = {},
+): LlmProvider {
   let decision = 0;
   return {
     name: "mock",
@@ -92,6 +95,9 @@ function createSingleLoopMutationProvider(outputPath: string): LlmProvider {
     stop: vi.fn(),
     generateTurn: vi.fn(async (input): Promise<LlmTurnOutput> => {
       decision++;
+      if (options.failFromDecision !== undefined && decision >= options.failFromDecision) {
+        throw options.failure ?? new Error("Decision provider unavailable");
+      }
       if (decision === 1) {
         return nativeDecisionFixture({
           kind: "transition_mode",
@@ -802,6 +808,90 @@ describe("IVecEngine one-run integration", () => {
     }
   });
 
+  it("finalizes a provider failure after binding without leaving the stream active", async () => {
+    const dataDir = makeTmpDir("ayati-bound-provider-failure-");
+    const workingDirectory = join(dataDir, "workspace");
+    const outputPath = join(workingDirectory, "provider-failure.txt");
+    const database = await ContextDatabase.open({ path: join(dataDir, "context.sqlite") });
+    const service = new SqliteContextEngineService({
+      database,
+      rootDirectory: dataDir,
+      now: () => "2026-07-21T10:00:00.000Z",
+    });
+    const runtime = createContextEngineRuntime({
+      service,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      scopeKey: "default",
+    });
+    const prepareUserTurn = vi.spyOn(runtime, "prepareUserTurn");
+    const finalizeRun = vi.spyOn(runtime, "finalizeRun");
+    const timeout = Object.assign(new Error("Request timed out."), {
+      name: "APIConnectionTimeoutError",
+    });
+    const provider = createSingleLoopMutationProvider(outputPath, {
+      failFromDecision: 6,
+      failure: timeout,
+    });
+    const gitContextTools = createGitContextSkill({ service }).tools;
+    const onReply = vi.fn();
+    const engine = createEngine({
+      onReply,
+      provider,
+      workspaceRoot: workingDirectory,
+      dataDir,
+      chatContextRuntime: runtime,
+      contextEngineService: service,
+      toolExecutor: createToolExecutor([writeFilesTool, inspectPathsTool, ...gitContextTools]),
+    });
+
+    try {
+      await engine.start();
+      engine.handleMessage("c1", {
+        type: "chat",
+        content: `Create a file at ${outputPath}`,
+      });
+
+      await vi.waitFor(() => {
+        expect(onReply.mock.calls.some(([, response]) => (
+          response as { type?: string }
+        ).type === "reply")).toBe(true);
+      }, { timeout: 5_000 });
+      const prepared = await prepareUserTurn.mock.results[0]!.value;
+      expect(readFileSync(outputPath, "utf8")).toBe("same durable run");
+      expect(finalizeRun).toHaveBeenCalledWith(expect.objectContaining({
+        turn: expect.objectContaining({ run: expect.objectContaining({ runId: prepared.run.runId }) }),
+        outcome: "failed",
+        stopReason: "failed",
+        workstreamCompletion: expect.objectContaining({
+          accepted: false,
+          effects: [expect.objectContaining({ path: outputPath })],
+        }),
+        workstreamRequestEffect: { kind: "none" },
+      }));
+      expect(database.prepare(
+        "SELECT status, stop_reason FROM runs WHERE run_id = ?",
+      ).get(prepared.run.runId)).toEqual({ status: "failed", stop_reason: "failed" });
+      expect(database.prepare([
+        "SELECT q.status FROM runs r JOIN workstream_requests q",
+        "ON q.workstream_id = r.workstream_id AND q.request_id = r.bound_request_id",
+        "WHERE r.run_id = ?",
+      ].join(" ")).get(prepared.run.runId)).toEqual({ status: "active" });
+      expect(onReply).toHaveBeenCalledWith("c1", expect.objectContaining({
+        type: "reply",
+        content: expect.stringContaining("remained unavailable after one retry"),
+        runId: prepared.run.runId,
+      }));
+      expect(onReply).toHaveBeenCalledWith("c1", expect.objectContaining({
+        content: expect.stringContaining("preserved 1 verified filesystem change"),
+      }));
+    } finally {
+      await engine.stop();
+      await service.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("does not send a successful terminal envelope when finalization fails", async () => {
     const dataDir = makeTmpDir();
     try {
@@ -963,7 +1053,7 @@ describe("IVecEngine one-run integration", () => {
     }
   });
 
-  it("finalizes a provider crash as failed before sending the error", async () => {
+  it("finalizes an unbound provider crash before sending the failure reply", async () => {
     const dataDir = makeTmpDir();
     try {
       const runtime = createContextRuntime(createPreparedTurn({ role: "user", runId: "R-provider-fails" }));
@@ -987,11 +1077,12 @@ describe("IVecEngine one-run integration", () => {
       }));
       expect(vi.mocked(runtime.finalizeRun).mock.invocationCallOrder[0])
         .toBeLessThan(onReply.mock.invocationCallOrder[0]!);
-      expect(onReply).toHaveBeenCalledWith("c1", {
-        type: "error",
-        content: "Failed to generate a response.",
+      expect(onReply).toHaveBeenCalledWith("c1", expect.objectContaining({
+        type: "reply",
+        content: expect.stringContaining("decision provider or runtime failed"),
         runId: "R-provider-fails",
-      });
+        commitStatus: "not_required",
+      }));
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }

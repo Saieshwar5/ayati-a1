@@ -7,11 +7,19 @@ OPENAI_API_KEY=
 OPENROUTER_API_KEY=
 ANTHROPIC_API_KEY=
 FIREWORKS_API_KEY=
+AYATI_LLM_REQUEST_TIMEOUT_MS=120000
 ```
 
 Chat, embedding, image, and context-window model settings live in
 `ayati-main/data/runtime/llm-config.json`. OpenAI embeddings and image
 generation require `OPENAI_API_KEY`.
+
+LLM generation uses the explicit request timeout above, accepts values from
+1,000 through 600,000 milliseconds, and defaults to 120 seconds. Provider SDK
+retries are disabled for these generation requests. The foreground decision
+boundary retries one transient timeout, connection, rate-limit, or server
+failure with the exact same compiled input; permanent account/configuration
+failures and unknown errors are not retried.
 
 A model context profile may contain:
 

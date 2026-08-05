@@ -760,6 +760,23 @@ normally instead of misclassifying the run as limited.
 The deterministic closeout is also the provider-independent fallback: it
 always produces a bounded response even when no model budget remains.
 
+A decision-provider or decision-runtime exception uses the same safety shape:
+the runner makes no additional model call, pauses active plan items, preserves
+executor-verified filesystem effects, and returns a failed handoff through
+normal finalization. If that run has already bound, Context Engine derives
+negative completion evidence from the authoritative binding and persisted
+WorkState when the caller no longer has the refreshed bound projection.
+Successful `done` finalization never receives this fallback and still requires
+accepted completion evidence. Uncertain mutation or context-repository state
+continues to become `recovery_required` instead of being forced closed.
+
+Foreground generation requests disable provider-SDK retries and use an
+explicit bounded timeout. The decision boundary classifies transport failures
+without model involvement and retries at most one transient failure with the
+same compiled input. Permanent account or request failures, cancellation,
+unknown failures, and streaming failures after visible output are not retried.
+An exhausted retry enters the deterministic unsuccessful closeout above.
+
 ## Outcome Mapping
 
 ```text

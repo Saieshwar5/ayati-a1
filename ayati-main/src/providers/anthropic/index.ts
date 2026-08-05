@@ -13,6 +13,7 @@ import type {
 import { estimateTurnInputTokens } from "../../prompt/token-estimator.js";
 import { hasImageInput, toAnthropicContent } from "../shared/multimodal.js";
 import { getProviderCapabilities } from "../shared/provider-profiles.js";
+import { getProviderRequestOptions } from "../shared/provider-call-policy.js";
 import {
   buildToolNameMapsForProvider,
   toCanonicalToolName,
@@ -199,7 +200,7 @@ const provider: LlmProvider = {
       ...(tools ? { tools: tools as any } : {}),
     };
     captureProviderNativePayload({ provider: "anthropic", operation: "generateTurn", payload: request });
-    const response = await client.messages.create(request as any);
+    const response = await client.messages.create(request as any, getProviderRequestOptions());
     captureProviderNativeResponse({ provider: "anthropic", operation: "generateTurn", response });
     const usage = readAnthropicUsage(model, response);
 

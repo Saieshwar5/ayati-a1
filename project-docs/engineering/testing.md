@@ -261,6 +261,18 @@ Changes should prove the relevant invariants:
     provisional workstreams and atomically discards a bound initializing
     workstream when its creating run has no durable resource evidence. Bound
     provisional state with a resource remains available for finalization recovery.
+    A decision-provider failure after binding must finalize the run as failed,
+    preserve any executor-verified filesystem effects, keep the unfinished
+    request active and focused, and allow the next stream input. A caller that
+    lost its refreshed bound projection may omit workstream completion only for
+    an unsuccessful outcome; Context Engine derives `accepted: false` from the
+    authoritative run and persisted WorkState. `done` without accepted
+    completion evidence remains invalid.
+    Foreground generation disables hidden SDK retries, applies the configured
+    timeout to each provider request, retries at most one classified transient
+    failure with the same compiled input, and never retries permanent,
+    cancelled, unknown, or partially streamed failures. Exhaustion still
+    reaches deterministic failed-run finalization.
 42. Nested-repository migration is preview-first, refuses dirty or
     non-context repositories, preserves originals in an archive, converts v2
     cards and requests, creates an empty progress baseline when the legacy

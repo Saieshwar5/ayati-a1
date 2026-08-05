@@ -22,6 +22,12 @@ import {
 import type { ContextCompilationReceipt } from "../../prompt/context-compilation-receipt.js";
 import { resolveModelContextLimits } from "../../providers/shared/model-context-limits.js";
 import type { ResolvedModelContextLimits } from "../../providers/shared/model-context-limits.js";
+import {
+  classifyProviderFailure,
+  MAX_PROVIDER_RETRIES,
+  PROVIDER_RETRY_DELAY_MS,
+  toProviderCallError,
+} from "../../providers/shared/provider-call-policy.js";
 import { agentTrace, isAgentTracePromptEnabled, tracePreview } from "../../shared/index.js";
 import {
   getToolPurpose,
@@ -208,8 +214,6 @@ interface AgentDecisionFeedbackContext {
 }
 
 const MAX_DECISION_ATTEMPTS = 3;
-const MAX_PROVIDER_EMPTY_RESPONSE_RETRIES = 1;
-const PROVIDER_EMPTY_RESPONSE_RETRY_DELAY_MS = 400;
 const TOOL_PROTOCOL_FAILURE_REPLY = "I could not form a valid tool call for this request.";
 const TERMINAL_STOP_TOOL_NAME = "decision_stop";
 const WORK_STATE_CHECKPOINT_TOOL_NAME = "decision_checkpoint_workstate";
@@ -639,6 +643,7 @@ async function generateTurnWithEmptyResponseRetry(
 
   for (;;) {
     providerAttempt++;
+    let receivedStreamingOutput = false;
     try {
       const purpose = operationPurposeForDecision({
         finalResponse: input.contextPreparationMode === "final_response",
@@ -662,7 +667,10 @@ async function generateTurnWithEmptyResponseRetry(
           && input.provider.streamTurn
         ) {
           return await input.provider.streamTurn(compilation.finalTurnInput, {
-            onTextDelta: input.onAssistantTextDelta,
+            onTextDelta: (delta) => {
+              receivedStreamingOutput = true;
+              input.onAssistantTextDelta?.(delta);
+            },
           });
         }
         return await input.provider.generateTurn(compilation.finalTurnInput);
@@ -670,10 +678,27 @@ async function generateTurnWithEmptyResponseRetry(
     } catch (error) {
       const responseFailure = providerResponseFailureDetails(error);
       if (!responseFailure) {
-        throw error;
+        const failure = classifyProviderFailure(error, input.provider.name);
+        const willRetry = failure.retryable
+          && providerAttempt <= MAX_PROVIDER_RETRIES
+          && !receivedStreamingOutput;
+        const retryDelayMs = failure.retryDelayMs ?? PROVIDER_RETRY_DELAY_MS;
+        recordDecisionFeedback(input, "provider_call_failed", {
+          attempt: request.decisionAttempt,
+          providerAttempt,
+          ...failure,
+          receivedStreamingOutput,
+          willRetry,
+          ...(willRetry ? { retryDelayMs } : {}),
+        });
+        if (!willRetry) {
+          throw toProviderCallError(error, input.provider.name);
+        }
+        await delay(retryDelayMs);
+        continue;
       }
 
-      const willRetry = providerAttempt <= MAX_PROVIDER_EMPTY_RESPONSE_RETRIES;
+      const willRetry = providerAttempt <= MAX_PROVIDER_RETRIES;
       const repair = createRepairSignal(responseFailure.repairCode, {
         operatorDetails: {
           attempt: request.decisionAttempt,
@@ -686,7 +711,7 @@ async function generateTurnWithEmptyResponseRetry(
           nativeToolCount: request.decisionTools.length,
           requestMode: request.decisionTools.length > 0 ? "tools" : "text",
           willRetry,
-          ...(willRetry ? { retryDelayMs: PROVIDER_EMPTY_RESPONSE_RETRY_DELAY_MS } : {}),
+          ...(willRetry ? { retryDelayMs: PROVIDER_RETRY_DELAY_MS } : {}),
         },
       });
       recordDecisionFeedback(input, responseFailure.event, {
@@ -700,14 +725,14 @@ async function generateTurnWithEmptyResponseRetry(
         nativeToolCount: request.decisionTools.length,
         requestMode: request.decisionTools.length > 0 ? "tools" : "text",
         willRetry,
-        ...(willRetry ? { retryDelayMs: PROVIDER_EMPTY_RESPONSE_RETRY_DELAY_MS } : {}),
+        ...(willRetry ? { retryDelayMs: PROVIDER_RETRY_DELAY_MS } : {}),
         ...repairSignalToFeedbackData(repair),
       });
 
       if (!willRetry) {
         throw error;
       }
-      await delay(PROVIDER_EMPTY_RESPONSE_RETRY_DELAY_MS);
+      await delay(PROVIDER_RETRY_DELAY_MS);
     }
   }
 }

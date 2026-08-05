@@ -9,6 +9,7 @@ import {
   ContextInputLimitError,
   ContextRunCapacityError,
 } from "../../src/prompt/context-compilation-receipt.js";
+import { ProviderCallError } from "../../src/providers/shared/provider-call-policy.js";
 import { callAgentDecision } from "../../src/ivec/agent-runner/decision.js";
 import type { AgentEventInput, AgentEventSink } from "../../src/ivec/agent-event-sink.js";
 import type { AgentStateView } from "../../src/ivec/agent-runner/state-view.js";
@@ -1969,6 +1970,165 @@ describe("callAgentDecision", () => {
         },
       },
     });
+  });
+
+  it("retries one transient provider failure with the same compiled input", async () => {
+    const timeout = Object.assign(new Error("Request timed out."), {
+      name: "APIConnectionTimeoutError",
+    });
+    const { provider, generateTurn } = createProviderFromMock(
+      vi.fn()
+        .mockRejectedValueOnce(timeout)
+        .mockResolvedValueOnce({ type: "assistant", content: "Recovered" }),
+    );
+    const feedback = createEventRecorder();
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+      eventSink: feedback.sink,
+      feedbackContext: {
+        clientId: "local",
+        sessionId: "S-test",
+        seq: 1,
+      },
+    });
+
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+    expect(generateTurn.mock.calls[1]?.[0]).toEqual(generateTurn.mock.calls[0]?.[0]);
+    expect(decision).toMatchObject({
+      kind: "reply",
+      status: "completed",
+      message: "Recovered",
+    });
+    expect(feedback.events.filter((event) => event.event === "provider_call_failed"))
+      .toEqual([expect.objectContaining({
+        data: expect.objectContaining({
+          providerAttempt: 1,
+          provider: "fake-provider",
+          kind: "transient",
+          retryable: true,
+          receivedStreamingOutput: false,
+          willRetry: true,
+          retryDelayMs: 400,
+        }),
+      })]);
+  });
+
+  it("does not retry a permanent provider failure", async () => {
+    const rejected = Object.assign(new Error("Account spending limit reached"), { status: 429 });
+    const { provider, generateTurn } = createProviderFromMock(vi.fn().mockRejectedValue(rejected));
+    const feedback = createEventRecorder();
+
+    const error = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+      eventSink: feedback.sink,
+      feedbackContext: {
+        clientId: "local",
+        sessionId: "S-test",
+        seq: 1,
+      },
+    }).then(() => null, (caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ProviderCallError);
+    expect(error).toMatchObject({
+      name: "ProviderCallError",
+      details: {
+        provider: "fake-provider",
+        kind: "permanent",
+        retryable: false,
+        status: 429,
+      },
+    });
+    expect(generateTurn).toHaveBeenCalledTimes(1);
+    expect(feedback.events.filter((event) => event.event === "provider_call_failed"))
+      .toEqual([expect.objectContaining({
+        data: expect.objectContaining({ willRetry: false }),
+      })]);
+  });
+
+  it("stops after one retry when a transient provider failure continues", async () => {
+    const timeout = Object.assign(new Error("Request timed out."), {
+      name: "APIConnectionTimeoutError",
+    });
+    const { provider, generateTurn } = createProviderFromMock(vi.fn().mockRejectedValue(timeout));
+    const feedback = createEventRecorder();
+
+    const error = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+      eventSink: feedback.sink,
+      feedbackContext: {
+        clientId: "local",
+        sessionId: "S-test",
+        seq: 1,
+      },
+    }).then(() => null, (caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ProviderCallError);
+    expect(error).toMatchObject({
+      details: {
+        provider: "fake-provider",
+        kind: "transient",
+        retryable: true,
+      },
+    });
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+    expect(feedback.events.filter((event) => event.event === "provider_call_failed"))
+      .toEqual([
+        expect.objectContaining({ data: expect.objectContaining({ providerAttempt: 1, willRetry: true }) }),
+        expect.objectContaining({ data: expect.objectContaining({ providerAttempt: 2, willRetry: false }) }),
+      ]);
+  });
+
+  it("does not retry a streaming failure after visible output", async () => {
+    const timeout = Object.assign(new Error("Connection reset"), { code: "ECONNRESET" });
+    const streamTurn = vi.fn(async (
+      _input: LlmTurnInput,
+      callbacks: { onTextDelta?: (delta: string) => void },
+    ): Promise<LlmTurnOutput> => {
+      callbacks.onTextDelta?.("Partial reply");
+      throw timeout;
+    });
+    const provider: LlmProvider = {
+      name: "fake-provider",
+      version: "test-model",
+      capabilities: { nativeToolCalling: true, streaming: true },
+      start() {},
+      stop() {},
+      generateTurn: vi.fn(),
+      streamTurn,
+    };
+    const feedback = createEventRecorder();
+    const onAssistantTextDelta = vi.fn();
+
+    const error = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+      modeTransitionAvailable: false,
+      onAssistantTextDelta,
+      eventSink: feedback.sink,
+      feedbackContext: {
+        clientId: "local",
+        sessionId: "S-test",
+        seq: 1,
+      },
+    }).then(() => null, (caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ProviderCallError);
+    expect(streamTurn).toHaveBeenCalledTimes(1);
+    expect(onAssistantTextDelta).toHaveBeenCalledWith("Partial reply");
+    expect(feedback.events.find((event) => event.event === "provider_call_failed")?.data)
+      .toMatchObject({
+        kind: "transient",
+        receivedStreamingOutput: true,
+        willRetry: false,
+      });
   });
 
   it("exposes and parses terminal stop only when the graph is active", async () => {

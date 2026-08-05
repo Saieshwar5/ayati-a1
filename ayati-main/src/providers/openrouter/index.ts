@@ -17,6 +17,7 @@ import type {
 import { estimateTurnInputTokens } from "../../prompt/token-estimator.js";
 import { toOpenAiResponseFormat } from "../shared/openai-response-format.js";
 import { toOpenAiCompatibleContent } from "../shared/multimodal.js";
+import { getProviderRequestOptions } from "../shared/provider-call-policy.js";
 import {
   compileResponseFormatForProvider,
   getProviderCapabilities,
@@ -278,7 +279,10 @@ const provider: LlmProvider = {
         : {}),
     };
     captureProviderNativePayload({ provider: "openrouter", operation: "generateTurn", payload: request });
-    const response = await client.chat.completions.create(request as any).catch((error: unknown) => {
+    const response = await client.chat.completions.create(
+      request as any,
+      getProviderRequestOptions(),
+    ).catch((error: unknown) => {
       if (isMalformedProviderResponseCause(error)) {
         throw malformedOpenRouterResponseError(model, error);
       }

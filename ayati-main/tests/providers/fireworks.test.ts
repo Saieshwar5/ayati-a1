@@ -99,7 +99,7 @@ describe("Fireworks provider", () => {
         { role: "system", content: "System" },
         { role: "user", content: "Hi" },
       ],
-    });
+    }, { timeout: 120_000, maxRetries: 0 });
     expect(out).toEqual({ type: "assistant", content: "Hello from Fireworks" });
   });
 
@@ -368,7 +368,7 @@ describe("Fireworks provider", () => {
       messages: [{ role: "user", content: "Hi" }],
       stream: true,
       max_tokens: 1_200,
-    });
+    }, { timeout: 120_000, maxRetries: 0 });
     expect(deltas).toEqual(["Hello", " Fireworks"]);
     expect(out).toEqual({ type: "assistant", content: "Hello Fireworks" });
   });
@@ -464,7 +464,7 @@ describe("Fireworks provider", () => {
           strict: true,
         },
       },
-    });
+    }, { timeout: 120_000, maxRetries: 0 });
   });
 
   it("should omit structured output when tools are present", async () => {
@@ -554,7 +554,7 @@ describe("Fireworks provider", () => {
         },
       ],
       tool_choice: "auto",
-    });
+    }, { timeout: 120_000, maxRetries: 0 });
   });
 
   it("should throw for invalid MiniMax reasoning effort", async () => {

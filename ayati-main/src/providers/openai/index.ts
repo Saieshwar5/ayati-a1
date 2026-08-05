@@ -15,6 +15,7 @@ import type {
 import { estimateTurnInputTokens } from "../../prompt/token-estimator.js";
 import { toOpenAiResponseFormat } from "../shared/openai-response-format.js";
 import { hasImageInput, toOpenAiCompatibleContent } from "../shared/multimodal.js";
+import { getProviderRequestOptions } from "../shared/provider-call-policy.js";
 import {
   compileResponseFormatForProvider,
   getProviderCapabilities,
@@ -257,7 +258,7 @@ const provider: LlmProvider = {
         : {}),
     } as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming;
     captureProviderNativePayload({ provider: "openai", operation: "generateTurn", payload: request });
-    const response = await client.chat.completions.create(request);
+    const response = await client.chat.completions.create(request, getProviderRequestOptions());
     captureProviderNativeResponse({ provider: "openai", operation: "generateTurn", response });
     const usage = readOpenAiCompatibleUsage("openai", model, response);
 
@@ -337,7 +338,7 @@ const provider: LlmProvider = {
         : {}),
     };
     captureProviderNativePayload({ provider: "openai", operation: "streamTurn", payload: request });
-    const stream = await client.chat.completions.create(request as any);
+    const stream = await client.chat.completions.create(request as any, getProviderRequestOptions());
 
     const textParts: string[] = [];
     const nativeChunks: unknown[] | undefined = isLiveEvaluationEnabled() ? [] : undefined;

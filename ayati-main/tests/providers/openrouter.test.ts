@@ -119,7 +119,7 @@ describe("OpenRouter provider", () => {
         { role: "system", content: "System" },
         { role: "user", content: "Hi" },
       ],
-    });
+    }, { timeout: 120_000, maxRetries: 0 });
     expect(out).toEqual({ type: "assistant", content: "Hello from OpenRouter" });
   });
 
@@ -323,7 +323,7 @@ describe("OpenRouter provider", () => {
     expect(mockCreate).toHaveBeenCalledWith({
       model: "nvidia/nemotron-3-super-120b-a12b:free",
       messages: [{ role: "user", content: "Hi" }],
-    });
+    }, { timeout: 120_000, maxRetries: 0 });
   });
 
   it("should throw on empty response", async () => {

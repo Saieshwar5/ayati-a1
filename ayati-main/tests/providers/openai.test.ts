@@ -93,7 +93,7 @@ describe("OpenAI provider", () => {
         { role: "system", content: "System" },
         { role: "user", content: "Hi" },
       ],
-    });
+    }, { timeout: 120_000, maxRetries: 0 });
     expect(out).toEqual({ type: "assistant", content: "Hello from AI" });
   });
 
@@ -252,7 +252,7 @@ describe("OpenAI provider", () => {
       messages: [{ role: "user", content: "Hi" }],
       stream: true,
       max_completion_tokens: 1_200,
-    });
+    }, { timeout: 120_000, maxRetries: 0 });
     expect(deltas).toEqual(["Hello", " streaming"]);
     expect(out).toEqual({ type: "assistant", content: "Hello streaming" });
   });
@@ -361,7 +361,7 @@ describe("OpenAI provider", () => {
           strict: true,
         },
       },
-    });
+    }, { timeout: 120_000, maxRetries: 0 });
   });
 
   it("should fall back to json_object for unsupported strict schemas", async () => {
@@ -393,7 +393,7 @@ describe("OpenAI provider", () => {
       response_format: {
         type: "json_object",
       },
-    });
+    }, { timeout: 120_000, maxRetries: 0 });
   });
 
   it("should fall back to json_object for nested schema nodes that omit type", async () => {
@@ -436,7 +436,7 @@ describe("OpenAI provider", () => {
       response_format: {
         type: "json_object",
       },
-    });
+    }, { timeout: 120_000, maxRetries: 0 });
   });
 
   it("should throw on empty response", async () => {

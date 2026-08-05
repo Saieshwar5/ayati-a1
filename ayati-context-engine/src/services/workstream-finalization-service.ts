@@ -22,6 +22,7 @@ import {
   readRunEvidence,
 } from "../repositories/run-records.js";
 import { readRunWorkState, replaceRunWorkState } from "../repositories/run-work-state-records.js";
+import { withUnsuccessfulBoundRunFinalization } from "./unsuccessful-bound-run-finalization.js";
 import {
   insertWorkstreamFinalization,
   readRecoverableWorkstreamFinalizations,
@@ -269,7 +270,7 @@ export class WorkstreamFinalizationService {
         continue;
       }
       try {
-        await this.finalize({
+        await this.finalize(withUnsuccessfulBoundRunFinalization({
           requestId: "RECOVER:" + runId + ":finalize",
           runId,
           outcome: "incomplete",
@@ -286,18 +287,8 @@ export class WorkstreamFinalizationService {
             importantContext: workState.importantContext,
             nextAction: workState.nextAction ?? null,
           },
-          workstream: {
-            completion: {
-              accepted: false,
-              resources: [],
-              missing: ["The interrupted run did not submit final acceptance evidence."],
-              failures: [],
-              criteria: [],
-            },
-            requestEffect: { kind: "none" },
-          },
           at,
-        });
+        }, workState));
       } catch (error) {
         const record = readWorkstreamFinalization(this.options.database, runId);
         if (record) {

@@ -78,6 +78,7 @@ import {
 import { completeWorkStateHandoff } from "./work-state/terminal-handoff.js";
 import { buildVerifiedResourceEffects } from "./verified-resource-effects.js";
 import { buildRunLimitHandoff } from "./run-limit-handoff.js";
+import { buildRunFailureHandoff } from "./run-failure-handoff.js";
 import { workStateFindings } from "./work-state/selectors.js";
 import {
   buildFinalFeedbackWarnings,
@@ -541,7 +542,17 @@ export async function runAgentLoop(
       });
     } catch (error) {
       if (!(error instanceof ContextRunCapacityError || error instanceof ContextInputLimitError)) {
-        throw error;
+        const handoff = buildRunFailureHandoff(state, error);
+        state.status = "failed";
+        state.workState = handoff.workState;
+        state.finalOutput = handoff.response;
+        recordFeedback(deps, inputHandle, runHandle.runId, "guard", "decision_runtime_failed", {
+          iteration: state.iteration,
+          errorName: error instanceof Error ? error.name : "UnknownError",
+          errorMessage: error instanceof Error ? error.message : String(error),
+          verifiedEffectCount: handoff.verifiedEffectCount,
+        });
+        return finalize({ status: "failed", content: state.finalOutput });
       }
       state.contextLimitReached = true;
       state.status = "stuck";

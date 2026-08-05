@@ -15,6 +15,7 @@ import type {
 import { estimateTurnInputTokens } from "../../prompt/token-estimator.js";
 import { toOpenAiResponseFormat } from "../shared/openai-response-format.js";
 import { toOpenAiCompatibleContent } from "../shared/multimodal.js";
+import { getProviderRequestOptions } from "../shared/provider-call-policy.js";
 import {
   compileResponseFormatForProvider,
   getProviderCapabilities,
@@ -289,7 +290,10 @@ const provider: LlmProvider = {
     };
 
     captureProviderNativePayload({ provider: "fireworks", operation: "generateTurn", payload: request });
-    const response = await client.chat.completions.create(request as any);
+    const response = await client.chat.completions.create(
+      request as any,
+      getProviderRequestOptions(),
+    );
     captureProviderNativeResponse({ provider: "fireworks", operation: "generateTurn", response });
     const usage = readFireworksUsage(model, response as unknown as Record<string, unknown>);
     const cost = usage ? estimateFireworksCost(model, usage) : undefined;
@@ -376,7 +380,10 @@ const provider: LlmProvider = {
     };
 
     captureProviderNativePayload({ provider: "fireworks", operation: "streamTurn", payload: request });
-    const stream = await client.chat.completions.create(request as any);
+    const stream = await client.chat.completions.create(
+      request as any,
+      getProviderRequestOptions(),
+    );
     const textParts: string[] = [];
     const nativeChunks: unknown[] | undefined = isLiveEvaluationEnabled() ? [] : undefined;
     let usage: LlmTokenUsage | undefined;

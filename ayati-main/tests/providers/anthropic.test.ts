@@ -91,7 +91,7 @@ describe("Anthropic provider", () => {
       max_tokens: 1_200,
       system: "System",
       messages: [{ role: "user", content: "Hi" }],
-    });
+    }, { timeout: 120_000, maxRetries: 0 });
     expect(out).toEqual({ type: "assistant", content: "Hello from Claude" });
   });
 
