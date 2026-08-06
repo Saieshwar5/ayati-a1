@@ -2,8 +2,7 @@
 
 ## Ingress and Run Preparation
 
-1. A client sends a user message or an integration emits a normalized system
-   event.
+1. A client sends a user message.
 2. The daemon calls `prepareAgentRun` with `agentId`, `scopeKey`, role, content,
    resources, and a stable request id.
 3. One transaction resolves or creates the agent stream, appends the immutable
@@ -105,13 +104,6 @@ Only then does the daemon send the terminal response envelope.
 ## Memory
 
 Committed checkpoint ranges feed personal-memory extraction asynchronously.
-Personal memory remains independent from stream continuity; episodic memory
-remains an explicit semantic-recall system. Its compact snapshot is a
-rebuildable `personal.memory` Hot Context source, not an always-included prompt
-lane.
-
-## System Events
-
-Plugins and Pulse normalize events through `SystemIngressService` and
-`SystemEventWorker`. System events enter the same default agent stream and use
-the same run, step, pressure, and finalization lifecycle as user messages.
+Personal memory remains independent from stream continuity. Its compact
+snapshot is a rebuildable `personal.memory` Hot Context source, not an
+always-included prompt lane.

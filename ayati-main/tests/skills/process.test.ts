@@ -62,7 +62,7 @@ describe("focused process tools", () => {
     ["sqlite3", "database tools"],
     ["git", "Context Engine runtime"],
     ["python3", "python_execute"],
-    ["curl", "file_fetch_url"],
+    ["curl", "policy-controlled external-action tool"],
   ])("rejects %s because a focused tool owns the capability", async (executable, owner) => {
     const result = await processRunTool.execute({ executable });
 

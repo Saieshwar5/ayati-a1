@@ -441,7 +441,7 @@ update WorkState. Filesystem evidence records path state, read coverage,
 content availability, filename-search completeness, mutation state, and
 step/call identity. A zero-match filename search becomes completion proof only
 when it was uncapped, error-free, and did not stop at its depth limit. An explicit
-completion registry maps eligible facts from calculator, database, Pulse,
+completion registry maps eligible facts from calculator, database,
 process, Python, memory, system-observation, and artifact tools into stable
 typed outcomes.
 Unregistered facts remain supporting evidence rather than silently becoming

@@ -649,31 +649,6 @@ describe("buildAgentStateView", () => {
     expect(view.context.core.current).toMatchObject({ runId: "RUN-1" });
   });
 
-  it("projects system events into the Core Capsule without treating them as user messages", () => {
-    const state = createLoopState({ context: undefined, message: "Meeting started." });
-    state.inputKind = "system_event";
-    state.systemEvent = {
-      type: "system_event",
-      eventId: "EVT-1",
-      source: "calendar",
-      eventName: "meeting.started",
-      receivedAt: AT,
-      summary: "Meeting started.",
-      payload: {},
-    };
-
-    const view = buildAgentStateView(state);
-
-    expect(view.context.core.current.input).toEqual(expect.objectContaining({
-      kind: "system_event",
-      source: "calendar",
-      event: "meeting.started",
-      summary: "Meeting started.",
-      current: true,
-    }));
-    expect(view.systemEvent).toMatchObject({ source: "calendar", eventName: "meeting.started" });
-  });
-
   it("reports pressure escalation as a stream checkpoint recommendation", () => {
     const state = createLoopState({ context: createContext() });
     state.contextPressure = {

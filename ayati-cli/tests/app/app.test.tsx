@@ -147,6 +147,7 @@ describe("App", () => {
       expect(sentChatMessages()).toHaveLength(2);
       expect(sentChatMessages().at(-1)).toEqual({
         type: "chat",
+        messageId: expect.any(String),
         content: "second message",
       });
     });
@@ -162,7 +163,11 @@ describe("App", () => {
     await writeInput(app, "hello");
 
     await vi.waitFor(() => {
-      expect(sentChatMessages()).toEqual([{ type: "chat", content: "hello" }]);
+      expect(sentChatMessages()).toEqual([{
+        type: "chat",
+        messageId: expect.any(String),
+        content: "hello",
+      }]);
       expect(sentMessages().map((message) => (
         typeof message === "object" && message !== null
           ? (message as { type?: unknown }).type
@@ -386,6 +391,7 @@ describe("App", () => {
 
     expect(websocketState.send).toHaveBeenCalledWith({
       type: "chat",
+      messageId: expect.any(String),
       content: `Summarize ${reportPath}`,
       attachments: [{
         source: "cli",
@@ -415,6 +421,7 @@ describe("App", () => {
     await pressEnter(app);
     expect(websocketState.send).toHaveBeenCalledWith({
       type: "chat",
+      messageId: expect.any(String),
       content: [
         "Attached selected items.",
         "",
@@ -447,6 +454,7 @@ describe("App", () => {
 
     expect(websocketState.send).toHaveBeenCalledWith({
       type: "chat",
+      messageId: expect.any(String),
       content: `What is missing in ${docsPath}`,
       attachments: [{
         type: "directory",

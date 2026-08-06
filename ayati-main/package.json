@@ -9,7 +9,6 @@
     "start": "node --env-file=../.env dist/index.js",
     "dev": "nodemon --watch src --ext ts --exec \"pnpm build && pnpm start\"",
     "doctor": "pnpm build && node --env-file=../.env dist/doctor.js",
-    "bench:runtime": "pnpm build && node dist/benchmarks/runtime-performance-runner.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -26,7 +25,6 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
     "ayati-context-engine": "workspace:*",
-    "@lancedb/lancedb": "^0.27.2",
     "cheerio": "^1.2.0",
     "decimal.js": "^10.6.0",
     "openai": "^6.18.0",

@@ -2,6 +2,31 @@ import { describe, expect, it } from "vitest";
 import { parseChatInboundMessage } from "../../src/ivec/index.js";
 
 describe("parseChatInboundMessage", () => {
+  it("preserves a bounded stable message identity", () => {
+    expect(parseChatInboundMessage({
+      type: "chat",
+      messageId: " voice-message-1 ",
+      content: "Hello",
+    })).toEqual({
+      type: "chat",
+      messageId: "voice-message-1",
+      content: "Hello",
+    });
+  });
+
+  it("rejects malformed message identities", () => {
+    expect(parseChatInboundMessage({
+      type: "chat",
+      messageId: "",
+      content: "Hello",
+    })).toBeNull();
+    expect(parseChatInboundMessage({
+      type: "chat",
+      messageId: "x".repeat(129),
+      content: "Hello",
+    })).toBeNull();
+  });
+
   it("keeps CLI attachments backward compatible when source is omitted", () => {
     const parsed = parseChatInboundMessage({
       type: "chat",

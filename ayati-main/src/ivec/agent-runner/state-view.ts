@@ -85,19 +85,9 @@ export interface AgentStateView {
   toolCalls?: PromptToolCalls;
   trace?: PromptTrace;
   attachments?: {
-    incoming?: Array<{ id: string; name: string; kind: string; source: string; mimeType?: string; status: string }>;
-    prepared?: Array<{ id: string; name: string; mode: string; status: string }>;
-    managedFiles?: Array<{ id: string; name: string; kind: string; status: string }>;
+    managedFiles?: Array<{ id: string; name: string; kind: string; mimeType?: string; status: string }>;
     managedDirectories?: Array<{ id: string; name: string; rootPath: string; status: string }>;
     warnings?: string[];
-  };
-  systemEvent?: {
-    source?: string;
-    eventName?: string;
-    summary?: string;
-    requestedAction?: string;
-    approvalRequired?: boolean;
-    approvalState?: string;
   };
 }
 
@@ -122,14 +112,6 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
   });
   const trace = buildTraceView(state);
   const attachments = buildAttachmentState(state);
-  const systemEvent = state.systemEvent ? {
-    source: state.systemEvent.source,
-    eventName: state.systemEvent.eventName,
-    summary: state.systemEvent.summary,
-    requestedAction: state.systemEventRequestedAction,
-    approvalRequired: state.approvalRequired,
-    approvalState: state.approvalState,
-  } : undefined;
   const context = projectAgentPromptContext({
     context: contextPack,
     tools: buildToolsContext({
@@ -166,7 +148,6 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
     ...(toolCalls ? { toolCalls } : {}),
     ...(trace ? { trace } : {}),
     ...(attachments ? { attachments } : {}),
-    ...(systemEvent ? { systemEvent } : {}),
   };
 }
 
@@ -441,24 +422,11 @@ function readActionMode(executionContract: string | undefined): PromptTraceStep[
 }
 
 function buildAttachmentState(state: LoopState): AgentStateView["attachments"] | undefined {
-  const incoming = (state.attachedDocuments ?? []).slice(0, 8).map((document) => ({
-    id: document.documentId,
-    name: document.displayName,
-    kind: document.kind,
-    source: document.source,
-    ...(document.mimeType?.trim() ? { mimeType: document.mimeType } : {}),
-    status: "registered",
-  }));
-  const prepared = (state.preparedAttachments ?? []).slice(0, 8).map((attachment) => ({
-    id: attachment.preparedInputId,
-    name: attachment.displayName,
-    mode: attachment.mode,
-    status: attachment.status,
-  }));
   const managedFiles = (state.managedFiles ?? []).slice(0, 8).map((file) => ({
     id: file.fileId,
     name: file.originalName,
     kind: file.kind,
+    ...(file.mimeType ? { mimeType: file.mimeType } : {}),
     status: file.processingStatus,
   }));
   const managedDirectories = (state.managedDirectories ?? []).slice(0, 5).map((directory) => ({
@@ -470,9 +438,7 @@ function buildAttachmentState(state: LoopState): AgentStateView["attachments"] |
   const warnings = state.attachmentWarnings ?? [];
 
   if (
-    incoming.length === 0
-    && prepared.length === 0
-    && managedFiles.length === 0
+    managedFiles.length === 0
     && managedDirectories.length === 0
     && warnings.length === 0
   ) {
@@ -480,8 +446,6 @@ function buildAttachmentState(state: LoopState): AgentStateView["attachments"] |
   }
 
   return {
-    ...(incoming.length > 0 ? { incoming } : {}),
-    ...(prepared.length > 0 ? { prepared } : {}),
     ...(managedFiles.length > 0 ? { managedFiles } : {}),
     ...(managedDirectories.length > 0 ? { managedDirectories } : {}),
     ...(warnings.length > 0 ? { warnings } : {}),

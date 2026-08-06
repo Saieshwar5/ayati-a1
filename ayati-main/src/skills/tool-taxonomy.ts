@@ -123,13 +123,6 @@ export const TOOL_TAXONOMY: Readonly<Record<string, ToolTaxonomyEntry>> = buildT
   db_update_rows: workspaceMutation(["workstream_mutation", "data_analysis"], "one_step"),
   db_delete_rows: destructive(["workstream_mutation", "data_analysis"], "one_step"),
   db_drop_table: destructive(["workstream_mutation", "data_analysis"], "one_step"),
-  db_execute_sql: workspaceMutation(["workstream_mutation", "data_analysis"], "one_step"),
-
-  pulse: contextMutation(["workstream_mutation"], "run", ["workstream_bound"]),
-
-  recall_memory: search(["enquiry_read", "memory_control"], "phase", READ_ONLY_PHASES),
-  memory_status: readOnly(["enquiry_read", "memory_control"], "phase", READ_ONLY_PHASES),
-  memory_set_episodic_enabled: control(["memory_control"], "one_step", ["workstream_bound"]),
   memory_search: search(["enquiry_read", "memory_control"], "phase", READ_ONLY_PHASES),
   memory_explain: readOnly(["enquiry_read", "memory_control"], "phase", READ_ONLY_PHASES),
   memory_remember: contextMutation(["memory_control"], "one_step", ["workstream_bound"]),
@@ -138,12 +131,6 @@ export const TOOL_TAXONOMY: Readonly<Record<string, ToolTaxonomyEntry>> = buildT
   context_load: readOnly(["conversation_read", "memory_control"], "run", READ_ONLY_PHASES),
 
   attachment_restore: control(["attachment_access", "workstream_discovery"], "phase", ["routing", "workstream_bound"]),
-  document_list_sections: search(["enquiry_read", "attachment_access"], "phase", ["enquiry", "workstream_bound"]),
-  document_read_section: readOnly(["enquiry_read", "attachment_access"], "phase", ["enquiry", "workstream_bound"]),
-  document_query: search(["enquiry_read", "attachment_access"], "phase", ["enquiry", "workstream_bound"]),
-  dataset_profile: readOnly(["enquiry_read", "data_analysis", "attachment_access"], "phase", ["enquiry", "workstream_bound"]),
-  dataset_query: search(["enquiry_read", "data_analysis", "attachment_access"], "phase", ["enquiry", "workstream_bound"]),
-  dataset_promote_table: workspaceMutation(["workstream_mutation", "data_analysis"], "one_step"),
   python_inspect_dataset: readOnly(["data_analysis", "attachment_access"], "phase", ["enquiry", "workstream_bound"]),
   python_execute: workspaceMutation(["command_execution", "data_analysis"], "one_step", WORKSTREAM_BOUND_ONLY),
 
@@ -159,7 +146,6 @@ export const TOOL_TAXONOMY: Readonly<Record<string, ToolTaxonomyEntry>> = buildT
   file_read_text: readOnly(["enquiry_read", "attachment_access"], "phase", ["enquiry", "workstream_bound"]),
   file_query: search(["enquiry_read", "attachment_access"], "phase", ["enquiry", "workstream_bound"]),
   file_register_path: control(["attachment_access"], "one_step", ["workstream_bound"]),
-  file_fetch_url: externalMutation(["attachment_access"], "one_step", ["workstream_bound"]),
   file_register_artifact: control(["attachment_access"], "one_step", ["workstream_bound"]),
 
   git_context_activate_workstream: control(["workstream_routing"], "single_use", ROUTING_ONLY),
@@ -416,24 +402,6 @@ function control(
   return {
     ...contextMutation(roles, lifetime, allowedPhases),
     purpose: "control",
-  };
-}
-
-function externalMutation(
-  roles: ToolRole[],
-  lifetime: ToolLifetime,
-  allowedPhases: ToolPhase[],
-): ToolTaxonomyInput {
-  return {
-    purpose: "mutation",
-    effect: "external_mutation",
-    roles,
-    lifetime,
-    allowedPhases,
-    requiresWorkstreamBinding: true,
-    canRunBeforeWorkstream: false,
-    producesEvidence: true,
-    producesUserArtifact: false,
   };
 }
 

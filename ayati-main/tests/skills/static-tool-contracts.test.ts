@@ -12,7 +12,6 @@ import { patchFilesTool } from "../../src/skills/builtins/filesystem/patch-files
 import { readFilesTool } from "../../src/skills/builtins/filesystem/read-files.js";
 import { setPermissionsTool } from "../../src/skills/builtins/filesystem/set-permissions.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
-import { pulseTool } from "../../src/skills/builtins/pulse/index.js";
 import {
   processPollTool,
   processRunTool,
@@ -27,29 +26,13 @@ const supportsSubprocessOutput = canCaptureNodeSubprocessOutput();
 
 describe("static built-in tool contracts", () => {
   let tmp: string;
-  let previousPulsePath: string | undefined;
-  let previousPulseTimezone: string | undefined;
 
   beforeEach(async () => {
     tmp = await mkdtemp(join(tmpdir(), "ayati-static-contracts-"));
-    previousPulsePath = process.env["PULSE_STORE_FILE_PATH"];
-    previousPulseTimezone = process.env["PULSE_TIMEZONE"];
-    process.env["PULSE_STORE_FILE_PATH"] = join(tmp, "pulse.sqlite");
-    process.env["PULSE_TIMEZONE"] = "UTC";
   });
 
   afterEach(async () => {
     vi.useRealTimers();
-    if (previousPulsePath === undefined) {
-      delete process.env["PULSE_STORE_FILE_PATH"];
-    } else {
-      process.env["PULSE_STORE_FILE_PATH"] = previousPulsePath;
-    }
-    if (previousPulseTimezone === undefined) {
-      delete process.env["PULSE_TIMEZONE"];
-    } else {
-      process.env["PULSE_TIMEZONE"] = previousPulseTimezone;
-    }
     await rm(tmp, { recursive: true, force: true });
   });
 
@@ -245,7 +228,7 @@ describe("static built-in tool contracts", () => {
     expect(stopped.v2?.verification?.status).toBe("passed");
   });
 
-  it("verifies calculator, database, and pulse contracts", async () => {
+  it("verifies calculator and database contracts", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-01T12:00:00.000Z"));
 
@@ -295,20 +278,5 @@ describe("static built-in tool contracts", () => {
     expect(queried.v2?.verification?.status).toBe("passed");
     expect(queried.v2?.structuredContent).toMatchObject({ rowCount: 1 });
 
-    const pulseExecutor = createToolExecutor([pulseTool]);
-    const createdPulse = await pulseExecutor.execute(
-      "pulse",
-      {
-        action: "create",
-        instruction: "Check contract state",
-        every: "every one hour",
-        timezone: "UTC",
-      },
-      { clientId: "contract-client", runId: "run-1", sessionId: "session-1" },
-    );
-    expect(createdPulse.ok).toBe(true);
-    expect(createdPulse.v2?.verification?.status).toBe("passed");
-    expect(createdPulse.v2?.code).toBe("PULSE_CREATE_SUCCEEDED");
-    expect(createdPulse.v2?.artifacts?.some((artifact) => artifact.label === "pulse_item")).toBe(true);
   });
 });

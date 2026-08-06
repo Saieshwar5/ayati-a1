@@ -2,7 +2,6 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { IVecEngine } from "../ivec/index.js";
 import { UploadServer, WsServer } from "../server/index.js";
-import pluginFactories from "../config/plugins.js";
 import providerFactory from "../config/provider.js";
 import {
   getActiveProvider,
@@ -10,28 +9,13 @@ import {
   getModelForProvider,
   initializeLlmRuntimeConfig,
 } from "../config/llm-runtime-config.js";
-import {
-  AdapterRegistry,
-  InboundQueueStore,
-  PluginRegistry,
-  SystemEventWorker,
-  SystemIngressService,
-  loadPlugins,
-  loadProvider,
-  normalizeSystemEvent,
-  type PluginRuntimeContext,
-} from "../core/index.js";
+import { loadProvider } from "../core/index.js";
 import { loadStaticContext, type StaticContext } from "../context/static-context-cache.js";
-import { devLog } from "../shared/index.js";
-import { PulseScheduler, PulseStore } from "../pulse/index.js";
-import { pulseTool } from "../skills/builtins/pulse/index.js";
-import { loadSystemEventPolicy } from "../ivec/system-event-policy.js";
+import { devLog, devWarn } from "../shared/index.js";
 import { createMemoryRuntime } from "./memory-runtime.js";
 import { createContentRuntime } from "./content-runtime.js";
 import { createSkillRuntime } from "./skill-runtime.js";
 import { loadAyatiRuntimeConfig } from "../config/runtime-config.js";
-import embeddingProvider from "../embeddings/runtime/index.js";
-import imageGenerationProvider from "../image-generation/runtime/index.js";
 import {
   NOOP_AGENT_EVENT_SINK,
   type AgentEventSink,
@@ -39,7 +23,6 @@ import {
 import { startContextEngineHost } from "ayati-context-engine";
 import { createContextEngineRuntime } from "./context-engine-runtime.js";
 import { createChatTurnRuntime } from "./chat-turn-runtime.js";
-import { createSystemEventRuntime } from "./system-event-runtime.js";
 import { ensureWorkspaceRoot } from "../skills/workspace-paths.js";
 import {
   createHarnessContextEngineObserver,
@@ -51,18 +34,27 @@ import {
   startLiveEvaluationCapture,
   stopLiveEvaluationCapture,
 } from "../evaluation/index.js";
+import {
+  NotifySendVoiceNotifier,
+  VoiceChannelRuntime,
+  VoxtypeAdapter,
+  loadVoiceRuntimeConfig,
+  resolveVoiceRuntimePaths,
+} from "../voice/index.js";
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(thisDir, "..", "..");
 
 const CLIENT_ID = "local";
+const VOICE_REPLY_CLIENT_ID = "voice";
 
 export async function main(): Promise<void> {
   await initializeLlmRuntimeConfig({ projectRoot });
   const runtimeConfig = loadAyatiRuntimeConfig(process.env);
+  const voiceConfig = loadVoiceRuntimeConfig(process.env);
+  const voicePaths = resolveVoiceRuntimePaths(process.env);
   await ensureWorkspaceRoot(runtimeConfig.workspace.root);
   const loadedProvider = await loadProvider(providerFactory);
-  const systemEventPolicy = loadSystemEventPolicy(projectRoot);
   let evaluationRecorder: Awaited<ReturnType<typeof startLiveEvaluationCapture>>;
   try {
     evaluationRecorder = await startLiveEvaluationCapture({
@@ -80,27 +72,14 @@ export async function main(): Promise<void> {
   const provider = createEvaluationProvider(loadedProvider);
   let engine: IVecEngine | null = null;
   let staticContext: StaticContext | null = null;
+  let voiceChannel: VoiceChannelRuntime | null = null;
   const runByReplyTurn = new Map<string, string>();
 
   const memory = await createMemoryRuntime({
     projectRoot,
     clientId: CLIENT_ID,
     provider,
-    embeddingProvider,
   });
-
-  const adapterRegistry = new AdapterRegistry();
-  const inboundQueueStore = new InboundQueueStore({
-    dataDir: resolve(projectRoot, "data", "memory"),
-  });
-  inboundQueueStore.start();
-  const systemIngress = new SystemIngressService({
-    adapterRegistry,
-    queueStore: inboundQueueStore,
-  });
-
-  const pulseStore = new PulseStore();
-  const registry = new PluginRegistry();
 
   let content: Awaited<ReturnType<typeof createContentRuntime>> | null = null;
   const wsServer = new WsServer({
@@ -128,23 +107,27 @@ export async function main(): Promise<void> {
         event: "inbound",
         data: { transportClientId, envelope: data },
       });
-      engine?.handleMessage(CLIENT_ID, data);
-    },
-  });
-
-  const pulseScheduler = new PulseScheduler({
-    clientId: CLIENT_ID,
-    store: pulseStore,
-    onReminderDue: async (event) => {
-      await systemIngress.ingestInternalEvent(CLIENT_ID, event);
+      const receipt = engine?.handleMessage(CLIENT_ID, data, {
+        replyClientId: transportClientId,
+        channel: wsServer.clientKind(transportClientId),
+      });
+      if (receipt) {
+        const started = process.hrtime.bigint();
+        wsServer.send(transportClientId, receipt);
+        recordOutboundTransport(
+          eventSink,
+          transportClientId,
+          receipt,
+          runByReplyTurn,
+          elapsedMs(started),
+        );
+      }
     },
   });
 
   content = await createContentRuntime({
     projectRoot,
-    provider,
     config: runtimeConfig,
-    embeddingProvider,
   });
 
   const contextEngineHost = await startContextEngineHost({
@@ -171,10 +154,7 @@ export async function main(): Promise<void> {
     projectRoot,
     clientId: CLIENT_ID,
     personalMemoryStore: memory.personalMemoryStore,
-    memoryRetriever: memory.memoryRetriever,
-    episodicMemoryController: memory.episodicMemoryController,
     sessionAttachmentService: content.sessionAttachmentService,
-    preparedAttachmentService: content.preparedAttachmentService,
     fileLibrary: content.fileLibrary,
     directoryLibrary: content.directoryLibrary,
     config: runtimeConfig,
@@ -185,11 +165,14 @@ export async function main(): Promise<void> {
 
   staticContext = await loadStaticContext();
   const chatContextRuntime = contextEngineRuntime;
-  const systemEventContextRuntime = contextEngineRuntime;
   const chatTurnRuntime = createChatTurnRuntime({
     onReply: (clientId, data) => {
       const started = process.hrtime.bigint();
-      wsServer.send(clientId, data);
+      if (clientId === VOICE_REPLY_CLIENT_ID) {
+        voiceChannel?.handleAgentMessage(data);
+      } else {
+        wsServer.send(clientId, data);
+      }
       recordOutboundTransport(eventSink, clientId, data, runByReplyTurn, elapsedMs(started));
     },
     clientSupportsReplyStreaming: (clientId) => wsServer.clientSupportsReplyStreaming(clientId),
@@ -200,8 +183,6 @@ export async function main(): Promise<void> {
     capabilitySurfaceManager: skills.capabilitySurfaceManager,
     hotContextRuntime: skills.hotContextRuntime,
     dataDir: resolve(projectRoot, "data"),
-    documentStore: content.documentStore,
-    preparedAttachmentRegistry: content.preparedAttachmentRegistry,
     fileLibrary: content.fileLibrary,
     directoryLibrary: content.directoryLibrary,
     loopConfig: runtimeConfig.agent.loopConfig,
@@ -209,108 +190,79 @@ export async function main(): Promise<void> {
     chatContextRuntime,
     contextEngineService,
   });
-  const systemEventRuntime = createSystemEventRuntime({
-    onReply: (clientId, data) => {
-      const started = process.hrtime.bigint();
-      wsServer.send(clientId, data);
-      recordOutboundTransport(eventSink, clientId, data, runByReplyTurn, elapsedMs(started));
-    },
-    provider,
-    workspaceRoot: runtimeConfig.workspace.root,
-    staticContext,
-    toolExecutor,
-    capabilitySurfaceManager: skills.capabilitySurfaceManager,
-    hotContextRuntime: skills.hotContextRuntime,
-    systemEventContextRuntime,
-    contextEngineService,
-    dataDir: resolve(projectRoot, "data"),
-    documentStore: content.documentStore,
-    preparedAttachmentRegistry: content.preparedAttachmentRegistry,
-    fileLibrary: content.fileLibrary,
-    directoryLibrary: content.directoryLibrary,
-    systemEventPolicy,
-    loopConfig: runtimeConfig.agent.loopConfig,
-    eventSink,
-  });
-
   const uploadServer = new UploadServer({
-    uploadsDir: content.documentStore.uploadsDir,
+    uploadsDir: content.uploadsDir,
     host: content.httpHost,
     port: content.httpPort,
     maxUploadBytes: runtimeConfig.http.maxUploadBytes,
     allowOrigin: runtimeConfig.http.allowOrigin,
-    pulseTool,
-    pulseClientId: CLIENT_ID,
-    pulseApiToken: runtimeConfig.http.apiToken,
     fileLibrary: content.fileLibrary,
   });
   engine = new IVecEngine({
     provider,
     staticContext,
     chatTurnRuntime,
-    systemEventRuntime,
   });
-  const systemEventWorker = new SystemEventWorker({
-    queueStore: inboundQueueStore,
-    processEvent: async (clientId, event) => {
-      if (!engine) {
-        throw new Error("Engine is not initialized");
-      }
-      await engine.handleSystemEvent(clientId, event);
-    },
-  });
-  const publishSystemEvent: PluginRuntimeContext["publishSystemEvent"] = async (event) => {
-    devLog(
-      `System event ingress received: source=${event.source} eventName=${event.eventName} eventId=${event.eventId ?? "generated"} summary=${event.summary}`,
-    );
-    const normalized = normalizeSystemEvent(event);
-    devLog(
-      `System event normalized: source=${normalized.source} eventName=${normalized.eventName} eventId=${normalized.eventId} receivedAt=${normalized.receivedAt}`,
-    );
-    const result = await systemIngress.ingestInternalEvent(CLIENT_ID, normalized);
-    devLog(
-      `System event handed to ingress queue: eventId=${normalized.eventId} source=${normalized.source}/${normalized.eventName} queued=${result.queued !== false}`,
-    );
-    return result;
-  };
-  const pluginRuntimeContext: PluginRuntimeContext = {
-    clientId: CLIENT_ID,
-    dataDir: resolve(projectRoot, "data"),
-    projectRoot,
-    publishSystemEvent,
-    emitSystemEvent: publishSystemEvent,
-    registerSystemAdapter: (adapter) => adapterRegistry.register(adapter),
-    ingestExternalRequest: async (request) => await systemIngress.ingestExternalRequest(request),
-  };
-
-  const plugins = await loadPlugins(pluginFactories);
-  for (const plugin of plugins) {
-    registry.register(plugin);
+  if (voiceConfig.enabled) {
+    voiceChannel = new VoiceChannelRuntime({
+      config: voiceConfig,
+      paths: voicePaths,
+      transcriber: new VoxtypeAdapter({
+        command: voiceConfig.command,
+        statePath: voicePaths.voxtypeStatePath,
+        transcriptionTimeoutMs: voiceConfig.transcriptionTimeoutMs,
+        maxTranscriptChars: voiceConfig.maxTranscriptChars,
+      }),
+      notifier: new NotifySendVoiceNotifier(),
+      submitChat: ({ messageId, content: voiceContent, onSettled }) => {
+        eventSink.record({
+          clientId: CLIENT_ID,
+          stage: "transport",
+          event: "inbound",
+          data: {
+            transportClientId: VOICE_REPLY_CLIENT_ID,
+            channel: "voice",
+            envelope: { type: "chat", messageId, content: voiceContent },
+          },
+        });
+        return engine?.handleMessage(CLIENT_ID, {
+          type: "chat",
+          messageId,
+          content: voiceContent,
+        }, {
+          replyClientId: VOICE_REPLY_CLIENT_ID,
+          channel: "voice",
+          onSettled,
+        }) ?? null;
+      },
+    });
   }
-
   await engine.start();
-  systemEventWorker.start();
   await wsServer.start();
+  if (voiceChannel) {
+    try {
+      await voiceChannel.start();
+    } catch (error) {
+      devWarn("Voice channel failed to start:", error instanceof Error ? error.message : String(error));
+      await voiceChannel.stop().catch(() => undefined);
+      voiceChannel = null;
+    }
+  }
   await uploadServer.start();
-  await pulseScheduler.start();
-  await registry.startAll(pluginRuntimeContext);
 
-  console.log(`Ayati i-vec ready — plugins: [${registry.list().join(", ")}]`);
+  console.log(
+    "Ayati i-vec ready"
+      + (voiceChannel ? ` — voice: ${voiceChannel.snapshot().state}` : " — voice: disabled"),
+  );
 
   let shutdownPromise: Promise<void> | undefined;
   const shutdown = (status: "completed" | "interrupted" | "failed" = "completed"): Promise<void> => {
     if (shutdownPromise) return shutdownPromise;
     shutdownPromise = (async () => {
-      await registry.stopAll(pluginRuntimeContext);
-      await pulseScheduler.stop();
-      pulseStore.close();
+      await voiceChannel?.stop();
       await uploadServer.stop();
       await wsServer.stop();
-      await systemEventWorker.stop();
-      inboundQueueStore.stop();
       await memory.stop();
-      await embeddingProvider.stop();
-      await imageGenerationProvider.stop();
       await engine.stop();
       await contextEngineHost.stop();
       await stopLiveEvaluationCapture(evaluationRecorder, status);

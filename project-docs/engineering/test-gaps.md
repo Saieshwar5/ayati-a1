@@ -18,7 +18,7 @@ external-system boundaries.
 ## Cross-Layer Outcomes
 
 - Completed, failed, blocked, needs-user-input, run-limit, context-limit, and
-  tool-failure finalizations for both chat and system events.
+  tool-failure chat finalizations.
 - Duplicate/reordered client ingress and daemon restart during preparation,
   binding, step persistence, resource verification, or finalization.
 - Attachment admission while unbound, during clarification, and when routing

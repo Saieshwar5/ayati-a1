@@ -419,9 +419,6 @@ function collectMutationPolicyPaths(toolName: string, value: unknown): string[] 
   if (toolName.startsWith("db_")) {
     return readDirectPaths(value, ["dbPath"]);
   }
-  if (toolName === "dataset_promote_table") {
-    return readDirectPaths(value, ["targetDbPath"]);
-  }
   return collectToolPaths(value);
 }
 

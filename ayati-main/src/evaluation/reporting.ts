@@ -218,8 +218,6 @@ function calculateTotals(
       + events.filter((event) => event.component === "provider_transport"
         && !event.requestId
         && ["countInputTokens", "generateTurn", "streamTurn"].includes(event.event)).length,
-    embeddingOperations: events.filter((event) => event.component === "embedding" && event.event === "completed").length,
-    imageGenerationOperations: events.filter((event) => event.component === "image_generation" && event.event === "completed").length,
     toolCalls: events.filter((event) => event.component === "tool" && event.event === "completed").length
       || events.filter((event) => event.component === "action" && event.event === "tool_result").length,
     inputTokens: requests.reduce((sum, request) => sum + (request.usage?.inputTokens ?? 0), 0),

@@ -79,9 +79,9 @@ describe("per-call deterministic verification", () => {
     });
   });
 
-  it("uses the existing deterministic runtime gate for supported legacy tools", () => {
+  it("uses the deterministic runtime gate for managed table queries", () => {
     const verification = deriveToolCallVerification({
-      tool: "dataset_query",
+      tool: "file_query_table",
       purpose: "Return the item count.",
       input: { sql: "select count(*) from items" },
       output: JSON.stringify({

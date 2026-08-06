@@ -31,7 +31,7 @@ function userIdFromContext(contextUserId: string | undefined, fallback?: string)
 function createSearchTool(deps: MemorySkillDeps): ToolDefinition {
   return {
     name: "memory_search",
-    description: "Search canonical personal memory cards, not episodic conversation recall.",
+    description: "Search canonical personal memory cards.",
     inputSchema: {
       type: "object",
       properties: {

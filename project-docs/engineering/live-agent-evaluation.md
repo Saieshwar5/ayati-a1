@@ -127,11 +127,3 @@ drain queued events and reports. Run totals separate foreground from
 background model operations and provider requests. A deterministic resolve
 gate event carrying a model-operation or provider-request identity is an
 invariant failure.
-
-## Developer Diagnostics Are Not Evaluations
-
-`pnpm --filter ayati-main bench:runtime` measures local subsystem performance.
-It does not measure agent quality and must not run inside a live evaluation,
-because the extra CPU, filesystem, database, queue, and server load would
-change the observed daemon. A separately produced diagnostic report may be
-linked manually while investigating a hotspot measured in a live session.

@@ -68,17 +68,6 @@ pnpm eval:agent -- compare --baseline <id> --candidate <id>
 pnpm eval:agent -- prune [--older-than <days>|--keep <count>] [--confirm]
 ```
 
-Backend runtime performance benchmark:
-
-```bash
-pnpm --filter ayati-main bench:runtime
-pnpm --filter ayati-main bench:runtime -- --scale=smoke
-pnpm --filter ayati-main bench:runtime -- --scale=stress
-pnpm --filter ayati-main bench:runtime -- --list
-pnpm --filter ayati-main bench:runtime -- --case focus_store --scale=standard
-pnpm --filter ayati-main bench:runtime -- --output=data/benchmarks/runtime-debug --scale=smoke
-```
-
 CLI:
 
 ```bash
@@ -87,3 +76,29 @@ pnpm --filter ayati-cli start
 pnpm --filter ayati-cli dev
 pnpm --filter ayati-cli test
 ```
+
+Electron desktop client (Node.js 22.12+):
+
+```bash
+pnpm --filter ayati-desktop build
+pnpm --filter ayati-desktop start
+pnpm --filter ayati-desktop dev
+pnpm --filter ayati-desktop test
+```
+
+The daemon must already be running. `start` launches the last built desktop
+bundle; `dev` rebuilds it before launch. From the repository root, the matching
+shortcuts are `pnpm start:desktop` and `pnpm dev:desktop`.
+
+Voice control (after building the CLI):
+
+```bash
+node ayati-cli/dist/index.js voice status
+node ayati-cli/dist/index.js voice press
+node ayati-cli/dist/index.js voice release
+node ayati-cli/dist/index.js voice send
+node ayati-cli/dist/index.js voice cancel
+```
+
+The daemon must be running. Push-to-talk desktop bindings should call `press`
+on key-down and `release` on key-up.

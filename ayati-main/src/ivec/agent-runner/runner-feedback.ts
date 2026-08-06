@@ -290,7 +290,6 @@ export function summarizeDecisionInputState(
     recentFailureCount: stateView.trace?.recentFailures?.length ?? 0,
     attachmentCount,
     capabilitySurfaceStatus: stateView.capabilitySurface?.status,
-    systemEventName: stateView.systemEvent?.eventName,
   };
 }
 

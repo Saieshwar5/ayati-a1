@@ -8,6 +8,7 @@ import type {
   ProviderMalformedResponseError,
 } from "../../core/contracts/provider-errors.js";
 import type {
+  LlmImageContentPart,
   LlmMessage,
   LlmToolCall,
   LlmToolChoice,
@@ -182,6 +183,7 @@ interface CallAgentDecisionInput {
   evaluationIteration?: number;
   onContextCompilation?: (receipt: ContextCompilationReceipt) => void;
   onAssistantTextDelta?: (delta: string) => void;
+  imageInputs?: LlmImageContentPart[];
 }
 
 interface ToolProtocolViolation {
@@ -241,7 +243,12 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
 
   let messages: LlmMessage[] = [
     { role: "system", content: systemContext },
-    { role: "user", content: prompt },
+    {
+      role: "user",
+      content: input.imageInputs && input.imageInputs.length > 0
+        ? [{ type: "text", text: prompt }, ...input.imageInputs]
+        : prompt,
+    },
   ];
 
   let rawText = "";

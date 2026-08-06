@@ -117,8 +117,6 @@ export function validationCompletionReceiptValue(check: ValidationCheckResult): 
       return bounded(`Verified the database read ${subject}.`);
     case "database.mutation_succeeded":
       return bounded(`Verified the database change ${subject}.`);
-    case "pulse.action_completed":
-      return bounded(`Verified the completed Pulse action ${subject}.`);
     case "process.exit_success":
       return bounded(`Verified successful process completion for ${subject}.`);
     case "python.execution_succeeded":

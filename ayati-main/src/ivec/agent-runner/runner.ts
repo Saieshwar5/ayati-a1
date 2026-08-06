@@ -1,10 +1,10 @@
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
+import type { LlmImageContentPart } from "../../core/contracts/llm-protocol.js";
 import {
   ContextInputLimitError,
   ContextRunCapacityError,
 } from "../../prompt/context-compilation-receipt.js";
 import { devLog } from "../../shared/index.js";
-import { prepareIncomingAttachments } from "../../documents/attachment-preparer.js";
 import type { SessionInputHandle } from "../../memory/types.js";
 import { getWorkspaceRoot } from "../../skills/workspace-paths.js";
 import type {
@@ -101,7 +101,6 @@ import {
 import {
   buildUpdatedToolContext,
   executeActionStep,
-  syncPreparedAttachmentsFromRegistry,
 } from "./action-step.js";
 import {
   deriveWorkstreamBindingCapabilityPolicy,
@@ -208,7 +207,6 @@ export async function runAgentLoop(
       };
     }
     state.workState = compactWorkState(state.workState);
-    syncPreparedAttachmentsFromRegistry(state, deps);
     syncHarnessContext(state, deps, inputHandle);
     recordStateSnapshotMetric("final");
     const cleanupRunId = runHandle.runId;
@@ -369,11 +367,6 @@ export async function runAgentLoop(
 
   recordStateSnapshotMetric("initial");
 
-  if ((state.attachedDocuments ?? []).some((document) => document.kind !== "image")) {
-    await prepareAttachmentsForRun(deps, state, runHandle.runId);
-    syncHarnessContext(state, deps, inputHandle);
-  }
-
   while (
     state.status === "running"
     && state.iteration - (state.runContextMaintenanceBudgetCredits ?? 0) < config.maxIterations
@@ -532,6 +525,7 @@ export async function runAgentLoop(
           seq: inputHandle.seq,
           runId: runHandle.runId,
         },
+        imageInputs: managedImageInputs(deps.provider, state),
         onContextCompilation: (receipt) => {
           state.contextPressure = updateContextPressureState({
             current: state.contextPressure,
@@ -1350,35 +1344,6 @@ function appendWorkStateConstraint(
   ].slice(-12);
 }
 
-async function prepareAttachmentsForRun(
-  deps: AgentLoopDeps,
-  state: LoopState,
-  runId: string,
-): Promise<void> {
-  const preparableDocuments = (state.attachedDocuments ?? []).filter((document) => document.kind !== "image");
-  if (preparableDocuments.length === 0 || !deps.documentStore || !deps.preparedAttachmentRegistry) {
-    return;
-  }
-  const attachmentRoot = preparedAttachmentRoot(deps.dataDir, runId);
-  const prepared = await prepareIncomingAttachments({
-    attachedDocuments: preparableDocuments,
-    runId,
-    attachmentRoot,
-    documentStore: deps.documentStore,
-    registry: deps.preparedAttachmentRegistry,
-  });
-  state.preparedAttachments = prepared.summaries;
-  state.preparedAttachmentRecords = prepared.records;
-}
-
-function preparedAttachmentRoot(dataDir: string, runId: string): string {
-  return join(dataDir, "prepared-attachments", sanitizeFileName(runId));
-}
-
-function sanitizeFileName(value: string): string {
-  return value.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "") || "run";
-}
-
 function discardModelWorkingNotes(decision: AgentDecision): void {
   void decision.workingNotes;
 }
@@ -1483,6 +1448,23 @@ function describeActionInputValue(value: unknown): string {
   if (value === null) return "null";
   if (typeof value === "object") return "object";
   return typeof value;
+}
+
+function managedImageInputs(
+  provider: AgentLoopDeps["provider"],
+  state: LoopState,
+): LlmImageContentPart[] | undefined {
+  if (provider.capabilities.imageInput !== true) return undefined;
+  const images = (state.managedFiles ?? []).flatMap((file): LlmImageContentPart[] => {
+    if (file.kind !== "image" || !file.mimeType?.startsWith("image/")) return [];
+    return [{
+      type: "image",
+      imagePath: file.storagePath,
+      mimeType: file.mimeType,
+      name: file.originalName,
+    }];
+  });
+  return images.length > 0 ? images : undefined;
 }
 
 function buildLoopResult(

@@ -1,4 +1,4 @@
-import type { LlmMessage, LlmTurnInput } from "../../core/contracts/llm-protocol.js";
+import type { LlmMessage, LlmTurnInput, LlmUserContentPart } from "../../core/contracts/llm-protocol.js";
 import type { ContextBudgetReport } from "../../prompt/context-budget.js";
 import { correctLocalInputTokenEstimate } from "../../prompt/context-token-counter.js";
 import { estimateTurnInputTokens } from "../../prompt/token-estimator.js";
@@ -72,6 +72,12 @@ function replaceFirstUserPrompt(messages: LlmMessage[], prompt: string): LlmMess
   return messages.map((message) => {
     if (replaced || message.role !== "user") return message;
     replaced = true;
-    return { role: "user", content: prompt };
+    const images = typeof message.content === "string"
+      ? []
+      : message.content.filter((part): part is Extract<LlmUserContentPart, { type: "image" }> => part.type === "image");
+    return {
+      role: "user",
+      content: images.length > 0 ? [{ type: "text", text: prompt }, ...images] : prompt,
+    };
   });
 }

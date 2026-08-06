@@ -88,12 +88,11 @@ const DETERMINISTIC_SUCCESS_TOOLS = new Set([
   "attachment_query",
   "attachment_query_table",
   "directory_search",
-  "dataset_profile",
-  "dataset_query",
-  "dataset_promote_table",
-  "document_list_sections",
-  "document_read_section",
-  "document_query",
+  "file_describe",
+  "file_read_text",
+  "file_query",
+  "file_profile_table",
+  "file_query_table",
 ]);
 
 export function checkDeterministicSuccessGate(
@@ -160,20 +159,16 @@ function isDeterministicSuccessCall(call: ActOutput["toolCalls"][number]): boole
       return typeof payload?.["rowCount"] === "number" && Array.isArray(payload["rows"]);
     case "directory_search":
       return typeof payload?.["matchCount"] === "number" && Array.isArray(payload["matches"]);
-    case "dataset_profile":
+    case "file_profile_table":
       return typeof payload?.["rowCount"] === "number" && Array.isArray(payload["columns"]);
-    case "dataset_query":
+    case "file_query_table":
       return typeof payload?.["rowCount"] === "number" && Array.isArray(payload["rows"]);
-    case "dataset_promote_table":
-      return typeof payload?.["rowsCopied"] === "number"
-        && typeof payload["targetTable"] === "string"
-        && payload["targetTable"].trim().length > 0;
-    case "document_list_sections":
-      return typeof payload?.["sectionCount"] === "number" && Array.isArray(payload["sections"]);
-    case "document_read_section":
-      return Array.isArray(payload?.["sections"]) && payload["sections"].length > 0;
-    case "document_query":
-      return isGroundedDocumentQueryPayload(payload);
+    case "file_read_text":
+      return typeof payload?.["text"] === "string";
+    case "file_query":
+      return typeof payload?.["matchCount"] === "number" && Array.isArray(payload["matches"]);
+    case "file_describe":
+      return typeof payload?.["fileId"] === "string";
     default:
       return true;
   }
@@ -188,22 +183,6 @@ function parseJsonObject(text: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
-}
-
-function isGroundedDocumentQueryPayload(payload: Record<string, unknown> | null): boolean {
-  if (!payload) {
-    return false;
-  }
-  const context = typeof payload["context"] === "string" ? payload["context"].trim() : "";
-  const sources = Array.isArray(payload["sources"]) ? payload["sources"] : [];
-  const confidence = typeof payload["confidence"] === "number" ? payload["confidence"] : 0;
-  const documentState = payload["documentState"] && typeof payload["documentState"] === "object" && !Array.isArray(payload["documentState"])
-    ? payload["documentState"] as Record<string, unknown>
-    : {};
-  return context.length > 0
-    && sources.length > 0
-    && confidence > 0
-    && documentState["insufficientEvidence"] !== true;
 }
 
 function isDeterministicCriteriaCompatible(actOutput: ActOutput, successCriteria: string): boolean {
@@ -233,8 +212,8 @@ function buildDeterministicSummary(
 
 function formatDeterministicEvidenceItem(call: ActOutput["toolCalls"][number]): string {
   const payload = parseJsonObject(call.output);
-  const target = readMetaString(call, ["filePath", "dirPath", "targetPath", "source", "destination", "preparedInputId"])
-    ?? readPayloadString(payload, ["filePath", "dirPath", "targetPath", "source", "destination", "preparedInputId", "displayName", "targetTable"]);
+  const target = readMetaString(call, ["filePath", "dirPath", "targetPath", "source", "destination", "fileId", "directoryId"])
+    ?? readPayloadString(payload, ["filePath", "dirPath", "targetPath", "source", "destination", "fileId", "directoryId", "displayName", "targetTable"]);
   const bytes = readMetaNumber(call, ["bytesWritten", "sizeBytes", "rawOutputChars"]);
   const count = readMetaNumber(call, ["lineCount", "matchCount", "rowCount", "resultCount", "entryCount", "replacements"])
     ?? readPayloadNumber(payload, ["rowCount", "sectionCount", "rowsCopied"]);
@@ -248,7 +227,7 @@ function formatDeterministicEvidenceItem(call: ActOutput["toolCalls"][number]): 
 
 function buildContentPreview(actOutput: ActOutput): string {
   const readableOutputs = actOutput.toolCalls
-    .filter((call) => ["read_files", "search_in_files", "find_files", "dataset_query", "document_query"].includes(call.tool))
+    .filter((call) => ["read_files", "search_in_files", "find_files", "file_read_text", "file_query"].includes(call.tool))
     .map((call) => {
       const output = call.output.replace(/\s+/g, " ").trim();
       if (!output) return "";

@@ -1,8 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AyatiSystemEvent } from "../../src/core/contracts/plugin.js";
 import type { ChatTurnRuntime } from "../../src/ivec/chat-turn-runtime.js";
 import { IVecEngine } from "../../src/ivec/index.js";
-import type { SystemEventRuntime } from "../../src/ivec/system-event-runtime.js";
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolvePromise: (() => void) | undefined;
@@ -15,75 +13,122 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   };
 }
 
-function systemEvent(): AyatiSystemEvent {
-  return {
-    type: "system_event",
-    eventId: "event-1",
-    source: "test",
-    eventName: "run",
-    receivedAt: "2026-07-27T00:00:00.000Z",
-    summary: "Run the queued system event.",
-    payload: {},
-  };
-}
-
 describe("IVecEngine global run serialization", () => {
-  it("runs chat and system-event harness lifecycles one at a time", async () => {
+  it("returns queue receipts, routes replies independently, and suppresses duplicate message IDs", async () => {
+    const chatGate = deferred();
+    const chatTurnRuntime: ChatTurnRuntime = {
+      processChat: vi.fn(async () => await chatGate.promise),
+    };
+    const engine = new IVecEngine({ chatTurnRuntime });
+
+    const first = engine.handleMessage("local", {
+      type: "chat",
+      messageId: "message-1",
+      content: "First",
+    }, {
+      replyClientId: "transport-1",
+      channel: "cli",
+    });
+    const duplicate = engine.handleMessage("local", {
+      type: "chat",
+      messageId: "message-1",
+      content: "First",
+    }, {
+      replyClientId: "transport-1",
+      channel: "cli",
+    });
+    const second = engine.handleMessage("local", {
+      type: "chat",
+      messageId: "message-2",
+      content: "Second",
+    }, {
+      replyClientId: "transport-2",
+      channel: "voice",
+    });
+
+    expect(first).toEqual({
+      type: "chat_accepted",
+      messageId: "message-1",
+      queued: false,
+      queuePosition: 1,
+    });
+    expect(duplicate).toEqual({ ...first, duplicate: true });
+    expect(second).toEqual({
+      type: "chat_accepted",
+      messageId: "message-2",
+      queued: true,
+      queuePosition: 2,
+    });
+    await vi.waitFor(() => expect(chatTurnRuntime.processChat).toHaveBeenCalledTimes(1));
+    expect(chatTurnRuntime.processChat).toHaveBeenNthCalledWith(1, {
+      clientId: "local",
+      replyClientId: "transport-1",
+      messageId: "message-1",
+      channel: "cli",
+      content: "First",
+      attachments: [],
+    });
+
+    chatGate.resolve();
+    await engine.stop();
+    expect(chatTurnRuntime.processChat).toHaveBeenNthCalledWith(2, {
+      clientId: "local",
+      replyClientId: "transport-2",
+      messageId: "message-2",
+      channel: "voice",
+      content: "Second",
+      attachments: [],
+    });
+  });
+
+  it("runs chat harness lifecycles one at a time", async () => {
     const chatGate = deferred();
     const events: string[] = [];
     const chatTurnRuntime: ChatTurnRuntime = {
-      processChat: vi.fn(async () => {
-        events.push("chat:start");
-        await chatGate.promise;
-        events.push("chat:end");
+      processChat: vi.fn(async (input) => {
+        events.push(`${input.content}:start`);
+        if (input.content === "First") await chatGate.promise;
+        events.push(`${input.content}:end`);
       }),
     };
-    const systemEventRuntime: SystemEventRuntime = {
-      processSystemEvent: vi.fn(async () => {
-        events.push("system:start");
-        events.push("system:end");
-      }),
-    };
-    const engine = new IVecEngine({ chatTurnRuntime, systemEventRuntime });
+    const engine = new IVecEngine({ chatTurnRuntime });
 
-    engine.handleMessage("cli", { type: "chat", content: "Create the website." });
-    await vi.waitFor(() => expect(events).toEqual(["chat:start"]));
+    engine.handleMessage("cli", { type: "chat", content: "First" });
+    engine.handleMessage("cli", { type: "chat", content: "Second" });
+    await vi.waitFor(() => expect(events).toEqual(["First:start"]));
 
-    const systemRun = engine.handleSystemEvent("system", systemEvent());
-    await Promise.resolve();
-    expect(systemEventRuntime.processSystemEvent).not.toHaveBeenCalled();
+    expect(chatTurnRuntime.processChat).toHaveBeenCalledTimes(1);
 
     chatGate.resolve();
-    await systemRun;
+    await engine.stop();
 
     expect(events).toEqual([
-      "chat:start",
-      "chat:end",
-      "system:start",
-      "system:end",
+      "First:start",
+      "First:end",
+      "Second:start",
+      "Second:end",
     ]);
-    await engine.stop();
   });
 
   it("starts the next run after an earlier run fails", async () => {
     const events: string[] = [];
+    let call = 0;
     const chatTurnRuntime: ChatTurnRuntime = {
       processChat: vi.fn(async () => {
-        events.push("chat:failed");
-        throw new Error("chat failed");
+        call++;
+        if (call === 1) {
+          events.push("first:failed");
+          throw new Error("chat failed");
+        }
+        events.push("second:started");
       }),
     };
-    const systemEventRuntime: SystemEventRuntime = {
-      processSystemEvent: vi.fn(async () => {
-        events.push("system:started");
-      }),
-    };
-    const engine = new IVecEngine({ chatTurnRuntime, systemEventRuntime });
+    const engine = new IVecEngine({ chatTurnRuntime });
 
     engine.handleMessage("cli", { type: "chat", content: "Fail this run." });
-    await engine.handleSystemEvent("system", systemEvent());
+    engine.handleMessage("cli", { type: "chat", content: "Run next." });
 
-    expect(events).toEqual(["chat:failed", "system:started"]);
+    await vi.waitFor(() => expect(events).toEqual(["first:failed", "second:started"]));
     await engine.stop();
   });
 

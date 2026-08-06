@@ -17,7 +17,6 @@ Daemon running but no visible reply:
 - Check whether the input arrived through the expected transport.
 - Check WebSocket client connection state.
 - Check provider configuration and startup logs.
-- Check whether a system-event policy path requires approval or notification rather than direct action.
 
 Uploads fail:
 
@@ -25,14 +24,3 @@ Uploads fail:
 - Ensure field name is `file`.
 - Check `AYATI_UPLOAD_MAX_BYTES`.
 - Check HTTP server host/port env vars.
-
-Document vectors unavailable:
-
-- Check OpenAI credentials.
-- Check `AYATI_DOCUMENT_VECTOR_ENABLED`.
-- Review startup logs for document embedder warnings.
-
-Episodic memory unavailable:
-
-- Check OpenAI credentials.
-- Review startup logs for memory embedder warnings.

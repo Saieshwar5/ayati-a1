@@ -7,23 +7,25 @@ Model providers live under `ayati-main/src/providers/`:
 - Anthropic.
 - Fireworks.
 
-Embedding providers live under `ayati-main/src/embeddings/`.
-
-Image generation providers live under `ayati-main/src/image-generation/`.
-
-Current and optional communication/event integrations:
+Current communication integrations:
 
 - CLI client over WebSocket.
-- Pulse reminders and scheduled work under `ayati-main/src/pulse`.
-
+- Electron desktop client over the same WebSocket contract, with a local tray
+  lifecycle and native reply notifications.
+- Daemon-owned voice input through Voxtype file transcription and a private
+  local control socket.
 Future communication channels can include:
 
 - Browser/web client.
 - Mobile client.
-- Voice interface.
 - Other chat apps or notification surfaces.
 
 Integration rule:
 
-- Communication channels should feed normalized messages/events into `ayati-main`.
-- Core intelligence, memory, tool access, event policy, and provider behavior should stay in the daemon.
+- Communication channels should feed normalized user messages into
+  `ayati-main`.
+- Core intelligence, memory, tool access, and provider behavior should stay in
+  the daemon.
+
+See [Desktop Client](desktop-client.md) and [Voice Interface](voice-interface.md)
+for their process, lifecycle, and ownership boundaries.

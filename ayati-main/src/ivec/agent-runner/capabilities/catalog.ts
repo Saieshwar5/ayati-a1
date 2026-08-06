@@ -114,19 +114,10 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     "db_delete_rows",
     "db_drop_table",
   ]),
-  capability("database:raw", "Execute exact mutation SQL.", "Use only when the structured database capabilities cannot express the authorized change.", MUTATION, ["db_execute_sql"], [], {
-    success: ["database:read"],
-  }),
-
-  capability("pulse:manage", "Create or update Pulse automation.", "Use for reminders and scheduled work.", MUTATION, ["pulse"]),
-
-  capability("memory:read", "Search and explain personal or episodic memory.", "Use when earlier learned facts or memory state are needed.", OBSERVE_BOTH, [
-    "recall_memory",
-    "memory_status",
+  capability("memory:read", "Search and explain personal memory.", "Use when earlier learned facts or memory state are needed.", OBSERVE_BOTH, [
     "memory_search",
     "memory_explain",
   ]),
-  capability("memory:settings", "Change episodic-memory settings.", "Use only when the user requests a memory setting change.", MUTATION, ["memory_set_episodic_enabled"]),
   capability("memory:write", "Remember facts or record memory feedback.", "Use when the user asks Ayati to retain or correct a fact.", MUTATION, [
     "memory_remember",
     "memory_feedback",
@@ -156,25 +147,15 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
   capability("attachment:restore", "Restore a durable attachment into the bound run.", "Use when a known attachment must be re-admitted to current bound work.", EXECUTE, ["attachment_restore"], [], {
     success: ["attachment:read"],
   }),
-  capability("document:read", "Navigate and query structured documents.", "Use for PDFs and documents with sections or semantic queries.", OBSERVE_INVESTIGATE, [
-    "document_list_sections",
-    "document_read_section",
-    "document_query",
-  ]),
-  capability("dataset:inspect", "Profile and query a prepared dataset.", "Use for read-only analysis of structured data.", OBSERVE_INVESTIGATE, [
-    "dataset_profile",
-    "dataset_query",
+  capability("dataset:python", "Inspect a dataset with bounded Python.", "Use when managed table tools are insufficient for read-only analysis.", OBSERVE_INVESTIGATE, [
     "python_inspect_dataset",
   ]),
-  capability("dataset:promote", "Promote a prepared table to a durable output.", "Use when an inspected table should become a bound deliverable.", MUTATION, ["dataset_promote_table"]),
   capability("python:execute", "Run bounded Python analysis.", "Use when deterministic dataset tools are insufficient for the authorized analysis.", MUTATION, ["python_execute"]),
 
   capability("artifact:register", "Register an existing path or produced artifact.", "Use to make a bound filesystem output durable and addressable.", MUTATION, [
     "file_register_path",
     "file_register_artifact",
   ]),
-  capability("artifact:fetch", "Fetch a URL into a bound resource.", "Use for an explicitly requested external download.", MUTATION, ["file_fetch_url"]),
-
   unboundCapability(
     "workstream:search",
     "Search candidate workstreams.",

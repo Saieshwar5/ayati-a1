@@ -30,17 +30,8 @@ export function buildInitialState(
     runId: runHandle.runId,
     currentSeq: inputHandle.seq,
     ...(inputHandle.currentMessageId ? { currentMessageId: inputHandle.currentMessageId } : {}),
-    inputKind: deps.inputKind ?? (deps.systemEvent ? "system_event" : "user_message"),
+    inputKind: "user_message",
     userMessage: "",
-    systemEvent: deps.systemEvent,
-    originSource: deps.systemEvent?.source,
-    systemEventIntentKind: deps.systemEventIntentKind,
-    systemEventRequestedAction: deps.systemEventRequestedAction,
-    systemEventCreatedBy: deps.systemEventCreatedBy,
-    handlingMode: deps.systemEventHandlingMode,
-    approvalRequired: deps.systemEventApprovalRequired,
-    approvalState: deps.systemEventApprovalState,
-    contextVisibility: deps.systemEventContextVisibility,
     preferredResponseKind: deps.preferredResponseKind,
     workState: emptyWorkState(),
     workStateRuntime: {
@@ -60,10 +51,7 @@ export function buildInitialState(
     hotContext: deps.hotContextRuntime?.project(deps.clientId, runHandle.runId)
       ?? emptyHotContextProjection(),
     contextPressure: createInitialContextPressureState(),
-    attachedDocuments: deps.attachedDocuments ?? [],
     attachmentWarnings: deps.attachmentWarnings ?? [],
-    preparedAttachments: [],
-    preparedAttachmentRecords: [],
     managedFiles: deps.managedFiles ?? [],
     managedDirectories: deps.managedDirectories ?? [],
     harnessContext,
@@ -100,10 +88,6 @@ export function getPrimaryUserMessage(deps: AgentLoopDeps): string {
   const override = deps.userMessageOverride?.trim();
   if (override) {
     return override;
-  }
-  const systemEventSummary = deps.systemEvent?.summary?.trim();
-  if (systemEventSummary) {
-    return systemEventSummary;
   }
   const initial = deps.initialUserMessage?.trim();
   if (initial) {

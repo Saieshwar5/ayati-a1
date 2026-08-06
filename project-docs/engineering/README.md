@@ -6,6 +6,8 @@ operations, and project-history context for Ayati.
 Important paths:
 
 - `architecture/`: daemon architecture, agent harness, context/memory, tool contracts, APIs, runtime data, clients, integrations, and trust boundaries.
+- `architecture/desktop-client.md`: Electron process ownership, secure IPC,
+  daemon chat flow, tray behavior, configuration, and development workflow.
 - `architecture/workstreams-and-resources.md`: canonical durable-work,
   resource, request, run, and context-repository design.
 - `architecture/capability-surfaces.md`: canonical tool registry, explicit
@@ -20,7 +22,6 @@ Important paths:
 - `testing.md`: test strategy and commands.
 - `headless-chat-scenarios.md`: how another coding agent can test Ayati through the same multi-turn WebSocket chat path as a human user.
 - `live-agent-evaluation.md`: passive real-daemon evaluation capture, evidence reports, comparison, and safe pruning.
-- `runtime-performance-benchmarking.md`: non-LLM runtime performance benchmark design, commands, report interpretation, and subsystem improvement signals.
 - `conventions.md`: code organization and style.
 - `security.md`: safety and secret-handling rules.
 

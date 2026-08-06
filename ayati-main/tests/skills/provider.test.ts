@@ -13,6 +13,5 @@ describe("builtInSkillsProvider", () => {
     expect(skills.length).toBeGreaterThanOrEqual(1);
     expect(skills.some((s) => s.id === "process")).toBe(true);
     expect(skills.some((s) => s.id === "database")).toBe(true);
-    expect(skills.some((s) => s.id === "pulse")).toBe(true);
   }, 20000);
 });

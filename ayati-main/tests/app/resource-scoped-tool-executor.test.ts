@@ -1155,7 +1155,7 @@ describe("resource-scoped tool executor", () => {
     expect(existsSync(join(outside, "escaped.txt"))).toBe(false);
   });
 
-  it("rejects external process, Python, database, and dataset mutation effects", async () => {
+  it("rejects external process and Python mutation effects", async () => {
     const workspace = tempDirectory("ayati-effect-workspace-");
     const outside = tempDirectory("ayati-effect-outside-");
     const execute = vi.fn(async () => ({ ok: true, output: "should not run" }));
@@ -1167,8 +1167,6 @@ describe("resource-scoped tool executor", () => {
         "process_run",
         "process_start",
         "python_execute",
-        "db_execute_sql",
-        "dataset_promote_table",
       ]),
       contextEngine: service,
       workspaceRoot: workspace,
@@ -1198,20 +1196,6 @@ describe("resource-scoped tool executor", () => {
           code: "print('no execution')",
           cwd: outside,
           targets: [{ path: join(workspace, "chart.png"), kind: "file" }],
-        },
-      },
-      {
-        tool: "db_execute_sql",
-        input: {
-          dbPath: join(outside, "external.sqlite"),
-          sql: "CREATE TABLE forbidden(id INTEGER)",
-        },
-      },
-      {
-        tool: "dataset_promote_table",
-        input: {
-          targetDbPath: join(outside, "promoted.sqlite"),
-          targetTable: "forbidden",
         },
       },
     ];
@@ -1327,9 +1311,6 @@ describe("resource-scoped tool executor", () => {
     const executor = createResourceScopedToolExecutor({
       base: baseExecutor(execute, [
         "python_execute",
-        "db_execute_sql",
-        "dataset_promote_table",
-        "file_fetch_url",
       ]),
       contextEngine: service,
       workspaceRoot: workspace,
@@ -1338,18 +1319,6 @@ describe("resource-scoped tool executor", () => {
       {
         tool: "python_execute",
         input: { mode: "code", code: "print('no execution')" },
-      },
-      {
-        tool: "db_execute_sql",
-        input: { sql: "CREATE TABLE forbidden(id INTEGER)" },
-      },
-      {
-        tool: "dataset_promote_table",
-        input: { targetTable: "forbidden" },
-      },
-      {
-        tool: "file_fetch_url",
-        input: { url: "https://example.invalid/file.txt" },
       },
     ];
 

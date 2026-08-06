@@ -2,7 +2,7 @@ import {
   getNowSnapshot,
   getTimeZoneOffsetMinutes,
   isValidTimeZone,
-} from "../../../pulse/time.js";
+} from "./time.js";
 import type {
   SkillDefinition,
   ToolDefinition,

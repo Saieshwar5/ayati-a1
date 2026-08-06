@@ -7,7 +7,7 @@ Current product features:
 - Decision/action/reducer harness with tool-free `ENTRY` replies, run-scoped
   virtual-mode navigation, native whole-task validation, deterministic
   verification, and stable repair codes.
-- One atomic run for every accepted user message or system event, including
+- One atomic run for every accepted user message, including
   valid zero-step direct replies.
 - Autonomous durable-work discovery through compact candidates and
   `git_context_find_workstreams` / `git_context_read_workstream`, including
@@ -37,12 +37,15 @@ Current product features:
 - Exact run-step evidence with bounded on-demand history search/read; read
   results are not copied into a second cross-run context lane.
 - Filesystem metadata, batch reads and writes, focused processes, Python,
-  SQLite, document extraction, dataset analysis, generated artifacts, memory,
-  recall, UI workspace control, Pulse tools, timezone-aware current time, and
+  structured SQLite operations, unified managed-file text/table extraction,
+  generated artifacts, personal memory, timezone-aware current time, and
   bounded local machine health.
-- Personal memory, episodic recall, managed uploads, and session attachments.
-- WebSocket terminal chat, HTTP upload/artifact/Pulse APIs, and system-event
-  processing.
+- Personal memory, managed uploads, directories, and restorable workstream
+  attachments using one managed identity per file or directory.
+- WebSocket terminal chat, a secure Electron desktop client with streaming
+  replies, daemon reconnect, tray behavior, and native notifications,
+  push-to-talk voice input with local Voxtype transcription and confirmation,
+  and HTTP upload/artifact APIs.
 - Passive, opt-in real-daemon evaluation with schema-versioned evidence,
   deterministic diagnostics, and per-turn/session Markdown and JSON reports.
 - Preview-first nested-workstream migration, archive/reset, and context-catalog

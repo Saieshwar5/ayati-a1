@@ -22,7 +22,6 @@ const VERIFIED_FACT_OUTCOMES: Readonly<Record<string, TaskValidationOutcomeKind>
   calculation_evaluated: "calculation.evaluated",
   database_read: "database.read_succeeded",
   database_mutated: "database.mutation_succeeded",
-  pulse_action_completed: "pulse.action_completed",
   process_exit_success: "process.exit_success",
   python_execution_succeeded: "python.execution_succeeded",
   memory_read_completed: "memory.read_succeeded",

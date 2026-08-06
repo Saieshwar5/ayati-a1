@@ -1,28 +1,71 @@
-# Frontend Overview
+# Client Overview
 
-The current frontend is a terminal UI in `ayati-cli`, built with Ink and React.
+Ayati has two interactive client surfaces:
 
-There is no active browser app in the current documented product shape. Treat `frontend/` as CLI/UI context unless a web client is reintroduced.
+- `ayati-cli`: an Ink/React terminal client.
+- `ayati-desktop`: a secure Electron/React desktop client.
+
+The CLI executable also exposes local `voice` control commands for the
+daemon-owned Voxtype integration. Those commands and both visual clients are
+communication surfaces; they do not own agent state.
 
 Important product rule:
 
-- The frontend is a client surface for the daemon.
-- It should render messages, collect input, manage local UI behavior, and send normalized payloads.
-- It should not own core agent intelligence, long-term memory, provider selection, tool policy, or background event processing.
+- Clients render messages, collect input, manage local presentation behavior,
+  and send normalized payloads.
+- `ayati-main` owns agent intelligence, context, provider selection, tools,
+  memory, durable work, background events, and finalization.
+- Restarting or closing a client must not be treated as ending the daemon or
+  closing durable work.
+
+## Shared Chat Contract
+
+Both clients connect to the local daemon WebSocket at
+`ws://127.0.0.1:8080`. They announce a client kind and streaming capability,
+send each chat message with a stable `messageId`, render queue/progress/reply
+envelopes, and acknowledge a final streamed reply after it is rendered. The
+daemon routes the response to the originating connection while retaining
+`local` as the logical user identity.
+
+## Terminal Client
 
 Main files:
 
 - `ayati-cli/src/app/app.tsx`
-- `ayati-cli/src/app/components/header.tsx`
-- `ayati-cli/src/app/components/message-list.tsx`
-- `ayati-cli/src/app/components/chat-input.tsx`
-- `ayati-cli/src/app/components/status-bar.tsx`
+- `ayati-cli/src/app/components/`
 - `ayati-cli/src/app/hooks/use-websocket.ts`
 - `ayati-cli/src/app/commands.ts`
+- `ayati-cli/src/voice/`
 
-The CLI connects to `ws://localhost:8080`.
+The terminal client owns terminal input, attachment queue UX, slash commands,
+and Ink rendering.
 
-The client sends chat, attachments, capability negotiation, and reply-rendered
-acknowledgements. It does not inspect desktop windows, send window-manager
-metadata, emit workspace-attention events, or control desktop layout. Desktop
-integration can be reconsidered later as a separate optional client feature.
+## Electron Desktop Client
+
+Main files:
+
+- `ayati-desktop/src/main/main.ts`
+- `ayati-desktop/src/main/daemon-client.ts`
+- `ayati-desktop/src/main/window-manager.ts`
+- `ayati-desktop/src/preload/index.cts`
+- `ayati-desktop/src/renderer/app.tsx`
+- `ayati-desktop/src/shared/contracts.ts`
+
+The Electron main process owns the WebSocket, reconnect policy, message IDs,
+application window, tray, and native notifications. The sandboxed renderer owns
+only the current visual conversation and composer state. It reaches the main
+process through four narrow preload operations and has no Node.js or direct
+network access.
+
+See [Desktop Client](desktop-client.md) for the process boundary, security
+controls, runtime flow, and commands.
+
+## Browser Status
+
+There is no active browser app in the current product shape. A future browser
+or remote client requires an authentication and authorization design before it
+can safely reach the privileged daemon.
+
+Clients do not inspect arbitrary desktop windows, send window-manager metadata,
+emit workspace-attention events, or control desktop layout. Those capabilities
+would require separate explicit contracts and policy.

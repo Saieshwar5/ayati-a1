@@ -6,7 +6,6 @@ import {
   deleteRows,
   describeTable,
   dropTable,
-  executeSql,
   getTableDdl,
   insertRows,
   listTables,
@@ -14,7 +13,7 @@ import {
   renameTable,
   updateRows,
 } from "../../../database/sqlite-runtime.js";
-import type { DatabaseColumnInput, DatabaseToolMode } from "../../../database/sqlite-runtime.js";
+import type { DatabaseColumnInput } from "../../../database/sqlite-runtime.js";
 import { requireAbsolutePath } from "../../workspace-paths.js";
 
 const GENERIC_JSON_VALUE_SCHEMA: Record<string, unknown> = {};
@@ -100,7 +99,7 @@ function databaseArtifacts(output: unknown, meta?: Record<string, unknown>): Art
   return artifacts;
 }
 
-type DatabaseContractMode = "read" | "write" | "destructive" | "raw";
+type DatabaseContractMode = "read" | "write" | "destructive";
 
 function withDatabaseContract(tool: ToolDefinition, mode: DatabaseContractMode): ToolDefinition {
   const readOnly = mode === "read";
@@ -111,7 +110,7 @@ function withDatabaseContract(tool: ToolDefinition, mode: DatabaseContractMode):
       domain: "database",
       readOnly,
       mutatesWorkspace: !readOnly,
-      destructive: mode === "destructive" || mode === "raw",
+      destructive: mode === "destructive",
       idempotent: readOnly,
       retrySafe: readOnly,
     }),
@@ -133,9 +132,6 @@ function withDatabaseContract(tool: ToolDefinition, mode: DatabaseContractMode):
 function databaseProgressSubjectPath(toolName: string): string {
   if (toolName === "db_list_tables") {
     return "$.result.structuredContent.dbPath";
-  }
-  if (toolName === "db_execute_sql") {
-    return "$.result.structuredContent.statementType";
   }
   if (toolName === "db_rename_table") {
     return "$.result.structuredContent.newName";
@@ -595,51 +591,6 @@ function createQueryTool(): ToolDefinition {
   };
 }
 
-function createExecuteSqlTool(): ToolDefinition {
-  return {
-    name: "db_execute_sql",
-    description: "Execute raw SQLite SQL directly. Use mode=query for SELECT/RETURNING statements and mode=execute for DDL/DML or multi-statement SQL.",
-    inputSchema: {
-      type: "object",
-      required: ["sql"],
-      properties: {
-        dbPath: { type: "string", description: "Optional canonical absolute SQLite database path. Omit to use the managed default database." },
-        sql: { type: "string", description: "SQL to execute." },
-        params: {
-          type: "array",
-          description: "Optional positional parameters for a single prepared statement.",
-          items: GENERIC_JSON_VALUE_SCHEMA,
-        },
-        mode: { type: "string", description: "auto, query, or execute." },
-        maxRows: { type: "number", description: "Optional row cap for query mode (default 50, max 200)." },
-      },
-    },
-    async execute(input): Promise<ToolResult> {
-      if (!isPlainObject(input)) return buildFailureResult("Invalid input: expected object.");
-      const sql = readRequiredString(input, "sql");
-      if (isToolResult(sql)) return sql;
-      const params = readOptionalArray(input, "params");
-      if (isToolResult(params)) return params;
-      const mode = readOptionalMode(input, "mode");
-      if (isToolResult(mode)) return mode;
-      const maxRows = readOptionalNumber(input, "maxRows");
-      if (isToolResult(maxRows)) return maxRows;
-      const dbPath = readOptionalDatabasePath(input);
-      if (isToolResult(dbPath)) return dbPath;
-      const result = executeSql({
-        dbPath,
-        sql,
-        ...(Array.isArray(params) ? { params } : {}),
-        ...(typeof mode === "string" ? { mode } : {}),
-        ...(typeof maxRows === "number" ? { maxRows } : {}),
-      });
-      return result.ok
-        ? buildSuccessResult(result.data, { statementType: result.data?.statementType })
-        : buildFailureResult(result.error ?? "Failed to execute SQL.");
-    },
-  };
-}
-
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -702,15 +653,6 @@ function readOptionalNumber(input: Record<string, unknown>, field: string): numb
   return value;
 }
 
-function readOptionalMode(input: Record<string, unknown>, field: string): DatabaseToolMode | ToolResult | undefined {
-  const value = input[field];
-  if (value === undefined) return undefined;
-  if (value === "auto" || value === "query" || value === "execute") {
-    return value;
-  }
-  return buildFailureResult(`Invalid input: ${field} must be one of auto, query, or execute.`);
-}
-
 function readRequiredArray(input: Record<string, unknown>, field: string): unknown[] | ToolResult {
   const value = input[field];
   if (!Array.isArray(value) || value.length === 0) {
@@ -739,7 +681,7 @@ function readRequiredObject(input: Record<string, unknown>, field: string): Reco
 const databaseSkill: SkillDefinition = {
   id: "database",
   version: "1.0.0",
-  description: "SQLite database operations — inspect schema, create/alter tables, insert/update/delete rows, query data, and execute raw SQL.",
+  description: "Structured SQLite operations for schema inspection, table changes, row mutations, and queries.",
   tools: [
     withDatabaseContract(createListTablesTool(), "read"),
     withDatabaseContract(createDescribeTableTool(), "read"),
@@ -752,7 +694,6 @@ const databaseSkill: SkillDefinition = {
     withDatabaseContract(createUpdateRowsTool(), "write"),
     withDatabaseContract(createDeleteRowsTool(), "destructive"),
     withDatabaseContract(createQueryTool(), "read"),
-    withDatabaseContract(createExecuteSqlTool(), "raw"),
   ],
 };
 

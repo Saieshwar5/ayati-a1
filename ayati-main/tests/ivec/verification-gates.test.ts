@@ -82,14 +82,13 @@ describe("checkVerificationGates", () => {
 });
 
 describe("checkDeterministicSuccessGate", () => {
-  it("passes deterministic dataset query results without LLM validation", () => {
+  it("passes deterministic managed-table query results without LLM validation", () => {
     const actOutput: ActOutput = {
       toolCalls: [{
-        tool: "dataset_query",
-        input: { sql: "SELECT COUNT(*) AS count FROM employees" },
+        tool: "file_query_table",
+        input: { fileId: "file_employees", sql: "SELECT COUNT(*) AS count FROM file_data" },
         output: JSON.stringify({
-          preparedInputId: "att_1",
-          tableName: "staging_att_1",
+          fileId: "file_employees",
           rows: [{ count: 2 }],
           rowCount: 1,
           columns: ["count"],
@@ -98,12 +97,12 @@ describe("checkDeterministicSuccessGate", () => {
       finalText: "",
     };
 
-    const result = checkDeterministicSuccessGate(actOutput, "dataset query returns the count");
+    const result = checkDeterministicSuccessGate(actOutput, "table query returns the count");
 
     expect(result).not.toBeNull();
     expect(result!.passed).toBe(true);
     expect(result!.method).toBe("script");
-    expect(result!.evidenceSummary).toContain("dataset_query succeeded");
+    expect(result!.evidenceSummary).toContain("file_query_table succeeded");
     expect(result!.evidenceSummary).toContain("count=1");
   });
 
@@ -132,36 +131,30 @@ describe("checkDeterministicSuccessGate", () => {
     expect(result!.evidenceSummary).toContain("attachment_restore succeeded");
   });
 
-  it("passes grounded document query results but rejects insufficient evidence", () => {
-    const grounded: ActOutput = {
+  it("passes managed-file query results but rejects malformed results", () => {
+    const valid: ActOutput = {
       toolCalls: [{
-        tool: "document_query",
-        input: { query: "What is the document about?" },
+        tool: "file_query",
+        input: { fileId: "file_policy", query: "identity" },
         output: JSON.stringify({
-          context: "The document is about identity and isolation.",
-          sources: ["/docs/book.txt"],
-          confidence: 0.91,
-          documentState: { insufficientEvidence: false },
+          fileId: "file_policy",
+          matchCount: 1,
+          matches: [{ text: "Identity and isolation." }],
         }),
       }],
       finalText: "",
     };
-    const insufficient: ActOutput = {
+    const malformed: ActOutput = {
       toolCalls: [{
-        tool: "document_query",
-        input: { query: "What is the document about?" },
-        output: JSON.stringify({
-          context: "",
-          sources: [],
-          confidence: 0,
-          documentState: { insufficientEvidence: true },
-        }),
+        tool: "file_query",
+        input: { fileId: "file_policy", query: "identity" },
+        output: JSON.stringify({ fileId: "file_policy" }),
       }],
       finalText: "",
     };
 
-    expect(checkDeterministicSuccessGate(grounded, "document query returns a grounded answer")).not.toBeNull();
-    expect(checkDeterministicSuccessGate(insufficient, "document query returns a grounded answer")).toBeNull();
+    expect(checkDeterministicSuccessGate(valid, "file query returns matches")).not.toBeNull();
+    expect(checkDeterministicSuccessGate(malformed, "file query returns matches")).toBeNull();
   });
 
   it("does not treat send_email as a deterministic built-in verification tool", () => {

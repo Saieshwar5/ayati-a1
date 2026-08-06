@@ -1,7 +1,5 @@
 import { createHash } from "node:crypto";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import type { PreparedAttachmentRecord } from "../../documents/prepared-attachment-registry.js";
-import type { PreparedAttachmentSummary } from "../../documents/types.js";
 import type {
   AgentLoopResult,
   AgentResourceRecord,
@@ -76,7 +74,7 @@ export function buildWorkstreamSummaryRecord(
     nextAction: deriveNextAction(state),
     stopReason: deriveStopReason(state, runStatus),
     failureSummary,
-    attachmentNames: buildAttachmentNames(state.preparedAttachments),
+    attachmentNames: buildAttachmentNames(state),
   };
 }
 
@@ -93,7 +91,6 @@ export function buildRunResources(state: LoopState): AgentResourceRecord[] {
       locator: resource.locator,
       metadataStatus: resource.metadataStatus,
     } satisfies AgentResourceRecord)),
-    ...(state.preparedAttachmentRecords ?? []).map(attachmentRecordToResource),
     ...(state.managedFiles ?? []).map((file): AgentResourceRecord => ({
       resourceId: stableResourceId(absolutePath(file.storagePath)),
       role: "input",
@@ -395,8 +392,11 @@ function suggestFailureRecovery(
   return undefined;
 }
 
-function buildAttachmentNames(preparedAttachments: PreparedAttachmentSummary[] | undefined): string[] {
-  return (preparedAttachments ?? []).map((attachment) => attachment.displayName);
+function buildAttachmentNames(state: LoopState): string[] {
+  return [
+    ...(state.managedFiles ?? []).map((file) => file.originalName),
+    ...(state.managedDirectories ?? []).map((directory) => directory.name),
+  ];
 }
 
 function buildGeneratedResources(state: LoopState): AgentResourceRecord[] {
@@ -555,23 +555,6 @@ function isDescendantPath(parent: string, candidate: string): boolean {
     && !isAbsolute(child);
 }
 
-function attachmentRecordToResource(
-  record: PreparedAttachmentRecord,
-): AgentResourceRecord {
-  const kind = record.summary.mode === "structured_data" ? "dataset" : "document";
-  const path = absolutePath(record.manifest.originalPath || record.summary.artifactPath);
-  return {
-    resourceId: stableResourceId(path),
-    role: "input",
-    kind,
-    origin: "user_attachment",
-    displayName: record.summary.displayName,
-    description: `User-provided ${kind} ${record.summary.displayName}.`,
-    aliases: [record.summary.displayName, record.summary.documentId],
-    locator: { kind: "filesystem", path },
-    metadataStatus: "enriched",
-  };
-}
 function dedupeResources(resources: AgentResourceRecord[]): AgentResourceRecord[] {
   const output = new Map<string, AgentResourceRecord>();
   for (const resource of resources) {

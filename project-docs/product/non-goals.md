@@ -15,4 +15,6 @@ Do not assume Ayati is trying to be:
   context-window implementation details.
 - A system that should expose process, filesystem, Python, or database tools to untrusted users without careful policy and deployment review.
 
-Current development should preserve the daemon/client separation and modular runtime shape instead of tightly coupling providers, tools, memory, plugins, and clients together.
+Current development should preserve the daemon/client separation and modular
+runtime shape instead of tightly coupling providers, tools, memory, and clients
+together.

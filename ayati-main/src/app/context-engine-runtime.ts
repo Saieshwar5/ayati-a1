@@ -37,7 +37,7 @@ export interface ContextEnginePreparedTurn {
   streamCreated: boolean;
   messageSequence: number;
   currentMessageId: string;
-  inputRole: "user" | "system_event";
+  inputRole: "user";
   run: AgentRunHandle;
   context: ContextEngineMachineContext;
 }
@@ -77,11 +77,7 @@ export interface ContextEngineRuntime {
     clientId: string;
     userMessage: string;
     resources?: ResourceAdmission[];
-    at: string;
-  }): Promise<ContextEnginePreparedTurn>;
-  prepareSystemEventTurn(input: {
-    clientId: string;
-    systemMessage: string;
+    ingressMessageId?: string;
     at: string;
   }): Promise<ContextEnginePreparedTurn>;
   finalizeRun(input: ContextEngineFinalizeRunInput): Promise<FinalizeRunResponse | null>;
@@ -118,6 +114,7 @@ class AppContextEngineRuntime implements ContextEngineRuntime {
     clientId: string;
     userMessage: string;
     resources?: ResourceAdmission[];
+    ingressMessageId?: string;
     at: string;
   }): Promise<ContextEnginePreparedTurn> {
     return await this.prepareInput(
@@ -126,19 +123,7 @@ class AppContextEngineRuntime implements ContextEngineRuntime {
       input.userMessage,
       input.at,
       input.resources,
-    );
-  }
-
-  async prepareSystemEventTurn(input: {
-    clientId: string;
-    systemMessage: string;
-    at: string;
-  }): Promise<ContextEnginePreparedTurn> {
-    return await this.prepareInput(
-      input.clientId,
-      "system_event",
-      input.systemMessage,
-      input.at,
+      input.ingressMessageId,
     );
   }
 
@@ -362,12 +347,13 @@ class AppContextEngineRuntime implements ContextEngineRuntime {
 
   private async prepareInput(
     clientId: string,
-    role: "user" | "system_event",
+    role: "user",
     content: string,
     at: string,
     resources?: ResourceAdmission[],
+    ingressMessageId?: string,
   ): Promise<ContextEnginePreparedTurn> {
-    const requestId = preparationRequestId(clientId, role, content, at);
+    const requestId = preparationRequestId(clientId, role, content, at, ingressMessageId);
     const prepared = await this.options.service.prepareAgentRun({
       requestId,
       timezone: this.options.timezone,
@@ -537,12 +523,15 @@ function toRunWorkState(value: unknown, outcome?: RunOutcome): RunWorkStateInput
 
 function preparationRequestId(
   clientId: string,
-  role: "user" | "system_event",
+  role: "user",
   content: string,
   at: string,
+  ingressMessageId?: string,
 ): string {
   const digest = createHash("sha256")
-    .update(JSON.stringify({ clientId, role, content, at }))
+    .update(JSON.stringify(ingressMessageId
+      ? { clientId, role, ingressMessageId }
+      : { clientId, role, content, at }))
     .digest("hex")
     .slice(0, 24);
   return "prepare:" + digest;

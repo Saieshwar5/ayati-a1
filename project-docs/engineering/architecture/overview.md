@@ -6,15 +6,15 @@ Ayati is a TypeScript ESM pnpm monorepo.
 user channels -> persistent daemon -> agent stream + run context -> tools/providers -> actions/replies
 ```
 
-`ayati-main` owns agent intelligence, the harness, provider access, tools,
-personal/episodic memory, plugins, and event handling. `ayati-cli` is a client.
+`ayati-main` owns agent intelligence, the harness, provider access, tools, and
+personal memory. `ayati-cli` and `ayati-desktop` are clients.
 `ayati-context-engine` is an in-process daemon library and the only owner of
 context SQLite and context-only Git writes. The daemon depends on its typed
 `ContextEngineService` interface, not its SQLite implementation.
 
 ## Runtime Flow
 
-1. A client sends a message or an integration produces a system event.
+1. A client sends a user message.
 2. One `prepareAgentRun` transaction resolves the default agent stream,
    appends an immutable ingress message, creates a run with initial WorkState,
    and returns the authoritative agent-facing projection.
@@ -107,7 +107,8 @@ context pack -> decision -> action executor -> deterministic verification -> pro
 
 ```text
 agent stream (slow growth, many runs)
-  immutable user/system-event/assistant messages
+  immutable user/assistant messages
+  readable legacy system_event messages for stored-history compatibility
   durable continuity checkpoint + exact tail
   optional focused unfinished workstream/request pair
   recent-workstream metadata prepared for optional Hot Context
@@ -135,8 +136,8 @@ personal memory (independent)
 ```
 
 There is one default stream for the local agent: `agentId=local` and
-`scopeKey=default`. Different clients and system events contribute to that
-same continuity stream. A run is never used as a long-term conversation
+`scopeKey=default`. Different clients contribute to that same continuity
+stream. A run is never used as a long-term conversation
 container, and the stream is never used as an action log.
 
 ## Managed Filesystem Topology
@@ -180,4 +181,4 @@ Important entry points:
 Default endpoints:
 
 - WebSocket chat: `ws://localhost:8080`
-- HTTP upload/artifact/Pulse API: `http://127.0.0.1:8081`
+- HTTP upload/artifact API: `http://127.0.0.1:8081`

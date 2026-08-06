@@ -362,7 +362,6 @@ export function buildDeterministicFindings(input: {
       "decision_repair",
       "provider_retry",
       "final_response",
-      "proposal_reflection",
     ].includes(request.purpose));
     const appearances = relevant.map(({ request, value }) => ({
       request,

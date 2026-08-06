@@ -106,6 +106,7 @@ describe.runIf(canBindTcpSocket())("WsServer", () => {
     const client = await connectClient(port);
     client.send(JSON.stringify({
       type: "client_hello",
+      clientKind: "voice",
       capabilities: {
         replyStreaming: true,
       },
@@ -123,6 +124,37 @@ describe.runIf(canBindTcpSocket())("WsServer", () => {
     client.send(JSON.stringify({ type: "chat", content: "hello" }));
     await messageReceived;
 
+    expect(server.clientSupportsReplyStreaming(capturedClientId)).toBe(true);
+    expect(server.clientKind(capturedClientId)).toBe("voice");
+    await closeClient(client);
+  });
+
+  it("recognizes the Electron desktop client kind", async () => {
+    const port = getPort();
+    let capturedClientId = "";
+    const onMessage = vi.fn();
+    server = new WsServer({ port, onMessage });
+    await server.start();
+
+    const client = await connectClient(port);
+    client.send(JSON.stringify({
+      type: "client_hello",
+      clientKind: "desktop",
+      capabilities: {
+        replyStreaming: true,
+      },
+    }));
+
+    const messageReceived = new Promise<void>((resolve) => {
+      onMessage.mockImplementation((clientId: string) => {
+        capturedClientId = clientId;
+        resolve();
+      });
+    });
+    client.send(JSON.stringify({ type: "chat", messageId: "desktop-1", content: "hello" }));
+    await messageReceived;
+
+    expect(server.clientKind(capturedClientId)).toBe("desktop");
     expect(server.clientSupportsReplyStreaming(capturedClientId)).toBe(true);
     await closeClient(client);
   });
@@ -238,7 +270,7 @@ describe.runIf(canBindTcpSocket())("WsServer", () => {
     const server2 = new WsServer({ port, onMessage });
     await expect(server2.start()).rejects.toThrow();
 
-    // Clean up: stop the retry timer
+    // Release the failed server instance.
     await server2.stop();
   });
 

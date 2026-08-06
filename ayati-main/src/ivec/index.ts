@@ -3,49 +3,52 @@ import { buildStaticSystemContext } from "../app/static-prompt.js";
 import type { LlmProvider } from "../core/contracts/provider.js";
 import type { StaticContext } from "../context/static-context-cache.js";
 import { estimateTextTokens } from "../prompt/token-estimator.js";
-import { devLog, devWarn, devError } from "../shared/index.js";
-import {
-  normalizeSystemEvent,
-  type AyatiSystemEvent,
-  type SystemEventClass,
-  type SystemEventCreatedBy,
-  type SystemEventEffectLevel,
-  type SystemEventIntentKind,
-  type SystemEventIntentMetadata,
-  type SystemEventTrustTier,
-} from "../core/contracts/plugin.js";
+import { devError, devLog, devWarn } from "../shared/index.js";
 import { AgentRunQueue } from "./agent-run-queue.js";
 import type { ChatTurnRuntime } from "./chat-turn-runtime.js";
-import type { SystemEventRuntime } from "./system-event-runtime.js";
-import type {
-  ChatAttachmentInput,
-  ChatInboundMessage,
-} from "./types.js";
+import type { ChatAttachmentInput, ChatInboundMessage } from "./types.js";
 
 export interface IVecEngineOptions {
   provider?: LlmProvider;
   staticContext?: StaticContext;
-  now?: () => Date;
   chatTurnRuntime?: ChatTurnRuntime;
-  systemEventRuntime?: SystemEventRuntime;
 }
+
+export interface ChatIngressReceipt {
+  type: "chat_accepted";
+  messageId: string;
+  queued: boolean;
+  queuePosition: number;
+  duplicate?: true;
+}
+
+export interface ChatRunSettled {
+  messageId: string;
+  status: "completed" | "failed";
+  error?: string;
+}
+
+export interface MessageIngressContext {
+  replyClientId?: string;
+  channel?: "cli" | "desktop" | "voice" | "unknown";
+  onSettled?: (result: ChatRunSettled) => void;
+}
+
+const MAX_RECENT_CHAT_RECEIPTS = 2_048;
 
 export class IVecEngine {
   private readonly provider?: LlmProvider;
   private readonly staticContext?: StaticContext;
-  private readonly nowProvider: () => Date;
   private readonly chatTurnRuntime?: ChatTurnRuntime;
-  private readonly systemEventRuntime?: SystemEventRuntime;
   private readonly runQueue = new AgentRunQueue();
+  private readonly recentChatReceipts = new Map<string, ChatIngressReceipt>();
   private staticSystemTokens = 0;
   private staticTokensReady = false;
 
   constructor(options?: IVecEngineOptions) {
     this.provider = options?.provider;
     this.staticContext = options?.staticContext;
-    this.nowProvider = options?.now ?? (() => new Date());
     this.chatTurnRuntime = options?.chatTurnRuntime;
-    this.systemEventRuntime = options?.systemEventRuntime;
   }
 
   async start(): Promise<void> {
@@ -55,7 +58,6 @@ export class IVecEngine {
     } else {
       devWarn("No LLM provider configured — running in echo mode");
     }
-
     this.ensureStaticTokenCache();
     devLog("IVecEngine started");
   }
@@ -73,110 +75,85 @@ export class IVecEngine {
     this.staticTokensReady = false;
   }
 
-  handleMessage(clientId: string, data: unknown): void {
+  handleMessage(
+    clientId: string,
+    data: unknown,
+    ingress?: MessageIngressContext,
+  ): ChatIngressReceipt | null {
     devLog(`Message from ${clientId}:`, JSON.stringify(data));
-
-    const payload = data as { type?: string };
-    if (payload?.type === "system_event") {
-      const systemEvent = this.toSystemEvent(data);
-      if (!systemEvent) {
-        devWarn("Ignored invalid system_event payload");
-        return;
-      }
-      if (!this.systemEventRuntime) {
-        devWarn("Ignored system_event because no system event runtime is configured.");
-        return;
-      }
-      const systemEventRuntime = this.systemEventRuntime;
-      void this.enqueueRun("system_event", clientId, async () => {
-        await systemEventRuntime.processSystemEvent({ clientId, event: systemEvent });
-      }).catch((err) => {
-        devError("Unhandled system_event processing failure:", err);
-      });
-      return;
-    }
-
-    const msg = parseChatInboundMessage(data);
-    if (!msg) return;
-
+    const message = parseChatInboundMessage(data);
+    if (!message) return null;
     if (!this.chatTurnRuntime) {
       devWarn("Ignored chat message because no chat turn runtime is configured.");
-      return;
+      return null;
     }
-    const chatTurnRuntime = this.chatTurnRuntime;
 
-    void this.enqueueRun("chat", clientId, async () => {
-      await chatTurnRuntime.processChat({
+    const messageId = message.messageId ?? randomUUID();
+    const receiptKey = `${clientId}:${messageId}`;
+    const previousReceipt = this.recentChatReceipts.get(receiptKey);
+    if (previousReceipt) return { ...previousReceipt, duplicate: true };
+
+    const queued = this.runQueue.isBusy();
+    const receipt: ChatIngressReceipt = {
+      type: "chat_accepted",
+      messageId,
+      queued,
+      queuePosition: this.runQueue.size() + 1,
+    };
+    this.rememberChatReceipt(receiptKey, receipt);
+
+    void this.enqueueChat(clientId, async () => {
+      await this.chatTurnRuntime!.processChat({
         clientId,
-        content: msg.content,
-        attachments: msg.attachments ?? [],
+        ...(ingress?.replyClientId ? { replyClientId: ingress.replyClientId } : {}),
+        messageId,
+        ...(ingress?.channel ? { channel: ingress.channel } : {}),
+        content: message.content,
+        attachments: message.attachments ?? [],
       });
-    }).catch((err) => {
-      devError("Unhandled chat processing failure:", err);
-    });
+    }).then(
+      () => this.notifyChatSettled(ingress?.onSettled, { messageId, status: "completed" }),
+      (error: unknown) => {
+        devError("Unhandled chat processing failure:", error);
+        this.notifyChatSettled(ingress?.onSettled, {
+          messageId,
+          status: "failed",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    );
+    return receipt;
   }
 
-  async handleSystemEvent(clientId: string, event: AyatiSystemEvent): Promise<void> {
-    if (!this.systemEventRuntime) {
-      devWarn("Ignored system event because no system event runtime is configured.");
-      return;
-    }
-    const systemEventRuntime = this.systemEventRuntime;
-    await this.enqueueRun("system_event", clientId, async () => {
-      await systemEventRuntime.processSystemEvent({ clientId, event });
-    });
-  }
-
-  private async enqueueRun(
-    source: "chat" | "system_event",
-    clientId: string,
-    work: () => Promise<void>,
-  ): Promise<void> {
+  private async enqueueChat(clientId: string, work: () => Promise<void>): Promise<void> {
     const queued = this.runQueue.isBusy();
     const position = this.runQueue.size() + 1;
     if (queued) {
-      devLog(`[${clientId}] ${source} queued behind an active agent run position=${position}`);
+      devLog(`[${clientId}] chat queued behind an active agent run position=${position}`);
     }
     await this.runQueue.enqueue(async () => {
-      if (queued) {
-        devLog(`[${clientId}] ${source} started after waiting for the global agent run queue`);
-      }
+      if (queued) devLog(`[${clientId}] chat started after waiting for the global agent run queue`);
       await work();
     });
   }
 
-  private toSystemEvent(data: unknown): AyatiSystemEvent | null {
-    if (!data || typeof data !== "object") return null;
-    const value = data as Record<string, unknown>;
-    if (value["type"] !== "system_event") return null;
-    const source = asRequiredString(value["source"]);
-    const eventName = asRequiredString(value["eventName"]) ?? asRequiredString(value["event"]);
-    if (!source || !eventName) {
-      return null;
+  private rememberChatReceipt(key: string, receipt: ChatIngressReceipt): void {
+    if (this.recentChatReceipts.size >= MAX_RECENT_CHAT_RECEIPTS) {
+      const oldestKey = this.recentChatReceipts.keys().next().value;
+      if (oldestKey) this.recentChatReceipts.delete(oldestKey);
     }
+    this.recentChatReceipts.set(key, receipt);
+  }
 
-    const eventId = asOptionalString(value["eventId"]) ?? randomUUID();
-    const receivedAt = asOptionalString(value["receivedAt"])
-      ?? asOptionalString(value["occurredAt"])
-      ?? asOptionalString(value["triggeredAt"])
-      ?? asOptionalString(value["scheduledFor"])
-      ?? this.nowProvider().toISOString();
-    const summary = this.toSystemEventSummary(source, eventName, value);
-    if (!summary) {
-      return null;
+  private notifyChatSettled(
+    callback: MessageIngressContext["onSettled"],
+    result: ChatRunSettled,
+  ): void {
+    try {
+      callback?.(result);
+    } catch (error) {
+      devWarn("Chat settlement callback failed:", error);
     }
-    const payload = this.toSystemEventPayload(value);
-    const intent = this.toSystemEventIntent(value);
-
-    return normalizeSystemEvent({
-      eventId,
-      source,
-      eventName,
-      receivedAt,
-      summary,
-      payload,
-      ...(intent ? { intent } : {}),
-    });
   }
 
   private ensureStaticTokenCache(): void {
@@ -186,124 +163,12 @@ export class IVecEngine {
       this.staticTokensReady = true;
       return;
     }
-
     const staticOnlyPrompt = buildStaticSystemContext(this.staticContext) ?? "";
-
     const promptTokens = estimateTextTokens(staticOnlyPrompt);
-
     this.staticSystemTokens = promptTokens;
     this.staticTokensReady = true;
     devLog(`Static context tokens cached: ${this.staticSystemTokens} (prompt=${promptTokens})`);
   }
-
-  private toSystemEventSummary(
-    source: string,
-    eventName: string,
-    value: Record<string, unknown>,
-  ): string | null {
-    const summary = asOptionalString(value["summary"]);
-    if (summary) {
-      return summary;
-    }
-
-    const title = asOptionalString(value["title"]);
-    const instruction = asOptionalString(value["instruction"]);
-    if (source === "pulse" && eventName === "reminder_due") {
-      return title
-        ? `Reminder due: ${title}`
-        : instruction
-          ? `Reminder due: ${instruction}`
-          : "Reminder due";
-    }
-    if (source === "pulse" && eventName === "task_due") {
-      return title
-        ? `Scheduled task due: ${title}`
-        : instruction
-          ? `Scheduled task due: ${instruction}`
-          : "Scheduled task due";
-    }
-
-    const fallback = `${source} ${eventName}`.trim();
-    return title ?? instruction ?? (fallback.length > 0 ? fallback : null);
-  }
-
-  private toSystemEventPayload(value: Record<string, unknown>): Record<string, unknown> {
-    const directPayload = asRecord(value["payload"]);
-    if (directPayload) {
-      return directPayload;
-    }
-
-    const metadata = asRecord(value["metadata"]);
-    const payload: Record<string, unknown> = {};
-    const fieldMap = {
-      occurrenceId: value["occurrenceId"],
-      scheduledItemId: value["scheduledItemId"],
-      reminderId: value["reminderId"],
-      taskId: value["taskId"],
-      title: value["title"],
-      instruction: value["instruction"],
-      scheduledFor: value["scheduledFor"],
-      triggeredAt: value["triggeredAt"],
-      timezone: value["timezone"],
-      intentKind: value["intentKind"],
-      requestedAction: value["requestedAction"],
-      originRunId: value["originRunId"],
-      originSessionId: value["originSessionId"],
-    } satisfies Record<string, unknown>;
-
-    for (const [key, fieldValue] of Object.entries(fieldMap)) {
-      if (fieldValue !== undefined) {
-        payload[key] = fieldValue;
-      }
-    }
-
-    if (metadata) {
-      payload["metadata"] = metadata;
-    }
-
-    return payload;
-  }
-
-  private toSystemEventIntent(value: Record<string, unknown>): SystemEventIntentMetadata | undefined {
-    const nestedIntent = asRecord(value["intent"]);
-    const kind = asSystemEventIntentKind(nestedIntent?.["kind"])
-      ?? asSystemEventIntentKind(value["intentKind"]);
-    const eventClass = asSystemEventClass(nestedIntent?.["eventClass"])
-      ?? asSystemEventClass(value["eventClass"])
-      ?? asSystemEventClass(value["event_class"]);
-    const trustTier = asSystemEventTrustTier(nestedIntent?.["trustTier"])
-      ?? asSystemEventTrustTier(value["trustTier"])
-      ?? asSystemEventTrustTier(value["trust_tier"]);
-    const effectLevel = asSystemEventEffectLevel(nestedIntent?.["effectLevel"])
-      ?? asSystemEventEffectLevel(value["effectLevel"])
-      ?? asSystemEventEffectLevel(value["effect_level"]);
-    const requestedAction = asOptionalString(nestedIntent?.["requestedAction"])
-      ?? asOptionalString(value["requestedAction"]);
-    const createdBy = asSystemEventCreatedBy(nestedIntent?.["createdBy"])
-      ?? asSystemEventCreatedBy(value["createdBy"]);
-
-    if (!kind && !eventClass && !trustTier && !effectLevel && !requestedAction && !createdBy) {
-      return undefined;
-    }
-
-    return {
-      ...(kind ? { kind } : {}),
-      ...(eventClass ? { eventClass } : {}),
-      ...(trustTier ? { trustTier } : {}),
-      ...(effectLevel ? { effectLevel } : {}),
-      ...(requestedAction ? { requestedAction } : {}),
-      ...(createdBy ? { createdBy } : {}),
-    };
-  }
-
-}
-
-function asOptionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
-}
-
-function asRequiredString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
 function asOptionalPositiveNumber(value: unknown): number | undefined {
@@ -311,9 +176,7 @@ function asOptionalPositiveNumber(value: unknown): number | undefined {
 }
 
 function asOptionalStringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
+  if (!Array.isArray(value)) return undefined;
   const strings = value
     .map((entry) => typeof entry === "string" ? entry.trim() : "")
     .filter((entry) => entry.length > 0);
@@ -321,102 +184,46 @@ function asOptionalStringArray(value: unknown): string[] | undefined {
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
 }
 
-function asSystemEventIntentKind(value: unknown): SystemEventIntentKind | undefined {
-  return value === "reminder" || value === "task" || value === "notification" || value === "unknown"
-    ? value
-    : undefined;
-}
-
-function asSystemEventCreatedBy(value: unknown): SystemEventCreatedBy | undefined {
-  return value === "user" || value === "agent" || value === "system" || value === "external" || value === "unknown"
-    ? value
-    : undefined;
-}
-
-function asSystemEventClass(value: unknown): SystemEventClass | undefined {
-  return value === "message_received"
-    || value === "trigger_fired"
-    || value === "task_requested"
-    || value === "state_changed"
-    || value === "artifact_received"
-    || value === "approval_response"
-    ? value
-    : undefined;
-}
-
-function asSystemEventTrustTier(value: unknown): SystemEventTrustTier | undefined {
-  return value === "internal" || value === "trusted_system" || value === "external"
-    ? value
-    : undefined;
-}
-
-function asSystemEventEffectLevel(value: unknown): SystemEventEffectLevel | undefined {
-  return value === "observe" || value === "assist" || value === "act" || value === "act_external"
-    ? value
-    : undefined;
-}
-
 export function parseChatInboundMessage(data: unknown): ChatInboundMessage | null {
-  if (!data || typeof data !== "object") {
-    return null;
-  }
+  const payload = asRecord(data);
+  if (!payload || payload["type"] !== "chat" || typeof payload["content"] !== "string") return null;
 
-  const payload = data as Record<string, unknown>;
-  if (payload["type"] !== "chat") {
-    return null;
-  }
+  const rawMessageId = payload["messageId"];
+  const messageId = rawMessageId === undefined ? undefined : asBoundedString(rawMessageId, 128);
+  if (rawMessageId !== undefined && !messageId) return null;
+  const baseMessage: ChatInboundMessage = {
+    type: "chat",
+    ...(messageId ? { messageId } : {}),
+    content: payload["content"],
+  };
 
-  const content = payload["content"];
-  if (typeof content !== "string") {
-    return null;
-  }
-
-  const attachmentsRaw = payload["attachments"];
-  if (!Array.isArray(attachmentsRaw)) {
-    return {
-      type: "chat",
-      content,
-    };
-  }
-
+  if (!Array.isArray(payload["attachments"])) return baseMessage;
   const attachments: ChatAttachmentInput[] = [];
-  for (const row of attachmentsRaw) {
+  for (const row of payload["attachments"]) {
     const value = asRecord(row);
-    if (!value) {
-      continue;
-    }
+    if (!value) continue;
 
     const fileId = typeof value["fileId"] === "string" ? value["fileId"].trim() : "";
-    if (fileId.length > 0) {
-      attachments.push({
-        source: "file",
-        fileId,
-      });
+    if (fileId) {
+      attachments.push({ source: "file", fileId });
       continue;
     }
 
-    const rawAttachmentType = typeof value["type"] === "string"
+    const rawType = typeof value["type"] === "string"
       ? value["type"]
       : typeof value["kind"] === "string"
         ? value["kind"]
         : undefined;
-    const attachmentType = rawAttachmentType?.trim().toLowerCase();
+    const attachmentType = rawType?.trim().toLowerCase();
     const source = typeof value["source"] === "string" ? value["source"].trim().toLowerCase() : undefined;
     if (attachmentType === "directory") {
-      if (source !== undefined && source !== "cli") {
-        continue;
-      }
+      if (source !== undefined && source !== "cli") continue;
       const path = typeof value["path"] === "string" ? value["path"].trim() : "";
-      if (path.length === 0) {
-        continue;
-      }
-
+      if (!path) continue;
       const name = typeof value["name"] === "string" ? value["name"].trim() : undefined;
       const include = asOptionalStringArray(value["include"]);
       const exclude = asOptionalStringArray(value["exclude"]);
@@ -437,10 +244,7 @@ export function parseChatInboundMessage(data: unknown): ChatInboundMessage | nul
 
     if (attachmentType !== "upload" && (source === undefined || source === "cli")) {
       const path = typeof value["path"] === "string" ? value["path"].trim() : "";
-      if (path.length === 0) {
-        continue;
-      }
-
+      if (!path) continue;
       const name = typeof value["name"] === "string" ? value["name"].trim() : undefined;
       attachments.push({
         ...(attachmentType === "file" ? { type: "file" as const } : {}),
@@ -451,16 +255,10 @@ export function parseChatInboundMessage(data: unknown): ChatInboundMessage | nul
       continue;
     }
 
-    if (source !== "upload" && attachmentType !== "upload") {
-      continue;
-    }
-
+    if (source !== "upload" && attachmentType !== "upload") continue;
     const uploadedPath = typeof value["uploadedPath"] === "string" ? value["uploadedPath"].trim() : "";
     const originalName = typeof value["originalName"] === "string" ? value["originalName"].trim() : "";
-    if (uploadedPath.length === 0 || originalName.length === 0) {
-      continue;
-    }
-
+    if (!uploadedPath || !originalName) continue;
     const mimeType = typeof value["mimeType"] === "string" ? value["mimeType"].trim() : undefined;
     const sizeBytes = asOptionalPositiveNumber(value["sizeBytes"]);
     attachments.push({
@@ -472,11 +270,13 @@ export function parseChatInboundMessage(data: unknown): ChatInboundMessage | nul
     });
   }
 
-  return {
-    type: "chat",
-    content,
-    ...(attachments.length > 0 ? { attachments } : {}),
-  };
+  return { ...baseMessage, ...(attachments.length > 0 ? { attachments } : {}) };
+}
+
+function asBoundedString(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed.length <= maxLength ? trimmed : undefined;
 }
 
 export { IVecEngine as AgentEngine };

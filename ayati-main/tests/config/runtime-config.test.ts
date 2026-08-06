@@ -3,8 +3,6 @@ import { join } from "node:path";
 import {
   DEFAULT_AGENT_MAX_CAPABILITY_SURFACE_TOOLS,
   DEFAULT_AYATI_ROOT_DIR,
-  DEFAULT_DOCUMENT_EMBED_BATCH_SIZE,
-  DEFAULT_DOCUMENT_VECTOR_MIN_CHUNKS,
   DEFAULT_CONTEXT_ENGINE_AGENT_ID,
   DEFAULT_CONTEXT_ENGINE_TIMEZONE,
   DEFAULT_HTTP_ALLOW_ORIGIN,
@@ -28,11 +26,6 @@ describe("ayati runtime config", () => {
         allowOrigin: DEFAULT_HTTP_ALLOW_ORIGIN,
         maxUploadBytes: DEFAULT_UPLOAD_MAX_BYTES,
       },
-      documents: {
-        vectorEnabled: true,
-        embedBatchSize: DEFAULT_DOCUMENT_EMBED_BATCH_SIZE,
-        vectorMinChunks: DEFAULT_DOCUMENT_VECTOR_MIN_CHUNKS,
-      },
       python: {},
       agent: { loopConfig: { maxCapabilitySurfaceTools: DEFAULT_AGENT_MAX_CAPABILITY_SURFACE_TOOLS } },
       filesystemAccess: {
@@ -55,11 +48,7 @@ describe("ayati runtime config", () => {
       AYATI_HTTP_HOST: " 0.0.0.0 ",
       AYATI_HTTP_PORT: "9090",
       AYATI_HTTP_ALLOW_ORIGIN: " https://app.example ",
-      AYATI_HTTP_API_TOKEN: " local-token ",
       AYATI_UPLOAD_MAX_BYTES: "4096",
-      AYATI_DOCUMENT_VECTOR_ENABLED: "false",
-      AYATI_DOCUMENT_EMBED_BATCH_SIZE: "64",
-      AYATI_DOCUMENT_VECTOR_MIN_CHUNKS: "12",
       AYATI_PYTHON_INTERPRETER: " /usr/bin/python3 ",
       AYATI_AGENT_MAX_CAPABILITY_SURFACE_TOOLS: "5",
       AYATI_FILESYSTEM_READ_SCOPE: "workspace",
@@ -80,13 +69,7 @@ describe("ayati runtime config", () => {
       host: "0.0.0.0",
       port: 9090,
       allowOrigin: "https://app.example",
-      apiToken: "local-token",
       maxUploadBytes: 4096,
-    });
-    expect(config.documents).toEqual({
-      vectorEnabled: false,
-      embedBatchSize: 64,
-      vectorMinChunks: 12,
     });
     expect(config.python.interpreterPath).toBe("/usr/bin/python3");
     expect(config.agent.loopConfig.maxCapabilitySurfaceTools).toBe(5);
@@ -118,14 +101,10 @@ describe("ayati runtime config", () => {
     const config = loadAyatiRuntimeConfig({
       AYATI_HTTP_PORT: "-1",
       AYATI_UPLOAD_MAX_BYTES: "not-a-number",
-      AYATI_DOCUMENT_EMBED_BATCH_SIZE: "0",
-      AYATI_DOCUMENT_VECTOR_MIN_CHUNKS: "",
     });
 
     expect(config.http.port).toBe(DEFAULT_HTTP_PORT);
     expect(config.http.maxUploadBytes).toBe(DEFAULT_UPLOAD_MAX_BYTES);
-    expect(config.documents.embedBatchSize).toBe(DEFAULT_DOCUMENT_EMBED_BATCH_SIZE);
-    expect(config.documents.vectorMinChunks).toBe(DEFAULT_DOCUMENT_VECTOR_MIN_CHUNKS);
     expect(config.agent.loopConfig.maxCapabilitySurfaceTools).toBe(
       DEFAULT_AGENT_MAX_CAPABILITY_SURFACE_TOOLS,
     );
@@ -133,20 +112,11 @@ describe("ayati runtime config", () => {
     expect(parsePositiveInt("0", 1)).toBe(1);
   });
 
-  it("treats explicit false-like document vector values as disabled", () => {
-    for (const value of ["0", "false", "FALSE", "no", "off"]) {
-      expect(loadAyatiRuntimeConfig({ AYATI_DOCUMENT_VECTOR_ENABLED: value }).documents.vectorEnabled)
-        .toBe(false);
-    }
-  });
-
   it("omits optional trimmed values when they are empty", () => {
     const config = loadAyatiRuntimeConfig({
-      AYATI_HTTP_API_TOKEN: "   ",
       AYATI_PYTHON_INTERPRETER: "   ",
     });
 
-    expect(config.http.apiToken).toBeUndefined();
     expect(config.python.interpreterPath).toBeUndefined();
   });
 

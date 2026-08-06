@@ -1,13 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { createAttachmentSkill } from "../../src/skills/builtins/attachments/index.js";
-import { createDatasetSkill } from "../../src/skills/builtins/datasets/index.js";
-import { createDocumentSkill } from "../../src/skills/builtins/documents/index.js";
 import { createFilesSkill } from "../../src/skills/builtins/files/index.js";
 import { createGitContextSkill } from "../../src/skills/builtins/git-context/index.js";
 import { createGitReadSkill } from "../../src/skills/builtins/git-read/index.js";
 import { createMemorySkill } from "../../src/skills/builtins/memory/index.js";
 import { createPythonSkill } from "../../src/skills/builtins/python/index.js";
-import { createRecallSkill } from "../../src/skills/builtins/recall/index.js";
 import { createContextSkill } from "../../src/skills/builtins/context/index.js";
 import { createSystemSkill } from "../../src/skills/builtins/system/index.js";
 import { builtInSkillsProvider } from "../../src/skills/provider.js";
@@ -148,12 +145,9 @@ function runtimeSkills(): SkillDefinition[] {
       defaultTimezone: "UTC",
       healthRoot: "/tmp",
     }),
-    createRecallSkill({ retriever: stub, controls: stub }),
     createMemorySkill({ store: stub, defaultUserId: "taxonomy-test" }),
     createPythonSkill({ dataDir: "/tmp/ayati-tool-taxonomy" }),
     createAttachmentSkill({ sessionAttachmentService: stub }),
-    createDatasetSkill({ preparedAttachmentService: stub }),
-    createDocumentSkill({ preparedAttachmentService: stub }),
     createFilesSkill({ fileLibrary: stub, directoryLibrary: stub }),
     createGitContextSkill({ service: stub }),
     createGitReadSkill({ service: stub, workstreamRoot: "/tmp/ayati-workstreams" }),

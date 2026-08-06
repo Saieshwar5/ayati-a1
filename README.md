@@ -2,19 +2,21 @@
 
 Ayati is a local-first autonomous AI agent platform. It combines a persistent
 daemon, provider-independent agent harness, durable work continuity, resources,
-memory, composable tools, events, and a terminal client.
+memory, composable tools, and terminal and desktop clients.
 
 The core design goal is to keep the agent chassis stable while models, skills,
-tools, plugins, clients, and memory behavior evolve independently.
+tools, clients, and memory behavior evolve independently.
 
 ## Packages
 
-- `ayati-main`: daemon, harness, providers, tools, memory, WebSocket/HTTP
-  servers, plugins, Pulse, and system events.
+- `ayati-main`: daemon, harness, providers, tools, personal memory, and
+  WebSocket/HTTP servers.
 - `ayati-context-engine`: in-process SQLite-and-Git engine for streams, runs,
   workstreams, requests, resources, checkpoints, history, finalization, and
   recovery.
 - `ayati-cli`: Ink/React terminal client.
+- `ayati-desktop`: secure Electron desktop client with streaming chat, daemon
+  reconnect, a tray lifecycle, and native reply notifications.
 - `project-docs`: stable product and engineering context.
 
 ## Harness
@@ -25,7 +27,7 @@ Ayati uses one execution model:
 context pack -> decision -> action executor -> deterministic verification -> progress reducer
 ```
 
-Every accepted user message or system event creates one atomic run. A run may
+Every accepted user message creates one atomic run. A run may
 finish unbound for conversation or observation, or bind immutably to one
 workstream/request for durable work. The run id never changes after binding.
 
@@ -111,13 +113,16 @@ reported as a successful commit.
 
 - OpenRouter, OpenAI, Anthropic, and Fireworks providers.
 - Filesystem inspection/read/write/patch/search, focused process execution,
-  Python, SQLite, documents, datasets, managed files, and artifacts.
-- Personal memory and episodic recall.
+  Python, structured SQLite operations, managed files/directories, and
+  artifacts.
+- Personal memory.
 - Upload admission and immutable attachment resources.
-- Pulse reminders, scheduled events, plugins, and system-event handling.
 - Passive, opt-in live-daemon evaluation with exact evidence, deterministic
   diagnostics, and per-turn/session reports.
-- WebSocket terminal chat and HTTP upload/artifact/Pulse APIs.
+- WebSocket terminal and Electron desktop chat plus HTTP upload/artifact
+  APIs.
+- Push-to-talk voice input using local Voxtype transcription, transcript
+  confirmation, and desktop reply notifications.
 
 ## Quick Start
 
@@ -134,6 +139,27 @@ In another terminal:
 ```bash
 pnpm start:cli
 ```
+
+Or launch the desktop surface (Node.js 22.12+ is required to develop the
+Electron package):
+
+```bash
+pnpm start:desktop
+```
+
+The desktop client keeps running in the system tray, reconnects when the daemon
+restarts, and sends text through the same daemon-owned chat path as the CLI.
+See `project-docs/engineering/architecture/desktop-client.md` for the process
+boundary, security model, and development workflow.
+
+With the daemon running, inspect or control voice input through the built CLI:
+
+```bash
+node ayati-cli/dist/index.js voice status
+```
+
+See `project-docs/engineering/architecture/voice-interface.md` for push-to-talk
+bindings, configuration, privacy, and failure behavior.
 
 Provide the API key for the configured provider in a local env file:
 
@@ -162,6 +188,8 @@ pnpm --filter ayati-main build
 pnpm --filter ayati-main test
 pnpm --filter ayati-cli build
 pnpm --filter ayati-cli test
+pnpm --filter ayati-desktop build
+pnpm --filter ayati-desktop test
 ```
 
 Live daemon evaluation:
@@ -197,4 +225,5 @@ text is inappropriate.
 - `project-docs/engineering/architecture/workstreams-and-resources.md`
 - `project-docs/engineering/architecture/agent-harness.md`
 - `project-docs/engineering/architecture/context-and-memory.md`
+- `project-docs/engineering/architecture/desktop-client.md`
 - `project-docs/engineering/testing.md`

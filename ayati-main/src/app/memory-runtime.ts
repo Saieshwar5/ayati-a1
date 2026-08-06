@@ -2,17 +2,6 @@ import { resolve } from "node:path";
 import { loadMemoryPolicy } from "../memory/personal/memory-policy.js";
 import { PersonalMemoryStore } from "../memory/personal/personal-memory-store.js";
 import { PersonalMemorySnapshotCache } from "../memory/personal/personal-memory-snapshot-cache.js";
-import type { SummaryEmbeddingProvider } from "../memory/embedding-provider.js";
-import {
-  EpisodicMemoryController,
-  EpisodicMemoryIndexer,
-  EpisodicMemoryJobStore,
-  EpisodicMemoryRetriever,
-  EpisodicMemorySettingsStore,
-  LanceEpisodicVectorStore,
-} from "../memory/episodic/index.js";
-import { devLog, devWarn } from "../shared/index.js";
-import type { EmbeddingProvider } from "../embeddings/contracts.js";
 import type { LlmProvider } from "../core/contracts/provider.js";
 import type {
   ContextCheckpointPlan,
@@ -25,7 +14,6 @@ export interface MemoryRuntimeOptions {
   projectRoot: string;
   clientId: string;
   provider: LlmProvider;
-  embeddingProvider?: EmbeddingProvider;
 }
 
 export interface PersonalMemoryCheckpointInput {
@@ -44,9 +32,6 @@ export type PersonalMemoryCheckpointPayload = MemoryConsolidationJobPayload & {
 export interface MemoryRuntime {
   personalMemoryStore: PersonalMemoryStore;
   personalMemorySnapshotCache: PersonalMemorySnapshotCache;
-  memoryIndexer: EpisodicMemoryIndexer;
-  memoryRetriever: EpisodicMemoryRetriever;
-  episodicMemoryController: EpisodicMemoryController;
   enqueuePersonalMemoryCheckpoint(input: PersonalMemoryCheckpointInput): void;
   stop(): Promise<void>;
 }
@@ -54,8 +39,6 @@ export interface MemoryRuntime {
 export async function createMemoryRuntime(options: MemoryRuntimeOptions): Promise<MemoryRuntime> {
   const { projectRoot, clientId } = options;
   const memoryDataDir = resolve(projectRoot, "data", "memory");
-  const episodicDataDir = resolve(memoryDataDir, "episodic");
-
   const personalMemoryStore = new PersonalMemoryStore({
     dataDir: memoryDataDir,
   });
@@ -79,54 +62,9 @@ export async function createMemoryRuntime(options: MemoryRuntimeOptions): Promis
       );
     },
   });
-  const episodicSettingsStore = new EpisodicMemorySettingsStore({
-    dataDir: episodicDataDir,
-  });
-  const episodicJobStore = new EpisodicMemoryJobStore({
-    dataDir: episodicDataDir,
-  });
-  const episodicVectorStore = new LanceEpisodicVectorStore({
-    dataDir: resolve(memoryDataDir, "episodic-vectors"),
-  });
-
-  let memoryEmbedder: SummaryEmbeddingProvider | undefined;
-  if (options.embeddingProvider) {
-    try {
-      await options.embeddingProvider.start();
-      memoryEmbedder = options.embeddingProvider;
-      devLog(`Episodic memory embeddings available with model=${memoryEmbedder.modelName}`);
-    } catch (err) {
-      devWarn(`Episodic memory embeddings unavailable: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  const memoryIndexer = new EpisodicMemoryIndexer({
-    settingsStore: episodicSettingsStore,
-    jobStore: episodicJobStore,
-    vectorStore: episodicVectorStore,
-    ...(memoryEmbedder ? { embedder: memoryEmbedder } : {}),
-  });
-  memoryIndexer.start();
-
-  const memoryRetriever = new EpisodicMemoryRetriever({
-    settingsStore: episodicSettingsStore,
-    vectorStore: episodicVectorStore,
-    ...(memoryEmbedder ? { embedder: memoryEmbedder } : {}),
-  });
-
-  const episodicMemoryController = new EpisodicMemoryController({
-    settingsStore: episodicSettingsStore,
-    jobStore: episodicJobStore,
-    embeddingAvailable: () => memoryEmbedder !== undefined,
-    embeddingModel: () => memoryEmbedder?.modelName ?? episodicSettingsStore.get(clientId).embeddingModel,
-  });
-
   return {
     personalMemoryStore,
     personalMemorySnapshotCache,
-    memoryIndexer,
-    memoryRetriever,
-    episodicMemoryController,
     enqueuePersonalMemoryCheckpoint(input): void {
       const payload = buildPersonalMemoryCheckpointPayload(input);
       if (payload) personalMemoryConsolidator.enqueueCheckpoint(payload);
@@ -134,7 +72,6 @@ export async function createMemoryRuntime(options: MemoryRuntimeOptions): Promis
     async stop(): Promise<void> {
       await personalMemoryConsolidator.shutdown();
       personalMemoryStore.stop();
-      await memoryIndexer.shutdown();
     },
   };
 }

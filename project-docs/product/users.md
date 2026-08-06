@@ -14,6 +14,6 @@ Expected user workflows:
 - Let the agent use local tools when appropriate and safe.
 - Receive reminders, notifications, or event-driven assistance.
 - Configure provider credentials and runtime provider selection.
-- Optionally enable Pulse reminders and future event integrations.
+- Optionally enable future event integrations.
 
 AI agents working on this repo are also a first-class audience for documentation in `project-docs/`.

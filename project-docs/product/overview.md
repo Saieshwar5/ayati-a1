@@ -6,8 +6,8 @@ long-running real-life goals.
 
 The core product is a persistent local daemon. `ayati-main` can run for long
 periods while clients connect through different communication surfaces. The
-CLI is the current client; models, tools, plugins, clients, memory, and channels
-can evolve without replacing the daemon or harness.
+CLI and Electron app are current clients; models, tools, clients, memory, and
+channels can evolve without replacing the daemon or harness.
 
 The harness remains:
 
@@ -16,7 +16,7 @@ context pack -> decision -> action executor -> deterministic verification -> pro
 ```
 
 Ayati should feel continuous without requiring users to manage sessions,
-context windows, or internal work lists. Every accepted message or system event
+context windows, or internal work lists. Every accepted user message
 creates one run. Conversation and observational work can finish unbound;
 durable work binds that same run to one workstream and request.
 
@@ -79,15 +79,17 @@ Primary value:
   workstreams from resources.
 - A simple default output location at `<AYATI_ROOT_DIR>/workspace/` when the
   user does not specify a path.
-- Personal and episodic memory for user facts, preferences, and recalled
-  experience without mixing them into workstream state.
-- Multi-channel communication and proactive system-event handling.
+- Personal memory for user facts and preferences without mixing them into
+  workstream state.
+- CLI, Electron, and local push-to-talk voice communication over one
+  daemon-owned chat path.
 
 Current packages:
 
-- `ayati-main`: daemon, harness, providers, tools, memory, events, WebSocket,
+- `ayati-main`: daemon, harness, providers, tools, personal memory, WebSocket,
   and HTTP APIs.
 - `ayati-cli`: Ink/React terminal client.
+- `ayati-desktop`: Electron desktop communication client.
 - `ayati-context-engine`: local SQLite-and-Git service that owns agent streams,
   immutable messages, runs, checkpoints, history, workstream context,
   resources, mutation journals, and finalization.

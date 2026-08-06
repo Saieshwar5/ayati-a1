@@ -1,28 +1,21 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { devError, devLog, devWarn } from "../shared/index.js";
-import type { ToolDefinition, ToolResult } from "../skills/types.js";
 import { persistManagedUpload, type ManagedUploadRecord } from "./upload-storage.js";
 import type { FileLibrary } from "../files/file-library.js";
 
 const DEFAULT_HOST = "0.0.0.0";
 const DEFAULT_PORT = 8081;
 const DEFAULT_MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
-const DEFAULT_MAX_JSON_BYTES = 1024 * 1024;
 const DEFAULT_ALLOW_ORIGIN = "*";
 const UPLOAD_PATH = "/api/uploads";
-const PULSE_PATH = "/api/pulse";
 
 export interface UploadServerOptions {
   uploadsDir: string;
   host?: string;
   port?: number;
   maxUploadBytes?: number;
-  maxJsonBytes?: number;
   allowOrigin?: string;
-  pulseTool?: ToolDefinition;
-  pulseClientId?: string;
-  pulseApiToken?: string;
   fileLibrary?: FileLibrary;
 }
 
@@ -38,11 +31,7 @@ export class UploadServer {
   private readonly host: string;
   private readonly port: number;
   private readonly maxUploadBytes: number;
-  private readonly maxJsonBytes: number;
   private readonly allowOrigin: string;
-  private readonly pulseTool: ToolDefinition | null;
-  private readonly pulseClientId: string;
-  private readonly pulseApiToken: string | null;
   private readonly fileLibrary?: FileLibrary;
   private server: Server | null = null;
 
@@ -51,11 +40,7 @@ export class UploadServer {
     this.host = options.host?.trim() || DEFAULT_HOST;
     this.port = options.port ?? DEFAULT_PORT;
     this.maxUploadBytes = Math.max(1024, options.maxUploadBytes ?? DEFAULT_MAX_UPLOAD_BYTES);
-    this.maxJsonBytes = Math.max(1024, options.maxJsonBytes ?? DEFAULT_MAX_JSON_BYTES);
     this.allowOrigin = options.allowOrigin?.trim() || DEFAULT_ALLOW_ORIGIN;
-    this.pulseTool = options.pulseTool ?? null;
-    this.pulseClientId = options.pulseClientId?.trim() || "local";
-    this.pulseApiToken = options.pulseApiToken?.trim() || null;
     this.fileLibrary = options.fileLibrary;
   }
 
@@ -101,11 +86,6 @@ export class UploadServer {
     }
 
     const requestUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? `${this.host}:${this.port}`}`);
-    if (requestUrl.pathname === PULSE_PATH) {
-      await this.handlePulseRequest(req, res);
-      return;
-    }
-
     if (req.method !== "POST" || requestUrl.pathname !== UPLOAD_PATH) {
       res.statusCode = 404;
       res.end("Not found");
@@ -192,80 +172,6 @@ export class UploadServer {
     res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
   }
 
-  private async handlePulseRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!this.pulseTool) {
-      this.sendJson(res, 503, { ok: false, error: "pulse API is not configured." });
-      return;
-    }
-
-    if (req.method !== "POST") {
-      res.setHeader("Allow", "POST, OPTIONS");
-      this.sendJson(res, 405, { ok: false, error: "method not allowed: use POST." });
-      return;
-    }
-
-    const auth = this.authorizePulseRequest(req);
-    if (!auth.ok) {
-      this.sendJson(res, auth.statusCode, { ok: false, error: auth.error });
-      return;
-    }
-
-    const contentType = req.headers["content-type"]?.trim() ?? "";
-    if (!isJsonContentType(contentType)) {
-      this.sendJson(res, 415, { ok: false, error: "unsupported content type: expected application/json." });
-      return;
-    }
-
-    try {
-      const rawBody = await readRequestBody(req, this.maxJsonBytes, "request");
-      const input = parseJsonBody(rawBody);
-      const result = await this.pulseTool.execute(input, { clientId: this.pulseClientId });
-      this.sendPulseResult(res, input, result);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const statusCode = classifyPulseException(message);
-      if (statusCode >= 500) {
-        devError("Pulse API server error:", message);
-      } else {
-        devWarn(`Pulse API request rejected: ${message}`);
-      }
-      this.sendJson(res, statusCode, { ok: false, error: message });
-    }
-  }
-
-  private authorizePulseRequest(req: IncomingMessage): { ok: true } | { ok: false; statusCode: number; error: string } {
-    if (this.pulseApiToken) {
-      const token = readBearerToken(req.headers["authorization"]);
-      if (!token) {
-        return { ok: false, statusCode: 401, error: "missing bearer token." };
-      }
-      if (token !== this.pulseApiToken) {
-        return { ok: false, statusCode: 403, error: "invalid bearer token." };
-      }
-      return { ok: true };
-    }
-
-    if (isLoopbackAddress(req.socket.remoteAddress)) {
-      return { ok: true };
-    }
-
-    return { ok: false, statusCode: 403, error: "pulse API requires a bearer token for non-local requests." };
-  }
-
-  private sendPulseResult(res: ServerResponse, input: unknown, result: ToolResult): void {
-    if (!result.ok) {
-      const error = result.error ?? "Pulse command failed.";
-      this.sendJson(res, classifyPulseToolError(error), { ok: false, error, meta: result.meta });
-      return;
-    }
-
-    this.sendJson(res, pulseSuccessStatusCode(input), {
-      ok: true,
-      data: parseJsonOutput(result.output),
-      meta: result.meta,
-    });
-  }
-
   private sendJson(res: ServerResponse, statusCode: number, body: unknown): void {
     res.statusCode = statusCode;
     res.setHeader("Content-Type", "application/json");
@@ -342,86 +248,5 @@ function classifyUploadError(message: string): number {
 }
 
 function isManagedPath(url: string): boolean {
-  return url.startsWith(UPLOAD_PATH)
-    || url.startsWith(PULSE_PATH);
-}
-
-function isJsonContentType(value: string): boolean {
-  const normalized = value.split(";")[0]?.trim().toLowerCase() ?? "";
-  return normalized === "application/json" || normalized.endsWith("+json");
-}
-
-function parseJsonBody(rawBody: Buffer): unknown {
-  if (rawBody.length === 0) {
-    throw new Error("request body is empty.");
-  }
-
-  try {
-    return JSON.parse(rawBody.toString("utf-8")) as unknown;
-  } catch {
-    throw new Error("request body must be valid JSON.");
-  }
-}
-
-function parseJsonOutput(output: string | undefined): unknown {
-  if (!output) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(output) as unknown;
-  } catch {
-    return output;
-  }
-}
-
-function pulseSuccessStatusCode(input: unknown): number {
-  if (input && typeof input === "object" && !Array.isArray(input)) {
-    const action = (input as Record<string, unknown>)["action"];
-    return action === "create" ? 201 : 200;
-  }
-  return 200;
-}
-
-function classifyPulseToolError(message: string): number {
-  const normalized = message.toLowerCase();
-  if (normalized.includes("not found")) return 404;
-  if (
-    normalized.includes("invalid input")
-    || normalized.includes("requires")
-    || normalized.includes("must")
-    || normalized.includes("unable to parse")
-    || normalized.includes("unsupported")
-  ) {
-    return 400;
-  }
-  return 500;
-}
-
-function classifyPulseException(message: string): number {
-  const normalized = message.toLowerCase();
-  if (normalized.includes("exceeds")) return 413;
-  if (normalized.includes("empty") || normalized.includes("valid json")) return 400;
-  return 500;
-}
-
-function readBearerToken(value: string | string[] | undefined): string | null {
-  const raw = Array.isArray(value) ? value[0] : value;
-  if (!raw) {
-    return null;
-  }
-
-  const match = raw.match(/^Bearer\s+(.+)$/i);
-  const token = match?.[1]?.trim();
-  return token && token.length > 0 ? token : null;
-}
-
-function isLoopbackAddress(value: string | undefined): boolean {
-  if (!value) {
-    return false;
-  }
-  return value === "::1"
-    || value === "127.0.0.1"
-    || value.startsWith("127.")
-    || value.startsWith("::ffff:127.");
+  return url.startsWith(UPLOAD_PATH);
 }

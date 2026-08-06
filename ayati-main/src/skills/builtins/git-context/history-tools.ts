@@ -78,7 +78,7 @@ function readAgentConversationTool(service: ContextEngineService): ToolDefinitio
   return {
     name: "agent_conversation_read",
     description: [
-      "Page backward through exact user, assistant, and system-event messages from the current stream; each returned page is chronological.",
+      "Page backward through exact user and assistant messages, including readable legacy system-event records; each returned page is chronological.",
       "Omit cursor and beforeSeq for the latest page; use olderCursor for the next older page.",
       "If contentTruncated is true, continue that message with agent_history_read using continuationRef and continuationOffsetChars.",
       "Use agent_history_search instead when a known topic or phrase can locate the needed history directly.",

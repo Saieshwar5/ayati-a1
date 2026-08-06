@@ -24,21 +24,9 @@ import type {
   ContextRunStepRecord,
 } from "../context-engine/index.js";
 import type { ContextPreparationManager } from "./context-preparation/manager.js";
-import type { DocumentStore } from "../documents/document-store.js";
-import type { PreparedAttachmentRecord, PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
-import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
 import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
 import type { DirectoryAttachmentRecord, ManagedFileRecord } from "../files/types.js";
-import type {
-  AyatiSystemEvent,
-  SystemEventCreatedBy,
-  SystemEventIntentKind,
-} from "../core/contracts/plugin.js";
-import type {
-  SystemEventContextVisibility,
-  SystemEventHandlingMode,
-} from "./system-event-policy.js";
 import type { AgentEventSink } from "./agent-event-sink.js";
 import type { HarnessContext, HarnessContextInput } from "./harness-context.js";
 import type { ContextPressureState } from "./context-pressure-state.js";
@@ -82,7 +70,6 @@ import type {
   WorkstreamCompletionCriterion,
 } from "ayati-context-engine";
 
-export type SystemEventApprovalState = "not_needed" | "pending" | "granted" | "rejected";
 export type WorkstreamSummaryRunStatus = "completed" | "failed" | "stuck";
 export type WorkstreamSummaryStatus = "open" | "done" | "blocked" | "needs_user_input";
 export type WorkstreamSummaryStopReason = "completed" | "needs_user_input" | "blocked" | "failed" | "stuck" | "context_limit" | "run_limit";
@@ -265,17 +252,8 @@ export interface LoopState {
   runId: string;
   currentSeq: number;
   currentMessageId?: string;
-  inputKind?: "user_message" | "system_event";
+  inputKind?: "user_message";
   userMessage: string;
-  systemEvent?: AyatiSystemEvent;
-  originSource?: string;
-  systemEventIntentKind?: SystemEventIntentKind;
-  systemEventRequestedAction?: string;
-  systemEventCreatedBy?: SystemEventCreatedBy;
-  handlingMode?: SystemEventHandlingMode;
-  approvalRequired?: boolean;
-  approvalState?: SystemEventApprovalState;
-  contextVisibility?: SystemEventContextVisibility;
   preferredResponseKind?: AgentResponseKind;
   workState: WorkState;
   workStateRuntime: WorkStateRuntimeMetadata;
@@ -299,10 +277,7 @@ export interface LoopState {
   readProgress?: ReadProgressState;
   virtualMode: VirtualModeState;
   hotContext: HotContextProjection;
-  attachedDocuments?: ManagedDocumentManifest[];
   attachmentWarnings?: string[];
-  preparedAttachments?: PreparedAttachmentSummary[];
-  preparedAttachmentRecords?: PreparedAttachmentRecord[];
   managedFiles?: ManagedFileRecord[];
   managedDirectories?: DirectoryAttachmentRecord[];
   harnessContext: HarnessContext;
@@ -515,15 +490,7 @@ export interface AgentLoopDeps {
   inputHandle?: SessionInputHandle;
   runHandle: AgentRunHandle;
   clientId: string;
-  inputKind?: "user_message" | "system_event";
-  systemEvent?: AyatiSystemEvent;
-  systemEventIntentKind?: SystemEventIntentKind;
-  systemEventRequestedAction?: string;
-  systemEventCreatedBy?: SystemEventCreatedBy;
-  systemEventHandlingMode?: SystemEventHandlingMode;
-  systemEventApprovalRequired?: boolean;
-  systemEventApprovalState?: SystemEventApprovalState;
-  systemEventContextVisibility?: SystemEventContextVisibility;
+  inputKind?: "user_message";
   preferredResponseKind?: AgentResponseKind;
   initialUserMessage?: string;
   onProgress?: OnProgressCallback;
@@ -552,14 +519,11 @@ export interface AgentLoopDeps {
   systemContext?: string;
   harnessContext?: HarnessContextInput;
   userMessageOverride?: string;
-  attachedDocuments?: ManagedDocumentManifest[];
   attachmentWarnings?: string[];
   managedFiles?: ManagedFileRecord[];
   managedDirectories?: DirectoryAttachmentRecord[];
   fileLibrary?: FileLibrary;
   directoryLibrary?: DirectoryLibrary;
-  documentStore?: DocumentStore;
-  preparedAttachmentRegistry?: PreparedAttachmentRegistry;
   signal?: AbortSignal;
   onStuck?: (state: LoopState) => void;
 }
@@ -606,6 +570,7 @@ export type ChatAttachmentInput =
 
 export interface ChatInboundMessage {
   type: "chat";
+  messageId?: string;
   content: string;
   attachments?: ChatAttachmentInput[];
 }

@@ -191,14 +191,6 @@ export interface RegisterPathInput {
   runRole?: RunFileReference["role"];
 }
 
-export interface FetchUrlInput {
-  url: string;
-  originalName?: string;
-  mimeType?: string;
-  runId?: string;
-  maxBytes?: number;
-}
-
 export interface PrepareFileOptions {
   sheetName?: string;
   maxChunkTokens?: number;

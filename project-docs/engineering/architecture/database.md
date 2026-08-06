@@ -19,9 +19,11 @@ Supported database tool operations include:
 - Add columns.
 - Insert, update, and delete rows.
 - Query tables.
-- Execute SQL.
 
-Runtime memory, documents, files, vectors, queues, runs, and plugin state are also stored under `ayati-main/data/`, but they are runtime state rather than source-controlled database schema.
+Raw multi-statement SQL execution is intentionally not model-facing. Runtime
+personal memory, managed files, and runs are also stored under managed runtime
+roots, but they are runtime state rather than source-controlled database
+schema.
 
 ## Context Engine Database
 
@@ -46,7 +48,7 @@ Storage responsibilities are intentionally split:
 - Context Engine SQLite: catalog, coordination, idempotency, and detailed run
   journal;
 - live evaluation evidence: operator diagnostics;
-- personal/episodic stores: cross-task user memory and semantic recall.
+- personal-memory store: cross-task user facts and preferences.
 
 Do not place raw run transcripts in context Git merely because they exist in
 SQLite. Conversely, do not treat the catalog as a replacement for repository

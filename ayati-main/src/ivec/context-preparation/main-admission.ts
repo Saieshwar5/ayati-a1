@@ -1,7 +1,7 @@
 import type { ContextCheckpointRecord } from "ayati-context-engine";
 import type { ContextEngineMachineContext } from "../../context-engine/index.js";
 import type { LlmProvider } from "../../core/contracts/provider.js";
-import type { LlmMessage, LlmTurnInput } from "../../core/contracts/llm-protocol.js";
+import type { LlmMessage, LlmTurnInput, LlmUserContentPart } from "../../core/contracts/llm-protocol.js";
 import type { ContextBudgetReport } from "../../prompt/context-budget.js";
 import {
   buildFullContextCompilationReceipt,
@@ -572,7 +572,13 @@ function replaceFirstUserPrompt(messages: LlmMessage[], prompt: string): LlmMess
   return messages.map((message) => {
     if (replaced || message.role !== "user") return message;
     replaced = true;
-    return { role: "user", content: prompt };
+    const images = typeof message.content === "string"
+      ? []
+      : message.content.filter((part): part is Extract<LlmUserContentPart, { type: "image" }> => part.type === "image");
+    return {
+      role: "user",
+      content: images.length > 0 ? [{ type: "text", text: prompt }, ...images] : prompt,
+    };
   });
 }
 

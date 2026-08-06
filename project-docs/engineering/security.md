@@ -10,7 +10,6 @@ High-risk runtime capabilities:
 - Filesystem tools.
 - Python tool.
 - SQLite database tools.
-- Plugin webhooks.
 - Upload handling.
 - Context Engine workstream/resource lifecycle mutation.
 
@@ -25,9 +24,9 @@ Resources and the shared context repository are separate security boundaries:
 - keep runtime-owned workstream/request updates and commits behind the typed Git
   Context service.
 
-Agents should not weaken validation or policy files casually. Review these files before changing tool or event permissions:
+Agents should not weaken validation or policy files casually. Review this file
+before changing memory permissions:
 
-- `ayati-main/context/system-event-policy.json`
 - `ayati-main/context/memory-policy.json`
 
 Do not add real credentials, private tokens, or personal data to `project-docs/`.

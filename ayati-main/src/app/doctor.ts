@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { executeSql } from "../database/sqlite-runtime.js";
 import { loadAyatiRuntimeConfig } from "../config/runtime-config.js";
 import { ensureManagedPythonInterpreter, resolveManagedPythonInterpreter } from "../skills/builtins/python/runtime.js";
+import { loadVoiceRuntimeConfig, resolveVoiceRuntimePaths } from "../voice/index.js";
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -39,7 +40,6 @@ export interface DoctorOptions {
 const REQUIRED_NODE_PACKAGES = [
   "xlsx",
   "cheerio",
-  "@lancedb/lancedb",
   "openai",
 ] as const;
 
@@ -59,6 +59,8 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   const projectRoot = resolve(options.projectRoot);
   const dataDir = resolve(projectRoot, "data");
   const config = loadAyatiRuntimeConfig(env);
+  const voiceConfig = loadVoiceRuntimeConfig(env);
+  const voicePaths = resolveVoiceRuntimePaths(env);
   const sections: DoctorSection[] = [];
 
   sections.push({
@@ -79,10 +81,8 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     checks: await Promise.all([
       checkWritableDir(dataDir),
       checkWritableDir(resolve(dataDir, "files")),
-      checkWritableDir(resolve(dataDir, "documents")),
       checkWritableDir(resolve(dataDir, "directories")),
       checkWritableDir(resolve(dataDir, "run-attachments")),
-      checkWritableDir(resolve(dataDir, "prepared-attachments")),
       checkWritableDir(resolve(dataDir, "python")),
     ]),
   });
@@ -97,22 +97,32 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   });
 
   sections.push({
-    title: "Document Vectors",
+    title: "Voice Input",
     checks: [
       {
-        label: "AYATI_DOCUMENT_VECTOR_ENABLED",
-        status: config.documents.vectorEnabled ? "ok" : "warn",
-        detail: config.documents.vectorEnabled
-          ? `enabled; minChunks=${config.documents.vectorMinChunks}; batchSize=${config.documents.embedBatchSize}`
-          : "disabled; document_query will use lexical retrieval only",
+        label: "AYATI_VOICE_ENABLED",
+        status: voiceConfig.enabled ? "ok" : "warn",
+        detail: voiceConfig.enabled ? "enabled" : "disabled",
       },
-      {
-        label: "OPENAI_API_KEY",
-        status: !config.documents.vectorEnabled || Boolean(env["OPENAI_API_KEY"]?.trim()) ? "ok" : "warn",
-        detail: env["OPENAI_API_KEY"]?.trim()
-          ? "present"
-          : "missing; OpenAI embeddings cannot start while document vectors are enabled",
-      },
+      ...(voiceConfig.enabled
+        ? [
+            await checkOptionalCommand(
+              voiceConfig.command,
+              "voxtype",
+              "missing; voice capture and transcription are unavailable",
+            ),
+            await checkReadableFile(
+              voicePaths.voxtypeStatePath,
+              "voxtype user daemon",
+              "state file missing; start voxtype.service for the user session",
+            ),
+            await checkOptionalCommand(
+              "notify-send",
+              "desktop notifications",
+              "missing; voice still works but review and reply notifications are unavailable",
+            ),
+          ]
+        : []),
     ],
   });
 
@@ -281,6 +291,27 @@ async function checkJavaForTika(env: NodeJS.ProcessEnv): Promise<DoctorCheck> {
   return found
     ? { label: "java", status: "ok", detail: found }
     : { label: "java", status: "fail", detail: "missing but required by TIKA_JAR_PATH" };
+}
+
+async function checkOptionalCommand(
+  command: string,
+  label: string,
+  missingDetail: string,
+): Promise<DoctorCheck> {
+  const found = await commandPath(command);
+  return found
+    ? { label, status: "ok", detail: found }
+    : { label, status: "warn", detail: missingDetail };
+}
+
+async function checkReadableFile(
+  pathValue: string,
+  label: string,
+  missingDetail: string,
+): Promise<DoctorCheck> {
+  return await fileIsReadable(pathValue)
+    ? { label, status: "ok", detail: pathValue }
+    : { label, status: "warn", detail: `${missingDetail}: ${pathValue}` };
 }
 
 async function checkPythonInterpreter(

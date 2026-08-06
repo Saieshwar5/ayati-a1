@@ -35,15 +35,25 @@ export type ChatRequestAttachment =
 
 export interface ChatRequestMessage {
   type: "chat";
+  messageId: string;
   content: string;
   attachments?: ChatRequestAttachment[];
 }
 
 export interface ClientHelloMessage {
   type: "client_hello";
+  clientKind?: "cli" | "desktop" | "voice";
   capabilities?: {
     replyStreaming?: boolean;
   };
+}
+
+export interface ChatAcceptedMessage {
+  type: "chat_accepted";
+  messageId: string;
+  queued: boolean;
+  queuePosition: number;
+  duplicate?: true;
 }
 
 export interface ReplyRenderedMessage {
@@ -118,6 +128,7 @@ export interface ErrorMessage {
 }
 
 export type ServerMessage =
+  | ChatAcceptedMessage
   | ReplyMessage
   | FeedbackMessage
   | NotificationMessage

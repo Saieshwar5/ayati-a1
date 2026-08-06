@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { Box } from "ink";
 import { dirname } from "node:path";
+import { randomUUID } from "node:crypto";
 import { Header } from "./components/header.js";
 import { MessageList, type MessageListHandle } from "./components/message-list.js";
 import { ChatInput } from "./components/chat-input.js";
@@ -223,6 +224,7 @@ export function App(): React.JSX.Element {
     }
     send({
       type: "client_hello",
+      clientKind: "cli",
       capabilities: {
         replyStreaming: true,
       },
@@ -304,6 +306,7 @@ export function App(): React.JSX.Element {
     setIsLoading(true);
     send({
       type: "chat",
+      messageId: randomUUID(),
       content: trimmedServerContent,
       ...(attachments.length > 0 ? { attachments } : {}),
     });

@@ -15,7 +15,6 @@ import { prepareTableFile } from "./processors/table-processor.js";
 import { prepareTextFile } from "./processors/text-processor.js";
 import { prepareUnsupportedFile } from "./processors/unsupported-processor.js";
 import type {
-  FetchUrlInput,
   FileOrigin,
   ManagedFileRecord,
   PreparedFileRecord,
@@ -29,23 +28,19 @@ import type {
 export interface FileLibraryOptions {
   dataDir: string;
   now?: () => Date;
-  defaultMaxDownloadBytes?: number;
 }
 
 const DEFAULT_MAX_CHUNK_TOKENS = 700;
-const DEFAULT_MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024;
 const MAX_TOOL_TEXT_CHARS = 120_000;
 
 export class FileLibrary {
   readonly layout: FileStorageLayout;
   private readonly metadataStore = new FileMetadataStore();
   private readonly nowProvider: () => Date;
-  private readonly defaultMaxDownloadBytes: number;
 
   constructor(options: FileLibraryOptions) {
     this.layout = new FileStorageLayout(options.dataDir);
     this.nowProvider = options.now ?? (() => new Date());
-    this.defaultMaxDownloadBytes = Math.max(1024, options.defaultMaxDownloadBytes ?? DEFAULT_MAX_DOWNLOAD_BYTES);
   }
 
   async registerUpload(input: RegisterFileInput): Promise<ManagedFileRecord> {
@@ -71,41 +66,6 @@ export class FileLibrary {
       runId: input.runId,
       runRole: input.runRole ?? (input.origin === "generated_artifact" ? "generated" : "found"),
       originalPath: filePath,
-    });
-  }
-
-  async registerDownload(input: FetchUrlInput): Promise<ManagedFileRecord> {
-    const url = new URL(input.url);
-    if (url.protocol !== "https:" && url.protocol !== "http:") {
-      throw new Error("Only http and https downloads are supported.");
-    }
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error(`Download failed with status ${response.status}.`);
-    }
-
-    const contentLength = response.headers.get("content-length");
-    const maxBytes = Math.max(1024, Math.min(input.maxBytes ?? this.defaultMaxDownloadBytes, this.defaultMaxDownloadBytes));
-    if (contentLength && Number.parseInt(contentLength, 10) > maxBytes) {
-      throw new Error(`download exceeds ${maxBytes} bytes.`);
-    }
-
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.length > maxBytes) {
-      throw new Error(`download exceeds ${maxBytes} bytes.`);
-    }
-
-    const originalName = input.originalName?.trim()
-      || basename(decodeURIComponent(url.pathname))
-      || "downloaded-file";
-    return this.registerBytes({
-      originalName,
-      bytes,
-      mimeType: input.mimeType ?? response.headers.get("content-type") ?? undefined,
-      origin: "agent_download",
-      runId: input.runId,
-      runRole: "downloaded",
-      sourceUri: url.toString(),
     });
   }
 

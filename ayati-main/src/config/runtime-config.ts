@@ -14,8 +14,6 @@ export const DEFAULT_HTTP_HOST = "127.0.0.1";
 export const DEFAULT_HTTP_PORT = 8081;
 export const DEFAULT_HTTP_ALLOW_ORIGIN = "*";
 export const DEFAULT_UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
-export const DEFAULT_DOCUMENT_EMBED_BATCH_SIZE = 32;
-export const DEFAULT_DOCUMENT_VECTOR_MIN_CHUNKS = 40;
 export const DEFAULT_AGENT_MAX_CAPABILITY_SURFACE_TOOLS = 8;
 export const DEFAULT_AYATI_ROOT_DIR = resolve(projectRoot, "ayati");
 export const DEFAULT_WORKSPACE_DIR = join(DEFAULT_AYATI_ROOT_DIR, "workspace");
@@ -26,14 +24,7 @@ export interface HttpRuntimeConfig {
   host: string;
   port: number;
   allowOrigin: string;
-  apiToken?: string;
   maxUploadBytes: number;
-}
-
-export interface DocumentRuntimeConfig {
-  vectorEnabled: boolean;
-  embedBatchSize: number;
-  vectorMinChunks: number;
 }
 
 export interface PythonRuntimeConfig {
@@ -57,7 +48,6 @@ export interface ContextEngineRuntimeConfig {
 
 export interface AyatiRuntimeConfig {
   http: HttpRuntimeConfig;
-  documents: DocumentRuntimeConfig;
   python: PythonRuntimeConfig;
   agent: AgentRuntimeConfig;
   filesystemAccess: FilesystemAccessPolicy;
@@ -72,7 +62,6 @@ export function loadAyatiRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Ay
 
   return {
     http,
-    documents: loadDocumentRuntimeConfig(env),
     python: loadPythonRuntimeConfig(env),
     agent: loadAgentRuntimeConfig(env),
     filesystemAccess: loadFilesystemAccessPolicy(env),
@@ -95,15 +84,6 @@ function loadHttpRuntimeConfig(env: NodeJS.ProcessEnv): HttpRuntimeConfig {
     port: parsePositiveInt(env["AYATI_HTTP_PORT"], DEFAULT_HTTP_PORT),
     allowOrigin: env["AYATI_HTTP_ALLOW_ORIGIN"]?.trim() || DEFAULT_HTTP_ALLOW_ORIGIN,
     maxUploadBytes: parsePositiveInt(env["AYATI_UPLOAD_MAX_BYTES"], DEFAULT_UPLOAD_MAX_BYTES),
-    ...(trimOptional(env["AYATI_HTTP_API_TOKEN"]) ? { apiToken: trimOptional(env["AYATI_HTTP_API_TOKEN"]) } : {}),
-  };
-}
-
-function loadDocumentRuntimeConfig(env: NodeJS.ProcessEnv): DocumentRuntimeConfig {
-  return {
-    vectorEnabled: !isEnvFalse(env["AYATI_DOCUMENT_VECTOR_ENABLED"]),
-    embedBatchSize: parsePositiveInt(env["AYATI_DOCUMENT_EMBED_BATCH_SIZE"], DEFAULT_DOCUMENT_EMBED_BATCH_SIZE),
-    vectorMinChunks: parsePositiveInt(env["AYATI_DOCUMENT_VECTOR_MIN_CHUNKS"], DEFAULT_DOCUMENT_VECTOR_MIN_CHUNKS),
   };
 }
 
@@ -167,10 +147,6 @@ export function resolveAyatiRootDir(rawValue: string | undefined): string {
     return resolve(normalized);
   }
   return resolve(projectRoot, normalized);
-}
-
-function isEnvFalse(rawValue: string | undefined): boolean {
-  return /^(?:0|false|no|off)$/i.test(rawValue ?? "");
 }
 
 function trimOptional(value: string | undefined): string | undefined {

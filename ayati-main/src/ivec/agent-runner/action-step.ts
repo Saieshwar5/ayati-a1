@@ -93,8 +93,6 @@ export async function executeActionStep(input: ExecuteActionStepInput): Promise<
       nextWorkState: input.state.workState,
     };
   }
-  syncPreparedAttachmentsFromRegistry(input.state, input.deps);
-
   const stepSummary = buildStepSummary({
     stepNumber: input.stepNumber,
     action: input.decision.action,
@@ -119,10 +117,6 @@ export async function applyToolStateUpdates(state: LoopState, deps: AgentLoopDep
       }
       continue;
     }
-    if (update["type"] === "restore_prepared_attachment") {
-      syncPreparedAttachmentsFromRegistry(state, deps);
-      continue;
-    }
     if (update["type"] === "restore_managed_file") {
       await syncManagedFilesFromLibrary(state, deps);
       continue;
@@ -131,46 +125,7 @@ export async function applyToolStateUpdates(state: LoopState, deps: AgentLoopDep
       await syncManagedDirectoriesFromLibrary(state, deps);
       continue;
     }
-    if (update["type"] === "mark_document_indexed") {
-      const preparedInputId = readString(update["preparedInputId"]);
-      if (!preparedInputId) continue;
-      deps.preparedAttachmentRegistry?.updateAttachmentSummary(state.runId, preparedInputId, (summary) => ({
-        ...summary,
-        ...(summary.unstructured ? {
-          unstructured: {
-            ...summary.unstructured,
-            indexed: update["indexed"] === true,
-          },
-        } : {}),
-      }));
-      continue;
-    }
-    if (update["type"] === "mark_dataset_staged") {
-      const preparedInputId = readString(update["preparedInputId"]);
-      if (!preparedInputId) continue;
-      deps.preparedAttachmentRegistry?.updateAttachmentSummary(state.runId, preparedInputId, (summary) => ({
-        ...summary,
-        ...(summary.structured ? {
-          structured: {
-            ...summary.structured,
-            staged: update["staged"] === true,
-            ...(readString(update["stagingDbPath"]) ? { stagingDbPath: readString(update["stagingDbPath"])! } : {}),
-            ...(readString(update["stagingTableName"]) ? { stagingTableName: readString(update["stagingTableName"])! } : {}),
-          },
-        } : {}),
-      }));
-      continue;
-    }
   }
-}
-
-export function syncPreparedAttachmentsFromRegistry(state: LoopState, deps: AgentLoopDeps): void {
-  const records = deps.preparedAttachmentRegistry?.getRunAttachments(state.runId) ?? [];
-  if (records.length === 0) {
-    return;
-  }
-  state.preparedAttachmentRecords = records;
-  state.preparedAttachments = records.map((record) => record.summary);
 }
 
 export function buildUpdatedToolContext(
@@ -216,10 +171,6 @@ function readToolStateUpdates(meta: Record<string, unknown> | undefined): Array<
     return [];
   }
   return raw.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)));
-}
-
-function readString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function mergeRecoveredExecution(

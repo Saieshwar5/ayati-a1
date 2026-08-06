@@ -13,6 +13,8 @@ external-system boundaries unless a test is explicitly live acceptance.
   scoped execution, feedback, transports, and daemon integration.
 - `ayati-cli/src/app/**/*.test.ts*`: terminal input/rendering, commands,
   attachments, and transport envelopes.
+- `ayati-desktop/tests`: process-boundary parsers, renderer state reduction,
+  and the reconnecting desktop WebSocket contract.
 
 ## V12 Context Invariants
 
@@ -20,8 +22,8 @@ Changes should prove the relevant invariants:
 
 1. Preparation atomically resolves one agent stream and creates one immutable
    ingress message, run, and WorkState; replay returns the same identities.
-2. All local clients and system events use `local/default` continuity unless a
-   caller explicitly selects another stream scope.
+2. All local clients use `local/default` continuity unless a caller explicitly
+   selects another stream scope.
 3. Message update/delete fails and sequence is monotonic per stream.
 4. Run context contains structured steps and WorkState; stream projection does
    not duplicate action logs. The exact current-input content appears once in
@@ -294,9 +296,8 @@ Changes should prove the relevant invariants:
     WorkState does not repeat workstream or request identity. Context-pressure
     projection preserves the bound-workstream lane exactly.
 45. Every primary-model prompt contains the exact configured absolute
-    `context.run.workspaceRoot` once. Chat and actionable system-event runs use
-    the same runtime value; prompt compaction and post-binding refresh preserve
-    it. The model treats workspace aliases and relative output destinations as
+    `context.run.workspaceRoot` once. Prompt compaction and post-binding refresh
+    preserve it. The model treats workspace aliases and relative output destinations as
     this location without rediscovery or repeating the root in a creation
     call. Creation declares exact typed workspace-relative targets; the runtime
     derives canonical absolute roots and current-run routing evidence without
@@ -321,7 +322,7 @@ Changes should prove the relevant invariants:
     independently of the larger run outcome. Create/restore, modify,
     permission change, move, copy, and delete preserve the correct identities,
     former locators, tombstones, versions, and fallback/enriched metadata.
-49. Chat and system-event entry share one FIFO agent-run queue. A later input
+49. Chat entry uses one FIFO agent-run queue. A later input
     cannot prepare or execute while an earlier run still owns target-local
     verification, and shutdown drains the queue.
 50. Once initialized, the exact shared workstream repository path, branch,
@@ -407,11 +408,11 @@ verify deliberate clean-state recovery while preserving workspace output.
 
 Start the ordinary configured daemon with `pnpm eval:agent -- live`. Exercise
 conversation through the real WebSocket/client path across multiple clients,
-system events, resource reads, ambiguous ownership, new workstream creation,
+resource reads, ambiguous ownership, new workstream creation,
 mutation, continuation, conversation maintenance, whole-request pressure
 recovery, exact history recovery, and
 restart behavior. Use the configured real provider, tools, Context Engine,
-memory, resources, schedulers, and background services.
+memory, and resources.
 
 After every terminal response and finalization acknowledgement, inspect the
 run evidence/report before choosing the next adaptive message. Inspect final
@@ -429,9 +430,11 @@ developer verification and must not be presented as agent evaluation results.
 pnpm --filter ayati-context-engine test
 pnpm --filter ayati-main test
 pnpm --filter ayati-cli test
+pnpm --filter ayati-desktop test
 pnpm test
 
 pnpm --filter ayati-context-engine build
 pnpm --filter ayati-main build
+pnpm --filter ayati-desktop build
 pnpm build
 ```

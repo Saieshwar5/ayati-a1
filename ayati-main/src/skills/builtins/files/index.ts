@@ -23,7 +23,6 @@ export function createFilesSkill(deps: FilesSkillDeps): SkillDefinition {
     ...(deps.directoryLibrary ? [createDirectorySearchTool(deps)] : []),
     createFileDescribeTool(deps),
     createFileRegisterPathTool(deps),
-    createFileFetchUrlTool(deps),
     createFileRegisterArtifactTool(deps),
     createFileReadTextTool(deps),
     createFileQueryTool(deps),
@@ -267,38 +266,6 @@ function createFileRegisterPathTool(deps: FilesSkillDeps): ToolDefinition {
           name: readOptionalString(input, "name"),
           runId: context?.runId,
           runRole: "found",
-        });
-        return { file: summarizeToolFile(record) };
-      });
-    },
-  };
-}
-
-function createFileFetchUrlTool(deps: FilesSkillDeps): ToolDefinition {
-  return {
-    name: "file_fetch_url",
-    description: "Download a URL into the managed file library and return its fileId.",
-    inputSchema: {
-      type: "object",
-      required: ["url"],
-      properties: {
-        url: { type: "string" },
-        originalName: { type: "string" },
-        mimeType: { type: "string" },
-        maxBytes: { type: "number" },
-      },
-      additionalProperties: false,
-    },
-    outputSchema: genericObjectOutputSchema,
-    resultContract: fileRegistrationContract(),
-    async execute(input, context): Promise<ToolResult> {
-      return withJsonResult(async () => {
-        const record = await deps.fileLibrary.registerDownload({
-          url: readRequiredString(input, "url"),
-          originalName: readOptionalString(input, "originalName"),
-          mimeType: readOptionalString(input, "mimeType"),
-          maxBytes: readOptionalNumber(input, "maxBytes"),
-          runId: context?.runId,
         });
         return { file: summarizeToolFile(record) };
       });

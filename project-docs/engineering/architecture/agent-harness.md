@@ -12,13 +12,13 @@ repair, and validation all advance through the same primary decision loop.
 
 ## One Run Per Accepted Input
 
-Every accepted user message or system event atomically appends one immutable
+Every accepted user message atomically appends one immutable
 stream message and creates exactly one run. A run is the compute, audit,
 idempotency, finalization, and recovery boundary. Direct replies are valid
 zero-step runs.
 
 ```text
-message/event
+user message
 -> prepare agent stream message + attachment links + run + WorkState
 -> project stream continuity and run context
 -> decide / act / verify / reduce / persist step (zero or more)
@@ -360,8 +360,9 @@ Older stream continuity is accessed with:
 - `agent_conversation_read`
 - `agent_history_read`
 
-Search locates a known topic, conversation read pages exact user, assistant,
-and stored system-event messages backward from a stable stream snapshot, and
+Search locates a known topic, conversation read pages exact user and assistant
+messages plus readable legacy system-event records backward from a stable
+stream snapshot, and
 history read opens one exact message, range, run, or evidence reference. Hidden
 system prompts and policies are not stream messages and are never returned.
 
@@ -656,7 +657,7 @@ insufficient or a later verified mutation invalidated it. Bounded overview
 responses may select exact profile or slice outcomes and must describe their
 coverage honestly instead of implying a complete-file read.
 
-Registered semantic kinds cover calculator, database, Pulse, process, Python,
+Registered semantic kinds cover calculator, database, process, Python,
 memory, and managed-artifact outcomes. `tool.call_succeeded` is an exact-call
 fallback keyed by `callId`; it is emitted only by the existing deterministic
 runtime verifier when no stronger completion outcome exists. Routing calls
@@ -720,7 +721,7 @@ Clarification acceptance does not depend on punctuation. Successful work never
 uses `decision_stop`. A failed stop also keeps its user-facing response in
 message history instead of copying it into WorkState.
 
-One coordinator serves chat and system events. `finalizeRun` receives outcome,
+One coordinator serves chat. `finalizeRun` receives outcome,
 stop reason, assistant response, summaries, validation, WorkState, completion
 evidence, and a request lifecycle effect. It atomically appends the assistant
 message and closes the run. A bound finalization appends one immutable progress
@@ -806,7 +807,7 @@ foreground call on the same provider. The candidate remains in memory and
 foreground work does not wait below the forced barrier.
 
 The 8K Core Capsule continuity target is independent of these whole-request
-thresholds. The current input and newest completed user/system-event turn with
+thresholds. The current input and newest completed user turn with
 its assistant response remain exact, even when that one turn exceeds the
 target. When additional older whole turns do not fit, the prompt names their
 unloaded exact sequence range. Before the task decision, the runtime

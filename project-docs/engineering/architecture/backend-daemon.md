@@ -10,17 +10,16 @@ Core responsibilities:
 - Load provider configuration.
 - Load stable base and soul prompt context.
 - Start WebSocket chat transport.
-- Start HTTP upload/artifact/Pulse API.
-- Start plugins and system-event worker.
+- Start HTTP upload/artifact API.
 - Open and close the in-process Context Engine host and consume its typed
   agent-stream, workstream, request, run, checkpoint, history, and
   context-projection operations.
-- Manage personal memory stores and episodic recall services.
+- Manage personal memory stores.
 - Register every tool once, validate explicit capability ownership, and expose
   only the exact bounded run-scoped capability surface.
 - Execute the IVec decision-action-reducer agent loop.
 - Preserve daemon-owned runtime state under `ayati-main/data/`.
-- Provide replies, feedback, notifications, and background event handling to client transports.
+- Provide replies, feedback, and notifications to client transports.
 
 Primary bootstrap file:
 

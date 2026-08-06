@@ -7,10 +7,13 @@ context, tools, providers, and event processing.
 
 Default URL: `ws://localhost:8080`.
 
-A client sends normalized chat with optional attachments. Streaming-capable
+A client sends normalized chat with a stable `messageId` and optional
+attachments. The daemon returns `chat_accepted` with queue position and
+duplicate status before processing. Streaming-capable
 clients announce `replyStreaming`; they receive `reply_started`, zero or more
 `reply_delta` events, and one terminal `reply_done`. Other clients receive the
 equivalent final `reply`, `feedback`, `notification`, or `error` envelope.
+Chat progress and terminal envelopes carry the originating `messageId`.
 
 Terminal envelopes include the run id and workstream context-commit state:
 
@@ -33,8 +36,7 @@ server turn to distinguish dispatch from confirmed rendering.
 
 Default URL: `http://127.0.0.1:8081`.
 
-Current routes include uploads, artifacts, and Pulse ingress. Use
-`AYATI_HTTP_API_TOKEN` where HTTP ingress needs token protection.
+Current routes include uploads and artifacts.
 
 ## Context Engine Service Contract
 

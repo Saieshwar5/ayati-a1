@@ -17,7 +17,6 @@ export const TASK_VALIDATION_OUTCOME_KINDS = [
   "calculation.evaluated",
   "database.read_succeeded",
   "database.mutation_succeeded",
-  "pulse.action_completed",
   "process.exit_success",
   "python.execution_succeeded",
   "memory.read_succeeded",

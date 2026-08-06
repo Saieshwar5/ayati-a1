@@ -1,109 +1,38 @@
 import { resolve } from "node:path";
-import type { LlmProvider } from "../core/index.js";
-import { DocumentStore } from "../documents/document-store.js";
-import { DocumentContextBackend } from "../documents/document-context-backend.js";
-import { LanceDocumentVectorStore } from "../documents/document-vector-store.js";
-import { DocumentIndexer } from "../documents/document-indexer.js";
-import { DocumentRetriever } from "../documents/document-retriever.js";
-import { PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
-import { PreparedAttachmentService } from "../documents/prepared-attachment-service.js";
-import { SessionAttachmentService } from "../documents/session-attachment-service.js";
+import type { AyatiRuntimeConfig } from "../config/runtime-config.js";
 import { DirectoryLibrary } from "../files/directory-library.js";
 import { FileLibrary } from "../files/file-library.js";
-import { devLog, devWarn } from "../shared/index.js";
-import type { AyatiRuntimeConfig } from "../config/runtime-config.js";
-import type { EmbeddingProvider } from "../embeddings/contracts.js";
+import { SessionAttachmentService } from "../files/session-attachment-service.js";
 
 export interface ContentRuntimeOptions {
   projectRoot: string;
-  provider: LlmProvider;
   config: AyatiRuntimeConfig;
-  embeddingProvider?: EmbeddingProvider;
 }
 
 export interface ContentRuntime {
-  documentStore: DocumentStore;
-  documentContextBackend: DocumentContextBackend;
-  preparedAttachmentRegistry: PreparedAttachmentRegistry;
-  preparedAttachmentService: PreparedAttachmentService;
   sessionAttachmentService: SessionAttachmentService;
   fileLibrary: FileLibrary;
   directoryLibrary: DirectoryLibrary;
+  uploadsDir: string;
   httpHost: string;
   httpPort: number;
 }
 
 export async function createContentRuntime(options: ContentRuntimeOptions): Promise<ContentRuntime> {
-  const { projectRoot, provider, config } = options;
-  const dataDir = resolve(projectRoot, "data");
-
-  const documentStore = new DocumentStore({
-    dataDir: resolve(dataDir, "documents"),
-  });
-  const fileLibrary = new FileLibrary({
-    dataDir,
-    defaultMaxDownloadBytes: config.http.maxUploadBytes,
-  });
-  const directoryLibrary = new DirectoryLibrary({
-    dataDir,
-  });
-
-  let documentIndexer: DocumentIndexer | undefined;
-  let documentRetriever: DocumentRetriever | undefined;
-  if (config.documents.vectorEnabled && options.embeddingProvider) {
-    try {
-      const documentEmbedder = options.embeddingProvider;
-      await documentEmbedder.start();
-      const documentVectorStore = new LanceDocumentVectorStore({
-        dataDir: resolve(dataDir, "documents", "vector"),
-      });
-      documentIndexer = new DocumentIndexer({
-        embedder: documentEmbedder,
-        store: documentVectorStore,
-        documentsDir: documentStore.documentsDir,
-        batchSize: config.documents.embedBatchSize,
-      });
-      documentRetriever = new DocumentRetriever({
-        embedder: documentEmbedder,
-        store: documentVectorStore,
-      });
-      devLog(`Document vector retrieval enabled with model=${documentEmbedder.modelName}`);
-    } catch (err) {
-      devWarn(`Document vector retrieval disabled: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  } else if (config.documents.vectorEnabled) {
-    devWarn("Document vector retrieval disabled: no embedding provider configured.");
-  }
-
-  const documentContextBackend = new DocumentContextBackend({
-    store: documentStore,
-    ...(documentIndexer ? { documentIndexer } : {}),
-    ...(documentRetriever ? { documentRetriever } : {}),
-    largeDocumentMinChunks: config.documents.vectorMinChunks,
-  });
-  const preparedAttachmentRegistry = new PreparedAttachmentRegistry();
-  const preparedAttachmentService = new PreparedAttachmentService({
-    registry: preparedAttachmentRegistry,
-    documentStore,
-    provider,
-    documentContextBackend,
-  });
+  const dataDir = resolve(options.projectRoot, "data");
+  const fileLibrary = new FileLibrary({ dataDir });
+  const directoryLibrary = new DirectoryLibrary({ dataDir });
   const sessionAttachmentService = new SessionAttachmentService({
-    preparedAttachmentRegistry,
-    dataDir,
-    documentStore,
     fileLibrary,
     directoryLibrary,
   });
+
   return {
-    documentStore,
-    documentContextBackend,
-    preparedAttachmentRegistry,
-    preparedAttachmentService,
     sessionAttachmentService,
     fileLibrary,
     directoryLibrary,
-    httpHost: config.http.host,
-    httpPort: config.http.port,
+    uploadsDir: resolve(dataDir, "uploads"),
+    httpHost: options.config.http.host,
+    httpPort: options.config.http.port,
   };
 }

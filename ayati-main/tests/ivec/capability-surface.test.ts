@@ -236,9 +236,9 @@ describe("capability surface resolution", () => {
       "db_describe_table",
       "db_get_table_ddl",
       "db_query",
-      "dataset_profile",
-      "dataset_query",
-      "python_inspect_dataset",
+      "attachment_query_table",
+      "file_profile_table",
+      "file_query_table",
     ];
     const executor = createToolExecutor([]);
     const manager = new CapabilitySurfaceManager({
@@ -250,13 +250,13 @@ describe("capability surface resolution", () => {
     current.virtualMode = {
       active: "observe.investigate",
       revision: 1,
-      capabilities: ["database:read", "dataset:inspect"],
+      capabilities: ["database:read", "attachment:table"],
       targets: [],
     };
     const context = { runId: current.runId, stepNumber: 1 };
 
     manager.replaceWithCapabilities({
-      capabilities: ["database:read", "dataset:inspect"],
+      capabilities: ["database:read", "attachment:table"],
       mode: "observe.investigate",
       state: current,
       context,

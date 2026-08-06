@@ -3,16 +3,11 @@ import { readFile } from "node:fs/promises";
 import type { LlmProvider } from "../core/contracts/provider.js";
 import { isProviderEmptyResponseError } from "../core/contracts/provider-errors.js";
 import type { StaticContext } from "../context/static-context-cache.js";
-import type { ManagedDocumentManifest } from "../documents/types.js";
-import type { DocumentStore } from "../documents/document-store.js";
-import { PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
 import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
 import type { DirectoryAttachmentRecord, ManagedFileRecord } from "../files/types.js";
 import type {
   AgentResponseKind,
-  ConversationTurn,
-  PromptMemoryContext,
   SessionInputHandle,
 } from "../memory/types.js";
 import {
@@ -23,13 +18,7 @@ import {
   type ResourceAdmission,
   type ResourceKind,
 } from "ayati-context-engine";
-import {
-  appendPulseProposalQuestion,
-  PulseProposalReflectionService,
-} from "../pulse/proposal-reflection.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
-import type { ToolDefinition } from "../skills/types.js";
-import type { ContextEngineMachineContext } from "../context-engine/index.js";
 import {
   createInitialHarnessContext,
   type HarnessContextInput,
@@ -52,7 +41,10 @@ import type {
   LoopConfig,
 } from "../ivec/types.js";
 import { createWorkstreamBindingCoordinator } from "../ivec/workstream-binding/coordinator.js";
-import { withEvaluationContext } from "../evaluation/capture-runtime.js";
+import {
+  createChatReplyChannel,
+  type ChatReplyChannel,
+} from "./chat-reply-channel.js";
 import { buildStaticSystemContext } from "./static-prompt.js";
 import type {
   ContextEnginePreparedTurn,
@@ -60,7 +52,6 @@ import type {
 } from "./context-engine-runtime.js";
 import {
   finalizeAgentRun,
-  isWorkstreamBoundResult,
   isWorkstreamBoundRun,
 } from "./run-finalization-coordinator.js";
 
@@ -78,15 +69,12 @@ export interface CreateChatTurnRuntimeOptions {
   loopConfig?: Partial<LoopConfig>;
   now?: () => Date;
   dataDir?: string;
-  documentStore?: DocumentStore;
-  preparedAttachmentRegistry?: PreparedAttachmentRegistry;
   fileLibrary?: FileLibrary;
   directoryLibrary?: DirectoryLibrary;
   eventSink?: AgentEventSink;
 }
 
 interface RegisteredChatAttachments {
-  documents: ManagedDocumentManifest[];
   warnings: string[];
   managedFiles: ManagedFileRecord[];
   managedDirectories: DirectoryAttachmentRecord[];
@@ -117,15 +105,11 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   private readonly loopConfig?: Partial<LoopConfig>;
   private readonly nowProvider: () => Date;
   private readonly dataDir?: string;
-  private readonly documentStore?: DocumentStore;
-  private readonly preparedAttachmentRegistry?: PreparedAttachmentRegistry;
   private readonly fileLibrary?: FileLibrary;
   private readonly directoryLibrary?: DirectoryLibrary;
   private readonly eventSink?: AgentEventSink;
   private readonly chatContextRuntime: ContextEngineRuntime;
   private readonly contextEngineService?: ContextEngineService;
-  private readonly pulseProposalReflectionService = new PulseProposalReflectionService();
-
   constructor(options: CreateChatTurnRuntimeOptions) {
     this.onReply = options.onReply;
     this.clientSupportsReplyStreaming = options.clientSupportsReplyStreaming ?? (() => false);
@@ -138,9 +122,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     this.loopConfig = options.loopConfig;
     this.nowProvider = options.now ?? (() => new Date());
     this.dataDir = options.dataDir;
-    this.documentStore = options.documentStore;
-    this.preparedAttachmentRegistry = options.preparedAttachmentRegistry
-      ?? (this.documentStore ? new PreparedAttachmentRegistry() : undefined);
     this.fileLibrary = options.fileLibrary;
     this.directoryLibrary = options.directoryLibrary;
     this.eventSink = options.eventSink;
@@ -149,10 +130,11 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   }
 
   async processChat(input: ChatTurnRuntimeInput): Promise<void> {
-    await this.processChatUnlocked(input);
-  }
-
-  private async processChatUnlocked(input: ChatTurnRuntimeInput): Promise<void> {
+    const replyChannel = createChatReplyChannel({
+      input,
+      onReply: this.onReply,
+      clientSupportsReplyStreaming: this.clientSupportsReplyStreaming,
+    });
     let inputHandle: SessionInputHandle | null = null;
     let runHandle: AgentRunHandle | null = null;
     let chatContextTurn: ContextEnginePreparedTurn | null = null;
@@ -167,6 +149,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         input.content,
         resourceAdmissions(registeredAttachments),
         ingressAt,
+        input.messageId,
       );
       inputHandle = this.inputHandleFromChatContextTurn(chatContextTurn);
       runHandle = chatContextTurn.run;
@@ -237,23 +220,20 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           systemContext: buildStaticSystemContext(this.staticContext),
           harnessContext,
           eventSink: this.eventSink,
-          attachedDocuments: registeredAttachments.documents,
           attachmentWarnings: registeredAttachments.warnings,
           managedFiles: registeredAttachments.managedFiles,
           managedDirectories: registeredAttachments.managedDirectories,
           fileLibrary: this.fileLibrary,
           directoryLibrary: this.directoryLibrary,
-          documentStore: this.documentStore,
-          preparedAttachmentRegistry: this.preparedAttachmentRegistry,
           onProgress: (log, _runPath) => {
             devLog(`[${input.clientId}] ${log}`);
-            this.sendProgress(input.clientId, runHandle!, log);
+            this.sendProgress(replyChannel, runHandle!, log);
           },
-          ...(this.clientSupportsReplyStreaming(input.clientId)
+          ...(replyChannel.supportsStreaming
             ? {
                 onFinalResponseStream: (event: FinalResponseStreamEvent) => {
                   liveFinalResponseStream = this.handleLiveFinalResponseStreamEvent(
-                    input.clientId,
+                    replyChannel,
                     runHandle,
                     liveFinalResponseStream,
                     event,
@@ -262,24 +242,13 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
               }
             : {}),
         });
-        result = await withEvaluationContext({
-          runId: runHandle.runId,
-          sessionId: inputHandle.sessionId,
-          laneId: `main:${runHandle.runId}`,
-          attribution: "foreground",
-        }, async () => await this.applyPulseProposalReflection(
-            input.clientId,
-            input.content,
-            result,
-            toolDefinitions,
-          ));
         finalizationAttempted = true;
         const commitStatus = await this.finalizeChatContextRun(
           input.clientId,
           chatContextTurn,
           result,
         );
-        this.dispatchAgentResponse(input.clientId, runHandle, result, commitStatus, liveFinalResponseStream);
+        this.dispatchAgentResponse(replyChannel, runHandle, result, commitStatus, liveFinalResponseStream);
         this.eventSink?.record({
           clientId: input.clientId,
           sessionId: inputHandle.sessionId,
@@ -306,7 +275,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           chatContextTurn,
           result,
         );
-        this.dispatchAgentResponse(input.clientId, runHandle, {
+        this.dispatchAgentResponse(replyChannel, runHandle, {
           type: "reply",
           content: echoContent,
         }, commitStatus);
@@ -358,14 +327,14 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       }
       const failedLiveStream = liveFinalResponseStream as LiveReplyStream | null;
       if (failedLiveStream) {
-        this.finishLiveFinalResponseStream(input.clientId, runHandle, failedLiveStream, {
+        this.finishLiveFinalResponseStream(replyChannel, runHandle, failedLiveStream, {
           kind: failedLiveStream.kind,
           content: failedLiveStream.content,
           commitStatus: "failed",
         });
         liveFinalResponseStream = null;
       }
-      this.onReply?.(input.clientId, {
+      replyChannel.send({
         type: "error",
         content: formatChatRuntimeError(err),
         ...(runHandle ? { runId: runHandle.runId } : {}),
@@ -379,11 +348,13 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     userMessage: string,
     resources: ResourceAdmission[],
     at: string,
+    messageId?: string,
   ): Promise<ContextEnginePreparedTurn> {
     const turn = await this.chatContextRuntime.prepareUserTurn({
       clientId,
       userMessage,
       ...(resources.length > 0 ? { resources } : {}),
+      ...(messageId ? { ingressMessageId: messageId } : {}),
       at,
     });
     const contextEngine = turn.context;
@@ -527,57 +498,8 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     };
   }
 
-  private async applyPulseProposalReflection(
-    clientId: string,
-    userMessage: string,
-    result: AgentLoopResult,
-    toolDefinitions: ToolDefinition[],
-  ): Promise<AgentLoopResult> {
-    if (!this.provider || result.type !== "reply" || result.outcome !== "done" || !isWorkstreamBoundResult(result) || !result.workstreamSummary) {
-      return result;
-    }
-
-    try {
-      const reflection = await this.pulseProposalReflectionService.reflect({
-        provider: this.provider,
-        currentUserMessage: userMessage,
-        assistantResponse: result.content,
-        workstreamSummary: result.workstreamSummary,
-        memoryContext: promptMemoryContextFromContextEngine(result.harnessContext?.contextEngine),
-        toolDefinitions,
-        now: this.nowProvider(),
-      });
-
-      if (reflection.action !== "ask_user") {
-        if (reflection.reason) {
-          devLog(`[${clientId}] pulse proposal reflection skipped: ${reflection.reason}`);
-        }
-        return result;
-      }
-
-      devLog(
-        `[${clientId}] pulse proposal reflection asking confidence=${reflection.confidence.toFixed(2)} reason=${reflection.reason}`,
-      );
-      const content = appendPulseProposalQuestion(result.content, reflection.question);
-      return {
-        ...result,
-        type: "feedback",
-        content,
-        workstreamSummary: {
-          ...result.workstreamSummary,
-          assistantResponse: content,
-          assistantResponseKind: "feedback",
-          feedbackKind: "approval",
-        },
-      };
-    } catch (err) {
-      devWarn("Pulse proposal reflection failed:", err instanceof Error ? err.message : String(err));
-      return result;
-    }
-  }
-
   private dispatchAgentResponse(
-    clientId: string,
+    replyChannel: ChatReplyChannel,
     runHandle: AgentRunHandle | null,
     result: {
       type: AgentResponseKind;
@@ -589,13 +511,13 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   ): void {
     switch (result.type) {
       case "reply":
-        this.sendAssistantReply(clientId, runHandle, result.content, commitStatus, result.artifacts, liveStream);
+        this.sendAssistantReply(replyChannel, runHandle, result.content, commitStatus, result.artifacts, liveStream);
         return;
       case "feedback":
-        this.sendAssistantFeedback(clientId, runHandle, result.content, commitStatus, result.artifacts, liveStream);
+        this.sendAssistantFeedback(replyChannel, runHandle, result.content, commitStatus, result.artifacts, liveStream);
         return;
       case "notification":
-        this.sendAssistantNotification(clientId, runHandle, result.content, commitStatus, result.artifacts, liveStream);
+        this.sendAssistantNotification(replyChannel, runHandle, result.content, commitStatus, result.artifacts, liveStream);
         return;
       case "none":
         return;
@@ -603,7 +525,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   }
 
   private sendAssistantReply(
-    clientId: string,
+    replyChannel: ChatReplyChannel,
     runHandle: AgentRunHandle | null,
     content: string,
     commitStatus: ReplyCommitStatus,
@@ -616,7 +538,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       ...(artifacts && artifacts.length > 0 ? { artifacts } : {}),
     };
     if (liveStream) {
-      this.finishLiveFinalResponseStream(clientId, runHandle, liveStream, {
+      this.finishLiveFinalResponseStream(replyChannel, runHandle, liveStream, {
         kind: "reply",
         content,
         commitStatus,
@@ -624,11 +546,11 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       });
       return;
     }
-    if (this.clientSupportsReplyStreaming(clientId)) {
-      this.sendStreamedAssistantResponse(clientId, runHandle, "reply", content, commitStatus, terminalPayload);
+    if (replyChannel.supportsStreaming) {
+      this.sendStreamedAssistantResponse(replyChannel, runHandle, "reply", content, commitStatus, terminalPayload);
       return;
     }
-    this.onReply?.(clientId, {
+    replyChannel.send({
       type: "reply",
       content,
       ...terminalPayload,
@@ -636,7 +558,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   }
 
   private sendAssistantFeedback(
-    clientId: string,
+    replyChannel: ChatReplyChannel,
     runHandle: AgentRunHandle | null,
     content: string,
     commitStatus: ReplyCommitStatus,
@@ -649,7 +571,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       ...(artifacts && artifacts.length > 0 ? { artifacts } : {}),
     };
     if (liveStream) {
-      this.finishLiveFinalResponseStream(clientId, runHandle, liveStream, {
+      this.finishLiveFinalResponseStream(replyChannel, runHandle, liveStream, {
         kind: "feedback",
         content,
         commitStatus,
@@ -657,11 +579,11 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       });
       return;
     }
-    if (this.clientSupportsReplyStreaming(clientId)) {
-      this.sendStreamedAssistantResponse(clientId, runHandle, "feedback", content, commitStatus, terminalPayload);
+    if (replyChannel.supportsStreaming) {
+      this.sendStreamedAssistantResponse(replyChannel, runHandle, "feedback", content, commitStatus, terminalPayload);
       return;
     }
-    this.onReply?.(clientId, {
+    replyChannel.send({
       type: "feedback",
       content,
       ...terminalPayload,
@@ -669,7 +591,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   }
 
   private sendAssistantNotification(
-    clientId: string,
+    replyChannel: ChatReplyChannel,
     runHandle: AgentRunHandle | null,
     content: string,
     commitStatus: ReplyCommitStatus,
@@ -682,7 +604,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       ...(artifacts && artifacts.length > 0 ? { artifacts } : {}),
     };
     if (liveStream) {
-      this.finishLiveFinalResponseStream(clientId, runHandle, liveStream, {
+      this.finishLiveFinalResponseStream(replyChannel, runHandle, liveStream, {
         kind: "notification",
         content,
         commitStatus,
@@ -690,11 +612,11 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       });
       return;
     }
-    if (this.clientSupportsReplyStreaming(clientId)) {
-      this.sendStreamedAssistantResponse(clientId, runHandle, "notification", content, commitStatus, terminalPayload);
+    if (replyChannel.supportsStreaming) {
+      this.sendStreamedAssistantResponse(replyChannel, runHandle, "notification", content, commitStatus, terminalPayload);
       return;
     }
-    this.onReply?.(clientId, {
+    replyChannel.send({
       type: "notification",
       content,
       final: true,
@@ -703,17 +625,17 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   }
 
   private handleLiveFinalResponseStreamEvent(
-    clientId: string,
+    replyChannel: ChatReplyChannel,
     runHandle: AgentRunHandle | null,
     current: LiveReplyStream | null,
     event: FinalResponseStreamEvent,
   ): LiveReplyStream | null {
-    if (!this.clientSupportsReplyStreaming(clientId)) {
+    if (!replyChannel.supportsStreaming) {
       return current;
     }
     if (event.type === "start") {
       const turnId = randomUUID();
-      this.onReply?.(clientId, {
+      replyChannel.send({
         type: "reply_started",
         turnId,
         kind: event.kind,
@@ -727,7 +649,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       };
     }
 
-    const stream = current ?? this.handleLiveFinalResponseStreamEvent(clientId, runHandle, null, {
+    const stream = current ?? this.handleLiveFinalResponseStreamEvent(replyChannel, runHandle, null, {
       type: "start",
       kind: "reply",
     });
@@ -742,7 +664,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       content: `${stream.content}${event.delta}`,
       seq: stream.seq + 1,
     };
-    this.onReply?.(clientId, {
+    replyChannel.send({
       type: "reply_delta",
       turnId: next.turnId,
       seq: next.seq,
@@ -752,7 +674,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   }
 
   private finishLiveFinalResponseStream(
-    clientId: string,
+    replyChannel: ChatReplyChannel,
     runHandle: AgentRunHandle | null,
     stream: LiveReplyStream,
     result: {
@@ -762,7 +684,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       extraPayload?: Record<string, unknown>;
     },
   ): void {
-    this.onReply?.(clientId, {
+    replyChannel.send({
       type: "reply_done",
       turnId: stream.turnId,
       kind: result.kind,
@@ -774,7 +696,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   }
 
   private sendStreamedAssistantResponse(
-    clientId: string,
+    replyChannel: ChatReplyChannel,
     runHandle: AgentRunHandle | null,
     kind: "reply" | "feedback" | "notification",
     content: string,
@@ -783,7 +705,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   ): void {
     const turnId = randomUUID();
     const runPayload = runHandle ? { runId: runHandle.runId } : {};
-    this.onReply?.(clientId, {
+    replyChannel.send({
       type: "reply_started",
       turnId,
       kind,
@@ -792,14 +714,14 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     let seq = 0;
     for (const delta of chunkReplyContent(content)) {
       seq++;
-      this.onReply?.(clientId, {
+      replyChannel.send({
         type: "reply_delta",
         turnId,
         seq,
         delta,
       });
     }
-    this.onReply?.(clientId, {
+    replyChannel.send({
       type: "reply_done",
       turnId,
       kind,
@@ -810,8 +732,8 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     });
   }
 
-  private sendProgress(clientId: string, runHandle: AgentRunHandle, content: string): void {
-    this.onReply?.(clientId, {
+  private sendProgress(replyChannel: ChatReplyChannel, runHandle: AgentRunHandle, content: string): void {
+    replyChannel.send({
       type: "progress",
       content,
       runId: runHandle.runId,
@@ -822,7 +744,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     attachments: ChatAttachmentInput[],
   ): Promise<RegisteredChatAttachments> {
     if (attachments.length === 0) {
-      return { documents: [], warnings: [], managedFiles: [], managedDirectories: [] };
+      return { warnings: [], managedFiles: [], managedDirectories: [] };
     }
 
     if (this.fileLibrary) {
@@ -854,24 +776,17 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       }
 
       return {
-        documents: managedFiles.map(managedFileToDocumentManifest),
         warnings,
         managedFiles,
         managedDirectories,
       };
     }
 
-    if (!this.documentStore) {
-      return {
-        documents: [],
-        warnings: ["Attachments were provided but no document store is configured."],
-        managedFiles: [],
-        managedDirectories: [],
-      };
-    }
-
-    const registered = await this.documentStore.registerAttachments(attachments.filter(isLegacyDocumentAttachment));
-    return { ...registered, managedFiles: [], managedDirectories: [] };
+    return {
+      warnings: ["Attachments were provided but the managed file library is not configured."],
+      managedFiles: [],
+      managedDirectories: [],
+    };
   }
 
   private async registerIncomingManagedFile(
@@ -951,21 +866,6 @@ function summarizeChatAttachment(attachment: ChatAttachmentInput): Record<string
   };
 }
 
-function managedFileToDocumentManifest(file: ManagedFileRecord): ManagedDocumentManifest {
-  return {
-    documentId: file.sha256.slice(0, 16),
-    name: file.safeName,
-    displayName: file.originalName,
-    source: file.origin === "local_path" ? "cli" : "upload",
-    originalPath: file.originalPath ?? file.sourceUri ?? file.storagePath,
-    storedPath: file.storagePath,
-    kind: file.kind,
-    ...(file.mimeType ? { mimeType: file.mimeType } : {}),
-    sizeBytes: file.sizeBytes,
-    checksum: file.sha256,
-  };
-}
-
 function resourceAdmissions(registered: RegisteredChatAttachments): ResourceAdmission[] {
   const managedFiles = registered.managedFiles.map((file): ResourceAdmission => ({
     admissionId: "file:" + file.fileId,
@@ -986,19 +886,7 @@ function resourceAdmissions(registered: RegisteredChatAttachments): ResourceAdmi
     aliases: [directory.name],
     role: "attachment",
   }));
-  const documents = registered.managedFiles.length > 0
-    ? []
-    : registered.documents.map((document): ResourceAdmission => ({
-        admissionId: "document:" + document.documentId,
-        kind: document.kind === "csv" || document.kind === "xlsx" ? "dataset" : "document",
-        origin: "user_attachment",
-        locator: { kind: "filesystem", path: document.storedPath },
-        displayName: document.displayName,
-        aliases: [document.name],
-        role: "attachment",
-        mediaType: document.mimeType,
-      }));
-  return [...managedFiles, ...directories, ...documents];
+  return [...managedFiles, ...directories];
 }
 
 function resourceKindForManagedFile(file: ManagedFileRecord): ResourceKind {
@@ -1013,12 +901,6 @@ function isDirectoryChatAttachment(attachment: ChatAttachmentInput): attachment 
   return attachment.type === "directory";
 }
 
-function isLegacyDocumentAttachment(
-  attachment: ChatAttachmentInput,
-): attachment is Exclude<ChatAttachmentInput, { fileId: string } | DirectoryChatAttachmentInput> {
-  return !("fileId" in attachment) && !isDirectoryChatAttachment(attachment);
-}
-
 function formatAttachmentLabel(attachment: ChatAttachmentInput): string {
   if ("fileId" in attachment && typeof attachment.fileId === "string") {
     return attachment.fileId;
@@ -1030,37 +912,6 @@ function formatAttachmentLabel(attachment: ChatAttachmentInput): string {
     return attachment.path;
   }
   return "path" in attachment ? attachment.path : "attachment";
-}
-
-function promptMemoryContextFromContextEngine(
-  context: ContextEngineMachineContext | undefined,
-): PromptMemoryContext {
-  const streamId = context?.agentStream.meta.streamId;
-  const conversationTurns: ConversationTurn[] = (context?.agentStream.recentMessages ?? [])
-    .filter(isUserAssistantContextEngineMessage)
-    .map((message) => ({
-      role: message.role,
-      content: message.content,
-      timestamp: message.at,
-      sessionPath: `agent-stream:${streamId ?? ""}`,
-      seq: message.sequence,
-    }));
-
-  return {
-    recentExchanges: [],
-    recentSystemEvents: [],
-    conversationTurns,
-    personalMemorySnapshot: "",
-    personalMemories: [],
-  };
-}
-
-function isUserAssistantContextEngineMessage(
-  message: ContextEngineMachineContext["agentStream"]["recentMessages"][number],
-): message is ContextEngineMachineContext["agentStream"]["recentMessages"][number] & {
-  role: "user" | "assistant";
-} {
-  return message.role === "user" || message.role === "assistant";
 }
 
 function formatChatRuntimeError(error: unknown): string {

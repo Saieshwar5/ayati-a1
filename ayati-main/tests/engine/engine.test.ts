@@ -12,13 +12,8 @@ import {
   createChatTurnRuntime,
   type CreateChatTurnRuntimeOptions,
 } from "../../src/app/chat-turn-runtime.js";
-import {
-  createSystemEventRuntime,
-  type CreateSystemEventRuntimeOptions,
-} from "../../src/app/system-event-runtime.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnInput, LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
-import type { SystemEventPolicyConfig } from "../../src/ivec/system-event-policy.js";
 import type {
   ContextEnginePreparedTurn,
   ContextEngineRuntime,
@@ -213,26 +208,8 @@ function projectedOutcomeRef(input: LlmTurnInput, callId: string): string {
   return outcomeRef;
 }
 
-function createSystemEventPolicy(): SystemEventPolicyConfig {
-  return {
-    schemaVersion: 2,
-    defaults: {
-      mode: "analyze_notify",
-      delivery: "notification",
-      contextVisibility: "summary",
-      approvalRequired: false,
-    },
-    rules: [{
-      source: "pulse",
-      eventClass: "trigger_fired",
-      createdBy: "user",
-      mode: "auto_execute_notify",
-    }],
-  };
-}
-
 function createPreparedTurn(input: {
-  role: "user" | "system_event";
+  role: "user";
   runId?: string;
   messageSeq?: number;
 }): ContextEnginePreparedTurn {
@@ -269,12 +246,6 @@ function createContextRuntime(prepared: ContextEnginePreparedTurn): ContextEngin
     setCurrentMessage(prepared, input.userMessage, input.at, "user");
     return prepared;
   });
-  const prepareSystemEventTurn = vi.fn(async (
-    input: Parameters<ContextEngineRuntime["prepareSystemEventTurn"]>[0],
-  ) => {
-    setCurrentMessage(prepared, input.systemMessage, input.at, "system_event");
-    return prepared;
-  });
   const finalizeRun = vi.fn(async (
     input: Parameters<ContextEngineRuntime["finalizeRun"]>[0],
   ) => {
@@ -291,7 +262,7 @@ function createContextRuntime(prepared: ContextEnginePreparedTurn): ContextEngin
           },
         } : {}),
         status: input.outcome,
-        trigger: prepared.inputRole === "user" ? "user" : "system_event",
+        trigger: "user",
         startedAt: "2026-07-19T10:00:00.000Z",
         completedAt: input.at,
         stopReason: input.stopReason,
@@ -330,7 +301,6 @@ function createContextRuntime(prepared: ContextEnginePreparedTurn): ContextEngin
   const checkpointCommit = vi.fn();
   return {
     prepareUserTurn,
-    prepareSystemEventTurn,
     finalizeRun,
     recordRunStep: vi.fn().mockResolvedValue(null),
     contextCheckpointCoordinator: vi.fn().mockReturnValue({
@@ -344,7 +314,7 @@ function setCurrentMessage(
   prepared: ContextEnginePreparedTurn,
   text: string,
   at: string,
-  role: "user" | "system_event",
+  role: "user",
 ): void {
   const message = {
     messageId: prepared.currentMessageId,
@@ -361,21 +331,13 @@ function setCurrentMessage(
   prepared.context.current.runId = prepared.run.runId;
 }
 
-type TestEngineOptions =
-  & Omit<
-    Partial<CreateChatTurnRuntimeOptions & CreateSystemEventRuntimeOptions>,
-    "chatContextRuntime" | "systemEventContextRuntime"
-  >
-  & {
-    chatContextRuntime?: ContextEngineRuntime;
-    systemEventContextRuntime?: ContextEngineRuntime;
-  };
+type TestEngineOptions = Omit<Partial<CreateChatTurnRuntimeOptions>, "chatContextRuntime"> & {
+  chatContextRuntime?: ContextEngineRuntime;
+};
 
 function createEngine(options: TestEngineOptions = {}): IVecEngine {
   const chatContextRuntime = options.chatContextRuntime
     ?? createContextRuntime(createPreparedTurn({ role: "user" }));
-  const systemEventContextRuntime = options.systemEventContextRuntime
-    ?? createContextRuntime(createPreparedTurn({ role: "system_event" }));
   const provider = options.provider ? withNativeDecisions(options.provider) : undefined;
   const chatTurnRuntime = createChatTurnRuntime({
     onReply: options.onReply,
@@ -389,24 +351,9 @@ function createEngine(options: TestEngineOptions = {}): IVecEngine {
     chatContextRuntime,
     contextEngineService: options.contextEngineService,
   });
-  const systemEventRuntime = createSystemEventRuntime({
-    onReply: options.onReply,
-    provider,
-    workspaceRoot: options.workspaceRoot ?? getWorkspaceRoot(),
-    systemEventContextRuntime,
-    toolExecutor: options.toolExecutor,
-    loopConfig: options.loopConfig,
-    now: options.now,
-    dataDir: options.dataDir,
-    systemEventPolicy: options.systemEventPolicy,
-    eventSink: options.eventSink,
-    contextEngineService: options.contextEngineService,
-  });
   return new IVecEngine({
     provider,
-    now: options.now,
     chatTurnRuntime,
-    systemEventRuntime,
   });
 }
 
@@ -487,26 +434,6 @@ function createFindTool(path = "/tmp/health-notes.md"): ToolDefinition {
   };
 }
 
-function pulseEvent(eventId = "evt-1") {
-  return {
-    type: "system_event" as const,
-    source: "pulse",
-    eventName: "reminder_due",
-    eventId,
-    receivedAt: "2026-07-19T10:00:05.000Z",
-    summary: "Reminder due: Review health notes",
-    payload: {
-      occurrenceId: `occ-${eventId}`,
-      reminderId: "rem-1",
-      title: "Review health notes",
-      instruction: "Review health notes now",
-      scheduledFor: "2026-07-19T10:00:00.000Z",
-      triggeredAt: "2026-07-19T10:00:05.000Z",
-      timezone: "UTC",
-    },
-  };
-}
-
 describe("IVecEngine one-run integration", () => {
   it("is constructible and starts without a provider", async () => {
     const engine = createEngine();
@@ -534,6 +461,7 @@ describe("IVecEngine one-run integration", () => {
       .toBeLessThan(onReply.mock.invocationCallOrder[0]!);
     expect(onReply).toHaveBeenCalledWith("c1", {
       type: "reply",
+      messageId: expect.any(String),
       content: 'Received: "hello"',
       runId: "R-20260719-0001",
       commitStatus: "not_required",
@@ -556,6 +484,7 @@ describe("IVecEngine one-run integration", () => {
     expect(runtime.finalizeRun).not.toHaveBeenCalled();
     expect(onReply).toHaveBeenCalledWith("c1", {
       type: "error",
+      messageId: expect.any(String),
       content: "A previous Ayati run (RUN-blocked) is still active or requires recovery, so this message was not accepted.",
     });
   });
@@ -598,6 +527,7 @@ describe("IVecEngine one-run integration", () => {
       }));
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "reply",
+        messageId: expect.any(String),
         content: response,
         runId: "R-direct",
         commitStatus: "not_required",
@@ -912,6 +842,7 @@ describe("IVecEngine one-run integration", () => {
       expect(runtime.finalizeRun).toHaveBeenCalledOnce();
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "error",
+        messageId: expect.any(String),
         content: "Failed to generate a response.",
         runId: "R-finalize-fails",
       });
@@ -920,134 +851,6 @@ describe("IVecEngine one-run integration", () => {
       ).type === "reply" || (
         response as { commitStatus?: string }
       ).commitStatus === "committed")).toBe(false);
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("finalizes an unbound system event exactly once", async () => {
-    const dataDir = makeTmpDir();
-    const workspaceRoot = join(dataDir, "configured-workspace");
-    try {
-      const runtime = createContextRuntime(createPreparedTurn({
-        role: "system_event",
-        runId: "R-system-direct",
-      }));
-      const onReply = vi.fn();
-      const provider = createProvider([
-        { kind: "reply", status: "completed", message: "Health notes are current." },
-      ]);
-      const engine = createEngine({
-        onReply,
-        provider,
-        workspaceRoot,
-        dataDir,
-        systemEventContextRuntime: runtime,
-        systemEventPolicy: createSystemEventPolicy(),
-      });
-
-      await engine.start();
-      await engine.handleSystemEvent("c1", pulseEvent("system-direct"));
-
-      expect(runtime.prepareSystemEventTurn).toHaveBeenCalledOnce();
-      expect(JSON.stringify(vi.mocked(provider.generateTurn).mock.calls[0]?.[0]))
-        .toContain(workspaceRoot);
-      expect(runtime.recordRunStep).not.toHaveBeenCalled();
-      expect(runtime.finalizeRun).toHaveBeenCalledOnce();
-      expect(runtime.finalizeRun).toHaveBeenCalledWith(expect.objectContaining({
-        outcome: "done",
-        stopReason: "completed",
-      }));
-      expect(vi.mocked(runtime.finalizeRun).mock.calls[0]?.[0]).not.toHaveProperty("workstreamCompletion");
-      expect(onReply).toHaveBeenCalledWith("c1", {
-        type: "notification",
-        content: "Health notes are current.",
-        final: true,
-        runId: "R-system-direct",
-        commitStatus: "not_required",
-      });
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("records an observational system-event step on its prepared run", async () => {
-    const dataDir = makeTmpDir();
-    try {
-      const healthNotesPath = join(dataDir, "health-notes.md");
-      writeFileSync(healthNotesPath, "Health notes are current.\n", "utf8");
-      const runtime = createContextRuntime(createPreparedTurn({
-        role: "system_event",
-        runId: "R-system-read",
-      }));
-      const readTool = createReadTool();
-      const engine = createEngine({
-        provider: createProvider([
-          {
-            kind: "transition_mode",
-            request: {
-              to: "observe.locate",
-              purpose: "Locate and inspect the health notes referenced by the reminder.",
-              capabilities: ["file:search"],
-            },
-          },
-          {
-            kind: "act",
-            action: {
-              mode: "single",
-              calls: [{
-                id: "find-health",
-                tool: "find_files",
-                input: {},
-                dependsOn: [],
-                purpose: "Locate health notes",
-              }],
-              allowedTools: ["find_files"],
-              assertions: [],
-            },
-          },
-          {
-            kind: "transition_mode",
-            request: {
-              to: "validation",
-              purpose: "Check current-run proof for the located health notes file.",
-              capabilities: ["task:validation"],
-              outcomeRefs: ["run:R-system-read:step:1:call:find-health:outcome:0"],
-            },
-          },
-          {
-            kind: "reply",
-            status: "completed",
-            message: "Health notes are current.",
-          },
-        ]),
-        toolExecutor: createToolExecutor([
-          createFindTool(healthNotesPath),
-          readTool,
-        ]),
-        dataDir,
-        systemEventContextRuntime: runtime,
-        systemEventPolicy: createSystemEventPolicy(),
-      });
-
-      await engine.start();
-      await engine.handleSystemEvent("c1", pulseEvent("system-read"));
-
-      expect(runtime.recordRunStep).toHaveBeenCalledTimes(1);
-      expect(runtime.recordRunStep).toHaveBeenCalledWith(expect.objectContaining({
-        turn: expect.objectContaining({ run: expect.objectContaining({ runId: "R-system-read" }) }),
-        record: expect.objectContaining({
-          runId: "R-system-read",
-          step: 1,
-          toolCalls: [expect.objectContaining({
-            callId: "find-health",
-            tool: "find_files",
-            status: "success",
-          })],
-        }),
-      }));
-      expect(runtime.finalizeRun).toHaveBeenCalledOnce();
-      expect(vi.mocked(runtime.finalizeRun).mock.calls[0]?.[0]).not.toHaveProperty("workstreamCompletion");
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }

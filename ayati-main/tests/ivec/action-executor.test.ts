@@ -514,9 +514,9 @@ describe("executeAgentAction verification gates", () => {
   it("uses the deterministic success gate for known deterministic tool output without a contract", async () => {
     const runPath = makeTmpDir();
     try {
-      const datasetQueryTool: ToolDefinition = {
-        name: "dataset_query",
-        description: "Return deterministic dataset rows.",
+      const tableQueryTool: ToolDefinition = {
+        name: "file_query_table",
+        description: "Return deterministic managed table rows.",
         inputSchema: { type: "object", additionalProperties: true },
         async execute() {
           return {
@@ -531,8 +531,8 @@ describe("executeAgentAction verification gates", () => {
       };
 
       const result = await runAction(
-        [datasetQueryTool],
-        actionFor("dataset_query", { sql: "select count(*) as count from items" }, "Return dataset count"),
+        [tableQueryTool],
+        actionFor("file_query_table", { fileId: "file_items", sql: "select count(*) as count from file_data" }, "Return table count"),
         runPath,
       );
 
@@ -545,7 +545,7 @@ describe("executeAgentAction verification gates", () => {
         method: "runtime_check",
         contract: "deterministic_success_gate_v1",
       });
-      expect(result.verifyOutput.evidenceSummary).toContain("dataset_query succeeded");
+      expect(result.verifyOutput.evidenceSummary).toContain("file_query_table succeeded");
       expect(result.nextWorkState).toEqual(emptyWorkState());
     } finally {
       cleanup(runPath);

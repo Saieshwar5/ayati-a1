@@ -111,15 +111,18 @@ describe("database skill", () => {
     expect(result.v2?.code).toBe("ABSOLUTE_PATH_REQUIRED");
   });
 
-  it("supports schema changes, row updates/deletes, table rename/drop, and raw SQL", async () => {
+  it("supports schema changes, row updates/deletes, table rename, and table removal", async () => {
     const dbPath = makeDbPath();
 
-    const execCreate = await getTool("db_execute_sql").execute({
+    const create = await getTool("db_create_table").execute({
       dbPath,
-      mode: "execute",
-      sql: "CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
+      table: "people",
+      columns: [
+        { name: "id", type: "INTEGER", primaryKey: true },
+        { name: "name", type: "TEXT", notNull: true },
+      ],
     });
-    parseOutput(execCreate);
+    parseOutput(create);
 
     const insertRows = await getTool("db_insert_rows").execute({
       dbPath,
@@ -151,13 +154,14 @@ describe("database skill", () => {
     const updated = parseOutput(updateRows);
     expect(updated.updatedRowCount).toBe(1);
 
-    const rawQuery = await getTool("db_execute_sql").execute({
+    const query = await getTool("db_query").execute({
       dbPath,
-      mode: "query",
-      sql: "SELECT id, name, email FROM people WHERE id = ?",
+      table: "people",
+      columns: ["id", "name", "email"],
+      whereSql: "id = ?",
       params: [1],
     });
-    const queried = parseOutput(rawQuery);
+    const queried = parseOutput(query);
     expect(queried.rows).toEqual([
       { id: 1, name: "Sai", email: "sai@example.com" },
     ]);

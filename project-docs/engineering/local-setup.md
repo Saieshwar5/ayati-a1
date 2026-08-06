@@ -30,6 +30,13 @@ pnpm --filter ayati-cli build
 pnpm --filter ayati-cli start
 ```
 
+Or start the Electron desktop client (Node.js 22.12+):
+
+```bash
+pnpm --filter ayati-desktop build
+pnpm --filter ayati-desktop start
+```
+
 Mental model:
 
 - `ayati-main` is the app's persistent agent daemon.
@@ -39,7 +46,7 @@ Mental model:
   `<AYATI_ROOT_DIR>/workstreams/`; each `W-*` child contains only its
   workstream card, progress, request contracts, and resource projection. Real
   outputs stay in `workspace/` or the user-selected resource path.
-- `ayati-cli` is one communication client.
-- Stop or restart the CLI without assuming the daemon state is gone.
+- `ayati-cli` and `ayati-desktop` are communication clients.
+- Stop or restart either client without assuming the daemon state is gone.
 - Stop or restart a session without assuming durable work is closed;
   workstreams reopen from context and explicit request selection.

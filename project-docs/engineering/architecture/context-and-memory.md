@@ -16,7 +16,6 @@ growth rates and different authority.
 - Personal memory: stable, evolving, and time-scoped facts about the user.
 - Hot Context runtime: rebuildable typed catalog plus disposable run-scoped
   mounts. It is a projection cache, never the source of truth.
-- Episodic memory: semantic recall over prior experience.
 - Active-run projection: the harness keeps the latest authoritative service
   response for the current turn; it does not maintain a second context cache.
 - Agent-stream workstream focus: one optional durable workstream/request pair
@@ -35,8 +34,9 @@ agentId = local
 scopeKey = default
 ```
 
-The stream contains immutable `user`, `system_event`, and `assistant`
-messages. Assistant messages durably retain `reply`, `feedback`, or
+The active daemon appends immutable `user` and `assistant` messages. The
+Context Engine can still read legacy `system_event` messages already stored by
+older Ayati versions. Assistant messages durably retain `reply`, `feedback`, or
 `notification` response semantics and an optional feedback kind. User messages
 retain the exact resource identities admitted as attachments for that message.
 The stream also contains a durable continuity checkpoint plus exact tail,
@@ -144,7 +144,7 @@ access.
 
 The capsule has three explicit parts:
 
-- `current`: one exact current user or system-event input, the current run id,
+- `current`: one exact current user input, the current run id,
   exact routing state, and at most five lightweight active-document navigation
   pointers;
 - `continuity`: an optional durable checkpoint, recent whole exact turns, and
@@ -165,7 +165,7 @@ The current input is stored once under `core.current.input` and is not charged
 to the historical continuity budget. The initial continuity budget is 8,000
 estimated tokens, including checkpoint, exact tail, and continuity metadata.
 Selection is newest-first by complete turn; an individual message is never
-partially cut. The newest completed user/system-event turn and its assistant
+partially cut. The newest completed user turn and its assistant
 response are the minimum exact tail and remain exact even when that one turn
 exceeds the continuity target. Additional older turns become unloaded ranges
 and eligible checkpoint source. Maintenance summarizes older exact turns too,
@@ -187,7 +187,7 @@ contents matter.
 
 Capsule evolution is automatic:
 
-1. Immutable user, assistant, and system-event messages are appended to the
+1. Immutable user and assistant messages are appended to the
    Context Engine journal together with exact assistant-response metadata and
    per-message attachment links.
 2. Before a decision, the runtime builds the capsule from the active durable
@@ -429,7 +429,7 @@ For each maintenance attempt:
 
 1. Ask Context Engine for a plan over a complete prefix of terminal runs
    before the protected exact tail. The current input and newest completed
-   user/system-event turn with its assistant response are never summarized.
+   user turn with its assistant response are never summarized.
 2. Refuse a plan unless replacing the previous checkpoint and selected older
    turns is expected to save at least 2,000 tokens.
 3. Make at most one bounded semantic generation call over the previous
@@ -519,8 +519,9 @@ search/read.
 `agent_conversation_read` returns the latest page, or messages before an exact
 sequence, and follows a stable `olderCursor`. The first page pins a sequence
 high-water mark, so later appends cannot duplicate or skip entries while the
-agent pages backward. Each page contains at most 50 stored user, assistant, or
-system-event messages in chronological order. `agent_history_read` reads a
+agent pages backward. Each page contains at most 50 stored user or assistant
+messages, plus any legacy system-event records, in chronological order.
+`agent_history_read` reads a
 stable `message:*`, `seq:*`, `run:*`, or exact run/step/call reference, or an
 inclusive sequence range, with deterministic character bounds and content
 continuation.
@@ -530,7 +531,7 @@ Search defaults to 10 hits and caps at 25. Conversation and range reads cap at
 only and does not expose hidden system prompts. It does not inject unbounded
 transcripts into every decision.
 
-## Personal and Episodic Memory
+## Personal Memory
 
 Personal memory is independent from streams and workstreams. A preference may
 influence many kinds of work without belonging to any one of them. Automatic
@@ -540,8 +541,7 @@ memory cards regenerate the compact snapshot advertised as the
 `personal.memory` Hot Context source. The snapshot content is no longer
 injected into every decision.
 
-Episodic recall remains a separate semantic retrieval system. Neither memory
-system grants resource access or mutation authority.
+Personal memory never grants resource access or mutation authority.
 
 ## Context Pressure and Recovery
 

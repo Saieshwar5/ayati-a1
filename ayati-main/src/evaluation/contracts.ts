@@ -27,7 +27,6 @@ export type ModelOperationPurpose =
   | "durable_checkpoint_summary"
   | "run_focus_summary"
   | "memory_consolidation"
-  | "proposal_reflection"
   | "context_extraction"
   | "unclassified";
 
@@ -196,8 +195,6 @@ export interface RunEvidenceTotals {
   foregroundProviderInvocations: number;
   backgroundProviderInvocations: number;
   observableProviderTransportAttempts: number;
-  embeddingOperations: number;
-  imageGenerationOperations: number;
   toolCalls: number;
   inputTokens: number;
   outputTokens: number;

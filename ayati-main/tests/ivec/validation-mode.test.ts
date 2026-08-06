@@ -461,7 +461,6 @@ describe("validation mode", () => {
   it.each([
     ["calculation.evaluated", "calculation_evaluated", "14 * 3", "calculator"],
     ["database.mutation_succeeded", "database_mutated", "customers", "db_update_rows"],
-    ["pulse.action_completed", "pulse_action_completed", "create", "pulse"],
     ["process.exit_success", "process_exit_success", "pnpm test", "process_run"],
     ["memory.change_succeeded", "memory_change_completed", "identity/name", "memory_remember"],
   ] as const)(
@@ -494,7 +493,7 @@ describe("validation mode", () => {
       subject: "call-3",
     }]);
     const call = evidenceCall(3, []);
-    call.tool = "document_query";
+    call.tool = "file_query";
     call.verification = {
       version: 1,
       status: "passed",
@@ -504,7 +503,7 @@ describe("validation mode", () => {
       checks: [],
       facts: [{
         kind: "tool.execution.verified",
-        message: "document_query succeeded",
+        message: "file_query succeeded",
       }],
     };
 
@@ -517,7 +516,7 @@ describe("validation mode", () => {
         satisfiedBy: {
           step: 3,
           callId: "call-3",
-          tool: "document_query",
+          tool: "file_query",
         },
       }],
     });

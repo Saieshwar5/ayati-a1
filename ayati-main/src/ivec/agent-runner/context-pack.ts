@@ -80,20 +80,6 @@ function findCurrentMessageIndex(
 function ensureCurrentEvent(state: LoopState, events: AgentTemporalExactEvent[]): AgentTemporalExactEvent[] {
   if (events.some((event) => event.current)) return events;
   const seq = Math.max(1, ...events.map((event) => event.seq), state.currentSeq || 1);
-  if (state.inputKind === "system_event" && state.systemEvent) {
-    return [
-      ...events,
-      {
-        kind: "system_event",
-        seq,
-        timestamp: new Date(0).toISOString(),
-        source: state.systemEvent.source,
-        event: state.systemEvent.eventName,
-        summary: state.systemEvent.summary,
-        current: true,
-      },
-    ];
-  }
   return [
     ...events,
     {

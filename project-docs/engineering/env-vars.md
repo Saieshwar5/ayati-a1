@@ -10,9 +10,8 @@ FIREWORKS_API_KEY=
 AYATI_LLM_REQUEST_TIMEOUT_MS=120000
 ```
 
-Chat, embedding, image, and context-window model settings live in
-`ayati-main/data/runtime/llm-config.json`. OpenAI embeddings and image
-generation require `OPENAI_API_KEY`.
+Chat and context-window model settings live in
+`ayati-main/data/runtime/llm-config.json`.
 
 LLM generation uses the explicit request timeout above, accepts values from
 1,000 through 600,000 milliseconds, and defaults to 120 seconds. Provider SDK
@@ -110,16 +109,46 @@ removed.
 AYATI_HTTP_HOST=127.0.0.1
 AYATI_HTTP_PORT=8081
 AYATI_HTTP_ALLOW_ORIGIN=*
-AYATI_HTTP_API_TOKEN=
 AYATI_UPLOAD_MAX_BYTES=26214400
 ```
 
-## Documents and Python
+## Electron Desktop Client
 
 ```env
-AYATI_DOCUMENT_VECTOR_ENABLED=true
-AYATI_DOCUMENT_EMBED_BATCH_SIZE=32
-AYATI_DOCUMENT_VECTOR_MIN_CHUNKS=40
+AYATI_DESKTOP_WS_URL=ws://127.0.0.1:8080
+```
+
+This variable is read by the Electron main process. Plaintext `ws:` values are
+accepted only for loopback hosts; a non-loopback endpoint must use `wss:` and
+still requires a separate trusted deployment and authentication design.
+
+## Voice Input
+
+```env
+AYATI_VOICE_ENABLED=true
+AYATI_VOICE_AUTO_SEND=false
+AYATI_VOICE_NOTIFICATIONS=true
+AYATI_VOICE_SHOW_TRANSCRIPT=true
+AYATI_VOICE_SHOW_REPLY=true
+AYATI_VOICE_COMMAND=voxtype
+AYATI_VOICE_TRANSCRIPTION_TIMEOUT_MS=90000
+AYATI_VOICE_MAX_TRANSCRIPT_CHARS=32000
+AYATI_VOICE_SOCKET_PATH=
+```
+
+Voice input is enabled by default and uses the installed Voxtype user daemon
+for local recording and Whisper transcription. Confirmation is the safe
+default: after transcription, activate the voice key again to send. Set
+`AYATI_VOICE_AUTO_SEND=true` to send immediately.
+
+The default control socket is `$XDG_RUNTIME_DIR/ayati/voice.sock` with user-only
+permissions. `AYATI_VOICE_SOCKET_PATH`, when set, must be absolute and must be
+given to both daemon and CLI environments. Transcript and reply previews can
+be hidden independently for sensitive desktop environments.
+
+## Document Extraction and Python
+
+```env
 TIKA_BIN=tika
 TIKA_JAR_PATH=
 PANDOC_BIN=pandoc
@@ -148,4 +177,4 @@ It sets runtime-owned `AYATI_EVALUATION_ID`, `AYATI_EVALUATION_NAME`,
 `AYATI_EVALUATION_CAPTURE`, `AYATI_EVALUATION_ROOT`, and
 `AYATI_EVALUATION_COMMAND` values for the spawned ordinary daemon. Do not set
 these variables manually. Evaluation capture does not change `AYATI_ROOT_DIR`,
-provider/model selection, prompts, tools, schedulers, or background services.
+provider/model selection, prompts, tools, or daemon services.

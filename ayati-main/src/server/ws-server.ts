@@ -3,12 +3,11 @@ import { WebSocketServer, WebSocket } from "ws";
 import { devLog, devWarn, devError } from "../shared/index.js";
 
 const DEFAULT_PORT = 8080;
-const INITIAL_BACKOFF_MS = 1000;
-const MAX_BACKOFF_MS = 30_000;
-const MAX_RETRIES = 10;
+const DEFAULT_HOST = "127.0.0.1";
 const MAX_PENDING_REPLY_RENDERS = 100;
 
 export interface WsServerOptions {
+  host?: string;
   port?: number;
   onMessage: (clientId: string, data: unknown) => void;
   onDisconnect?: (clientId: string) => void;
@@ -24,9 +23,13 @@ export interface ReplyRenderedAcknowledgement {
 
 interface ClientCapabilities {
   replyStreaming: boolean;
+  kind: WsClientKind;
 }
 
+export type WsClientKind = "cli" | "desktop" | "voice" | "unknown";
+
 export class WsServer {
+  private readonly host: string;
   private readonly port: number;
   private readonly onMessage: (clientId: string, data: unknown) => void;
   private readonly onDisconnect?: (clientId: string) => void;
@@ -36,11 +39,9 @@ export class WsServer {
   private clientCapabilities = new Map<string, ClientCapabilities>();
   private pendingReplyRenders = new Map<string, Map<string, number>>();
   private defaultClientId: string | null = null;
-  private retryCount = 0;
-  private retryTimer: ReturnType<typeof setTimeout> | null = null;
-  private stopping = false;
 
   constructor(options: WsServerOptions) {
+    this.host = options.host ?? DEFAULT_HOST;
     this.port = options.port ?? DEFAULT_PORT;
     this.onMessage = options.onMessage;
     this.onDisconnect = options.onDisconnect;
@@ -48,25 +49,25 @@ export class WsServer {
   }
 
   async start(): Promise<void> {
-    this.stopping = false;
-    this.retryCount = 0;
     return this.bind();
   }
 
   private bind(): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      this.wss = new WebSocketServer({ port: this.port });
+      this.wss = new WebSocketServer({ host: this.host, port: this.port });
 
       this.wss.on("listening", () => {
-        devLog(`WebSocket server listening on port ${this.port}`);
-        this.retryCount = 0;
+        devLog(`WebSocket server listening on ${this.host}:${this.port}`);
         resolve();
       });
 
       this.wss.on("connection", (ws) => {
         const clientId = randomUUID();
         this.clients.set(clientId, ws);
-        this.clientCapabilities.set(clientId, { replyStreaming: false });
+        this.clientCapabilities.set(clientId, {
+          replyStreaming: false,
+          kind: "unknown",
+        });
         this.defaultClientId = clientId;
         devLog(`Client connected: ${clientId}`);
 
@@ -108,40 +109,9 @@ export class WsServer {
 
       this.wss.on("error", (err: NodeJS.ErrnoException) => {
         devError(`WebSocket server error: ${err.message}`);
-
-        if (this.retryCount === 0) {
-          // First attempt failed — reject the start() promise, then schedule retry
-          this.scheduleRetry();
-          reject(err);
-        } else {
-          this.scheduleRetry();
-        }
+        reject(err);
       });
     });
-  }
-
-  private scheduleRetry(): void {
-    if (this.stopping) return;
-
-    if (this.retryCount >= MAX_RETRIES) {
-      devError(`Max retries (${MAX_RETRIES}) reached. Giving up.`);
-      return;
-    }
-
-    const backoff = Math.min(
-      INITIAL_BACKOFF_MS * 2 ** this.retryCount,
-      MAX_BACKOFF_MS,
-    );
-    this.retryCount++;
-    devWarn(`Retrying in ${backoff}ms (attempt ${this.retryCount}/${MAX_RETRIES})...`);
-
-    this.retryTimer = setTimeout(() => {
-      if (this.stopping) return;
-      devLog("Attempting to restart WebSocket server...");
-      void this.bind().catch(() => {
-        // Error already handled by the "error" event
-      });
-    }, backoff);
   }
 
   send(clientId: string, data: unknown): void {
@@ -193,14 +163,11 @@ export class WsServer {
     return false;
   }
 
+  clientKind(clientId: string): WsClientKind {
+    return this.clientCapabilities.get(clientId)?.kind ?? "unknown";
+  }
+
   async stop(): Promise<void> {
-    this.stopping = true;
-
-    if (this.retryTimer) {
-      clearTimeout(this.retryTimer);
-      this.retryTimer = null;
-    }
-
     for (const client of this.clients.values()) {
       client.close(1001, "Server shutting down");
     }
@@ -230,8 +197,14 @@ export class WsServer {
       return false;
     }
     const capabilities = readObject(record["capabilities"]);
+    const kind = record["clientKind"] === "cli"
+      || record["clientKind"] === "desktop"
+      || record["clientKind"] === "voice"
+      ? record["clientKind"]
+      : "unknown";
     this.clientCapabilities.set(clientId, {
       replyStreaming: capabilities?.["replyStreaming"] === true,
+      kind,
     });
     return true;
   }

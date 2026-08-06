@@ -16,9 +16,9 @@ Ayati uses one managed root:
 ```
 
 The daemon also keeps non-Git runtime data in its configured data directory,
-including personal/episodic memory, provider settings, document indexes,
-Python scratch data, plugin state, and event queues. Live evaluation evidence
-is isolated beneath `data/evaluations/`. Do not commit generated runtime state.
+including personal memory, provider settings, managed-file metadata and
+derived extraction data, and Python scratch data. Live evaluation evidence is
+isolated beneath `data/evaluations/`. Do not commit generated runtime state.
 
 SQLite is authoritative for operational lifecycle and resource metadata.
 `workstreams/` is one portable shared context history containing
@@ -46,7 +46,7 @@ view, including Context Engine lifecycle evidence.
 Agent event capture is active only for a live evaluation. Ordinary daemon runs
 use a no-op event sink and do not create a second feedback trace or summary.
 Evaluation writes and report generation remain queued; terminal checkpoints do
-not hold the serialized chat or system-event turn, and explicit inspection or
+not hold the serialized chat turn, and explicit inspection or
 daemon shutdown provides a deterministic drain boundary.
 
 ## Archive and Rebuild

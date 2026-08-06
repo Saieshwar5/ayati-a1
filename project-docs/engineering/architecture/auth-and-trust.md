@@ -6,9 +6,12 @@ The daemon should be treated as highly privileged. It can hold user memory, acce
 
 Current trust boundaries:
 
-- CLI connects to local WebSocket server on `localhost:8080`.
-- HTTP upload/artifact/Pulse API runs on `127.0.0.1:8081` by default.
-- `AYATI_HTTP_API_TOKEN` can protect Pulse API access.
+- CLI and Electron desktop clients connect to the local WebSocket server on
+  loopback port 8080.
+- The Electron renderer is sandboxed and reaches the daemon only through a
+  narrow, sender-validated preload/main-process boundary. Plaintext desktop
+  WebSocket configuration is rejected for non-loopback hosts.
+- HTTP upload/artifact API runs on `127.0.0.1:8081` by default.
 - Provider and integration credentials are read from environment variables.
 - Context Engine runs inside the trusted daemon. Its typed service boundary,
   exact resource validation, and strict filesystem boundaries remain required.

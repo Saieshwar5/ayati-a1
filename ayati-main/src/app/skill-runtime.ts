@@ -1,11 +1,6 @@
 import { resolve } from "node:path";
-import type {
-  EpisodicMemoryController,
-  EpisodicMemoryRetriever,
-} from "../memory/episodic/index.js";
 import type { PersonalMemoryStore } from "../memory/personal/personal-memory-store.js";
-import type { PreparedAttachmentService } from "../documents/prepared-attachment-service.js";
-import type { SessionAttachmentService } from "../documents/session-attachment-service.js";
+import type { SessionAttachmentService } from "../files/session-attachment-service.js";
 import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
 import type { AyatiRuntimeConfig } from "../config/runtime-config.js";
@@ -13,12 +8,9 @@ import type { ContextEngineService } from "ayati-context-engine";
 import { builtInSkillsProvider } from "../skills/provider.js";
 import { createToolExecutor, type ToolExecutor } from "../skills/tool-executor.js";
 import type { SkillDefinition } from "../skills/types.js";
-import { createRecallSkill } from "../skills/builtins/recall/index.js";
 import { createMemorySkill } from "../skills/builtins/memory/index.js";
 import { createPythonSkill } from "../skills/builtins/python/index.js";
 import { createAttachmentSkill } from "../skills/builtins/attachments/index.js";
-import { createDatasetSkill } from "../skills/builtins/datasets/index.js";
-import { createDocumentSkill } from "../skills/builtins/documents/index.js";
 import { createFilesSkill } from "../skills/builtins/files/index.js";
 import { createGitContextSkill } from "../skills/builtins/git-context/index.js";
 import { createGitReadSkill } from "../skills/builtins/git-read/index.js";
@@ -38,10 +30,7 @@ export interface SkillRuntimeOptions {
   projectRoot: string;
   clientId: string;
   personalMemoryStore: PersonalMemoryStore;
-  memoryRetriever: EpisodicMemoryRetriever;
-  episodicMemoryController: EpisodicMemoryController;
   sessionAttachmentService: SessionAttachmentService;
-  preparedAttachmentService: PreparedAttachmentService;
   fileLibrary: FileLibrary;
   directoryLibrary: DirectoryLibrary;
   config: AyatiRuntimeConfig;
@@ -73,10 +62,6 @@ export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<
       defaultTimezone: options.config.contextEngine.timezone,
       healthRoot: options.config.contextEngine.rootDirectory,
     }),
-    createRecallSkill({
-      retriever: options.memoryRetriever,
-      controls: options.episodicMemoryController,
-    }),
     createMemorySkill({
       store: options.personalMemoryStore,
       defaultUserId: options.clientId,
@@ -86,8 +71,6 @@ export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<
       interpreterPath: options.config.python.interpreterPath,
     }),
     createAttachmentSkill({ sessionAttachmentService: options.sessionAttachmentService }),
-    createDatasetSkill({ preparedAttachmentService: options.preparedAttachmentService }),
-    createDocumentSkill({ preparedAttachmentService: options.preparedAttachmentService }),
     createFilesSkill({
       fileLibrary: options.fileLibrary,
       directoryLibrary: options.directoryLibrary,

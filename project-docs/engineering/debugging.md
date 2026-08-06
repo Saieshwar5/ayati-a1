@@ -13,8 +13,7 @@ pnpm --filter ayati-main test
 Key owners:
 
 - daemon/bootstrap: `ayati-main/src/app/main.ts`
-- chat/system turns: `ayati-main/src/app/chat-turn-runtime.ts` and
-  `system-event-runtime.ts`
+- chat turns: `ayati-main/src/app/chat-turn-runtime.ts`
 - harness: `ayati-main/src/ivec/agent-runner/`
 - resource scopes: `ayati-main/src/app/resource-scoped-tool-executor.ts`
 - Context Engine host/runtime: `ayati-context-engine/src/runtime.ts` and

@@ -1,4 +1,4 @@
-import type { RestoredAttachmentContext, SessionAttachmentService } from "../../../documents/session-attachment-service.js";
+import type { RestoredAttachmentContext, SessionAttachmentService } from "../../../files/session-attachment-service.js";
 import type { SkillDefinition, ToolDefinition, ToolResult } from "../../types.js";
 
 export interface AttachmentSkillDeps {
@@ -20,9 +20,9 @@ function buildFailureResult(error: string): ToolResult {
   };
 }
 
-function createRestoreAttachmentContextTool(deps: AttachmentSkillDeps, name = "attachment_restore"): ToolDefinition {
+function createRestoreAttachmentContextTool(deps: AttachmentSkillDeps): ToolDefinition {
   return {
-    name,
+    name: "attachment_restore",
     description: "Restore a previously used file, directory, document, or dataset attachment into the current run.",
     inputSchema: {
       type: "object",
@@ -75,52 +75,32 @@ function buildRestoreOutput(restored: RestoredAttachmentContext): Record<string,
       restored: restored.restored,
       attachmentKind: restored.attachmentKind,
       resourceId: restored.resourceId,
-      attachmentId: restored.fileId ?? restored.path,
-      ...(restored.fileId ? { fileId: restored.fileId } : {}),
+      attachmentId: restored.fileId,
+      fileId: restored.fileId,
       path: restored.path,
       displayName: restored.displayName,
       kind: restored.kind,
       mode: "file",
     };
   }
-  if (restored.attachmentKind === "directory") {
-    return {
-      restored: restored.restored,
-      attachmentKind: restored.attachmentKind,
-      resourceId: restored.resourceId,
-      attachmentId: restored.directoryId ?? restored.path,
-      ...(restored.directoryId ? { directoryId: restored.directoryId } : {}),
-      path: restored.path,
-      displayName: restored.displayName,
-      kind: restored.kind,
-      mode: "directory",
-    };
-  }
   return {
     restored: restored.restored,
     attachmentKind: restored.attachmentKind,
     resourceId: restored.resourceId,
-    attachmentId: restored.summary.preparedInputId,
-    preparedInputId: restored.summary.preparedInputId,
-    documentId: restored.summary.documentId,
-    displayName: restored.summary.displayName,
-    kind: restored.summary.kind,
-    mode: restored.summary.mode,
+    attachmentId: restored.directoryId,
+    directoryId: restored.directoryId,
+    path: restored.path,
+    displayName: restored.displayName,
+    kind: restored.kind,
+    mode: "directory",
   };
 }
 
 function buildRestoreStateUpdates(restored: RestoredAttachmentContext): Array<Record<string, unknown>> {
   if (restored.attachmentKind === "file") {
-    return restored.fileId ? [{ type: "restore_managed_file", fileId: restored.fileId }] : [];
+    return [{ type: "restore_managed_file", fileId: restored.fileId }];
   }
-  if (restored.attachmentKind === "directory") {
-    return restored.directoryId ? [{ type: "restore_managed_directory", directoryId: restored.directoryId }] : [];
-  }
-  return [{
-    type: "restore_prepared_attachment",
-    manifest: restored.manifest,
-    summary: restored.summary,
-  }];
+  return [{ type: "restore_managed_directory", directoryId: restored.directoryId }];
 }
 
 function readRunId(context: { runId?: string } | undefined): string {

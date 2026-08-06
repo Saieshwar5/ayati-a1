@@ -951,7 +951,7 @@ describe("current-run verification index", () => {
   });
 
   it("creates an exact-call fallback only for runtime-verified calls", () => {
-    const runtimeVerified = verifiedCall(5, "document_query", []);
+    const runtimeVerified = verifiedCall(5, "file_query", []);
     runtimeVerified.verification = {
       version: 1,
       status: "passed",
@@ -961,7 +961,7 @@ describe("current-run verification index", () => {
       checks: [],
       facts: [{
         kind: "tool.execution.verified",
-        message: "document_query succeeded",
+        message: "file_query succeeded",
       }],
     };
     const contractOnly = verifiedCall(6, "custom_tool", []);
@@ -989,7 +989,7 @@ describe("current-run verification index", () => {
         family: "task",
         kind: "tool.call_succeeded",
         subject: "call-5",
-        source: expect.objectContaining({ tool: "document_query" }),
+        source: expect.objectContaining({ tool: "file_query" }),
       }),
     ]);
   });

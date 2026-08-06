@@ -5,9 +5,11 @@ Current documented environment is local development with a long-running local da
 Default services:
 
 - Backend WebSocket server: `localhost:8080`.
-- Backend HTTP upload/artifact/Pulse API: `127.0.0.1:8081`.
+- Backend HTTP upload/artifact API: `127.0.0.1:8081`.
 - In-process Context Engine hosted by the backend daemon.
 - CLI client connects to `ws://localhost:8080`.
+- Electron desktop client connects to `ws://127.0.0.1:8080` and remains
+  available through the local system tray.
 
 Runtime data:
 
@@ -36,6 +38,5 @@ Production or shared deployment is not fully documented yet. Before deploying ou
 - Secret management.
 - Filesystem and tool boundaries.
 - Upload limits.
-- Plugin webhook validation.
 - Runtime data backup and retention.
 - Provider rate-limit behavior.

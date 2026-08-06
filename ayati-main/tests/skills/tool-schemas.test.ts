@@ -1,16 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { builtInSkillsProvider } from "../../src/skills/provider.js";
 import { createAttachmentSkill } from "../../src/skills/builtins/attachments/index.js";
-import { createDatasetSkill } from "../../src/skills/builtins/datasets/index.js";
-import { createDocumentSkill } from "../../src/skills/builtins/documents/index.js";
 import { createGitContextSkill } from "../../src/skills/builtins/git-context/index.js";
 import { createGitReadSkill } from "../../src/skills/builtins/git-read/index.js";
 import { createPythonSkill } from "../../src/skills/builtins/python/index.js";
-import { createRecallSkill } from "../../src/skills/builtins/recall/index.js";
 import { createSystemSkill } from "../../src/skills/builtins/system/index.js";
-import type { PreparedAttachmentService } from "../../src/documents/prepared-attachment-service.js";
-import type { SessionAttachmentService } from "../../src/documents/session-attachment-service.js";
-import type { RecallRetriever } from "../../src/skills/builtins/recall/index.js";
+import type { SessionAttachmentService } from "../../src/files/session-attachment-service.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
 import type { ContextEngineService } from "ayati-context-engine";
 
@@ -80,16 +75,11 @@ async function buildRuntimeTools(): Promise<ToolDefinition[]> {
   const contextEngineService = {} as ContextEngineService;
   const builtInTools = (await builtInSkillsProvider.getAllSkills())
     .flatMap((skill) => skill.tools);
-  const preparedAttachmentService = {} as unknown as PreparedAttachmentService;
-
   return [
     ...builtInTools,
     ...createSystemSkill({
       defaultTimezone: "UTC",
       healthRoot: "/tmp",
-    }).tools,
-    ...createRecallSkill({
-      retriever: { recall: async () => [] } satisfies RecallRetriever,
     }).tools,
     ...createPythonSkill({
       dataDir: "/tmp/ayati-test-data",
@@ -97,12 +87,6 @@ async function buildRuntimeTools(): Promise<ToolDefinition[]> {
     }).tools,
     ...createAttachmentSkill({
       sessionAttachmentService: {} as unknown as SessionAttachmentService,
-    }).tools,
-    ...createDatasetSkill({
-      preparedAttachmentService,
-    }).tools,
-    ...createDocumentSkill({
-      preparedAttachmentService,
     }).tools,
     ...createGitContextSkill({
       service: contextEngineService,
